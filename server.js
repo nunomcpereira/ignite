@@ -9,6 +9,7 @@
  */
 
 const express = require('express');
+const { DatabaseSync } = require('node:sqlite');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 const AdmZip = require('adm-zip');
@@ -62,6 +63,60 @@ function loadConfig() {
 }
 
 const CONFIG = loadConfig();
+
+/* ------------------------------------------------------------------ */
+/* Persistence: SQLite (node:sqlite) — onboarding history + documents  */
+/* ------------------------------------------------------------------ */
+
+const db = new DatabaseSync(path.join(__dirname, 'ignite.db'));
+db.exec(`
+  PRAGMA journal_mode = WAL;
+  CREATE TABLE IF NOT EXISTS projects (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      TEXT UNIQUE NOT NULL,
+    org         TEXT NOT NULL,
+    repo        TEXT NOT NULL,
+    gxp         INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'running',
+    error       TEXT,
+    repo_url    TEXT,
+    pr_url      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS steps (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    phase      INTEGER NOT NULL,
+    title      TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    logs       TEXT NOT NULL DEFAULT ''
+  );
+  CREATE TABLE IF NOT EXISTS documents (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('upload','link')),
+    name       TEXT NOT NULL,
+    url        TEXT,
+    mime       TEXT,
+    size       INTEGER,
+    data       BLOB,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+const insertProject = db.prepare(
+  'INSERT INTO projects (job_id, org, repo, gxp) VALUES (?, ?, ?, ?)'
+);
+const finishProject = db.prepare(
+  `UPDATE projects SET status = ?, error = ?, repo_url = ?, pr_url = ?, finished_at = datetime('now') WHERE id = ?`
+);
+const insertStep = db.prepare(
+  'INSERT INTO steps (project_id, phase, title, state, logs) VALUES (?, ?, ?, ?, ?)'
+);
+const insertDocument = db.prepare(
+  'INSERT INTO documents (project_id, kind, name, url, mime, size, data) VALUES (?, ?, ?, ?, ?, ?, ?)'
+);
 
 const PORT = process.env.PORT || CONFIG.port;
 const MAX_ZIP_BYTES = 250 * 1024 * 1024; // 250 MB upload cap
@@ -739,10 +794,11 @@ async function generateFailureInsight(failedPhase, error, record) {
 
 const PHASE_TITLES = {
   1: 'Input & Metadata Configuration',
-  2: 'Extraction & Structure Audit',
-  3: 'Security & AI Compliance Scan',
-  4: 'Org Governance CI (GitHub Actions via act)',
-  5: 'Provisioning & Shipping',
+  2: 'GxP Validation Documents',
+  3: 'Extraction & Structure Audit',
+  4: 'Security & AI Compliance Scan',
+  5: 'Org Governance CI (GitHub Actions via act)',
+  6: 'Provisioning & Shipping',
 };
 
 function buildMailTransport() {
@@ -835,11 +891,70 @@ app.get('/api/config', (req, res) => {
   res.json({ orgs });
 });
 
+/* Onboarding history: project list, per-project steps + documents, and
+   document download. Document blobs never leave the DB except via download. */
+app.get('/api/projects', (req, res) => {
+  const rows = db.prepare(`
+    SELECT p.id, p.org, p.repo, p.gxp, p.status, p.error, p.repo_url, p.pr_url,
+           p.created_at, p.finished_at,
+           (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS doc_count
+    FROM projects p ORDER BY p.id DESC LIMIT 100
+  `).all();
+  res.json(rows);
+});
+
+app.get('/api/projects/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid project id.' });
+  const project = db.prepare(
+    'SELECT id, org, repo, gxp, status, error, repo_url, pr_url, created_at, finished_at FROM projects WHERE id = ?'
+  ).get(id);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  const steps = db.prepare(
+    'SELECT phase, title, state, logs FROM steps WHERE project_id = ? ORDER BY phase'
+  ).all(id);
+  const documents = db.prepare(
+    'SELECT id, kind, name, url, mime, size, created_at FROM documents WHERE project_id = ? ORDER BY id'
+  ).all(id);
+  res.json({ ...project, steps, documents });
+});
+
+app.delete('/api/projects/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid project id.' });
+  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Project not found.' });
+  db.prepare('DELETE FROM documents WHERE project_id = ?').run(id);
+  db.prepare('DELETE FROM steps WHERE project_id = ?').run(id);
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/projects', (req, res) => {
+  db.exec('DELETE FROM documents; DELETE FROM steps; DELETE FROM projects;');
+  res.json({ ok: true });
+});
+
+app.get('/api/documents/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid document id.' });
+  const doc = db.prepare('SELECT kind, name, url, mime, data FROM documents WHERE id = ?').get(id);
+  if (!doc) return res.status(404).json({ error: 'Document not found.' });
+  if (doc.kind === 'link') return res.redirect(doc.url);
+  res.setHeader('Content-Type', doc.mime || 'application/octet-stream');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename*=UTF-8''${encodeURIComponent(doc.name)}`
+  );
+  res.send(Buffer.from(doc.data));
+});
+
 app.post(
   '/api/pipeline',
   upload.fields([
     { name: 'archive', maxCount: 1 },
     { name: 'files', maxCount: 5000 },
+    { name: 'gxpDocs', maxCount: 50 },
   ]),
   async (req, res) => {
   res.setHeader('Content-Type', 'application/x-ndjson');
@@ -869,6 +984,7 @@ app.post(
 
   const zipFile = req.files?.archive?.[0] || null;
   const dirFiles = req.files?.files || [];
+  const gxpDocFiles = req.files?.gxpDocs || [];
   let relPaths = [];
   try {
     relPaths = JSON.parse(req.body.paths || '[]');
@@ -876,6 +992,14 @@ app.post(
 
   const org = (req.body.org || '').trim();
   const repo = (req.body.repo || '').trim();
+  const isGxp = req.body.gxp === 'true';
+  let gxpLinks = [];
+  try {
+    const parsed = JSON.parse(req.body.gxpLinks || '[]');
+    if (Array.isArray(parsed)) gxpLinks = parsed;
+  } catch { /* validated in phase 2 */ }
+
+  let projectId = null;
 
   try {
     /* ---------------- Phase 1: input validation ---------------- */
@@ -900,11 +1024,54 @@ app.post(
       log1(`Folder upload: ${dirFiles.length} files (${totalMb.toFixed(1)} MB)`);
     }
     log1(`Target: ${org}/${repo} (private)`);
+    log1(`GxP-regulated process: ${isGxp ? 'YES — validation documents are mandatory' : 'no'}`);
+    projectId = Number(insertProject.run(jobId, org, repo, isGxp ? 1 : 0).lastInsertRowid);
     status(1, 'success');
 
-    /* ---------------- Phase 2: extraction + structure audit ---------------- */
-    status(2, 'running');
-    const log2 = phaseLog(2);
+    /* ---------------- Phase 2: GxP validation documents ---------------- */
+    if (!isGxp) {
+      rec(2).state = 'skipped';
+      phaseLog(2)('Process declared non-GxP — no validation documents required.');
+      send({ type: 'status', phase: 2, state: 'skipped' });
+    } else {
+      status(2, 'running');
+      const logG = phaseLog(2);
+
+      const validLinks = [];
+      for (const l of gxpLinks) {
+        const url = String(l?.url || '').trim();
+        let parsed = null;
+        try { parsed = new URL(url); } catch { /* invalid */ }
+        if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+          throw Object.assign(new Error(`Invalid GxP document link: "${url}" (must be http/https).`), { phase: 2 });
+        }
+        validLinks.push({ url, name: String(l?.name || '').trim() || parsed.hostname + parsed.pathname });
+      }
+
+      if (gxpDocFiles.length === 0 && validLinks.length === 0) {
+        throw Object.assign(
+          new Error('GxP process declared but no validation documents provided. Attach at least one document (upload or link).'),
+          { phase: 2 }
+        );
+      }
+
+      logG(`Collecting ${gxpDocFiles.length} uploaded document(s) and ${validLinks.length} link(s)...`);
+      for (const doc of gxpDocFiles) {
+        const data = await fsp.readFile(doc.path);
+        insertDocument.run(projectId, 'upload', doc.originalname, null, doc.mimetype || null, doc.size, data);
+        logG(`✓ Archived upload: ${doc.originalname} (${(doc.size / 1024).toFixed(1)} KB)`);
+      }
+      for (const link of validLinks) {
+        insertDocument.run(projectId, 'link', link.name, link.url, null, null, null);
+        logG(`✓ Archived link: ${link.name} → ${link.url}`);
+      }
+      logG(`✓ ${gxpDocFiles.length + validLinks.length} GxP validation document(s) saved to the database.`);
+      status(2, 'success');
+    }
+
+    /* ---------------- Phase 3: extraction + structure audit ---------------- */
+    status(3, 'running');
+    const log2 = phaseLog(3);
 
     await fsp.mkdir(stagingDir, { recursive: true });
     log2(`Staging directory: ${stagingDir}`);
@@ -930,15 +1097,15 @@ app.post(
       envOffenders.forEach((f) => log2(`    ✗ ${f}`));
       throw Object.assign(
         new Error(`Raw environment files detected (${envOffenders.length}). Remove them and re-upload.`),
-        { phase: 2 }
+        { phase: 3 }
       );
     }
     log2('✓ Check 1 passed — no raw environment files present.');
-    status(2, 'success');
+    status(3, 'success');
 
-    /* ---------------- Phase 3: security + AI compliance ---------------- */
-    status(3, 'running');
-    const log3 = phaseLog(3);
+    /* ---------------- Phase 4: security + AI compliance ---------------- */
+    status(4, 'running');
+    const log3 = phaseLog(4);
 
     log3('Check 2 — scanning text files for hardcoded credentials...');
     const secrets = await checkSecrets(projectRoot, log3);
@@ -948,7 +1115,7 @@ app.post(
       secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
       throw Object.assign(
         new Error(`Hardcoded credentials detected in ${secrets.findings.length} location(s).`),
-        { phase: 3 }
+        { phase: 4 }
       );
     }
     log3('✓ Check 2 passed — no credential leakage detected.');
@@ -963,7 +1130,7 @@ app.post(
         new Error(
           `AI invocations without recursion_limit found in ${governance.findings.length} location(s).`
         ),
-        { phase: 3 }
+        { phase: 4 }
       );
     }
     log3('✓ Check 4 passed — all AI invocations are governed.');
@@ -984,40 +1151,43 @@ app.post(
         if (LLM_SCAN_MODE === 'block' && blocking.length > 0) {
           throw Object.assign(
             new Error(`LLM deep-scan found ${blocking.length} critical/high vulnerability(ies).`),
-            { phase: 3 }
+            { phase: 4 }
           );
         }
         log3(`⚠ Findings are advisory (mode: ${LLM_SCAN_MODE}${LLM_SCAN_MODE === 'block' ? ', none critical/high' : ''}) — pipeline continues.`);
       }
     }
 
-    status(3, 'success');
+    status(4, 'success');
 
-    /* ---------------- Phase 4: local GitHub Actions run (act) ---------------- */
-    status(4, 'running');
-    const log4 = phaseLog(4);
+    /* ---------------- Phase 5: local GitHub Actions run (act) ---------------- */
+    status(5, 'running');
+    const log4 = phaseLog(5);
 
     const tooling = await actTooling();
     if (!tooling.ok) {
       log4(`⚠ Local CI skipped: ${tooling.reason}`);
       log4('⚠ The org governance workflows will still gate the repo on GitHub after push.');
-      status(4, 'success');
+      status(5, 'success');
     } else {
       const wfFile = await fetchGovernanceWorkflow(workflowDir, log4);
       log4(`Executing org governance workflows locally with act (event: ${ACT_EVENT}).`);
       await runActionsLocally(projectRoot, wfFile, log4);
       log4('✓ All org governance jobs passed locally.');
-      status(4, 'success');
+      status(5, 'success');
     }
 
-    /* ---------------- Phase 5: provisioning + shipping ---------------- */
-    status(5, 'running');
-    const log5 = phaseLog(5);
+    /* ---------------- Phase 6: provisioning + shipping ---------------- */
+    status(6, 'running');
+    const log5 = phaseLog(6);
 
     const { repoUrl, prUrl } = await shipToGitHub(projectRoot, org, repo, log5);
     log5(`✓ Repository live at ${repoUrl}`);
-    status(5, 'success', { repoUrl, prUrl });
+    status(6, 'success', { repoUrl, prUrl });
 
+    if (projectId !== null) {
+      finishProject.run('success', null, repoUrl, prUrl || null, projectId);
+    }
     send({ type: 'done', ok: true, repoUrl, prUrl });
   } catch (err) {
     const phase = err.phase || currentPhase;
@@ -1046,14 +1216,29 @@ app.post(
       phaseLog(phase)(`⚠ Could not send failure email: ${mailErr.message}`);
     }
 
+    if (projectId !== null) {
+      try { finishProject.run('failed', err.message, null, null, projectId); } catch { /* best-effort */ }
+    }
     send({ type: 'done', ok: false, error: err.message, phase });
   } finally {
+    // Persist every phase's state and logs for the onboarding history panel.
+    if (projectId !== null) {
+      try {
+        for (const id of Object.keys(PHASE_TITLES)) {
+          const ph = record[id] || { state: 'pending', logs: [] };
+          insertStep.run(projectId, Number(id), PHASE_TITLES[id], ph.state, ph.logs.join('\n'));
+        }
+      } catch (e) {
+        console.error(`Could not persist step history for job ${jobId}: ${e.message}`);
+      }
+    }
     // Forceful cleanup regardless of outcome: staging dir, the uploaded ZIP,
     // and any multer temp files not yet moved into staging.
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     await fsp.rm(workflowDir, { recursive: true, force: true }).catch(() => {});
     if (zipFile) await fsp.rm(zipFile.path, { force: true }).catch(() => {});
     for (const f of dirFiles) await fsp.rm(f.path, { force: true }).catch(() => {});
+    for (const f of gxpDocFiles) await fsp.rm(f.path, { force: true }).catch(() => {});
     res.end();
   }
 });
