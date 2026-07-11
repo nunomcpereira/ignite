@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ignite — Onboarding Gatekeeper</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd',
+              400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8',
+              800: '#1e40af', 900: '#1e3a8a',
+            },
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Inter', 'Roboto', 'Helvetica Neue', 'sans-serif'],
+            mono: ['SF Mono', 'ui-monospace', 'Menlo', 'Consolas', 'monospace'],
+          },
+          boxShadow: {
+            card: '0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px rgba(15, 23, 42, 0.06)',
+            cardHover: '0 2px 4px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.10)',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    @keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(37,99,235,.35);} 70% { box-shadow: 0 0 0 8px rgba(37,99,235,0);} 100% { box-shadow: 0 0 0 0 rgba(37,99,235,0);} }
+    .running-dot { animation: pulse-ring 1.4s infinite; }
+    .terminal { scrollbar-width: thin; scrollbar-color: #334155 transparent; }
+    .terminal::-webkit-scrollbar { width: 6px; }
+    .terminal::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+    details[open] .chevron { transform: rotate(90deg); }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-brand-50 via-white to-white text-slate-700 min-h-screen antialiased font-sans">
+  <div class="max-w-3xl mx-auto px-6 py-12">
+
+    <!-- Header -->
+    <header class="mb-10 text-center">
+      <div class="inline-flex items-center gap-3 mb-3">
+        <div class="w-11 h-11 rounded-2xl bg-brand-600 shadow-lg shadow-brand-600/25 flex items-center justify-center">
+          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
+          </svg>
+        </div>
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Ignite</h1>
+      </div>
+      <p class="text-sm text-slate-500">Onboarding gatekeeper — upload a project · pass compliance gates · ship to GitHub</p>
+    </header>
+
+    <!-- Phase 1: Input card -->
+    <section class="bg-white border border-slate-200 rounded-2xl p-6 mb-8 shadow-card">
+      <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest mb-4">Input &amp; Metadata</h2>
+
+      <div id="dropzone"
+        class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer transition-all hover:border-brand-400 hover:bg-brand-50/60">
+        <input type="file" id="fileInput" accept=".zip,application/zip" class="hidden" />
+        <input type="file" id="dirInput" webkitdirectory class="hidden" />
+        <div id="dropIdle">
+          <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-100 flex items-center justify-center">
+            <svg class="w-6 h-6 text-brand-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+            </svg>
+          </div>
+          <p class="text-sm text-slate-500">Drag &amp; drop a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> here</p>
+          <div class="flex items-center justify-center gap-2 mt-3">
+            <button type="button" id="pickZipBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">Choose ZIP…</button>
+            <button type="button" id="pickDirBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">Choose Folder…</button>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">Up to 250 MB · node_modules, .git and build output are skipped automatically</p>
+        </div>
+        <div id="dropReady" class="hidden">
+          <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-600 flex items-center justify-center shadow-md shadow-brand-600/25">
+            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/>
+            </svg>
+          </div>
+          <p class="text-sm text-brand-700 font-semibold" id="fileName"></p>
+          <p class="text-xs text-slate-400 mt-1" id="fileSize"></p>
+        </div>
+      </div>
+      <p id="dropError" class="hidden text-xs font-medium text-rose-600 mt-2"></p>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
+        <div>
+          <label for="orgInput" class="block text-xs font-semibold text-slate-600 mb-1.5">GitHub Organization Name</label>
+          <input id="orgInput" type="text" placeholder="acme-corp" autocomplete="off" spellcheck="false"
+            class="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-shadow" />
+        </div>
+        <div>
+          <label for="repoInput" class="block text-xs font-semibold text-slate-600 mb-1.5">Desired Repository Name</label>
+          <input id="repoInput" type="text" placeholder="my-new-service" autocomplete="off" spellcheck="false"
+            class="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-shadow" />
+        </div>
+      </div>
+
+      <button id="startBtn" disabled
+        class="mt-6 w-full py-3 rounded-xl text-sm font-semibold transition-all
+               disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none
+               bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25">
+        Initiate Onboarding Pipeline
+      </button>
+    </section>
+
+    <!-- Pipeline stepper -->
+    <section id="pipeline" class="space-y-3"></section>
+
+    <!-- Final result banner -->
+    <div id="resultBanner" class="hidden mt-8"></div>
+
+    <!-- AI failure insight -->
+    <div id="insightCard" class="hidden mt-4"></div>
+
+    <footer class="mt-12 text-center text-xs text-slate-400">
+      Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>
+      Staging files are wiped from disk after every run, pass or fail.
+    </footer>
+  </div>
+
+  <script>
+    /* ------------------------------------------------------------ */
+    /* Pipeline model                                                */
+    /* ------------------------------------------------------------ */
+    const MAX_ZIP_MB = 250;
+    const PHASES = [
+      { id: 1, title: 'Input & Metadata Configuration', desc: 'Validate archive and target repository metadata' },
+      { id: 2, title: 'Extraction & Structure Audit', desc: 'Unpack to staging · deny raw .env* files' },
+      { id: 3, title: 'Security & AI Compliance Scan', desc: 'Credential leak regex · LangChain/LangGraph governance · LLM deep-scan' },
+      { id: 4, title: 'Org Governance CI — GitHub Actions', desc: 'Runs devops-governance org workflows locally in Docker via act' },
+      { id: 5, title: 'Provisioning & Shipping', desc: 'git init · gh repo create --private · push to main' },
+    ];
+
+    // payload: { kind: 'zip', file } | { kind: 'dir', entries: [{file, rel}], name, size }
+    const state = { payload: null, running: false, phases: {} };
+
+    const CLIENT_SKIP_DIRS = new Set([
+      'node_modules', '.git', '.next', 'dist', 'build', '__pycache__',
+      '.venv', 'venv', 'vendor', '.idea', '.vscode',
+    ]);
+
+    /* ------------------------------------------------------------ */
+    /* Elements                                                      */
+    /* ------------------------------------------------------------ */
+    const $ = (id) => document.getElementById(id);
+    const dropzone = $('dropzone'), fileInput = $('fileInput');
+    let orgInput = $('orgInput');
+    const repoInput = $('repoInput');
+    const startBtn = $('startBtn'), pipelineEl = $('pipeline'), resultBanner = $('resultBanner');
+
+    /* ------------------------------------------------------------ */
+    /* Rendering                                                     */
+    /* ------------------------------------------------------------ */
+    const STATE_META = {
+      pending: { label: 'Pending',  chip: 'bg-slate-100 text-slate-500 border-slate-200', ring: 'border-slate-300 text-slate-400 bg-white' },
+      running: { label: 'Running',  chip: 'bg-brand-50 text-brand-700 border-brand-200', ring: 'border-brand-600 text-brand-600 bg-white running-dot' },
+      success: { label: 'Success',  chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', ring: 'border-emerald-500 text-emerald-600 bg-white' },
+      failed:  { label: 'Failed',   chip: 'bg-rose-50 text-rose-700 border-rose-200', ring: 'border-rose-500 text-rose-600 bg-white' },
+      skipped: { label: 'Skipped',  chip: 'bg-amber-50 text-amber-700 border-amber-200', ring: 'border-amber-400 text-amber-500 bg-white' },
+    };
+
+    function iconFor(st, id) {
+      if (st === 'success') return '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>';
+      if (st === 'failed')  return '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
+      if (st === 'running') return '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>';
+      return String(id);
+    }
+
+    function renderPipeline() {
+      pipelineEl.innerHTML = PHASES.map((p, idx) => {
+        const ph = state.phases[p.id] || { state: 'pending', logs: [] };
+        const meta = STATE_META[ph.state];
+        const hasLogs = ph.logs.length > 0;
+        const isLast = idx === PHASES.length - 1;
+        return `
+        <div class="relative">
+          ${!isLast ? '<div class="absolute left-[27px] top-[54px] bottom-[-12px] w-px bg-slate-200"></div>' : ''}
+          <details class="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-card transition-shadow hover:shadow-cardHover" ${ph.state === 'running' || ph.state === 'failed' ? 'open' : ''}>
+            <summary class="flex items-center gap-4 p-4 ${hasLogs ? 'cursor-pointer hover:bg-slate-50' : 'cursor-default'} select-none transition-colors">
+              <div class="w-7 h-7 shrink-0 rounded-full border-2 ${meta.ring} flex items-center justify-center text-xs font-bold z-10">
+                ${iconFor(ph.state, p.id)}
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-semibold text-slate-800"><span class="text-brand-600 font-bold">Phase ${p.id}</span> <span class="text-slate-300 mx-1">·</span> ${p.title}</p>
+                <p class="text-xs text-slate-500 truncate">${p.desc}</p>
+              </div>
+              <span class="text-[11px] font-semibold px-2.5 py-1 rounded-full border ${meta.chip}">${meta.label}</span>
+              ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : '<span class="w-4"></span>'}
+            </summary>
+            ${hasLogs ? `
+            <div class="border-t border-slate-100 p-3 bg-slate-50/60">
+              <div class="terminal bg-slate-900 rounded-lg p-3 max-h-56 overflow-y-auto font-mono text-[12px] leading-relaxed shadow-inner" id="term-${p.id}">
+                ${ph.logs.map(formatLogLine).join('')}
+              </div>
+            </div>` : ''}
+          </details>
+        </div>`;
+      }).join('');
+
+      document.querySelectorAll('.terminal').forEach((t) => { t.scrollTop = t.scrollHeight; });
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function formatLogLine(line) {
+      const safe = escapeHtml(line);
+      let cls = 'text-slate-300';
+      if (line.startsWith('✓')) cls = 'text-emerald-400';
+      else if (line.includes('✗')) cls = 'text-rose-400';
+      else if (line.startsWith('$')) cls = 'text-sky-300';
+      else if (line.includes('⚠') || line.startsWith('Skipping')) cls = 'text-amber-300';
+      return `<div class="${cls} whitespace-pre-wrap break-all">${safe}</div>`;
+    }
+
+    function resetPhases() {
+      PHASES.forEach((p) => { state.phases[p.id] = { state: 'pending', logs: [] }; });
+      resultBanner.classList.add('hidden');
+      resultBanner.innerHTML = '';
+      const insightCard = $('insightCard');
+      insightCard.classList.add('hidden');
+      insightCard.innerHTML = '';
+      renderPipeline();
+    }
+
+    /* Minimal markdown for LLM output: **bold**, `code`, bullet lines. */
+    function renderInsightText(text) {
+      const html = escapeHtml(text)
+        .replace(/\*\*(.+?)\*\*/g, '<strong class="text-slate-900">$1</strong>')
+        .replace(/`([^`]+)`/g, '<code class="bg-brand-100 text-brand-800 px-1 py-0.5 rounded text-[12px] font-mono">$1</code>')
+        .split('\n')
+        .map((line) => {
+          const m = line.match(/^\s*[-*]\s+(.*)/);
+          if (m) return `<div class="flex gap-2 mt-1"><span class="text-brand-500 shrink-0">•</span><span>${m[1]}</span></div>`;
+          return line.trim() ? `<p class="mt-2 first:mt-0">${line}</p>` : '';
+        })
+        .join('');
+      return html;
+    }
+
+    function showInsight(state_, text) {
+      const card = $('insightCard');
+      card.classList.remove('hidden');
+      if (state_ === 'generating') {
+        card.innerHTML = `
+          <div class="bg-white border border-brand-200 rounded-2xl p-5 shadow-card flex items-center gap-3">
+            <svg class="w-5 h-5 text-brand-600 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>
+            <p class="text-sm text-slate-600">AI is analyzing the failure log…</p>
+          </div>`;
+      } else if (state_ === 'ready') {
+        card.innerHTML = `
+          <div class="bg-white border border-brand-200 rounded-2xl shadow-card overflow-hidden">
+            <div class="flex items-center gap-2 px-5 py-3 bg-brand-50 border-b border-brand-100">
+              <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 002.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>
+              <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">AI Insight — why this failed</p>
+            </div>
+            <div class="px-5 py-4 text-sm text-slate-700 leading-relaxed">${renderInsightText(text)}</div>
+          </div>`;
+      } else {
+        card.classList.add('hidden');
+        card.innerHTML = '';
+      }
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function showResult(ok, { repoUrl, prUrl, error, phase } = {}) {
+      resultBanner.classList.remove('hidden');
+      if (ok) {
+        resultBanner.innerHTML = `
+          <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center shadow-card">
+            <p class="text-emerald-800 font-semibold mb-1">Pipeline complete — repository shipped 🎉</p>
+            <a href="${repoUrl}" target="_blank" rel="noopener"
+               class="inline-flex items-center gap-2 mt-2 text-sm font-mono text-emerald-700 hover:text-emerald-900 underline underline-offset-4">
+              ${repoUrl}
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
+            </a>
+            ${prUrl ? `<p class="text-xs text-emerald-700 mt-3">Onboarding PR (auto-merges on green checks): <a href="${prUrl}" target="_blank" rel="noopener" class="underline underline-offset-2 font-mono">${prUrl}</a></p>` : ''}
+          </div>`;
+      } else {
+        resultBanner.innerHTML = `
+          <div class="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center shadow-card">
+            <p class="text-rose-800 font-semibold mb-1">Pipeline halted${phase ? ` at Phase ${phase}` : ''}</p>
+            <p class="text-sm text-rose-600">${escapeHtml(error || 'Unknown error')}</p>
+            <p class="text-xs text-slate-500 mt-3">Fix the violations above, re-zip, and try again. Staging files were cleaned up.</p>
+          </div>`;
+      }
+      resultBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    /* ------------------------------------------------------------ */
+    /* File handling — accepts a .zip OR a whole folder              */
+    /* ------------------------------------------------------------ */
+    function showDropError(message) {
+      const errEl = $('dropError');
+      errEl.textContent = message;
+      errEl.classList.remove('hidden');
+    }
+
+    function showReady(name, detail) {
+      $('dropError').classList.add('hidden');
+      $('dropIdle').classList.add('hidden');
+      $('dropReady').classList.remove('hidden');
+      $('fileName').textContent = name;
+      $('fileSize').textContent = detail + ' — click to replace';
+      updateButton();
+    }
+
+    /* Auto-propose the repository name from the uploaded ZIP/folder name.
+       Only fills the field while it's empty or still holding a previous
+       proposal — never overwrites something the user typed. */
+    let lastProposal = '';
+    function proposeRepoName(source) {
+      const slug = source
+        .toLowerCase()
+        .replace(/\.zip$/, '')
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^[-._]+|[-._]+$/g, '')
+        .slice(0, 100);
+      if (!slug) return;
+      const current = repoInput.value.trim();
+      if (current === '' || current === lastProposal) {
+        repoInput.value = slug;
+        lastProposal = slug;
+        updateButton();
+      }
+    }
+
+    function setZip(file) {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.zip')) {
+        return showDropError(`"${file.name}" rejected — drop a .zip archive or a folder.`);
+      }
+      if (file.size > MAX_ZIP_MB * 1024 * 1024) {
+        return showDropError(`"${file.name}" is ${(file.size / 1048576).toFixed(1)} MB — the limit is ${MAX_ZIP_MB} MB.`);
+      }
+      state.payload = { kind: 'zip', file };
+      proposeRepoName(file.name);
+      showReady(file.name, (file.size / 1048576).toFixed(1) + ' MB ZIP');
+    }
+
+    function pathIsSkipped(rel) {
+      return rel.split('/').some((seg) => CLIENT_SKIP_DIRS.has(seg) || seg === '.DS_Store');
+    }
+
+    function setDir(entries, rootName) {
+      const kept = entries.filter((e) => !pathIsSkipped(e.rel));
+      if (kept.length === 0) return showDropError('Folder contains no uploadable files.');
+      if (kept.length > 5000) return showDropError(`Folder has ${kept.length} files — the limit is 5000. Zip it instead, or trim build artifacts.`);
+      const size = kept.reduce((sum, e) => sum + e.file.size, 0);
+      if (size > MAX_ZIP_MB * 1024 * 1024) {
+        return showDropError(`Folder is ${(size / 1048576).toFixed(1)} MB after skipping artifacts — the limit is ${MAX_ZIP_MB} MB.`);
+      }
+      state.payload = { kind: 'dir', entries: kept, name: rootName, size };
+      proposeRepoName(rootName);
+      showReady(rootName + '/', `${kept.length} files · ${(size / 1048576).toFixed(1)} MB folder`);
+    }
+
+    /* Folder picker (webkitdirectory) delivers webkitRelativePath per file. */
+    function setDirFromInput(fileList) {
+      const files = Array.from(fileList);
+      if (files.length === 0) return;
+      // Strip the top-level folder name so staging is the project root.
+      const rootName = files[0].webkitRelativePath.split('/')[0];
+      const entries = files.map((f) => ({
+        file: f,
+        rel: f.webkitRelativePath.split('/').slice(1).join('/') || f.name,
+      }));
+      setDir(entries, rootName);
+    }
+
+    /* Drag-and-drop folder traversal via webkitGetAsEntry. */
+    function readAllEntries(reader) {
+      return new Promise((resolve, reject) => {
+        const all = [];
+        (function next() {
+          reader.readEntries((batch) => {
+            if (batch.length === 0) return resolve(all);
+            all.push(...batch);
+            next();
+          }, reject);
+        })();
+      });
+    }
+
+    async function collectEntries(entry, prefix, out) {
+      if (entry.isFile) {
+        const file = await new Promise((res, rej) => entry.file(res, rej));
+        out.push({ file, rel: prefix + entry.name });
+      } else if (entry.isDirectory) {
+        if (CLIENT_SKIP_DIRS.has(entry.name)) return;
+        const children = await readAllEntries(entry.createReader());
+        for (const child of children) await collectEntries(child, prefix + entry.name + '/', out);
+      }
+    }
+
+    async function handleDrop(dataTransfer) {
+      const items = Array.from(dataTransfer.items || []);
+      const entry = items[0]?.webkitGetAsEntry?.();
+      if (entry?.isDirectory) {
+        const out = [];
+        const children = await readAllEntries(entry.createReader());
+        for (const child of children) await collectEntries(child, '', out);
+        setDir(out, entry.name);
+      } else {
+        setZip(dataTransfer.files[0]);
+      }
+    }
+
+    dropzone.addEventListener('click', (e) => {
+      if (state.running || e.target.closest('button')) return;
+      // Idle state has explicit buttons; a click on the ready state re-opens
+      // the picker matching the current payload kind.
+      if (state.payload?.kind === 'dir') dirInput.click();
+      else fileInput.click();
+    });
+    const dirInput = $('dirInput');
+    $('pickZipBtn').addEventListener('click', () => fileInput.click());
+    $('pickDirBtn').addEventListener('click', () => dirInput.click());
+    fileInput.addEventListener('change', () => { setZip(fileInput.files[0]); fileInput.value = ''; });
+    dirInput.addEventListener('change', () => { setDirFromInput(dirInput.files); dirInput.value = ''; });
+
+    ['dragover', 'dragenter'].forEach((ev) =>
+      dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add('border-brand-500', 'bg-brand-50'); }));
+    ['dragleave', 'drop'].forEach((ev) =>
+      dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove('border-brand-500', 'bg-brand-50'); }));
+    dropzone.addEventListener('drop', (e) => { if (!state.running) handleDrop(e.dataTransfer).catch((err) => showDropError(`Could not read dropped item: ${err.message}`)); });
+
+    function updateButton() {
+      const ready = state.payload && orgInput.value.trim() && repoInput.value.trim() && !state.running;
+      startBtn.disabled = !ready;
+    }
+    [orgInput, repoInput].forEach((el) => el.addEventListener('input', updateButton));
+
+    /* ------------------------------------------------------------ */
+    /* Pipeline execution — consume NDJSON stream                    */
+    /* ------------------------------------------------------------ */
+    startBtn.addEventListener('click', async () => {
+      if (state.running) return;
+      state.running = true;
+      startBtn.textContent = 'Pipeline Running…';
+      updateButton();
+      resetPhases();
+
+      const form = new FormData();
+      if (state.payload.kind === 'zip') {
+        form.append('archive', state.payload.file);
+      } else {
+        for (const e of state.payload.entries) form.append('files', e.file);
+        form.append('paths', JSON.stringify(state.payload.entries.map((e) => e.rel)));
+      }
+      form.append('org', orgInput.value.trim());
+      form.append('repo', repoInput.value.trim());
+
+      try {
+        const res = await fetch('/api/pipeline', { method: 'POST', body: form });
+
+        // Non-streaming error (e.g. multer rejected the upload before the
+        // pipeline started): surface it instead of failing silently.
+        if (!res.ok) {
+          let message = `Server error (HTTP ${res.status})`;
+          try {
+            const body = await res.json();
+            if (body.error) message = body.error;
+          } catch { /* body wasn't JSON — keep generic message */ }
+          state.phases[1].state = 'failed';
+          state.phases[1].logs.push(`✗ ${message}`);
+          PHASES.slice(1).forEach((p) => { state.phases[p.id].state = 'skipped'; });
+          renderPipeline();
+          showResult(false, { error: message, phase: 1 });
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let sawDone = false;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.trim()) { if (handleEvent(JSON.parse(line))) sawDone = true; }
+          }
+        }
+        if (!sawDone) showResult(false, { error: 'Connection to the server was interrupted mid-pipeline.' });
+      } catch (err) {
+        showResult(false, { error: `Upload failed: ${err.message}. Check that the server is still running.` });
+      } finally {
+        state.running = false;
+        startBtn.textContent = 'Initiate Onboarding Pipeline';
+        updateButton();
+      }
+    });
+
+    function handleEvent(ev) {
+      if (ev.type === 'log') {
+        state.phases[ev.phase].logs.push(ev.message);
+      } else if (ev.type === 'status') {
+        state.phases[ev.phase].state = ev.state;
+        if (ev.state === 'failed') {
+          PHASES.filter((p) => p.id > ev.phase).forEach((p) => {
+            if (state.phases[p.id].state === 'pending') state.phases[p.id].state = 'skipped';
+          });
+        }
+      } else if (ev.type === 'insight') {
+        showInsight(ev.state, ev.text);
+      } else if (ev.type === 'done') {
+        showResult(ev.ok, ev);
+        renderPipeline();
+        return true;
+      }
+      renderPipeline();
+      return false;
+    }
+
+    /* ------------------------------------------------------------ */
+    /* Org list from server config: 1 entry = prefilled input,       */
+    /* 2+ entries = dropdown (first entry proposed by default).      */
+    /* ------------------------------------------------------------ */
+    async function applyServerConfig() {
+      try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
+        const orgs = cfg.orgs || [];
+        if (orgs.length === 0) return;
+        if (orgs.length === 1) {
+          if (!orgInput.value.trim()) orgInput.value = orgs[0];
+        } else {
+          const select = document.createElement('select');
+          select.id = 'orgInput';
+          select.className = orgInput.className + ' cursor-pointer';
+          select.innerHTML = orgs.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+          select.value = orgs[0];
+          orgInput.replaceWith(select);
+          orgInput = select;
+          select.addEventListener('change', updateButton);
+        }
+        updateButton();
+      } catch { /* no config endpoint — leave the free-text input */ }
+    }
+
+    /* Initial render */
+    resetPhases();
+    applyServerConfig();
+  </script>
+</body>
+</html>

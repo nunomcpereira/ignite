@@ -1,0 +1,31 @@
+{
+  "port": 3000,
+  "llm": {
+    "url": "http://localhost:8050",
+    "model": "default",
+    "mode": "warn",
+    "maxFiles": 40
+  },
+  "github": {
+    "orgs": "ai-governance-poc-2026",
+    "bootstrapBranch": "ignite"
+  },
+  "governance": {
+    "repo": "ai-governance-poc-2026/devops-governance",
+    "workflow": "ai-guardrails-orchestrator.yml",
+    "event": "pull_request",
+    "timeoutMinutes": 30
+  },
+  "notifications": {
+    "enabled": true,
+    "to": "you@example.com",
+    "from": "Ignite Gatekeeper <you@example.com>",
+    "smtp": {
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "secure": false,
+      "user": "you@example.com",
+      "pass": "YOUR_APP_PASSWORD"
+    }
+  }
+}

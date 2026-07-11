@@ -1,0 +1,19 @@
+{
+  "name": "ignite",
+  "version": "1.0.0",
+  "description": "Ignite — onboarding gatekeeper that scans uploaded projects for security/framework violations and runs org governance CI locally before pushing to GitHub",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "express": "^4.21.2",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3"
+  }
+}
