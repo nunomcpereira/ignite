@@ -12,7 +12,7 @@ const express = require('express');
 const { DatabaseSync } = require('node:sqlite');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
-const AdmZip = require('adm-zip');
+const StreamZip = require('node-stream-zip');
 const { execFile, spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -39,7 +39,7 @@ function loadConfig() {
       enabled: false,
       to: '',
       from: 'Ignite Gatekeeper <ignite@localhost>',
-      smtp: { host: '', port: 587, secure: false, user: '', pass: '' },
+      smtp: { host: '', port: 587, secure: false, user: '' },
     },
   };
   let fileConfig = {};
@@ -204,6 +204,7 @@ const BINARY_EXTENSIONS = new Set([
 
 const GITHUB_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // org login rules
 const REPO_NAME_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
+const SAFE_UPLOAD_SEGMENT_REGEX = /^[^\0/\\]+$/;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -231,16 +232,52 @@ async function* walkFiles(root) {
 
 function run(cmd, args, cwd) {
   return new Promise((resolve, reject) => {
+    const safeCmd = sanitizeCliArg(cmd, 'Command');
+    const safeArgs = Array.isArray(args)
+      ? args.map((arg, i) => sanitizeCliArg(arg, `Argument #${i + 1}`))
+      : [];
     const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
-    execFile(cmd, args, { cwd, env, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(safeCmd, safeArgs, { cwd, env, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const detail = (stderr || stdout || err.message || '').trim();
-        reject(new Error(`\`${cmd} ${args.join(' ')}\` failed: ${detail}`));
+        reject(new Error(`\`${safeCmd} ${safeArgs.join(' ')}\` failed: ${detail}`));
       } else {
         resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
       }
     });
   });
+}
+
+function sanitizeCliArg(value, label) {
+  const s = String(value ?? '');
+  if (!s) throw new Error(`${label} cannot be empty.`);
+  if (/\0|\r|\n/.test(s)) throw new Error(`${label} contains illegal control characters.`);
+  return s;
+}
+
+function sanitizeUploadRelativePath(rawPath) {
+  const rel = String(rawPath ?? '').replace(/\\/g, '/').trim();
+  if (!rel || rel.includes('\0')) {
+    throw new Error(`Invalid path in folder upload: ${JSON.stringify(rawPath)}`);
+  }
+  if (rel.startsWith('/') || rel.startsWith('~/') || /^[A-Za-z]:\//.test(rel)) {
+    throw new Error(`Absolute paths are not allowed in folder upload: ${rel}`);
+  }
+
+  const normalized = path.posix.normalize(rel);
+  if (normalized === '.' || normalized.startsWith('../') || normalized.includes('/../')) {
+    throw new Error(`Blocked path traversal entry in folder upload: ${rel}`);
+  }
+
+  for (const segment of normalized.split('/')) {
+    if (!segment || segment === '.' || segment === '..') {
+      throw new Error(`Invalid path segment in folder upload: ${rel}`);
+    }
+    if (!SAFE_UPLOAD_SEGMENT_REGEX.test(segment)) {
+      throw new Error(`Invalid characters in folder upload path: ${rel}`);
+    }
+  }
+  return normalized;
 }
 
 /**
@@ -249,13 +286,17 @@ function run(cmd, args, cwd) {
  */
 function runStreaming(cmd, args, cwd, onLine, { timeoutMs = 15 * 60_000, env = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
+    const safeCmd = sanitizeCliArg(cmd, 'Command');
+    const safeArgs = Array.isArray(args)
+      ? args.map((arg, i) => sanitizeCliArg(arg, `Argument #${i + 1}`))
+      : [];
+    const child = spawn(safeCmd, safeArgs, {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env },
     });
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      reject(new Error(`\`${cmd}\` timed out after ${timeoutMs / 60000} minutes.`));
+      reject(new Error(`\`${safeCmd}\` timed out after ${timeoutMs / 60000} minutes.`));
     }, timeoutMs);
 
     let pending = { out: '', err: '' };
@@ -271,7 +312,7 @@ function runStreaming(cmd, args, cwd, onLine, { timeoutMs = 15 * 60_000, env = {
     child.on('close', (code) => {
       clearTimeout(timer);
       Object.values(pending).forEach((rest) => { if (rest.trim()) onLine(rest); });
-      code === 0 ? resolve() : reject(new Error(`\`${cmd}\` exited with code ${code}.`));
+      code === 0 ? resolve() : reject(new Error(`\`${safeCmd}\` exited with code ${code}.`));
     });
   });
 }
@@ -280,36 +321,52 @@ function runStreaming(cmd, args, cwd, onLine, { timeoutMs = 15 * 60_000, env = {
  * Safe ZIP extraction: rejects entries that escape the staging root
  * (zip-slip), skips symlink entries, and enforces a total-size cap.
  */
-function extractZip(zipPath, destDir, log) {
-  const zip = new AdmZip(zipPath);
-  const entries = zip.getEntries();
+async function extractZip(zipPath, destDir, log) {
+  const zip = new StreamZip.async({ file: zipPath });
   let totalBytes = 0;
   let fileCount = 0;
 
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
+  try {
+    const entries = await zip.entries();
+    for (const entry of Object.values(entries)) {
+      if (entry.isDirectory) continue;
 
-    // Zip-slip guard: resolved target must stay inside destDir.
-    const target = path.resolve(destDir, entry.entryName);
-    if (target !== destDir && !target.startsWith(destDir + path.sep)) {
-      throw new Error(`Blocked path-traversal entry in archive: ${entry.entryName}`);
+      const entryPath = String(entry.name || '').replace(/\\/g, '/');
+      if (!entryPath || entryPath.includes('\0')) {
+        throw new Error('Archive contains an invalid entry path.');
+      }
+
+      // Zip-slip guard: resolved target must stay inside destDir.
+      const target = path.resolve(destDir, entryPath);
+      if (target !== destDir && !target.startsWith(destDir + path.sep)) {
+        throw new Error(`Blocked path-traversal entry in archive: ${entryPath}`);
+      }
+
+      // Skip symlink entries (unix mode stored in high bits of external attrs).
+      const unixMode = (Number(entry.attr || 0) >>> 16) & 0xffff;
+      if ((unixMode & 0o170000) === 0o120000) {
+        log(`Skipping symlink entry: ${entryPath}`);
+        continue;
+      }
+
+      totalBytes += Number(entry.size || 0);
+      if (totalBytes > MAX_EXTRACTED_BYTES) {
+        throw new Error('Archive exceeds maximum extracted size (possible zip bomb). Aborting.');
+      }
+
+      await fsp.mkdir(path.dirname(target), { recursive: true });
+      const source = await zip.stream(entry.name);
+      await new Promise((resolve, reject) => {
+        const sink = fs.createWriteStream(target, { mode: 0o600 });
+        source.on('error', reject);
+        sink.on('error', reject);
+        sink.on('finish', resolve);
+        source.pipe(sink);
+      });
+      fileCount++;
     }
-
-    // Skip symlink entries (unix mode stored in the high bits of attr).
-    const unixMode = entry.header.attr >>> 16;
-    if ((unixMode & 0o170000) === 0o120000) {
-      log(`Skipping symlink entry: ${entry.entryName}`);
-      continue;
-    }
-
-    totalBytes += entry.header.size;
-    if (totalBytes > MAX_EXTRACTED_BYTES) {
-      throw new Error('Archive exceeds maximum extracted size (possible zip bomb). Aborting.');
-    }
-
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, entry.getData());
-    fileCount++;
+  } finally {
+    await zip.close().catch(() => {});
   }
 
   return { fileCount, totalBytes };
@@ -341,8 +398,7 @@ async function stageDirectoryUpload(files, relPaths, destDir, log) {
   }
   let totalBytes = 0;
   for (let i = 0; i < files.length; i++) {
-    const rel = relPaths[i].replace(/\\/g, '/');
-    if (!rel || rel.includes('\0')) throw new Error(`Invalid path in folder upload: ${JSON.stringify(rel)}`);
+    const rel = sanitizeUploadRelativePath(relPaths[i]);
 
     const target = path.resolve(destDir, rel);
     if (target !== destDir && !target.startsWith(destDir + path.sep)) {
@@ -670,7 +726,9 @@ async function runActionsLocally(root, wfFile, log) {
 /* ------------------------------------------------------------------ */
 
 async function shipToGitHub(root, org, repo, log) {
-  const fullName = `${org}/${repo}`;
+  const safeOrg = sanitizeCliArg(org, 'Organization name');
+  const safeRepo = sanitizeCliArg(repo, 'Repository name');
+  const fullName = `${safeOrg}/${safeRepo}`;
 
   // Phase 4 may already have initialized and committed the repo for act.
   const alreadyRepo = fs.existsSync(path.join(root, '.git'));
@@ -713,16 +771,16 @@ async function shipToGitHub(root, org, repo, log) {
   ];
   const gitId = ['-c', 'user.name=Onboarding Gatekeeper', '-c', 'user.email=gatekeeper@localhost'];
 
-  log(`$ gh api POST orgs/${org}/repos (private, auto_init)`);
+  log(`$ gh api POST orgs/${safeOrg}/repos (private, auto_init)`);
   try {
-    await run('gh', ['api', '-X', 'POST', `orgs/${org}/repos`,
-      '-f', `name=${repo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
+    await run('gh', ['api', '-X', 'POST', `orgs/${safeOrg}/repos`,
+      '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
   } catch (e) {
     if (/404/.test(e.message)) {
       // Personal account, not an organization.
-      log(`"${org}" is not an org — creating under the authenticated user.`);
+      log(`"${safeOrg}" is not an org — creating under the authenticated user.`);
       await run('gh', ['api', '-X', 'POST', 'user/repos',
-        '-f', `name=${repo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
+        '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
     } else {
       throw e;
     }
@@ -1095,6 +1153,9 @@ app.post(
     if (!zipFile && dirFiles.length === 0) {
       throw Object.assign(new Error('No ZIP archive or folder upload received.'), { phase: 1 });
     }
+    if (dirFiles.length > 0 && !Array.isArray(relPaths)) {
+      throw Object.assign(new Error('Folder upload metadata is invalid: paths must be an array.'), { phase: 1 });
+    }
     if (!GITHUB_NAME_REGEX.test(org)) {
       throw Object.assign(new Error(`Invalid GitHub organization name: "${org}"`), { phase: 1 });
     }
@@ -1164,7 +1225,7 @@ app.post(
 
     let staged;
     if (zipFile) {
-      staged = extractZip(zipFile.path, stagingDir, log2);
+      staged = await extractZip(zipFile.path, stagingDir, log2);
       log2(`Extracted ${staged.fileCount} files (${(staged.totalBytes / 1024).toFixed(1)} KB).`);
     } else {
       staged = await stageDirectoryUpload(dirFiles, relPaths, stagingDir, log2);
