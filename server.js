@@ -976,11 +976,18 @@ async function runActionsLocally(root, wfFile, log) {
   // inside the repo being executed by act.
   const sourceWorkflowDir = path.dirname(wfFile);
   const sourceWorkflowFiles = await fsp.readdir(sourceWorkflowDir);
+  const existingLocalWorkflowFiles = new Set(
+    await fsp.readdir(localWorkflowDir).catch(() => [])
+  );
+  const injectedWorkflowFiles = [];
   for (const name of sourceWorkflowFiles) {
     if (!/\.ya?ml$/i.test(name)) continue;
     const src = path.join(sourceWorkflowDir, name);
     const dst = path.join(localWorkflowDir, name);
     await fsp.copyFile(src, dst);
+    if (!existingLocalWorkflowFiles.has(name)) {
+      injectedWorkflowFiles.push(dst);
+    }
   }
   const wfPathForAct = path.join(localWorkflowDir, path.basename(wfFile));
 
@@ -1012,9 +1019,16 @@ async function runActionsLocally(root, wfFile, log) {
 
   log(`$ act ${ACT_EVENT} -W ${path.relative(root, wfPathForAct)} -P ubuntu-latest=catthehacker/ubuntu:act-latest --rm`);
   log('(first run downloads runner/tool images — may take a few minutes)');
-  await runToolStreaming('act', args, root, (line) => log(line.slice(0, 400)), {
-    timeoutMs: ACT_TIMEOUT_MIN * 60_000,
-  });
+  try {
+    await runToolStreaming('act', args, root, (line) => log(line.slice(0, 400)), {
+      timeoutMs: ACT_TIMEOUT_MIN * 60_000,
+    });
+  } finally {
+    // Do not leak localized governance workflows into phase 6 shipping.
+    for (const file of injectedWorkflowFiles) {
+      await fsp.rm(file, { force: true }).catch(() => {});
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
