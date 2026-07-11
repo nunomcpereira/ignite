@@ -151,3 +151,43 @@ Then in the browser:
 4. On success, the final banner shows the live repository URL as a clickable link.
 
 > **Security note:** this server executes `git`/`gh` with the host machine's credentials. Run it locally or behind authentication — never expose it unauthenticated to a network.
+
+## Headless validation API (agent loop)
+
+Use this endpoint to run all validation phases via API (without the UI stream):
+
+- `POST /api/pipeline/validate-all`
+- Content type: `application/json`
+- Runs phases 1-5 and always skips phase 6 (shipping).
+
+Example:
+
+```bash
+curl -sS -X POST http://localhost:3000/api/pipeline/validate-all \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "projectPath": "/Users/nuno/tests/ignite",
+    "org": "ai-governance-poc-2026",
+    "repo": "ignite",
+    "gxp": false,
+    "runLocalCi": true,
+    "warningDecision": "continue"
+  }' | jq
+```
+
+Request fields:
+
+- `projectPath` (string, absolute path): local folder to validate.
+- `org` (string, optional): metadata context for validation logs.
+- `repo` (string, optional): metadata context for validation logs.
+- `gxp` (boolean, optional, default `false`): whether to enforce GxP document checks.
+- `gxpLinks` (array, optional): required when `gxp=true`; each item `{ "name": "...", "url": "https://..." }`.
+- `runLocalCi` (boolean, optional, default `true`): run phase 5 local governance workflows via `act`.
+- `warningDecision` (string, optional, default `continue`): `continue` or `fail` when LLM warnings exist.
+
+Response shape:
+
+- `ok`: `true`/`false`
+- `failedPhase`: phase number when `ok=false`
+- `phases`: array of `{ phase, title, state, logs[] }`
+- `events`: full event list (`status` + `log`) for machine-driven loops

@@ -22,10 +22,9 @@
     "from": "Ignite Gatekeeper <you@example.com>",
     "smtp": {
       "host": "smtp.gmail.com",
-      "port": 587,
-      "secure": false,
-      "user": "you@example.com",
-      "pass": ""
+      "port": 465,
+      "secure": true,
+      "user": "you@example.com"
     }
   }
 }
