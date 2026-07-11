@@ -969,7 +969,10 @@ async function actTooling() {
 }
 
 async function runActionsLocally(root, wfFile, log) {
+  const localGithubDir = path.join(root, '.github');
   const localWorkflowDir = path.join(root, '.github', 'workflows');
+  const hadGithubDir = fs.existsSync(localGithubDir);
+  const hadLocalWorkflowDir = fs.existsSync(localWorkflowDir);
   await fsp.mkdir(localWorkflowDir, { recursive: true });
 
   // Reusable workflows referenced as ./.github/workflows/*.yml must exist
@@ -980,10 +983,17 @@ async function runActionsLocally(root, wfFile, log) {
     await fsp.readdir(localWorkflowDir).catch(() => [])
   );
   const injectedWorkflowFiles = [];
+  const overwrittenWorkflowBackups = new Map();
   for (const name of sourceWorkflowFiles) {
     if (!/\.ya?ml$/i.test(name)) continue;
     const src = path.join(sourceWorkflowDir, name);
     const dst = path.join(localWorkflowDir, name);
+
+    if (existingLocalWorkflowFiles.has(name) && !overwrittenWorkflowBackups.has(name)) {
+      const original = await fsp.readFile(dst).catch(() => null);
+      if (original) overwrittenWorkflowBackups.set(name, original);
+    }
+
     await fsp.copyFile(src, dst);
     if (!existingLocalWorkflowFiles.has(name)) {
       injectedWorkflowFiles.push(dst);
@@ -1027,6 +1037,20 @@ async function runActionsLocally(root, wfFile, log) {
     // Do not leak localized governance workflows into phase 6 shipping.
     for (const file of injectedWorkflowFiles) {
       await fsp.rm(file, { force: true }).catch(() => {});
+    }
+
+    // Restore original workflow files that existed in the user's repo.
+    for (const [name, originalBytes] of overwrittenWorkflowBackups.entries()) {
+      const dst = path.join(localWorkflowDir, name);
+      await fsp.writeFile(dst, originalBytes).catch(() => {});
+    }
+
+    // Remove scaffolding created only for local act execution.
+    if (!hadLocalWorkflowDir) {
+      await fsp.rm(localWorkflowDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (!hadGithubDir) {
+      await fsp.rm(localGithubDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 }
