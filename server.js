@@ -517,6 +517,30 @@ async function stageExistingProject(sourceDir, destDir, log) {
   return { fileCount, totalBytes };
 }
 
+async function cloneDirectoryWithoutSymlinks(sourceDir, destDir) {
+  const src = path.resolve(sourceDir);
+  const dst = path.resolve(destDir);
+  await fsp.mkdir(dst, { recursive: true });
+
+  const stack = [{ src, dst }];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const entries = await fsp.readdir(current.src, { withFileTypes: true });
+    for (const entry of entries) {
+      const childSrc = path.join(current.src, entry.name);
+      const childDst = path.join(current.dst, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        await fsp.mkdir(childDst, { recursive: true });
+        stack.push({ src: childSrc, dst: childDst });
+      } else if (entry.isFile()) {
+        await fsp.mkdir(path.dirname(childDst), { recursive: true });
+        await fsp.copyFile(childSrc, childDst);
+      }
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Checks                                                              */
 /* ------------------------------------------------------------------ */
@@ -1063,6 +1087,15 @@ async function shipToGitHub(root, org, repo, log) {
   const safeOrg = sanitizeCliArg(org, 'Organization name');
   const safeRepo = sanitizeCliArg(repo, 'Repository name');
   const fullName = `${safeOrg}/${safeRepo}`;
+  const isCreateValidation422 = (msg) => /HTTP 422/i.test(String(msg || ''));
+  const repoExistsOnGitHub = async (owner, name) => {
+    try {
+      await runTool('gh', ['api', `repos/${owner}/${name}`], root);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   // Phase 4 may already have initialized and committed the repo for act.
   const alreadyRepo = fs.existsSync(path.join(root, '.git'));
@@ -1113,8 +1146,28 @@ async function shipToGitHub(root, org, repo, log) {
     if (/404/.test(e.message)) {
       // Personal account, not an organization.
       log(`"${safeOrg}" is not an org — creating under the authenticated user.`);
-      await runTool('gh', ['api', '-X', 'POST', 'user/repos',
-        '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
+      try {
+        await runTool('gh', ['api', '-X', 'POST', 'user/repos',
+          '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
+      } catch (fallbackErr) {
+        if (isCreateValidation422(fallbackErr.message)) {
+          const exists = await repoExistsOnGitHub(safeOrg, safeRepo);
+          if (exists) {
+            log(`Repository ${fullName} already exists — reusing it.`);
+          } else {
+            throw fallbackErr;
+          }
+        } else {
+          throw fallbackErr;
+        }
+      }
+    } else if (isCreateValidation422(e.message)) {
+      const exists = await repoExistsOnGitHub(safeOrg, safeRepo);
+      if (exists) {
+        log(`Repository ${fullName} already exists — reusing it.`);
+      } else {
+        throw e;
+      }
     } else {
       throw e;
     }
@@ -1213,16 +1266,32 @@ async function shipToGitHub(root, org, repo, log) {
   return { repoUrl: `https://github.com/${fullName}`, prUrl };
 }
 
-/* ------------------------------------------------------------------ */
-/* AI failure insight: explain the failed step in plain language       */
-/* ------------------------------------------------------------------ */
+async function archivePhase6Payload(root, projectId, log) {
+  if (projectId === null) return null;
 
-const INSIGHT_SYSTEM_PROMPT = `You are a senior DevOps engineer explaining a CI pipeline failure to a developer who did not write the pipeline. You get the raw log of the failed step.
-Answer in plain language, no CI jargon, max ~180 words, in exactly this structure:
-**What failed:** one sentence naming the concrete check/tool and, when the log shows it, the exact file(s) and line(s).
-**Why:** one or two sentences on the root cause found in the log.
-**How to fix:** 1-3 short bullet points with the most direct fix.
-Never quote long log fragments. If the log shows multiple problems, cover the ones that made the step fail.`;
+  const tmpName = `ignite-phase6-payload-${crypto.randomUUID()}.zip`;
+  const tmpZip = path.join(os.tmpdir(), tmpName);
+  try {
+    // Snapshot the exact tracked tree that phase 6 is attempting to push.
+    await runTool('git', ['archive', '--format=zip', '-o', tmpZip, 'HEAD'], root);
+    const data = await fsp.readFile(tmpZip);
+    const size = data.length;
+    const docName = `phase6-payload-${new Date().toISOString().replace(/[:]/g, '-')}.zip`;
+    store.addUploadDocument(projectId, docName, 'application/zip', size, data);
+    log(`📦 Archived phase 6 push payload for inspection: ${docName} (${(size / 1024).toFixed(1)} KB).`);
+    return { name: docName, size };
+  } catch (e) {
+    log(`⚠ Could not archive phase 6 push payload: ${e.message}`);
+    return null;
+  } finally {
+    await fsp.rm(tmpZip, { force: true }).catch(() => {});
+  }
+}
+
+const INSIGHT_SYSTEM_PROMPT = `You are a concise DevOps incident explainer.
+Explain only the real reason this phase failed and the next concrete fix.
+Answer in plain language, no CI jargon, max ~180 words.
+If logs contain multiple issues, focus on the blockers that made the phase fail.`;
 
 async function generateFailureInsight(failedPhase, error, record) {
   try {
@@ -1681,6 +1750,8 @@ app.post(
 
   const jobId = crypto.randomUUID();
   const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', jobId);
+  const sourceBackupDir = stagingDir + '-source-backup';
+  const publishDir = stagingDir + '-publish';
   // Governance workflow cache lives OUTSIDE the project tree so it is never
   // committed or pushed with the user's code.
   const workflowDir = stagingDir + '-workflows';
@@ -1793,6 +1864,9 @@ app.post(
     if (projectRoot !== stagingDir) {
       log2(`Detected single top-level folder — project root: ${path.basename(projectRoot)}/`);
     }
+
+    await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
+    log2('Created immutable source snapshot for final publish phase.');
 
     log2('Check 1 — scanning for raw environment files (.env*)...');
     const envOffenders = await checkEnvFiles(projectRoot);
@@ -1909,7 +1983,17 @@ app.post(
     status(6, 'running');
     const log5 = phaseLog(6);
 
-    const { repoUrl, prUrl } = await shipToGitHub(projectRoot, org, repo, log5);
+    const backupStat = await fsp.stat(sourceBackupDir).catch(() => null);
+    if (!backupStat || !backupStat.isDirectory()) {
+      throw Object.assign(new Error('Immutable source snapshot is missing before phase 6.'), { phase: 6 });
+    }
+    await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
+    await cloneDirectoryWithoutSymlinks(sourceBackupDir, publishDir);
+    log5('Prepared clean publish workspace from immutable source snapshot.');
+
+    await archivePhase6Payload(publishDir, projectId, log5);
+
+    const { repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log5);
     log5(`✓ Repository live at ${repoUrl}`);
     status(6, 'success', { repoUrl, prUrl });
 
@@ -1963,6 +2047,8 @@ app.post(
     // Forceful cleanup regardless of outcome: staging dir, the uploaded ZIP,
     // and any multer temp files not yet moved into staging.
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(sourceBackupDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
     await fsp.rm(workflowDir, { recursive: true, force: true }).catch(() => {});
     if (zipFile) await fsp.rm(zipFile.path, { force: true }).catch(() => {});
     for (const f of dirFiles) await fsp.rm(f.path, { force: true }).catch(() => {});
