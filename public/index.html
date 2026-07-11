@@ -328,6 +328,31 @@
       card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
+    async function handleReviewRequired(ev) {
+      const warningLines = (ev.warnings || []).map((w, idx) => {
+        const loc = `${w.file || 'unknown'}:${Number.isInteger(w.line) ? w.line : 0}`;
+        const rec = w.recommendation ? ` | fix: ${w.recommendation}` : '';
+        return `${idx + 1}. [${w.category || 'quality'}] ${loc} — ${w.issue}${rec}`;
+      });
+      const preview = warningLines.slice(0, 12).join('\n');
+      const tail = warningLines.length > 12
+        ? `\n\n...and ${warningLines.length - 12} more warning(s) in the phase logs.`
+        : '';
+      const proceed = window.confirm(
+        `Preliminary code review found ${warningLines.length} warning(s).\n\n${preview}${tail}\n\nPress OK to continue onboarding, or Cancel to interrupt.`
+      );
+      try {
+        await fetch(`/api/pipeline/${ev.jobId}/review-decision`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ proceed }),
+        });
+      } catch {
+        state.phases[ev.phase].logs.push('✗ Could not send review decision to server; pipeline may time out waiting.');
+        renderPipeline();
+      }
+    }
+
     function showResult(ok, { repoUrl, prUrl, error, phase } = {}) {
       resultBanner.classList.remove('hidden');
       if (ok) {
@@ -642,6 +667,9 @@
         }
       } else if (ev.type === 'insight') {
         showInsight(ev.state, ev.text);
+      } else if (ev.type === 'review_required') {
+        state.phases[ev.phase].logs.push(`⚠ LLM review raised ${ev.warnings?.length || 0} warning(s). Awaiting user decision...`);
+        handleReviewRequired(ev);
       } else if (ev.type === 'done') {
         showResult(ev.ok, ev);
         renderPipeline();

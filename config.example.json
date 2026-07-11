@@ -25,7 +25,7 @@
       "port": 587,
       "secure": false,
       "user": "you@example.com",
-      "pass": "YOUR_APP_PASSWORD"
+      "pass": ""
     }
   }
 }

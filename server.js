@@ -59,7 +59,16 @@ function loadConfig() {
           : over?.[k] !== undefined ? over[k] : base[k],
       ])
     );
-  return merge(defaults, fileConfig);
+  const merged = merge(defaults, fileConfig);
+  const smtpPass =
+    process.env.NOTIFICATIONS_SMTP_PASS ||
+    process.env.SMTP_PASS ||
+    process.env.SMTP_PASSWORD ||
+    '';
+  if (smtpPass) {
+    merged.notifications.smtp.pass = smtpPass;
+  }
+  return merged;
 }
 
 const CONFIG = loadConfig();
@@ -124,7 +133,26 @@ const MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024; // zip-bomb guard
 const MAX_SCAN_FILE_BYTES = 5 * 1024 * 1024; // skip huge files in text scans
 
 const app = express();
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+const pendingReviewDecisions = new Map();
+
+function waitForReviewDecision(jobId, timeoutMs = 5 * 60_000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingReviewDecisions.delete(jobId);
+      resolve({ proceed: false, reason: 'timeout' });
+    }, timeoutMs);
+    pendingReviewDecisions.set(jobId, {
+      resolve: (decision) => {
+        clearTimeout(timer);
+        pendingReviewDecisions.delete(jobId);
+        resolve(decision);
+      },
+    });
+  });
+}
 
 const upload = multer({
   dest: path.join(os.tmpdir(), 'gatekeeper-uploads'),
@@ -419,13 +447,33 @@ async function checkAiGovernance(root) {
 /* Check 3: local LLM security deep-scan (optional, Ollama-compatible) */
 /* ------------------------------------------------------------------ */
 
-const LLM_SYSTEM_PROMPT = `You are a strict application security auditor. You will receive source files from a project, each preceded by a "===== FILE: <path> =====" header with numbered lines.
-Find concrete security vulnerabilities: injection (SQL/command/template), path traversal, SSRF, insecure deserialization, XSS, broken auth/authz, weak crypto, unsafe eval/exec, prototype pollution, insecure temp files, missing input validation on dangerous sinks.
-Do NOT report style issues, missing tests, or hypothetical problems without a concrete sink.
-Respond with ONLY a JSON object: {"findings":[{"file":"<path>","line":<number>,"severity":"critical|high|medium|low","issue":"<one sentence>"}]}
+const LLM_SECURITY_DEP_PROMPT = `You are a strict application security reviewer. You will receive source files from a project, each preceded by a "===== FILE: <path> =====" header with numbered lines.
+Review ONLY for:
+1) Security vulnerabilities: injection (SQL/command/template), path traversal, SSRF, insecure deserialization, XSS, broken auth/authz, weak crypto, unsafe eval/exec, prototype pollution, insecure temp files, missing input validation on dangerous sinks.
+2) Potentially dangerous dependencies (known risky/malicious/deprecated-vulnerable usage from dependency manifests/lockfiles).
+
+Classification rules:
+- Dangerous dependency findings must be category "dependency" and level "error".
+- Exploitable security findings should be category "security" and level "error".
+
+Respond with ONLY a JSON object in this schema:
+{"findings":[{"file":"<path>","line":<number>,"category":"security|dependency","level":"error","issue":"<one sentence>","recommendation":"<short actionable fix>"}]}
 If nothing is found respond {"findings":[]}.`;
 
-async function llmChat(sourceBlock) {
+const LLM_QUALITY_PROMPT = `You are a senior software engineer performing a code quality and encapsulation review. You will receive source files from a project, each preceded by a "===== FILE: <path> =====" header with numbered lines.
+Review ONLY for:
+1) Encapsulation improvements (leaky abstractions, exposed mutable internals, missing boundaries, too much coupling).
+2) Maintainability/code-quality improvements (complexity hotspots, duplicated logic, poor separation of concerns, fragile API shapes).
+
+Classification rules:
+- Findings from this pass are advisory and must be level "warning".
+- Use category "encapsulation" or "quality".
+
+Respond with ONLY a JSON object in this schema:
+{"findings":[{"file":"<path>","line":<number>,"category":"encapsulation|quality","level":"warning","issue":"<one sentence>","recommendation":"<short actionable fix>"}]}
+If nothing is found respond {"findings":[]}.`;
+
+async function llmChat(sourceBlock, systemPrompt) {
   const res = await fetch(`${LLM_SCAN_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -436,7 +484,7 @@ async function llmChat(sourceBlock) {
       temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: LLM_SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: sourceBlock },
       ],
     }),
@@ -488,25 +536,54 @@ async function checkLlmDeepScan(root, log) {
   }
   if (current) chunks.push(current);
 
-  log(`Model: ${LLM_SCAN_MODEL} @ ${LLM_SCAN_URL} — ${files.length} files in ${chunks.length} request(s)...`);
+  log(`Model: ${LLM_SCAN_MODEL} @ ${LLM_SCAN_URL} — ${files.length} files in ${chunks.length} chunk(s), 2 review passes (security/dependency + quality/encapsulation)...`);
 
   const findings = [];
   for (let i = 0; i < chunks.length; i++) {
-    log(`Analyzing chunk ${i + 1}/${chunks.length}...`);
+    log(`Analyzing chunk ${i + 1}/${chunks.length} [security/dependency]...`);
     try {
-      const chunkFindings = await llmChat(chunks[i]);
+      const chunkFindings = await llmChat(chunks[i], LLM_SECURITY_DEP_PROMPT);
       for (const f of chunkFindings) {
         if (f && typeof f.file === 'string' && f.issue) {
+          const category = ['security', 'dependency', 'encapsulation', 'quality'].includes(f.category)
+            ? f.category
+            : 'security';
+          let level = ['error', 'warning'].includes(f.level) ? f.level : 'warning';
+          if (category === 'dependency') level = 'error';
           findings.push({
             file: f.file,
             line: Number.isInteger(f.line) ? f.line : 0,
-            severity: ['critical', 'high', 'medium', 'low'].includes(f.severity) ? f.severity : 'medium',
+            category,
+            level,
             issue: String(f.issue).slice(0, 300),
+            recommendation: String(f.recommendation || '').slice(0, 300),
           });
         }
       }
     } catch (e) {
-      log(`⚠ Chunk ${i + 1} skipped: ${e.message}`);
+      log(`⚠ Chunk ${i + 1} security/dependency pass skipped: ${e.message}`);
+    }
+
+    log(`Analyzing chunk ${i + 1}/${chunks.length} [quality/encapsulation]...`);
+    try {
+      const chunkFindings = await llmChat(chunks[i], LLM_QUALITY_PROMPT);
+      for (const f of chunkFindings) {
+        if (f && typeof f.file === 'string' && f.issue) {
+          const category = ['encapsulation', 'quality'].includes(f.category)
+            ? f.category
+            : 'quality';
+          findings.push({
+            file: f.file,
+            line: Number.isInteger(f.line) ? f.line : 0,
+            category,
+            level: 'warning',
+            issue: String(f.issue).slice(0, 300),
+            recommendation: String(f.recommendation || '').slice(0, 300),
+          });
+        }
+      }
+    } catch (e) {
+      log(`⚠ Chunk ${i + 1} quality/encapsulation pass skipped: ${e.message}`);
     }
   }
 
@@ -919,6 +996,15 @@ app.get('/api/projects/:id', (req, res) => {
   res.json({ ...project, steps, documents });
 });
 
+app.post('/api/pipeline/:jobId/review-decision', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const pending = pendingReviewDecisions.get(jobId);
+  if (!pending) return res.status(404).json({ error: 'No pending review decision for this job.' });
+  const proceed = req.body?.proceed === true;
+  pending.resolve({ proceed, reason: proceed ? 'user-continue' : 'user-stop' });
+  res.json({ ok: true });
+});
+
 app.delete('/api/projects/:id', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid project id.' });
@@ -1136,25 +1222,51 @@ app.post(
     log3('✓ Check 4 passed — all AI invocations are governed.');
 
     {
-      log3(`Check 3 — local LLM security deep-scan (mode: ${LLM_SCAN_MODE})...`);
+      log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
       const llm = await checkLlmDeepScan(projectRoot, log3);
       if (!llm.available) {
         log3(`⚠ Deep-scan skipped: ${llm.reason}`);
       } else if (llm.findings.length === 0) {
-        log3(`✓ Check 3 passed — LLM found no vulnerabilities in ${llm.scanned} files.`);
+        log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
       } else {
-        const blocking = llm.findings.filter((f) => ['critical', 'high'].includes(f.severity));
+        const errors = llm.findings.filter((f) => f.level === 'error');
+        const warnings = llm.findings.filter((f) => f.level === 'warning');
         log3(`LLM reported ${llm.findings.length} finding(s):`);
         llm.findings.forEach((f) =>
-          log3(`    ${['critical', 'high'].includes(f.severity) ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.issue}`)
+          log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
         );
-        if (LLM_SCAN_MODE === 'block' && blocking.length > 0) {
+
+        if (errors.length > 0) {
           throw Object.assign(
-            new Error(`LLM deep-scan found ${blocking.length} critical/high vulnerability(ies).`),
+            new Error(`LLM review found ${errors.length} blocking error(s).`),
             { phase: 4 }
           );
         }
-        log3(`⚠ Findings are advisory (mode: ${LLM_SCAN_MODE}${LLM_SCAN_MODE === 'block' ? ', none critical/high' : ''}) — pipeline continues.`);
+
+        if (warnings.length > 0) {
+          log3(`⚠ ${warnings.length} warning(s) found — waiting for user decision to continue or interrupt.`);
+          const decisionPromise = waitForReviewDecision(jobId);
+          send({
+            type: 'review_required',
+            phase: 4,
+            jobId,
+            warnings: warnings.map((f) => ({
+              file: f.file,
+              line: f.line,
+              category: f.category,
+              issue: f.issue,
+              recommendation: f.recommendation,
+            })),
+          });
+          const decision = await decisionPromise;
+          if (!decision.proceed) {
+            throw Object.assign(
+              new Error('Pipeline interrupted by user after LLM review warnings.'),
+              { phase: 4 }
+            );
+          }
+          log3('✓ User chose to continue after reviewing warnings.');
+        }
       }
     }
 
