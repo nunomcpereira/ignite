@@ -34,7 +34,7 @@ A single-page web app that acts as a compliance gate for onboarding code into a 
 | Phase | Check | Failure condition |
 |---|---|---|
 | 2 | Structure audit | Any file named `.env` or `.env.*` anywhere in the tree |
-| 3 | Secret leakage | Line matches `/(password\|aws_secret\|api_key\|token\|private_key)\s*[:=]\s*['" \t]*[a-zA-Z0-9_\-.~]{10,}/i` in any text file (binaries, `node_modules`, `.git`, etc. excluded) |
+| 3 | Secret leakage | Line matches `/(password\|aws_secret\|api_key\|token\|private_key)\s*[:=]\s*['" \t]*[a-zA-Z0-9_\-.~]{10,}/i` in any text file (binaries, `node_modules`, `.git`, etc. excluded). Optionally supplemented by [gitleaks](https://github.com/gitleaks/gitleaks) — see below. |
 | 3 | AI governance | A `.py`/`.js`/`.ts` file calls `.invoke(` / `.stream(` / `.ainvoke(` / `.astream(` but never mentions `recursion_limit` |
 | 3 | LLM deep-scan (always on) | A local LLM reports critical/high vulnerabilities **and** `LLM_SCAN_MODE=block`; otherwise findings are advisory (amber). Skipped softly if the endpoint is down. |
 | 4 | Org governance CI (act) | Any job of the central `ai-guardrails-orchestrator.yml` fails when executed locally in Docker. Soft-skipped if `act`/Docker are unavailable. |
@@ -51,6 +51,20 @@ Instead of replicating the logic of the centrally defined governance workflows, 
 Requires `brew install act` and a running Docker daemon; if either is missing the phase soft-skips with a warning (the workflows still gate the repo remotely). Configure with `GOVERNANCE_REPO`, `GOVERNANCE_WORKFLOW`, `ACT_EVENT`, `ACT_TIMEOUT_MIN`.
 
 A failed check halts the pipeline, reports offending file paths and line numbers in the phase's terminal widget, marks downstream phases **Skipped**, and cleans up staging.
+
+### Optional gitleaks-powered secret scan
+
+The regex secret scan always runs. If [gitleaks](https://github.com/gitleaks/gitleaks) is installed and enabled in config, it runs as an additional pass over the same staging tree and its findings (tagged `tool: "gitleaks"`) are merged in — deduped against anything the regex already caught at the same file/line. Disabled by default; if it's enabled but the binary isn't found, the scan soft-fails back to regex-only results (a warning is logged, nothing blocks the pipeline).
+
+```jsonc
+"security": {
+  "gitleaks": {
+    "enabled": false,       // env: GITLEAKS_ENABLED=true
+    "binary": "gitleaks",   // env: GITLEAKS_BINARY (path or name on $PATH)
+    "configPath": ""        // env: GITLEAKS_CONFIG_PATH — optional gitleaks.toml
+  }
+}
+```
 
 ## Hardening notes
 
@@ -97,6 +111,13 @@ All settings live in `config.json` next to `server.js` (environment variables ov
       "secure": false,
       "user": "nunocpereira@gmail.com",
       "pass": ""                 // Gmail app password — see below
+    }
+  },
+  "security": {
+    "gitleaks": {                // optional supplemental secret scan
+      "enabled": false,
+      "binary": "gitleaks",
+      "configPath": ""
     }
   }
 }
@@ -152,6 +173,25 @@ Then in the browser:
 
 > **Security note:** this server executes `git`/`gh` with the host machine's credentials. Run it locally or behind authentication — never expose it unauthenticated to a network.
 
+## Simulation mode (`dryRun`) — check without pushing
+
+`POST /api/pipeline` (the same multipart endpoint the browser UI uses) accepts
+an optional `dryRun` form field (`"true"`/`"false"`, default `"false"`). When
+set, phases 1-5 run exactly as normal (structure audit, secret scan, AI
+governance, LLM deep-scan, local CI via `act`) but phase 6 — repo
+provisioning and `git push` — is skipped; the job is recorded as a success
+with no `repoUrl`/`prUrl`. This is the mode to reach for when driving the
+pipeline from an agent/MCP client that just wants to surface errors without
+committing to a real onboarding: run the checks, inspect the streamed NDJSON
+events, and only re-run with `dryRun` unset (or omitted) once everything is
+green.
+
+`POST /api/pipeline/validate-all` (below) is already dry-run-only — it never
+ships — but it takes a `projectPath` on the local filesystem rather than an
+upload, and only accepts GxP document *links*, not uploaded files. Prefer
+`dryRun` on `/api/pipeline` when you need parity with the real upload-driven
+pipeline (GxP doc uploads, folder/zip upload) minus the push.
+
 ## Headless validation API (agent loop)
 
 Use this endpoint to run all validation phases via API (without the UI stream):
@@ -191,3 +231,133 @@ Response shape:
 - `failedPhase`: phase number when `ok=false`
 - `phases`: array of `{ phase, title, state, logs[] }`
 - `events`: full event list (`status` + `log`) for machine-driven loops
+
+## AI validation guidelines — MCP server & API
+
+`guidelines/` holds the company AI validation guideline catalog (AI-governance,
+security, and process rules — the same detection patterns Ignite's onboarding
+pipeline enforces) and a pure checks engine, so guidelines can be applied
+*during development*, not just at onboarding time.
+
+### MCP server
+
+```bash
+npm run guidelines:mcp
+```
+
+Runs `mcp-server.js` over stdio. Point any MCP client (Claude Code, Claude
+Desktop, etc.) at it. Tools exposed:
+
+- `list_guidelines({ category?, severity? })` — list guidelines, optionally filtered.
+- `get_guideline({ id })` — full detail (description, rationale, remediation) for one guideline.
+- `check_guidelines({ content, path? })` — check a code snippet/file against the automated guidelines.
+- `check_project({ projectPath })` — walk a project directory and check every source file.
+- `onboard_project({ projectPath, org, repo, dryRun?, gxp?, gxpLinks?, runLocalCi?, warningDecision?, overrides?, actor? })`
+  — runs the **full** onboarding pipeline (phases 1-5, and phase 6 provisioning
+  + push if everything passes) against a `POST /api/pipeline/onboard` on a
+  running Ignite server. This is a thin proxy: the MCP process itself never
+  touches `git`/`gh`, it just calls the HTTP API. Set `dryRun: true` to run
+  every check without pushing — the way to "see what would fail" from an
+  agent loop before committing to a real push. Requires the Ignite server
+  running (`npm start`) and reachable at `IGNITE_BASE_URL` (env, default
+  `http://localhost:3000`), with `gh` authenticated on that host.
+
+Example `.mcp.json` entry:
+
+```json
+{
+  "mcpServers": {
+    "ai-validation-guidelines": {
+      "command": "node",
+      "args": ["/absolute/path/to/ignite/mcp-server.js"]
+    }
+  }
+}
+```
+
+### REST API
+
+```bash
+npm run guidelines:api   # listens on 127.0.0.1:8090 by default
+```
+
+Binds to loopback only by default (`GUIDELINES_API_HOST`/`GUIDELINES_API_PORT`
+to override) — `/check-project` reads arbitrary paths on the host filesystem,
+so this is a local dev/CI tool, not meant for public exposure.
+
+- `GET /guidelines?category=&severity=` — list guidelines.
+- `GET /guidelines/:id` — full detail for one guideline.
+- `POST /check` `{ content, path? }` — check a snippet/file; returns `{ violations, hasBlockingViolations }`.
+- `POST /check-project` `{ projectPath }` — check a project directory; returns `{ scanned, violations, hasBlockingViolations }`.
+
+Guidelines with `checkId: null` (e.g. `ai-governance-workflow-required`,
+`llm-deep-scan-required`) are process rules or covered by the LLM deep-scan in
+`server.js`, not mechanically checkable from a snippet alone.
+
+## Overriding flagged guideline checks — audit log & notification
+
+Phase 4 (Security & AI Compliance Scan) collects every flagged issue —
+hardcoded secrets, ungoverned AI invocations, and LLM security/quality
+findings — into a single addressable list instead of hard-failing
+immediately. Any issue (blocking error or advisory warning) can be
+overridden, but every override:
+
+1. requires a **justification**,
+2. must be **attributed** to a real person (logged-in session, or an
+   explicit `{email, name}` actor when auth isn't enforced globally),
+3. sends an **email notification** (reusing `notifications.*` config) listing
+   exactly what was overridden, by whom, and why,
+4. is **persisted to the audit log** (`overrides` table) and shown under
+   each project's entry in the Onboarded Projects list (click a project to
+   expand — "Audit log — overridden guideline checks" appears if any exist).
+
+Blocking (`severity: "error"`) issues cannot be silently bypassed: the
+pipeline stays halted until every blocking issue either has a matching
+override+justification, or is fixed in the source.
+
+- **Interactive pipeline** (`POST /api/pipeline`, browser upload): pauses and
+  emits a `review_required` event with the full issue list; the UI shows a
+  modal to check/justify issues, then posts the decision to
+  `POST /api/pipeline/:jobId/review-decision`
+  `{ proceed, overrides: [{issueId, justification}], actor? }`.
+- **Non-interactive** (`POST /api/pipeline/validate-all`): pass overrides
+  up front — `{ ..., overrides: [{issueId, justification}] }` — since there's
+  no live client to prompt. `issueId` is the `id` field on each finding
+  (`<category>::<file>::<line>`).
+
+## Authentication — standalone accounts or company IdP
+
+`AUTH_MODE` (env) or `auth.mode` (config.json) selects the strategy; both
+converge on the same session-cookie + `req.user` shape used for override
+attribution.
+
+- **`standalone`** (default): local accounts, `POST /api/auth/register` /
+  `login` / `logout`, scrypt-hashed passwords, `auth.allowSelfRegistration`
+  gates open registration. Session cookie is a random token in a local
+  `sessions` table (12h TTL).
+- **`oidc`**: delegates to any standards-compliant company IdP (Okta, Entra
+  ID, Auth0, Keycloak, …). Configure `auth.oidc.issuer` / `clientId` /
+  `clientSecret` (or `OIDC_CLIENT_SECRET` env) / `redirectUri`. Users sign in
+  via `GET /api/auth/oidc/login`, land back on `/api/auth/oidc/callback`,
+  and are upserted by IdP `sub`.
+
+Auth isn't required to browse the app or run the pipeline (so the existing
+CI/local-validation workflows keep working unauthenticated) — it's only
+enforced where attribution matters: submitting an override without a
+session must include an explicit `actor {email, name}` in the request body,
+or the server responds `401`.
+
+## Testing
+
+```bash
+npm test
+```
+
+Runs the Node built-in test runner (`node --test`) over `test/*.test.js`.
+`test/secrets-scan.test.js` covers the secret-scan pipeline check: the
+regex baseline, that gitleaks stays off and unused by default, that
+enabling it supplements (never replaces) the regex findings, dedup against
+regex hits at the same file/line, and the soft-fail path when gitleaks is
+enabled but the binary is missing. A fake `gitleaks` CLI stand-in
+(`test/helpers.js`) is used so the suite doesn't require a real gitleaks
+install.

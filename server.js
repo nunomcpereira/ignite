@@ -20,6 +20,8 @@ const os = require('os');
 const path = require('path');
 const { createDbStore } = require('./db-store');
 const { createReviewDecisionStore } = require('./review-decisions-store');
+const { createAuth, isValidEmail } = require('./auth');
+const { collectPhase4Issues, validateOverrides } = require('./override-engine');
 
 /* ------------------------------------------------------------------ */
 /* Configuration: config.json < environment variables                  */
@@ -41,6 +43,18 @@ function loadConfig() {
       to: '',
       from: 'Ignite Gatekeeper <ignite@localhost>',
       smtp: { host: '', port: 587, secure: false, user: '' },
+    },
+    auth: {
+      mode: 'standalone', // 'standalone' | 'oidc'
+      allowSelfRegistration: true,
+      oidc: { issuer: '', clientId: '', clientSecret: '', redirectUri: '', scope: 'openid email profile' },
+    },
+    security: {
+      // Optional: augments the built-in regex secret scan with gitleaks
+      // (https://github.com/gitleaks/gitleaks) when installed. Soft-fails
+      // (falls back to regex-only results) if disabled or the binary is
+      // missing, so this is safe to leave off in environments without it.
+      gitleaks: { enabled: false, binary: 'gitleaks', configPath: '' },
     },
   };
   let fileConfig = {};
@@ -69,6 +83,13 @@ function loadConfig() {
   if (smtpPass) {
     merged.notifications.smtp.pass = smtpPass;
   }
+  if (process.env.AUTH_MODE) merged.auth.mode = process.env.AUTH_MODE;
+  if (process.env.OIDC_CLIENT_SECRET) merged.auth.oidc.clientSecret = process.env.OIDC_CLIENT_SECRET;
+  if (process.env.GITLEAKS_ENABLED !== undefined) {
+    merged.security.gitleaks.enabled = String(process.env.GITLEAKS_ENABLED) === 'true';
+  }
+  if (process.env.GITLEAKS_BINARY) merged.security.gitleaks.binary = process.env.GITLEAKS_BINARY;
+  if (process.env.GITLEAKS_CONFIG_PATH) merged.security.gitleaks.configPath = process.env.GITLEAKS_CONFIG_PATH;
   return merged;
 }
 
@@ -83,9 +104,26 @@ const MAX_SCAN_FILE_BYTES = 5 * 1024 * 1024; // skip huge files in text scans
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+
+const auth = createAuth(store, CONFIG.auth);
+app.use(auth.attachUser);
+app.use(auth.router);
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const reviewDecisions = createReviewDecisionStore();
+
+/* Overriding a flagged guideline must be attributable to a real person for
+   the audit log — either the logged-in session (standalone or OIDC), or,
+   when auth isn't enforced globally, an explicit actor identity on the
+   request body. Returns null (caller responds 401) if neither is present. */
+function resolveActor(req) {
+  if (req.user) return { email: req.user.email, name: req.user.name || req.user.email };
+  const email = String(req.body?.actor?.email || '').trim().toLowerCase();
+  const name = String(req.body?.actor?.name || '').trim();
+  if (!isValidEmail(email)) return null;
+  return { email, name: name || email };
+}
 
 const upload = multer({
   dest: path.join(os.tmpdir(), 'gatekeeper-uploads'),
@@ -169,6 +207,11 @@ const LLM_SOURCE_EXTS = Object.freeze(new Set([
 const SECRET_REGEX =
   /(password|aws_secret|api_key|token|private_key)\s*[:=]\s*['" \t]*[a-zA-Z0-9_\-.~]{10,}/i;
 
+/* Optional gitleaks-powered secret scan (see CONFIG.security.gitleaks) */
+const GITLEAKS_ENABLED = Boolean(CONFIG.security.gitleaks.enabled);
+const GITLEAKS_BINARY = String(CONFIG.security.gitleaks.binary || 'gitleaks');
+const GITLEAKS_CONFIG_PATH = String(CONFIG.security.gitleaks.configPath || '');
+
 const AI_INVOKE_REGEX = /\.(invoke|stream|ainvoke|astream)\(/;
 
 const SKIP_DIRS = Object.freeze(new Set([
@@ -197,7 +240,7 @@ const BINARY_EXTENSIONS = Object.freeze(new Set([
 const GITHUB_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // org login rules
 const REPO_NAME_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
 const SAFE_UPLOAD_SEGMENT_REGEX = /^[^\0/\\]+$/;
-const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker']));
+const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks']));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -249,6 +292,7 @@ function runTool(tool, args, cwd) {
       case 'gh': return execute('gh');
       case 'act': return execute('act');
       case 'docker': return execute('docker');
+      case 'gitleaks': return execute(GITLEAKS_BINARY);
       default: return reject(new Error(`Unsupported command: ${safeTool}`));
     }
   });
@@ -587,7 +631,61 @@ async function checkSecrets(root, log) {
     });
   }
 
+  if (GITLEAKS_ENABLED) {
+    log('Gitleaks enabled — running supplemental secret-detection scan...');
+    const gitleaksFindings = await runGitleaksScan(root, log);
+    const seen = new Set(findings.map((f) => `${f.file}:${f.line}`));
+    let added = 0;
+    for (const f of gitleaksFindings) {
+      const key = `${f.file}:${f.line}`;
+      if (seen.has(key)) continue; // already caught by the regex scan
+      seen.add(key);
+      findings.push(f);
+      added++;
+    }
+    log(`Gitleaks scan complete — ${gitleaksFindings.length} finding(s), ${added} new.`);
+  }
+
   return { findings, scanned };
+}
+
+/**
+ * Optional secret-detection pass using gitleaks (https://github.com/gitleaks/gitleaks),
+ * when CONFIG.security.gitleaks.enabled is set. Soft-fails (returns no extra
+ * findings) if the binary is missing or the scan errors, so a misconfigured
+ * or absent install never breaks the pipeline — it just falls back to the
+ * built-in regex scan.
+ */
+async function runGitleaksScan(root, log) {
+  const reportPath = path.join(
+    os.tmpdir(),
+    `ignite-gitleaks-${crypto.randomBytes(8).toString('hex')}.json`
+  );
+  try {
+    const args = ['detect', '--source', root, '--no-git', '--report-format', 'json',
+      '--report-path', reportPath, '--exit-code', '0'];
+    if (GITLEAKS_CONFIG_PATH) args.push('--config', GITLEAKS_CONFIG_PATH);
+    await runTool('gitleaks', args, root);
+
+    let raw;
+    try {
+      raw = await fsp.readFile(reportPath, 'utf8');
+    } catch {
+      return []; // no report written (e.g. nothing found on some gitleaks versions)
+    }
+    const results = raw.trim() ? JSON.parse(raw) : [];
+    return results.map((r) => ({
+      file: path.relative(root, path.resolve(root, r.File || r.file || '')),
+      line: Number.isInteger(r.StartLine) ? r.StartLine : Number(r.startLine) || 0,
+      kind: String(r.RuleID || r.ruleID || 'secret').toLowerCase(),
+      tool: 'gitleaks',
+    }));
+  } catch (e) {
+    log(`⚠ gitleaks scan skipped: ${e.message}`);
+    return [];
+  } finally {
+    await fsp.unlink(reportPath).catch(() => {});
+  }
 }
 
 async function checkAiGovernance(root) {
@@ -770,7 +868,7 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
 
     if ((issue.includes('command injection') || issue.includes('user-supplied command') || issue.includes('child_process'))
       && relFile === 'server.js') {
-      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker'\]\)\);/.test(fileText);
+      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks'\]\)\);/.test(fileText);
       const hasStrictSanitizers = /sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(/.test(fileText);
       const isRunnerZone = line >= 200 && line <= 360;
       if (hasCommandAllowlist && hasStrictSanitizers && isRunnerZone) {
@@ -1415,6 +1513,90 @@ async function sendFailureNotification(details) {
   return { sent: true, to };
 }
 
+/* A developer chose to bypass one or more flagged guideline violations.
+   Always notify — this is the whole point of the override audit trail. */
+function buildOverrideEmail({ jobId, org, repo, phase, actor, applied }) {
+  const rows = applied
+    .map(
+      ({ issue, justification }) => `
+      <tr>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0;text-transform:uppercase;font-weight:600;color:${issue.severity === 'error' ? '#e11d48' : '#b45309'};">${escapeHtmlMail(issue.severity)}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0;">${escapeHtmlMail(issue.category)}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0;font-family:monospace;">${escapeHtmlMail(issue.file || '')}${issue.line ? ':' + issue.line : ''}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0;">${escapeHtmlMail(issue.summary)}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0;">${escapeHtmlMail(justification)}</td>
+      </tr>`
+    )
+    .join('');
+
+  const errorCount = applied.filter((a) => a.issue.severity === 'error').length;
+  const subject = `[Ignite] ⚠ ${applied.length} guideline override(s) at Phase ${phase} — ${org}/${repo}`;
+  const html = `
+  <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;color:#334155;">
+    <h2 style="color:#b45309;">A developer overrode flagged guideline check(s)</h2>
+    <p><strong>Target:</strong> ${escapeHtmlMail(org)}/${escapeHtmlMail(repo)}<br/>
+       <strong>Job:</strong> ${jobId}<br/>
+       <strong>Phase:</strong> ${phase} — ${PHASE_TITLES[phase] || 'Unknown'}<br/>
+       <strong>Overridden by:</strong> ${escapeHtmlMail(actor.name || actor.email)} (${escapeHtmlMail(actor.email)})<br/>
+       <strong>Blocking findings bypassed:</strong> ${errorCount} of ${applied.length}</p>
+    <table style="border-collapse:collapse;width:100%;font-size:13px;">
+      <tr style="background:#f1f5f9;">
+        <th style="padding:6px 12px;text-align:left;">Severity</th>
+        <th style="padding:6px 12px;text-align:left;">Category</th>
+        <th style="padding:6px 12px;text-align:left;">Location</th>
+        <th style="padding:6px 12px;text-align:left;">Finding</th>
+        <th style="padding:6px 12px;text-align:left;">Justification</th>
+      </tr>
+      ${rows}
+    </table>
+    <p style="color:#94a3b8;font-size:12px;margin-top:24px;">Sent by Ignite — this override is recorded in the project's audit log.</p>
+  </div>`;
+
+  return { subject, html };
+}
+
+async function sendOverrideNotification(details) {
+  const { enabled, to, from } = CONFIG.notifications;
+  if (!enabled || !to) return { sent: false, reason: 'notifications disabled or no recipient configured' };
+  const transport = buildMailTransport();
+  const { subject, html } = buildOverrideEmail(details);
+  await transport.sendMail({ from, to, subject, html });
+  return { sent: true, to };
+}
+
+/**
+ * Persist each applied override to the audit log and send exactly one
+ * notification email covering the whole batch. Best-effort on email: a
+ * flaky SMTP endpoint must not lose the audit record or crash the pipeline.
+ */
+async function recordOverrides({ projectId, jobId, org, repo, phase, actor, applied }) {
+  if (applied.length === 0) return;
+  let emailSent = false;
+  try {
+    const result = await sendOverrideNotification({ jobId, org, repo, phase, actor, applied });
+    emailSent = result.sent === true;
+  } catch (err) {
+    console.error('Failed to send override notification email:', err.message);
+  }
+  for (const { issue, justification } of applied) {
+    store.addOverride({
+      projectId,
+      jobId,
+      phase,
+      issueId: issue.id,
+      category: issue.category,
+      severity: issue.severity,
+      summary: issue.summary,
+      file: issue.file,
+      line: issue.line,
+      justification,
+      actorEmail: actor.email,
+      actorName: actor.name,
+      emailSent,
+    });
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Pipeline endpoint (streams NDJSON events)                           */
 /* ------------------------------------------------------------------ */
@@ -1446,7 +1628,22 @@ app.get('/api/projects/:id', (req, res) => {
 app.post('/api/pipeline/:jobId/review-decision', (req, res) => {
   const jobId = String(req.params.jobId || '').trim();
   const proceed = req.body?.proceed === true;
-  const ok = reviewDecisions.resolve(jobId, { proceed, reason: proceed ? 'user-continue' : 'user-stop' });
+  const overrides = Array.isArray(req.body?.overrides) ? req.body.overrides : [];
+
+  let actor = null;
+  if (overrides.length > 0) {
+    actor = resolveActor(req);
+    if (!actor) {
+      return res.status(401).json({ error: 'Log in, or provide actor {email,name}, to submit overrides.' });
+    }
+  }
+
+  const ok = reviewDecisions.resolve(jobId, {
+    proceed,
+    overrides,
+    actor,
+    reason: proceed ? 'user-continue' : 'user-stop',
+  });
   if (!ok) return res.status(404).json({ error: 'No pending review decision for this job.' });
   res.json({ ok: true });
 });
@@ -1460,6 +1657,7 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
   const warningDecision = String(body.warningDecision || 'continue').toLowerCase();
   const projectPath = sanitizeAbsoluteProjectPath(body.projectPath || process.cwd());
   const gxpLinks = Array.isArray(body.gxpLinks) ? body.gxpLinks : [];
+  const requestedOverrides = Array.isArray(body.overrides) ? body.overrides : [];
 
   const jobId = crypto.randomUUID();
   const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `${jobId}-api-validation`);
@@ -1565,7 +1763,6 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
 
     status(4, 'running');
     const log3 = phaseLog(4);
-    const blockingErrors = [];
 
     log3('Check 2 — scanning text files for hardcoded credentials...');
     const secrets = await checkSecrets(projectRoot, log3);
@@ -1573,7 +1770,6 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     if (secrets.findings.length > 0) {
       log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
       secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
-      blockingErrors.push(`hardcoded credentials (${secrets.findings.length})`);
     } else {
       log3('✓ Check 2 passed — no credential leakage detected.');
     }
@@ -1584,43 +1780,52 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     if (governance.findings.length > 0) {
       log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
       governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
-      blockingErrors.push(`ungoverned AI invocations (${governance.findings.length})`);
     } else {
       log3('✓ Check 4 passed — all AI invocations are governed.');
     }
 
     log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
     const llm = await checkLlmDeepScan(projectRoot, log3);
-    let llmWarnings = [];
     if (!llm.available) {
       log3(`⚠ Deep-scan skipped: ${llm.reason}`);
     } else if (llm.findings.length === 0) {
       log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
     } else {
-      const errors = llm.findings.filter((f) => f.level === 'error');
-      llmWarnings = llm.findings.filter((f) => f.level === 'warning');
       log3(`LLM reported ${llm.findings.length} finding(s):`);
       llm.findings.forEach((f) =>
         log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
       );
-      if (errors.length > 0) blockingErrors.push(`LLM security/dependency errors (${errors.length})`);
     }
 
-    if (blockingErrors.length > 0) {
-      throw Object.assign(
-        new Error(`Phase 4 collected ${blockingErrors.length} blocking finding group(s): ${blockingErrors.join('; ')}.`),
-        { phase: 4 }
-      );
-    }
+    const issues = collectPhase4Issues({ secrets, governance, llm });
+    const errorIssues = issues.filter((i) => i.severity === 'error');
+    const warningIssues = issues.filter((i) => i.severity === 'warning');
 
-    if (llmWarnings.length > 0 && warningDecision !== 'continue') {
-      throw Object.assign(
-        new Error(`Pipeline halted due to LLM warnings (${llmWarnings.length}) and warningDecision=${warningDecision}.`),
-        { phase: 4 }
-      );
-    }
-    if (llmWarnings.length > 0) {
-      log3(`⚠ ${llmWarnings.length} warning(s) found — continuing due to warningDecision=continue.`);
+    // Preserve the pre-override behavior of warningDecision=fail: treat
+    // unoverridden warnings as blocking too, in that mode only.
+    const issuesRequiringOverride =
+      warningDecision === 'continue' ? errorIssues : issues;
+
+    if (issuesRequiringOverride.length > 0) {
+      const { ok, unresolvedErrors, applied } = validateOverrides(issuesRequiringOverride, requestedOverrides);
+      if (applied.length > 0) {
+        const actor = resolveActor(req);
+        if (!actor) {
+          throw Object.assign(
+            new Error('Overrides were submitted but no authenticated user or actor {email,name} was provided — cannot attribute the audit record.'),
+            { phase: 4 }
+          );
+        }
+        log3(`⚠ ${applied.length} flagged issue(s) overridden by ${actor.email}:`);
+        applied.forEach(({ issue, justification }) => log3(`    ⚠ [override] [${issue.severity}] ${issue.file}:${issue.line} — ${issue.summary} — "${justification}"`));
+        await recordOverrides({ projectId, jobId, org, repo, phase: 4, actor, applied });
+      }
+      if (!ok) {
+        throw Object.assign(
+          new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.`),
+          { phase: 4 }
+        );
+      }
     }
     status(4, 'success');
 
@@ -1678,6 +1883,291 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     });
   } finally {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(workflowDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+/**
+ * Full onboarding pipeline from a project already on the local filesystem
+ * (no multipart upload) — the endpoint for agent/MCP callers that want the
+ * real outcome: phases 1-5 exactly as validate-all, and, if everything
+ * passes, phase 6 provisioning + push, same as the browser-driven
+ * /api/pipeline. Set `dryRun: true` to get validate-all's behavior (skip
+ * the push) from this same request shape.
+ */
+app.post('/api/pipeline/onboard', async (req, res) => {
+  const body = req.body || {};
+  const org = String(body.org || '').trim();
+  const repo = String(body.repo || '').trim();
+  const isGxp = body.gxp === true;
+  const runLocalCi = body.runLocalCi !== false;
+  const dryRun = body.dryRun === true;
+  const warningDecision = String(body.warningDecision || 'continue').toLowerCase();
+  const projectPath = sanitizeAbsoluteProjectPath(body.projectPath || process.cwd());
+  const gxpLinks = Array.isArray(body.gxpLinks) ? body.gxpLinks : [];
+  const requestedOverrides = Array.isArray(body.overrides) ? body.overrides : [];
+
+  const jobId = crypto.randomUUID();
+  const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `${jobId}-onboard`);
+  const sourceBackupDir = stagingDir + '-source-backup';
+  const publishDir = stagingDir + '-publish';
+  const workflowDir = stagingDir + '-workflows';
+  let projectId = null;
+
+  const events = [];
+  const record = {};
+  const rec = (phase) => (record[phase] ??= { state: 'pending', logs: [] });
+  const persistPhase = (phase) => {
+    if (projectId === null) return;
+    const ph = rec(phase);
+    try {
+      store.upsertStep(projectId, phase, PHASE_TITLES[phase], ph.state, ph.logs.join('\n'));
+    } catch {
+      // Live history persistence is best-effort.
+    }
+  };
+  const phaseLog = (phase) => (message) => {
+    rec(phase).logs.push(message);
+    events.push({ type: 'log', phase, message });
+    persistPhase(phase);
+  };
+
+  let currentPhase = 1;
+  const status = (phase, state, extra = {}) => {
+    if (state === 'running') currentPhase = phase;
+    rec(phase).state = state;
+    events.push({ type: 'status', phase, state, ...extra });
+    persistPhase(phase);
+  };
+
+  const phaseSummary = () => Object.keys(PHASE_TITLES)
+    .map((id) => {
+      const ph = record[id] || { state: 'pending', logs: [] };
+      return {
+        phase: Number(id),
+        title: PHASE_TITLES[id],
+        state: ph.state,
+        logs: ph.logs,
+      };
+    });
+
+  try {
+    status(1, 'running');
+    const log1 = phaseLog(1);
+
+    if (!GITHUB_NAME_REGEX.test(org)) {
+      throw Object.assign(new Error(`Invalid GitHub organization name: "${org}"`), { phase: 1 });
+    }
+    if (!REPO_NAME_REGEX.test(repo) || repo === '.' || repo === '..') {
+      throw Object.assign(new Error(`Invalid repository name: "${repo}"`), { phase: 1 });
+    }
+
+    log1(`Onboarding job ${jobId}`);
+    log1(`Source project path: ${projectPath}`);
+    log1(`Target: ${org}/${repo} (private)`);
+    log1(`GxP-regulated process: ${isGxp ? 'YES' : 'no'}`);
+    if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
+    projectId = store.createProject(jobId, org, repo, isGxp);
+    for (const id of Object.keys(record)) persistPhase(Number(id));
+    status(1, 'success');
+
+    if (!isGxp) {
+      phaseLog(2)('Process declared non-GxP — no validation documents required.');
+      status(2, 'skipped');
+    } else {
+      status(2, 'running');
+      const logG = phaseLog(2);
+      const validLinks = [];
+      for (const l of gxpLinks) {
+        const url = String(l?.url || '').trim();
+        let parsed = null;
+        try { parsed = new URL(url); } catch { /* invalid */ }
+        if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+          throw Object.assign(new Error(`Invalid GxP document link: "${url}" (must be http/https).`), { phase: 2 });
+        }
+        validLinks.push({ url, name: String(l?.name || '').trim() || parsed.hostname + parsed.pathname });
+      }
+      if (validLinks.length === 0) {
+        throw Object.assign(new Error('GxP process declared but no gxpLinks provided in API payload.'), { phase: 2 });
+      }
+      for (const link of validLinks) {
+        store.addLinkDocument(projectId, link.name, link.url);
+      }
+      logG(`Received ${validLinks.length} GxP document link(s) for validation context.`);
+      status(2, 'success');
+    }
+
+    status(3, 'running');
+    const log2 = phaseLog(3);
+    await stageExistingProject(projectPath, stagingDir, log2);
+    const projectRoot = await resolveProjectRoot(stagingDir);
+
+    await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
+    log2('Created immutable source snapshot for final publish phase.');
+
+    log2('Check 1 — scanning for raw environment files (.env*)...');
+    const envOffenders = await checkEnvFiles(projectRoot);
+    if (envOffenders.length > 0) {
+      log2(`✗ ${envOffenders.length} forbidden environment file(s) found:`);
+      envOffenders.forEach((f) => log2(`    ✗ ${f}`));
+      throw Object.assign(
+        new Error(`Raw environment files detected (${envOffenders.length}). Remove them before onboarding.`),
+        { phase: 3 }
+      );
+    }
+    log2('✓ Check 1 passed — no raw environment files present.');
+    status(3, 'success');
+
+    status(4, 'running');
+    const log3 = phaseLog(4);
+
+    log3('Check 2 — scanning text files for hardcoded credentials...');
+    const secrets = await checkSecrets(projectRoot, log3);
+    log3(`Scanned ${secrets.scanned} text files.`);
+    if (secrets.findings.length > 0) {
+      log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
+      secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+    } else {
+      log3('✓ Check 2 passed — no credential leakage detected.');
+    }
+
+    log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
+    const governance = await checkAiGovernance(projectRoot);
+    log3(`Audited ${governance.scanned} source files.`);
+    if (governance.findings.length > 0) {
+      log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
+      governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
+    } else {
+      log3('✓ Check 4 passed — all AI invocations are governed.');
+    }
+
+    log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
+    const llm = await checkLlmDeepScan(projectRoot, log3);
+    if (!llm.available) {
+      log3(`⚠ Deep-scan skipped: ${llm.reason}`);
+    } else if (llm.findings.length === 0) {
+      log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
+    } else {
+      log3(`LLM reported ${llm.findings.length} finding(s):`);
+      llm.findings.forEach((f) =>
+        log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
+      );
+    }
+
+    const issues = collectPhase4Issues({ secrets, governance, llm });
+    const errorIssues = issues.filter((i) => i.severity === 'error');
+
+    const issuesRequiringOverride =
+      warningDecision === 'continue' ? errorIssues : issues;
+
+    if (issuesRequiringOverride.length > 0) {
+      const { ok, unresolvedErrors, applied } = validateOverrides(issuesRequiringOverride, requestedOverrides);
+      if (applied.length > 0) {
+        const actor = resolveActor(req);
+        if (!actor) {
+          throw Object.assign(
+            new Error('Overrides were submitted but no authenticated user or actor {email,name} was provided — cannot attribute the audit record.'),
+            { phase: 4 }
+          );
+        }
+        log3(`⚠ ${applied.length} flagged issue(s) overridden by ${actor.email}:`);
+        applied.forEach(({ issue, justification }) => log3(`    ⚠ [override] [${issue.severity}] ${issue.file}:${issue.line} — ${issue.summary} — "${justification}"`));
+        await recordOverrides({ projectId, jobId, org, repo, phase: 4, actor, applied });
+      }
+      if (!ok) {
+        throw Object.assign(
+          new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.`),
+          { phase: 4 }
+        );
+      }
+    }
+    status(4, 'success');
+
+    status(5, 'running');
+    const log4 = phaseLog(5);
+    if (!runLocalCi) {
+      log4('Local CI execution disabled by request (runLocalCi=false).');
+      status(5, 'skipped');
+    } else {
+      const tooling = await actTooling();
+      if (!tooling.ok) {
+        log4(`⚠ Local CI skipped: ${tooling.reason}`);
+        log4('⚠ The org governance workflows will still gate the repo on GitHub after push.');
+        status(5, 'success');
+      } else {
+        const wfFile = await fetchGovernanceWorkflow(workflowDir, log4);
+        log4(`Executing org governance workflows locally with act (event: ${ACT_EVENT}).`);
+        await runActionsLocally(projectRoot, wfFile, log4);
+        log4('✓ All org governance jobs passed locally.');
+        status(5, 'success');
+      }
+    }
+
+    let repoUrl = null;
+    let prUrl = null;
+    if (dryRun) {
+      const log5 = phaseLog(6);
+      log5('Simulation mode (dryRun) — all checks passed; skipping repository provisioning and push.');
+      status(6, 'skipped');
+      if (projectId !== null) {
+        store.finishProject('success', null, null, null, projectId);
+      }
+    } else {
+      status(6, 'running');
+      const log5 = phaseLog(6);
+
+      const backupStat = await fsp.stat(sourceBackupDir).catch(() => null);
+      if (!backupStat || !backupStat.isDirectory()) {
+        throw Object.assign(new Error('Immutable source snapshot is missing before phase 6.'), { phase: 6 });
+      }
+      await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
+      await cloneDirectoryWithoutSymlinks(sourceBackupDir, publishDir);
+      log5('Prepared clean publish workspace from immutable source snapshot.');
+
+      await archivePhase6Payload(publishDir, projectId, log5);
+
+      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log5));
+      log5(`✓ Repository live at ${repoUrl}`);
+      status(6, 'success', { repoUrl, prUrl });
+
+      if (projectId !== null) {
+        store.finishProject('success', null, repoUrl, prUrl || null, projectId);
+      }
+    }
+
+    return res.json({
+      ok: true,
+      mode: 'onboard',
+      dryRun,
+      jobId,
+      projectPath,
+      repoUrl,
+      prUrl,
+      phases: phaseSummary(),
+      events,
+    });
+  } catch (err) {
+    const phase = err.phase || currentPhase;
+    phaseLog(phase)(`✗ ${err.message}`);
+    status(phase, 'failed', { error: err.message });
+    if (projectId !== null) {
+      try { store.finishProject('failed', err.message, null, null, projectId); } catch { /* best-effort */ }
+    }
+    return res.status(400).json({
+      ok: false,
+      mode: 'onboard',
+      dryRun,
+      jobId,
+      projectPath,
+      error: err.message,
+      failedPhase: phase,
+      phases: phaseSummary(),
+      events,
+    });
+  } finally {
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(sourceBackupDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
     await fsp.rm(workflowDir, { recursive: true, force: true }).catch(() => {});
   }
 });
@@ -1767,6 +2257,7 @@ app.post(
   const org = (req.body.org || '').trim();
   const repo = (req.body.repo || '').trim();
   const isGxp = req.body.gxp === 'true';
+  const dryRun = req.body.dryRun === 'true';
   let gxpLinks = [];
   try {
     const parsed = JSON.parse(req.body.gxpLinks || '[]');
@@ -1800,6 +2291,7 @@ app.post(
     }
     log1(`Target: ${org}/${repo} (private)`);
     log1(`GxP-regulated process: ${isGxp ? 'YES — validation documents are mandatory' : 'no'}`);
+    if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
     projectId = store.createProject(jobId, org, repo, isGxp);
     for (const id of Object.keys(record)) persistPhase(Number(id));
     status(1, 'success');
@@ -1885,16 +2377,12 @@ app.post(
     status(4, 'running');
     const log3 = phaseLog(4);
 
-    const blockingErrors = [];
-    let llmWarnings = [];
-
     log3('Check 2 — scanning text files for hardcoded credentials...');
     const secrets = await checkSecrets(projectRoot, log3);
     log3(`Scanned ${secrets.scanned} text files.`);
     if (secrets.findings.length > 0) {
       log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
       secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
-      blockingErrors.push(`hardcoded credentials (${secrets.findings.length})`);
     } else {
       log3('✓ Check 2 passed — no credential leakage detected.');
     }
@@ -1905,7 +2393,6 @@ app.post(
     if (governance.findings.length > 0) {
       log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
       governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
-      blockingErrors.push(`ungoverned AI invocations (${governance.findings.length})`);
     } else {
       log3('✓ Check 4 passed — all AI invocations are governed.');
     }
@@ -1917,47 +2404,45 @@ app.post(
     } else if (llm.findings.length === 0) {
       log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
     } else {
-      const errors = llm.findings.filter((f) => f.level === 'error');
-      llmWarnings = llm.findings.filter((f) => f.level === 'warning');
       log3(`LLM reported ${llm.findings.length} finding(s):`);
       llm.findings.forEach((f) =>
         log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
       );
-      if (errors.length > 0) {
-        blockingErrors.push(`LLM security/dependency errors (${errors.length})`);
-      }
     }
 
-    if (blockingErrors.length > 0) {
-      throw Object.assign(
-        new Error(`Phase 4 collected ${blockingErrors.length} blocking finding group(s): ${blockingErrors.join('; ')}.`),
-        { phase: 4 }
-      );
-    }
+    const issues = collectPhase4Issues({ secrets, governance, llm });
 
-    if (llmWarnings.length > 0) {
-      log3(`⚠ ${llmWarnings.length} warning(s) found — waiting for user decision to continue or interrupt.`);
+    if (issues.length > 0) {
+      log3(`⚠ ${issues.length} flagged issue(s) (${issues.filter((i) => i.severity === 'error').length} blocking) — waiting for user decision.`);
       const decisionPromise = reviewDecisions.wait(jobId);
       send({
         type: 'review_required',
         phase: 4,
         jobId,
-        warnings: llmWarnings.map((f) => ({
-          file: f.file,
-          line: f.line,
-          category: f.category,
-          issue: f.issue,
-          recommendation: f.recommendation,
-        })),
+        issues,
       });
       const decision = await decisionPromise;
+
+      const { ok, unresolvedErrors, applied } = validateOverrides(issues, decision.overrides || []);
+      if (applied.length > 0) {
+        log3(`⚠ ${applied.length} flagged issue(s) overridden by ${decision.actor.email}:`);
+        applied.forEach(({ issue, justification }) => log3(`    ⚠ [override] [${issue.severity}] ${issue.file}:${issue.line} — ${issue.summary} — "${justification}"`));
+        await recordOverrides({ projectId, jobId, org, repo, phase: 4, actor: decision.actor, applied });
+      }
+
       if (!decision.proceed) {
         throw Object.assign(
-          new Error('Pipeline interrupted by user after LLM review warnings.'),
+          new Error('Pipeline interrupted by user after reviewing flagged issues.'),
           { phase: 4 }
         );
       }
-      log3('✓ User chose to continue after reviewing warnings.');
+      if (!ok) {
+        throw Object.assign(
+          new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Override each with a justification, or fix them.`),
+          { phase: 4 }
+        );
+      }
+      log3('✓ User chose to continue after reviewing flagged issues.');
     }
 
     status(4, 'success');
@@ -1980,27 +2465,38 @@ app.post(
     }
 
     /* ---------------- Phase 6: provisioning + shipping ---------------- */
-    status(6, 'running');
-    const log5 = phaseLog(6);
+    let repoUrl = null;
+    let prUrl = null;
+    if (dryRun) {
+      const log5 = phaseLog(6);
+      log5('Simulation mode (dryRun) — all checks passed; skipping repository provisioning and push.');
+      status(6, 'skipped');
+      if (projectId !== null) {
+        store.finishProject('success', null, null, null, projectId);
+      }
+    } else {
+      status(6, 'running');
+      const log5 = phaseLog(6);
 
-    const backupStat = await fsp.stat(sourceBackupDir).catch(() => null);
-    if (!backupStat || !backupStat.isDirectory()) {
-      throw Object.assign(new Error('Immutable source snapshot is missing before phase 6.'), { phase: 6 });
+      const backupStat = await fsp.stat(sourceBackupDir).catch(() => null);
+      if (!backupStat || !backupStat.isDirectory()) {
+        throw Object.assign(new Error('Immutable source snapshot is missing before phase 6.'), { phase: 6 });
+      }
+      await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
+      await cloneDirectoryWithoutSymlinks(sourceBackupDir, publishDir);
+      log5('Prepared clean publish workspace from immutable source snapshot.');
+
+      await archivePhase6Payload(publishDir, projectId, log5);
+
+      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log5));
+      log5(`✓ Repository live at ${repoUrl}`);
+      status(6, 'success', { repoUrl, prUrl });
+
+      if (projectId !== null) {
+        store.finishProject('success', null, repoUrl, prUrl || null, projectId);
+      }
     }
-    await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
-    await cloneDirectoryWithoutSymlinks(sourceBackupDir, publishDir);
-    log5('Prepared clean publish workspace from immutable source snapshot.');
-
-    await archivePhase6Payload(publishDir, projectId, log5);
-
-    const { repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log5);
-    log5(`✓ Repository live at ${repoUrl}`);
-    status(6, 'success', { repoUrl, prUrl });
-
-    if (projectId !== null) {
-      store.finishProject('success', null, repoUrl, prUrl || null, projectId);
-    }
-    send({ type: 'done', ok: true, repoUrl, prUrl });
+    send({ type: 'done', ok: true, dryRun, repoUrl, prUrl });
   } catch (err) {
     const phase = err.phase || currentPhase;
     phaseLog(phase)(`✗ ${err.message}`);
@@ -2063,6 +2559,16 @@ app.use((err, req, res, next) => {
   res.status(400).json({ error: err.message });
 });
 
-app.listen(PORT, () => {
-  console.log(`Ignite (onboarding gatekeeper) running at http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Ignite (onboarding gatekeeper) running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  checkEnvFiles,
+  checkSecrets,
+  checkAiGovernance,
+  runGitleaksScan,
+  loadConfig,
+};

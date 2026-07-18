@@ -26,5 +26,23 @@
       "secure": true,
       "user": "you@example.com"
     }
+  },
+  "auth": {
+    "mode": "standalone",
+    "allowSelfRegistration": true,
+    "oidc": {
+      "issuer": "https://your-idp.example.com",
+      "clientId": "ignite",
+      "clientSecret": "",
+      "redirectUri": "http://localhost:3000/api/auth/oidc/callback",
+      "scope": "openid email profile"
+    }
+  },
+  "security": {
+    "gitleaks": {
+      "enabled": false,
+      "binary": "gitleaks",
+      "configPath": ""
+    }
   }
 }
