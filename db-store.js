@@ -75,6 +75,26 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_overrides_project ON overrides(project_id);
+    CREATE TABLE IF NOT EXISTS issues (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      issue_id     TEXT NOT NULL,
+      phase        INTEGER,
+      category     TEXT NOT NULL,
+      severity     TEXT NOT NULL,
+      summary      TEXT NOT NULL,
+      file         TEXT,
+      line         INTEGER,
+      snippet_json TEXT,
+      status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','overridden')),
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_issues_project ON issues(project_id);
+    CREATE TABLE IF NOT EXISTS issue_explanations (
+      hash        TEXT PRIMARY KEY,
+      explanation TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   const stmt = {
@@ -95,7 +115,8 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     listProjects: db.prepare(`
       SELECT p.id, p.org, p.repo, p.gxp, p.status, p.error, p.repo_url, p.pr_url,
              p.created_at, p.finished_at,
-             (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS doc_count
+             (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS doc_count,
+             (SELECT COUNT(*) FROM issues i WHERE i.project_id = p.id) AS issue_count
       FROM projects p ORDER BY p.id DESC LIMIT 100
     `),
     getProject: db.prepare(
@@ -142,6 +163,26 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
               actor_email, actor_name, email_sent, created_at
        FROM overrides WHERE project_id = ? ORDER BY id`
     ),
+
+    deleteProjectIssues: db.prepare('DELETE FROM issues WHERE project_id = ?'),
+    insertIssue: db.prepare(
+      `INSERT INTO issues (project_id, issue_id, phase, category, severity, summary, file, line, snippet_json, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ),
+    getProjectIssues: db.prepare(
+      `SELECT issue_id, phase, category, severity, summary, file, line, snippet_json, status, created_at
+       FROM issues WHERE project_id = ? ORDER BY id`
+    ),
+    countOpenIssues: db.prepare(
+      `SELECT project_id, COUNT(*) AS n FROM issues WHERE status = 'open' GROUP BY project_id`
+    ),
+
+    getIssueExplanation: db.prepare('SELECT explanation FROM issue_explanations WHERE hash = ?'),
+    saveIssueExplanation: db.prepare(
+      `INSERT INTO issue_explanations (hash, explanation) VALUES (?, ?)
+       ON CONFLICT(hash) DO UPDATE SET explanation = excluded.explanation`
+    ),
+    getProjectByJobId: db.prepare('SELECT id FROM projects WHERE job_id = ?'),
   };
 
   return {
@@ -190,6 +231,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       stmt.deleteProjectDocuments.run(projectId);
       stmt.deleteProjectSteps.run(projectId);
       stmt.deleteProjectOverrides.run(projectId);
+      stmt.deleteProjectIssues.run(projectId);
       stmt.deleteProject.run(projectId);
     },
 
@@ -244,6 +286,83 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     getProjectOverrides(projectId) {
       return stmt.getProjectOverrides.all(projectId);
+    },
+
+    /* ---------------- flagged issues (viewable live and in history) ------- */
+
+    // Called repeatedly as a run progresses — always reflects the latest
+    // known set of issues for the project, so the history/API view is never
+    // stale even if the pipeline dies before finishing.
+    replaceProjectIssues(projectId, issues, overriddenIds) {
+      const overridden = overriddenIds instanceof Set ? overriddenIds : new Set(overriddenIds || []);
+      stmt.deleteProjectIssues.run(projectId);
+      for (const issue of issues || []) {
+        stmt.insertIssue.run(
+          projectId,
+          issue.id,
+          Number.isInteger(issue.phase) ? issue.phase : null,
+          issue.category,
+          issue.severity,
+          issue.summary,
+          issue.file || null,
+          issue.line ?? null,
+          issue.snippet ? JSON.stringify(issue.snippet) : null,
+          overridden.has(issue.id) ? 'overridden' : 'open'
+        );
+      }
+    },
+
+    getProjectIssues(projectId) {
+      return stmt.getProjectIssues.all(projectId).map((row) => ({
+        id: row.issue_id,
+        phase: row.phase,
+        category: row.category,
+        severity: row.severity,
+        summary: row.summary,
+        file: row.file,
+        line: row.line,
+        snippet: row.snippet_json ? JSON.parse(row.snippet_json) : null,
+        status: row.status,
+        created_at: row.created_at,
+      }));
+    },
+
+    getProjectIdByJobId(jobId) {
+      return stmt.getProjectByJobId.get(jobId)?.id ?? null;
+    },
+
+    /* Cached AI explanations for a specific finding, keyed by a stable hash
+       of its identity (category/file/line/summary) — independent of which
+       project/run it was found in, so the same finding is never re-explained. */
+    getCachedIssueExplanation(hash) {
+      return stmt.getIssueExplanation.get(hash)?.explanation ?? null;
+    },
+
+    cacheIssueExplanation(hash, explanation) {
+      stmt.saveIssueExplanation.run(hash, explanation);
+    },
+
+    /**
+     * Projects/steps left in 'running' happen only when the process died
+     * mid-pipeline (killed, crashed) — nothing will ever finish them, so on
+     * every startup we sweep them into a terminal 'aborted' state instead of
+     * leaving stale spinners in the history panel forever.
+     */
+    abortStaleRunningProjects() {
+      const ABORTED_ERROR = 'Server restarted while onboarding was still in progress.';
+      db.exec(`
+        UPDATE projects
+        SET status = 'aborted',
+            error = COALESCE(error, '${ABORTED_ERROR}'),
+            finished_at = datetime('now')
+        WHERE status = 'running';
+
+        UPDATE steps
+        SET state = 'failed',
+            logs = logs || char(10) || '✗ ${ABORTED_ERROR}'
+        WHERE state = 'running'
+          AND project_id IN (SELECT id FROM projects WHERE error = '${ABORTED_ERROR}');
+      `);
     },
   };
 }

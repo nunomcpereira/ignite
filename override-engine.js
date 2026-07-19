@@ -29,6 +29,7 @@ function collectPhase4Issues({ secrets, governance, llm }) {
       summary: `Hardcoded ${f.kind}`,
       file: f.file,
       line: f.line,
+      snippet: f.code || null,
     });
   }
 
@@ -40,6 +41,7 @@ function collectPhase4Issues({ secrets, governance, llm }) {
       summary: `Ungoverned AI invocation (missing recursion_limit): ${f.snippet}`,
       file: f.file,
       line: f.line,
+      snippet: f.code || null,
     });
   }
 
@@ -52,6 +54,7 @@ function collectPhase4Issues({ secrets, governance, llm }) {
         summary: f.issue + (f.recommendation ? ` | fix: ${f.recommendation}` : ''),
         file: f.file,
         line: f.line,
+        snippet: f.code || null,
       });
     }
   }

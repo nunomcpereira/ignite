@@ -140,8 +140,16 @@
         </div>
       </div>
 
+      <label class="mt-5 flex items-start gap-2 text-xs text-slate-600 cursor-pointer select-none">
+        <input type="checkbox" id="dryRunInput" checked class="accent-brand-600 mt-0.5" />
+        <span>
+          <span class="font-semibold text-slate-700">Simulation mode (dry run)</span>
+          — run every check but skip repository provisioning and push. Nothing is created on GitHub.
+        </span>
+      </label>
+
       <button id="startBtn" disabled
-        class="mt-6 w-full py-3 rounded-xl text-sm font-semibold transition-all
+        class="mt-4 w-full py-3 rounded-xl text-sm font-semibold transition-all
                disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none
                bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25">
         Initiate Onboarding Pipeline
@@ -149,6 +157,11 @@
     </section>
 
     <!-- Pipeline stepper -->
+    <div class="flex items-center justify-end">
+      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+        View flagged issues
+      </button>
+    </div>
     <section id="pipeline" class="space-y-3"></section>
 
     <!-- Final result banner -->
@@ -188,8 +201,23 @@
   <div id="reviewModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
       <div class="px-6 py-4 border-b border-slate-100">
-        <p class="text-sm font-semibold text-slate-800">Flagged issues need your review</p>
-        <p class="text-xs text-slate-500 mt-0.5">Blocking findings must be overridden with a justification before you can continue. Every override is emailed and saved to the project's audit log.</p>
+        <p class="text-sm font-semibold text-slate-800">Final review — all flagged issues, before provisioning &amp; push</p>
+        <p class="text-xs text-slate-500 mt-0.5">Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.</p>
+      </div>
+      <div id="reviewBulkBar" class="hidden px-6 pt-3 pb-1 border-b border-slate-100 bg-slate-50">
+        <div class="flex items-center gap-2 text-[11px] text-slate-600">
+          <label class="flex items-center gap-1.5 cursor-pointer select-none">
+            <input type="checkbox" id="reviewSelectAll" class="accent-brand-600" />
+            Select all
+          </label>
+          <span id="reviewSelectedCount" class="font-semibold text-slate-700">0 selected</span>
+        </div>
+        <div class="flex items-start gap-2 mt-2">
+          <textarea id="reviewBulkJustification" rows="2" placeholder="Justification to apply to all selected issues…"
+                    class="flex-1 text-xs px-3 py-2 rounded-lg border border-slate-200"></textarea>
+          <button type="button" id="reviewBulkApplyBtn"
+                  class="text-xs font-semibold px-3 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 shrink-0">Apply to selected</button>
+        </div>
       </div>
       <div id="reviewIssueList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
       <div id="reviewActorRow" class="hidden px-6 pt-2 pb-1 border-t border-slate-100 grid grid-cols-2 gap-2">
@@ -204,6 +232,31 @@
     </div>
   </div>
 
+  <!-- Read-only issues viewer: usable any time during/after a run, and from the history panel -->
+  <div id="issuesViewModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-slate-800">Flagged issues</p>
+          <p id="issuesViewSubtitle" class="text-xs text-slate-500 mt-0.5">Read-only — issue-by-issue detail, updated live as the run progresses.</p>
+        </div>
+        <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+      </div>
+      <div id="issuesViewList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
+    </div>
+  </div>
+
+  <!-- Maximized phase log viewer -->
+  <div id="phaseMaxModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+        <p id="phaseMaxTitle" class="text-sm font-semibold text-slate-800"></p>
+        <button id="phaseMaxCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+      </div>
+      <div id="phaseMaxBody" class="px-6 py-4 overflow-y-auto flex-1 bg-slate-950 rounded-b-2xl font-mono text-xs leading-relaxed"></div>
+    </div>
+  </div>
+
   <script>
     /* ------------------------------------------------------------ */
     /* Pipeline model                                                */
@@ -212,14 +265,14 @@
     const PHASES = [
       { id: 1, title: 'Input & Metadata Configuration', desc: 'Validate archive and target repository metadata' },
       { id: 2, title: 'GxP Validation Documents', desc: 'Mandatory for GxP processes · documents archived to the database' },
-      { id: 3, title: 'Extraction & Structure Audit', desc: 'Unpack to staging · deny raw .env* files' },
+      { id: 3, title: 'Extraction, Structure Audit & Unit Tests', desc: 'Unpack to staging · deny raw .env* files · run the project\'s own `npm test` in an isolated Docker container' },
       { id: 4, title: 'Security & AI Compliance Scan', desc: 'Credential leak regex · LangChain/LangGraph governance · LLM deep-scan' },
       { id: 5, title: 'Org Governance CI — GitHub Actions', desc: 'Runs devops-governance org workflows locally in Docker via act' },
       { id: 6, title: 'Provisioning & Shipping', desc: 'git init · gh repo create --private · push to main' },
     ];
 
     // payload: { kind: 'zip', file } | { kind: 'dir', entries: [{file, rel}], name, size }
-    const state = { payload: null, running: false, phases: {}, gxp: false, gxpFiles: [], gxpLinks: [] };
+    const state = { payload: null, running: false, phases: {}, gxp: false, gxpFiles: [], gxpLinks: [], jobId: null };
 
     /* ------------------------------------------------------------ */
     /* Auth — standalone (email/password) or company IdP (OIDC)      */
@@ -344,6 +397,10 @@
         const meta = STATE_META[ph.state];
         const hasLogs = ph.logs.length > 0;
         const isLast = idx === PHASES.length - 1;
+        const durationMs = ph.startedAt ? (ph.endedAt || Date.now()) - ph.startedAt : null;
+        const durationHtml = durationMs != null
+          ? `<span class="text-[11px] font-mono text-slate-400 shrink-0">${formatDuration(durationMs)}</span>`
+          : '';
         return `
         <div class="relative">
           ${!isLast ? '<div class="absolute left-[27px] top-[54px] bottom-[-12px] w-px bg-slate-200"></div>' : ''}
@@ -356,7 +413,11 @@
                 <p class="text-sm font-semibold text-slate-800"><span class="text-brand-600 font-bold">Phase ${p.id}</span> <span class="text-slate-300 mx-1">·</span> ${p.title}</p>
                 <p class="text-xs text-slate-500 truncate">${p.desc}</p>
               </div>
+              ${durationHtml}
               <span class="text-[11px] font-semibold px-2.5 py-1 rounded-full border ${meta.chip}">${meta.label}</span>
+              ${hasLogs ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
+              </button>` : ''}
               ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : '<span class="w-4"></span>'}
             </summary>
             ${hasLogs ? `
@@ -370,10 +431,135 @@
       }).join('');
 
       document.querySelectorAll('.terminal').forEach((t) => { t.scrollTop = t.scrollHeight; });
+
+      document.querySelectorAll('.phase-maximize-btn').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openPhaseMaximized(Number(btn.dataset.phaseId));
+        });
+      });
     }
+
+    function openPhaseMaximized(phaseId) {
+      const p = PHASES.find((x) => x.id === phaseId);
+      const ph = state.phases[phaseId] || { logs: [] };
+      $('phaseMaxTitle').textContent = `Phase ${phaseId} · ${p ? p.title : ''}`;
+      $('phaseMaxBody').innerHTML = ph.logs.map(formatLogLine).join('');
+      $('phaseMaxModal').classList.remove('hidden');
+    }
+
+    $('phaseMaxCloseBtn').addEventListener('click', () => $('phaseMaxModal').classList.add('hidden'));
+    $('phaseMaxModal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'phaseMaxModal') $('phaseMaxModal').classList.add('hidden');
+    });
 
     function escapeHtml(s) {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function escapeAttr(s) {
+      return escapeHtml(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Renders a small code preview around a finding, with the offending span
+    // (or whole line, if no column info) highlighted. Hovering the highlight
+    // shows the finding's technical summary immediately, then swaps in an
+    // AI-generated, non-technical explanation of that exact instance once
+    // fetched (see attachAiTooltips / fetchIssueExplanation) — cached both
+    // client-side and in the DB, so it's only ever computed once per issue.
+    function renderSnippet(snippet, issue) {
+      if (!snippet || !Array.isArray(snippet.lines) || snippet.lines.length === 0) return '';
+      const payload = escapeAttr(JSON.stringify({
+        category: issue.category, severity: issue.severity, file: issue.file,
+        line: issue.line, summary: issue.summary, snippet,
+      }));
+      const rows = snippet.lines.map((l) => {
+        const raw = l.text || '';
+        const isHl = l.number === snippet.highlightLine;
+        let text;
+        if (isHl && Number.isInteger(snippet.highlightStart) && Number.isInteger(snippet.highlightEnd)) {
+          const before = escapeHtml(raw.slice(0, snippet.highlightStart));
+          const mid = escapeHtml(raw.slice(snippet.highlightStart, snippet.highlightEnd)) || ' ';
+          const after = escapeHtml(raw.slice(snippet.highlightEnd));
+          text = `${before}<mark class="bg-amber-200 text-amber-900 rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${mid}</mark>${after}`;
+        } else if (isHl) {
+          text = `<mark class="bg-amber-200 text-amber-900 rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${escapeHtml(raw) || ' '}</mark>`;
+        } else {
+          text = escapeHtml(raw);
+        }
+        return `<div class="flex ${isHl ? 'bg-rose-50' : ''}">` +
+          `<span class="w-9 shrink-0 text-right pr-2 text-slate-400 select-none">${l.number}</span>` +
+          `<span class="flex-1 whitespace-pre-wrap break-all">${text}</span></div>`;
+      }).join('');
+      return `<pre class="mt-2 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-mono overflow-x-auto p-2 leading-5">${rows}</pre>`;
+    }
+
+    /* ------------------------------------------------------------ */
+    /* On-demand AI explanation tooltip for highlighted code spans   */
+    /* ------------------------------------------------------------ */
+    const aiExplainCache = new Map(); // client-side mirror of the DB cache
+
+    function issueExplainKey(issue) {
+      return `${issue.category}|${issue.file || ''}|${issue.line || 0}|${issue.summary}`;
+    }
+
+    async function fetchIssueExplanation(issue) {
+      const key = issueExplainKey(issue);
+      if (aiExplainCache.has(key)) return aiExplainCache.get(key);
+      const promise = fetch('/api/issues/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category: issue.category, severity: issue.severity, file: issue.file,
+          line: issue.line, summary: issue.summary, snippet: issue.snippet,
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => data.explanation || null)
+        .catch(() => null);
+      aiExplainCache.set(key, promise);
+      const explanation = await promise;
+      aiExplainCache.set(key, explanation); // replace in-flight promise with the resolved value
+      return explanation;
+    }
+
+    function ensureAiTooltipEl() {
+      let el = document.getElementById('aiExplainTooltip');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'aiExplainTooltip';
+        el.className = 'hidden fixed z-[70] max-w-xs text-xs bg-slate-900 text-slate-100 rounded-lg shadow-xl p-3 leading-relaxed';
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+
+    // Call after rendering any HTML that may contain `.ai-explain-mark` spans.
+    function attachAiTooltips(container) {
+      const tooltip = ensureAiTooltipEl();
+      container.querySelectorAll('.ai-explain-mark').forEach((mark) => {
+        if (mark.dataset.aiBound) return;
+        mark.dataset.aiBound = '1';
+        mark.addEventListener('mouseenter', async () => {
+          const issue = JSON.parse(mark.dataset.issue);
+          const requestKey = issueExplainKey(issue);
+          const rect = mark.getBoundingClientRect();
+          tooltip.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 280))}px`;
+          tooltip.style.top = `${rect.bottom + 8}px`;
+          tooltip.textContent = issue.summary;
+          tooltip.dataset.activeKey = requestKey;
+          tooltip.classList.remove('hidden');
+          const explanation = await fetchIssueExplanation(issue);
+          // Ignore late replies for a mark the user has already moved away from.
+          if (tooltip.classList.contains('hidden') || tooltip.dataset.activeKey !== requestKey) return;
+          tooltip.textContent = explanation || issue.summary;
+        });
+        mark.addEventListener('mouseleave', () => {
+          tooltip.classList.add('hidden');
+          tooltip.dataset.activeKey = '';
+        });
+      });
     }
 
     function formatLogLine(line) {
@@ -387,13 +573,40 @@
     }
 
     function resetPhases() {
-      PHASES.forEach((p) => { state.phases[p.id] = { state: 'pending', logs: [] }; });
+      PHASES.forEach((p) => { state.phases[p.id] = { state: 'pending', logs: [], startedAt: null, endedAt: null }; });
+      state.jobId = null;
+      updateViewIssuesButton();
       resultBanner.classList.add('hidden');
       resultBanner.innerHTML = '';
       const insightCard = $('insightCard');
       insightCard.classList.add('hidden');
       insightCard.innerHTML = '';
       renderPipeline();
+    }
+
+    /* 12s -> "12s", 90s -> "1m 30s", 3700s -> "1h 1m" */
+    function formatDuration(ms) {
+      const totalSeconds = Math.max(0, Math.round(ms / 1000));
+      const h = Math.floor(totalSeconds / 3600);
+      const m = Math.floor((totalSeconds % 3600) / 60);
+      const s = totalSeconds % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    // Keeps a running phase's elapsed time ticking in the UI without
+    // waiting for the next server event.
+    let phaseDurationTimer = null;
+    function startPhaseDurationTicker() {
+      if (phaseDurationTimer) return;
+      phaseDurationTimer = setInterval(() => {
+        if (Object.values(state.phases).some((p) => p.state === 'running')) renderPipeline();
+      }, 1000);
+    }
+    function stopPhaseDurationTicker() {
+      clearInterval(phaseDurationTimer);
+      phaseDurationTimer = null;
     }
 
     /* Minimal markdown for LLM output: **bold**, `code`, bullet lines. */
@@ -436,6 +649,97 @@
       card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
+    // Shared by the interactive review-gate modal, the anytime read-only
+    // issues viewer, and the per-project history panel.
+    function renderIssueCard(issue, idx, { interactive }) {
+      const loc = `${escapeHtml(issue.file || 'unknown')}${issue.line ? ':' + issue.line : ''}`;
+      const badge = issue.severity === 'error'
+        ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-rose-50 text-rose-700 border-rose-200">BLOCKING</span>'
+        : '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">WARNING</span>';
+      const statusBadge = !interactive && issue.status === 'overridden'
+        ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">OVERRIDDEN</span>'
+        : '';
+      const hasSnippet = !!(issue.snippet && Array.isArray(issue.snippet.lines) && issue.snippet.lines.length);
+      const viewCodeBtn = hasSnippet
+        ? `<button type="button" class="view-code-toggle text-[11px] font-semibold text-brand-600 hover:underline" data-idx="${idx}">View code ▸</button>`
+        : '';
+      const snippetHtml = hasSnippet
+        ? `<div class="code-preview hidden" data-idx="${idx}">${renderSnippet(issue.snippet, issue)}</div>`
+        : '';
+      const checkboxHtml = interactive
+        ? `<input type="checkbox" class="override-check mt-1" data-idx="${idx}" ${issue.severity === 'error' ? 'data-required="1"' : ''} />`
+        : '';
+      const justificationHtml = interactive
+        ? `<textarea class="override-justification hidden mt-2 w-full text-xs px-3 py-2 rounded-lg border border-slate-200"
+                    placeholder="Justification for overriding this ${issue.severity === 'error' ? 'blocking finding (required)' : 'warning'}…"
+                    data-idx="${idx}"></textarea>`
+        : '';
+      return `
+      <div class="border border-slate-200 rounded-lg p-3" data-issue-idx="${idx}">
+        <div class="flex items-start gap-2">
+          ${checkboxHtml}
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              ${badge}
+              ${statusBadge}
+              ${issue.phase ? `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">PHASE ${issue.phase}</span>` : ''}
+              <span class="text-[10px] font-semibold text-slate-400 uppercase">${escapeHtml(issue.category)}</span>
+              <span class="text-[11px] font-mono text-slate-400">${loc}</span>
+              ${viewCodeBtn}
+            </div>
+            <p class="text-xs text-slate-700 mt-1">${escapeHtml(issue.summary)}</p>
+            ${snippetHtml}
+            ${justificationHtml}
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function wireIssueListInteractions(list) {
+      list.querySelectorAll('.view-code-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const block = list.querySelector(`.code-preview[data-idx="${btn.dataset.idx}"]`);
+          const nowHidden = block.classList.toggle('hidden');
+          btn.textContent = nowHidden ? 'View code ▸' : 'Hide code ▾';
+        });
+      });
+      attachAiTooltips(list);
+    }
+
+    // Anytime, read-only issues viewer — usable while a run is still in
+    // progress (live, polled from the running pipeline) or long after it
+    // finished (from the project history panel).
+    function openIssuesViewer(issues, subtitle) {
+      const modal = $('issuesViewModal');
+      const list = $('issuesViewList');
+      $('issuesViewSubtitle').textContent = subtitle || 'Read-only — issue-by-issue detail.';
+      list.innerHTML = issues.length
+        ? issues.map((issue, idx) => renderIssueCard(issue, idx, { interactive: false })).join('')
+        : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
+      wireIssueListInteractions(list);
+      modal.classList.remove('hidden');
+    }
+    $('issuesViewCloseBtn').addEventListener('click', () => $('issuesViewModal').classList.add('hidden'));
+    $('issuesViewModal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'issuesViewModal') $('issuesViewModal').classList.add('hidden');
+    });
+
+    function updateViewIssuesButton() {
+      $('viewIssuesBtn').classList.toggle('hidden', !state.jobId);
+    }
+    $('viewIssuesBtn').addEventListener('click', async () => {
+      if (!state.jobId) return;
+      try {
+        const res = await fetch(`/api/pipeline/${state.jobId}/issues`);
+        const data = await res.json();
+        openIssuesViewer(data.issues || [], data.running
+          ? 'Read-only — updates as later phases run. Overrides are only settled at the final review gate.'
+          : 'Read-only — final result of this run.');
+      } catch {
+        openIssuesViewer([], 'Could not load issues for this run.');
+      }
+    });
+
     function handleReviewRequired(ev) {
       const issues = ev.issues || [];
       const modal = $('reviewModal');
@@ -446,43 +750,62 @@
       const stopBtn = $('reviewStopBtn');
       errorEl.textContent = '';
 
-      list.innerHTML = issues.map((issue, idx) => {
-        const loc = `${escapeHtml(issue.file || 'unknown')}${issue.line ? ':' + issue.line : ''}`;
-        const badge = issue.severity === 'error'
-          ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-rose-50 text-rose-700 border-rose-200">BLOCKING</span>'
-          : '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">WARNING</span>';
-        return `
-        <div class="border border-slate-200 rounded-lg p-3" data-issue-idx="${idx}">
-          <div class="flex items-start gap-2">
-            <input type="checkbox" class="override-check mt-1" data-idx="${idx}" ${issue.severity === 'error' ? 'data-required="1"' : ''} />
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2 flex-wrap">
-                ${badge}
-                <span class="text-[10px] font-semibold text-slate-400 uppercase">${escapeHtml(issue.category)}</span>
-                <span class="text-[11px] font-mono text-slate-400">${loc}</span>
-              </div>
-              <p class="text-xs text-slate-700 mt-1">${escapeHtml(issue.summary)}</p>
-              <textarea class="override-justification hidden mt-2 w-full text-xs px-3 py-2 rounded-lg border border-slate-200"
-                        placeholder="Justification for overriding this ${issue.severity === 'error' ? 'blocking finding (required)' : 'warning'}…"
-                        data-idx="${idx}"></textarea>
-            </div>
-          </div>
-        </div>`;
-      }).join('');
+      list.innerHTML = issues.map((issue, idx) => renderIssueCard(issue, idx, { interactive: true })).join('');
+      wireIssueListInteractions(list);
+
+      const bulkBar = $('reviewBulkBar');
+      const selectAllCb = $('reviewSelectAll');
+      const selectedCountEl = $('reviewSelectedCount');
+      const bulkJustificationEl = $('reviewBulkJustification');
+      const bulkApplyBtn = $('reviewBulkApplyBtn');
+      bulkBar.classList.toggle('hidden', issues.length < 2);
+      selectAllCb.checked = false;
+      bulkJustificationEl.value = '';
+
+      function updateSelectedCount() {
+        const n = list.querySelectorAll('.override-check:checked').length;
+        selectedCountEl.textContent = `${n} selected`;
+      }
 
       list.querySelectorAll('.override-check').forEach((cb) => {
         cb.addEventListener('change', () => {
           const ta = list.querySelector(`.override-justification[data-idx="${cb.dataset.idx}"]`);
           ta.classList.toggle('hidden', !cb.checked);
           updateActorVisibility();
+          updateSelectedCount();
         });
       });
+
+      selectAllCb.onclick = () => {
+        list.querySelectorAll('.override-check').forEach((cb) => {
+          cb.checked = selectAllCb.checked;
+          cb.dispatchEvent(new Event('change'));
+        });
+      };
+
+      bulkApplyBtn.onclick = () => {
+        const text = bulkJustificationEl.value.trim();
+        if (!text) {
+          errorEl.textContent = 'Enter a justification to apply to the selected issues.';
+          return;
+        }
+        const checked = list.querySelectorAll('.override-check:checked');
+        if (checked.length === 0) {
+          errorEl.textContent = 'Select at least one issue to apply the justification to.';
+          return;
+        }
+        errorEl.textContent = '';
+        checked.forEach((cb) => {
+          list.querySelector(`.override-justification[data-idx="${cb.dataset.idx}"]`).value = text;
+        });
+      };
 
       function updateActorVisibility() {
         const anyChecked = !!list.querySelector('.override-check:checked');
         actorRow.classList.toggle('hidden', !anyChecked || !!authState.user);
       }
       updateActorVisibility();
+      updateSelectedCount();
 
       modal.classList.remove('hidden');
 
@@ -490,6 +813,8 @@
         modal.classList.add('hidden');
         proceedBtn.onclick = null;
         stopBtn.onclick = null;
+        selectAllCb.onclick = null;
+        bulkApplyBtn.onclick = null;
       };
 
       const submit = async (proceed) => {
@@ -539,9 +864,25 @@
       stopBtn.onclick = () => submit(false);
     }
 
-    function showResult(ok, { repoUrl, prUrl, error, phase } = {}) {
+    function showResult(ok, { repoUrl, prUrl, error, phase, dryRun, effectivatable, projectId } = {}) {
       resultBanner.classList.remove('hidden');
-      if (ok) {
+      if (ok && dryRun) {
+        const canEffectivate = !!effectivatable && projectId != null;
+        resultBanner.innerHTML = `
+          <div class="bg-brand-50 border border-brand-200 rounded-2xl p-6 text-center shadow-card">
+            <p class="text-brand-800 font-semibold mb-1">Simulation complete — all checks passed</p>
+            <p class="text-sm text-brand-700">Dry run only: no repository was created and nothing was pushed to GitHub.</p>
+            ${canEffectivate ? `
+            <button type="button" id="effectivateBtn" data-project-id="${projectId}"
+                    class="mt-4 text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25">
+              Effectivate — provision &amp; push for real
+            </button>
+            <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden"></p>` : ''}
+          </div>`;
+        if (canEffectivate) {
+          $('effectivateBtn').addEventListener('click', () => attemptEffectivate(projectId, []));
+        }
+      } else if (ok) {
         resultBanner.innerHTML = `
           <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center shadow-card">
             <p class="text-emerald-800 font-semibold mb-1">Pipeline complete — repository shipped 🎉</p>
@@ -561,6 +902,145 @@
           </div>`;
       }
       resultBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    /* ------------------------------------------------------------ */
+    /* Effectivate — turn a completed simulation into a real          */
+    /* provision + push, still gated on unresolved blocking findings  */
+    /* ------------------------------------------------------------ */
+    async function attemptEffectivate(projectId, overrides, actor) {
+      const errEl = document.getElementById('effectivateError');
+      const btn = document.getElementById('effectivateBtn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Effectivating…'; }
+      try {
+        const res = await fetch(`/api/projects/${projectId}/effectivate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ overrides, actor }),
+        });
+        const data = await res.json();
+        if ((res.status === 409 || res.status === 401) && data.needsReview) {
+          openEffectivateReview(projectId, data.issues || []);
+          return;
+        }
+        if (!res.ok) {
+          if (errEl) { errEl.textContent = data.error || 'Effectivate failed.'; errEl.classList.remove('hidden'); }
+          if (btn) { btn.disabled = false; btn.textContent = 'Effectivate — provision & push for real'; }
+          return;
+        }
+        showResult(true, { repoUrl: data.repoUrl, prUrl: data.prUrl, dryRun: false });
+      } catch (e) {
+        if (errEl) { errEl.textContent = `Could not reach server: ${e.message}`; errEl.classList.remove('hidden'); }
+        if (btn) { btn.disabled = false; btn.textContent = 'Effectivate — provision & push for real'; }
+      }
+    }
+
+    // Reuses the review-gate modal to collect justifications for any
+    // unresolved blocking findings before effectivating.
+    function openEffectivateReview(projectId, issues) {
+      const modal = $('reviewModal');
+      const list = $('reviewIssueList');
+      const actorRow = $('reviewActorRow');
+      const errorEl = $('reviewError');
+      const proceedBtn = $('reviewProceedBtn');
+      const stopBtn = $('reviewStopBtn');
+      errorEl.textContent = '';
+      proceedBtn.textContent = 'Effectivate';
+      stopBtn.textContent = 'Cancel';
+
+      list.innerHTML = issues.map((issue, idx) => renderIssueCard(issue, idx, { interactive: issue.status !== 'overridden' })).join('');
+      wireIssueListInteractions(list);
+
+      const bulkBar = $('reviewBulkBar');
+      const selectAllCb = $('reviewSelectAll');
+      const selectedCountEl = $('reviewSelectedCount');
+      const bulkJustificationEl = $('reviewBulkJustification');
+      const bulkApplyBtn = $('reviewBulkApplyBtn');
+      bulkBar.classList.toggle('hidden', issues.length < 2);
+      selectAllCb.checked = false;
+      bulkJustificationEl.value = '';
+
+      function updateSelectedCount() {
+        selectedCountEl.textContent = `${list.querySelectorAll('.override-check:checked').length} selected`;
+      }
+      function updateActorVisibility() {
+        const anyChecked = !!list.querySelector('.override-check:checked');
+        actorRow.classList.toggle('hidden', !anyChecked || !!authState.user);
+      }
+
+      list.querySelectorAll('.override-check').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          const ta = list.querySelector(`.override-justification[data-idx="${cb.dataset.idx}"]`);
+          ta.classList.toggle('hidden', !cb.checked);
+          updateActorVisibility();
+          updateSelectedCount();
+        });
+      });
+      selectAllCb.onclick = () => {
+        list.querySelectorAll('.override-check').forEach((cb) => {
+          cb.checked = selectAllCb.checked;
+          cb.dispatchEvent(new Event('change'));
+        });
+      };
+      bulkApplyBtn.onclick = () => {
+        const text = bulkJustificationEl.value.trim();
+        const checked = list.querySelectorAll('.override-check:checked');
+        if (!text) { errorEl.textContent = 'Enter a justification to apply to the selected issues.'; return; }
+        if (checked.length === 0) { errorEl.textContent = 'Select at least one issue to apply the justification to.'; return; }
+        errorEl.textContent = '';
+        checked.forEach((cb) => {
+          list.querySelector(`.override-justification[data-idx="${cb.dataset.idx}"]`).value = text;
+        });
+      };
+      updateActorVisibility();
+      updateSelectedCount();
+
+      modal.classList.remove('hidden');
+
+      const cleanup = () => {
+        modal.classList.add('hidden');
+        proceedBtn.textContent = 'Continue';
+        stopBtn.textContent = 'Stop pipeline';
+        proceedBtn.onclick = null;
+        stopBtn.onclick = null;
+        selectAllCb.onclick = null;
+        bulkApplyBtn.onclick = null;
+      };
+
+      stopBtn.onclick = () => cleanup();
+      proceedBtn.onclick = () => {
+        errorEl.textContent = '';
+        const overrides = [];
+        const checked = list.querySelectorAll('.override-check:checked');
+        for (const cb of checked) {
+          const idx = Number(cb.dataset.idx);
+          const justification = list.querySelector(`.override-justification[data-idx="${idx}"]`).value.trim();
+          if (!justification) {
+            errorEl.textContent = 'Every checked issue needs a justification.';
+            return;
+          }
+          overrides.push({ issueId: issues[idx].id, justification });
+        }
+        const requiredIdx = issues.map((it, idx) => (it.severity === 'error' && it.status !== 'overridden' ? idx : -1)).filter((i) => i >= 0);
+        const overriddenIds = new Set(overrides.map((o) => o.issueId));
+        const missing = requiredIdx.filter((idx) => !overriddenIds.has(issues[idx].id));
+        if (missing.length > 0) {
+          errorEl.textContent = `${missing.length} blocking finding(s) still need to be checked + justified, or click "Cancel".`;
+          return;
+        }
+        let actor;
+        if (!authState.user && overrides.length > 0) {
+          const email = $('reviewActorEmail').value.trim();
+          const name = $('reviewActorName').value.trim();
+          if (!email || !email.includes('@')) {
+            errorEl.textContent = 'Enter your email to attribute this override in the audit log.';
+            return;
+          }
+          actor = { email, name };
+        }
+        cleanup();
+        attemptEffectivate(projectId, overrides, actor);
+      };
     }
 
     /* ------------------------------------------------------------ */
@@ -778,9 +1258,10 @@
     startBtn.addEventListener('click', async () => {
       if (state.running) return;
       state.running = true;
-      startBtn.textContent = 'Pipeline Running…';
+      startBtn.textContent = $('dryRunInput').checked ? 'Simulation Running…' : 'Pipeline Running…';
       updateButton();
       resetPhases();
+      startPhaseDurationTicker();
 
       const form = new FormData();
       if (state.payload.kind === 'zip') {
@@ -792,6 +1273,7 @@
       form.append('org', orgInput.value.trim());
       form.append('repo', repoInput.value.trim());
       form.append('gxp', String(state.gxp));
+      form.append('dryRun', String($('dryRunInput').checked));
       if (state.gxp) {
         for (const f of state.gxpFiles) form.append('gxpDocs', f);
         form.append('gxpLinks', JSON.stringify(state.gxpLinks));
@@ -836,26 +1318,36 @@
         showResult(false, { error: `Upload failed: ${err.message}. Check that the server is still running.` });
       } finally {
         state.running = false;
+        stopPhaseDurationTicker();
+        renderPipeline();
         startBtn.textContent = 'Initiate Onboarding Pipeline';
         updateButton();
       }
     });
 
     function handleEvent(ev) {
-      if (ev.type === 'log') {
+      if (ev.type === 'job') {
+        state.jobId = ev.jobId;
+        updateViewIssuesButton();
+      } else if (ev.type === 'log') {
         state.phases[ev.phase].logs.push(ev.message);
       } else if (ev.type === 'status') {
-        state.phases[ev.phase].state = ev.state;
-        if (ev.state === 'failed') {
-          PHASES.filter((p) => p.id > ev.phase).forEach((p) => {
-            if (state.phases[p.id].state === 'pending') state.phases[p.id].state = 'skipped';
-          });
+        // No client-side inference here: the server explicitly sends
+        // 'skipped' for every phase it can't run (e.g. blocked by an
+        // earlier phase's failure), so every phase's status is authoritative.
+        const ph = state.phases[ev.phase];
+        ph.state = ev.state;
+        if (ev.state === 'running') {
+          ph.startedAt = Date.now();
+          ph.endedAt = null;
+        } else if (ph.startedAt && !ph.endedAt) {
+          ph.endedAt = Date.now();
         }
       } else if (ev.type === 'insight') {
         showInsight(ev.state, ev.text);
       } else if (ev.type === 'review_required') {
         const errorCount = (ev.issues || []).filter((i) => i.severity === 'error').length;
-        state.phases[ev.phase].logs.push(`⚠ Review raised ${ev.issues?.length || 0} flagged issue(s) (${errorCount} blocking). Awaiting user decision...`);
+        state.phases[ev.phase].logs.push(`⚠ Final review: ${ev.issues?.length || 0} flagged issue(s) across the run (${errorCount} blocking). Awaiting user decision...`);
         handleReviewRequired(ev);
       } else if (ev.type === 'done') {
         showResult(ev.ok, ev);
@@ -901,6 +1393,7 @@
       success: 'bg-emerald-50 text-emerald-700 border-emerald-200',
       failed: 'bg-rose-50 text-rose-700 border-rose-200',
       running: 'bg-brand-50 text-brand-700 border-brand-200',
+      aborted: 'bg-slate-100 text-slate-500 border-slate-200',
     };
     const openProjects = new Set(); // ids whose detail view is expanded
 
@@ -927,10 +1420,26 @@
               </div>
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
             </button>
+            ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-count="${p.issue_count}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
             <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold mt-0.5" data-id="${p.id}" title="Delete this project">✕</button>
           </div>
           <div class="hist-detail hidden px-5 pb-4"></div>
         </div>`).join('');
+
+      historyList.querySelectorAll('.hist-view-issues').forEach((btn) => {
+        btn.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const id = Number(btn.dataset.id);
+          try {
+            const res = await fetch(`/api/projects/${id}/issues`);
+            const data = await res.json();
+            openIssuesViewer(data.issues || [], `Read-only — ${data.issues?.length || 0} issue(s) flagged for this project.`);
+          } catch {
+            openIssuesViewer([], 'Could not load issues for this project.');
+          }
+        });
+      });
 
       historyList.querySelectorAll('.hist-item').forEach((item) => {
         const id = Number(item.dataset.id);
@@ -1019,7 +1528,7 @@
 
       detail.innerHTML = `
         ${p.repo_url ? `<a href="${escapeHtml(p.repo_url)}" target="_blank" rel="noopener" class="block text-[11px] font-mono text-brand-600 hover:text-brand-800 underline underline-offset-2 truncate mb-2">${escapeHtml(p.repo_url)}</a>` : ''}
-        ${p.status === 'failed' && p.error ? `<p class="text-[11px] text-rose-600 mb-2">✗ ${escapeHtml(p.error)}</p>` : ''}
+        ${(p.status === 'failed' || p.status === 'aborted') && p.error ? `<p class="text-[11px] text-rose-600 mb-2">✗ ${escapeHtml(p.error)}</p>` : ''}
         <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Pipeline steps</p>
         <div class="space-y-1.5 mb-3">${stepsHtml || '<p class="text-[11px] text-slate-400">No step history recorded.</p>'}</div>
         <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Documents${p.gxp ? ' (GxP validation)' : ''}</p>

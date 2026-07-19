@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^17.4.2",
     "express": "^4.21.2",
     "multer": "^2.2.0",
     "node-stream-zip": "^1.15.0",

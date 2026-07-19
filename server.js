@@ -8,6 +8,8 @@
  * matter how the pipeline ends.
  */
 
+require('dotenv').config();
+
 const express = require('express');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
@@ -30,7 +32,7 @@ const { collectPhase4Issues, validateOverrides } = require('./override-engine');
 function loadConfig() {
   const defaults = {
     port: 3000,
-    llm: { url: 'http://localhost:8050', model: 'default', mode: 'warn', maxFiles: 40 },
+    llm: { url: 'http://localhost:8050', model: 'default', mode: 'warn', maxFiles: 40, chunkChars: 10_000 },
     github: { orgs: '', bootstrapBranch: 'ignite' },
     governance: {
       repo: 'ai-governance-poc-2026/devops-governance',
@@ -96,6 +98,7 @@ function loadConfig() {
 const CONFIG = loadConfig();
 
 const store = createDbStore(path.join(__dirname, 'ignite.db'));
+store.abortStaleRunningProjects();
 
 const PORT = process.env.PORT || CONFIG.port;
 const MAX_ZIP_BYTES = 250 * 1024 * 1024; // 250 MB upload cap
@@ -112,6 +115,29 @@ app.use(auth.router);
 app.use(express.static(path.join(__dirname, 'public')));
 
 const reviewDecisions = createReviewDecisionStore();
+
+// jobId -> { org, repo, projectId, allIssues } for the interactive SSE
+// pipeline, so its flagged-issues list can be viewed live at any point
+// during the run, not only at the final review gate. Entries are removed
+// once the run ends; after that the same data lives in the `issues` table.
+const runningRuns = new Map();
+
+// projectId -> { org, repo, sourceBackupDir } — the immutable, validated
+// source snapshot kept around after a successful simulation (dryRun) so an
+// "Effectivate" action can provision/push it later without re-running the
+// whole pipeline. Cleared once effectivated, or on server restart (tmpdir).
+const pendingEffectivations = new Map();
+const EFFECTIVATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+function cleanupExpiredEffectivations() {
+  const now = Date.now();
+  for (const [projectId, entry] of pendingEffectivations) {
+    if (now - entry.createdAt > EFFECTIVATION_TTL_MS) {
+      fsp.rm(entry.sourceBackupDir, { recursive: true, force: true }).catch(() => {});
+      pendingEffectivations.delete(projectId);
+    }
+  }
+}
 
 /* Overriding a flagged guideline must be attributable to a real person for
    the audit log — either the logged-in session (standalone or OIDC), or,
@@ -198,7 +224,47 @@ const LLM_MAX_FILES = parsePositiveInt(
   40,
   { min: 1, max: 1000 }
 );
-const LLM_CHUNK_CHARS = 24_000; // per-request source budget
+// Per-request source budget. Smaller chunks mean more requests but each one
+// completes faster and is less likely to stall/timeout on a local CPU-bound
+// llama.cpp server, where prompt-processing time grows with context size.
+const LLM_CHUNK_CHARS = parsePositiveInt(
+  process.env.LLM_CHUNK_CHARS ?? CONFIG.llm.chunkChars,
+  10_000,
+  { min: 1000, max: 100_000 }
+);
+// Which backend the deep-scan/insight/explain calls talk to. 'local' keeps
+// the existing llama.cpp-compatible server at LLM_SCAN_URL; 'openai' routes
+// the same requests to the OpenAI (or OpenAI-compatible) Chat Completions
+// API instead — useful when no local model is available or a stronger
+// hosted model is wanted. Same request/response shape either way.
+const LLM_PROVIDER = ['local', 'openai'].includes(String(process.env.LLM_PROVIDER || CONFIG.llm.provider || '').toLowerCase())
+  ? String(process.env.LLM_PROVIDER || CONFIG.llm.provider).toLowerCase()
+  : 'local';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || CONFIG.llm.openai?.apiKey || '';
+const OPENAI_BASE_URL = String(process.env.OPENAI_BASE_URL || CONFIG.llm.openai?.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+const OPENAI_MODEL = process.env.OPENAI_MODEL || CONFIG.llm.openai?.model || 'gpt-4o-mini';
+if (LLM_PROVIDER === 'openai' && !/^https:\/\//i.test(OPENAI_BASE_URL) && !/^http:\/\/(localhost|127\.0\.0\.1)/i.test(OPENAI_BASE_URL)) {
+  throw new Error(`OPENAI_BASE_URL must use https (got ${OPENAI_BASE_URL}).`);
+}
+
+// Resolves the effective chat-completions endpoint/model/auth for whichever
+// provider is configured, so llmChat/llmComplete/llmAvailable don't need to
+// know which backend they're talking to.
+function llmTarget() {
+  if (LLM_PROVIDER === 'openai') {
+    return {
+      url: `${OPENAI_BASE_URL}/chat/completions`,
+      model: OPENAI_MODEL,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+    };
+  }
+  return {
+    url: `${LLM_SCAN_URL}/v1/chat/completions`,
+    model: LLM_SCAN_MODEL,
+    headers: { 'Content-Type': 'application/json' },
+  };
+}
+
 const LLM_SOURCE_EXTS = Object.freeze(new Set([
   '.py', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.go', '.rb', '.php',
   '.java', '.cs', '.sh', '.yaml', '.yml', '.json', '.sql', '.tf',
@@ -250,6 +316,30 @@ function looksBinary(buffer) {
   // NUL byte in the first 8 KB is the classic binary heuristic.
   const slice = buffer.subarray(0, 8192);
   return slice.includes(0);
+}
+
+/**
+ * Captures a few lines of context around a finding so the review UI can show
+ * a code preview with the offending span highlighted, instead of a bare
+ * file:line reference.
+ */
+function buildSnippet(content, lineNumber, { colStart, colEnd, radius = 3 } = {}) {
+  if (typeof content !== 'string' || !Number.isInteger(lineNumber) || lineNumber < 1) return null;
+  const lines = content.split(/\r?\n/);
+  const idx = lineNumber - 1;
+  if (idx >= lines.length) return null;
+
+  const start = Math.max(0, idx - radius);
+  const end = Math.min(lines.length - 1, idx + radius);
+  const code = [];
+  for (let i = start; i <= end; i++) code.push({ number: i + 1, text: lines[i] });
+
+  const snippet = { startLine: start + 1, lines: code, highlightLine: lineNumber };
+  if (Number.isInteger(colStart) && Number.isInteger(colEnd) && colEnd > colStart) {
+    snippet.highlightStart = colStart;
+    snippet.highlightEnd = colEnd;
+  }
+  return snippet;
 }
 
 async function* walkFiles(root) {
@@ -589,15 +679,78 @@ async function cloneDirectoryWithoutSymlinks(sourceDir, destDir) {
 /* Checks                                                              */
 /* ------------------------------------------------------------------ */
 
+// .env.example/.sample/.template/.dist/.defaults are the documented-defaults
+// convention (see this project's own .env.example) — by design they hold no
+// real secrets and are meant to be committed, so they're never flagged.
+const ENV_TEMPLATE_SUFFIXES = ['.example', '.sample', '.template', '.dist', '.defaults'];
+function isEnvTemplateFile(base) {
+  const lower = base.toLowerCase();
+  return lower.startsWith('.env') && ENV_TEMPLATE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
+// Minimal .gitignore matcher: last-matching pattern wins (negation with `!`
+// supported), `*`/`**`/`?` handled, `/`-anchored vs anywhere-in-tree patterns
+// distinguished. Good enough to recognize the common cases (`.env`, `.env*`)
+// without pulling in a full gitignore-semantics dependency.
+function gitignorePatternToRegex(rawPattern) {
+  let pattern = rawPattern.trim();
+  let negate = false;
+  if (pattern.startsWith('!')) { negate = true; pattern = pattern.slice(1); }
+  const anchored = pattern.startsWith('/');
+  if (anchored) pattern = pattern.slice(1);
+  if (pattern.endsWith('/')) pattern = pattern.slice(0, -1);
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, ' ')
+    .replace(/\*/g, '[^/]*')
+    .replace(/ /g, '.*')
+    .replace(/\?/g, '[^/]');
+  const regex = anchored
+    ? new RegExp(`^${escaped}(/.*)?$`)
+    : new RegExp(`(^|/)${escaped}(/.*)?$`);
+  return { regex, negate };
+}
+
+function isGitignored(patterns, relPath) {
+  const normalized = relPath.split(path.sep).join('/');
+  let ignored = false;
+  for (const { regex, negate } of patterns) {
+    if (regex.test(normalized)) ignored = !negate;
+  }
+  return ignored;
+}
+
+/**
+ * Flags raw .env files in the uploaded project. Returns `blocking` (real env
+ * files that must be removed before shipping) separately from `ignored`
+ * (env files that are also listed in the project's own .gitignore — since
+ * they'd never be committed/pushed by this same pipeline, they're surfaced
+ * as an informational note instead of failing the phase).
+ */
 async function checkEnvFiles(root) {
-  const offenders = [];
+  let gitignorePatterns = [];
+  try {
+    const content = await fsp.readFile(path.join(root, '.gitignore'), 'utf8');
+    gitignorePatterns = content
+      .split(/\r?\n/)
+      .filter((l) => l.trim() && !l.trim().startsWith('#'))
+      .map(gitignorePatternToRegex);
+  } catch { /* no .gitignore at the project root — nothing to exempt */ }
+
+  const blocking = [];
+  const ignored = [];
   for await (const file of walkFiles(root)) {
     const base = path.basename(file);
-    if (base === '.env' || base.startsWith('.env.')) {
-      offenders.push(path.relative(root, file));
+    if (base !== '.env' && !base.startsWith('.env.')) continue;
+    if (isEnvTemplateFile(base)) continue;
+    const rel = path.relative(root, file);
+    if (gitignorePatterns.length > 0 && isGitignored(gitignorePatterns, rel)) {
+      ignored.push(rel);
+    } else {
+      blocking.push(rel);
     }
   }
-  return offenders;
+  return { blocking, ignored };
 }
 
 async function checkSecrets(root, log) {
@@ -618,7 +771,8 @@ async function checkSecrets(root, log) {
     if (looksBinary(buffer)) continue;
 
     scanned++;
-    const lines = buffer.toString('utf8').split(/\r?\n/);
+    const content = buffer.toString('utf8');
+    const lines = content.split(/\r?\n/);
     lines.forEach((line, i) => {
       const match = line.match(SECRET_REGEX);
       if (match) {
@@ -626,6 +780,7 @@ async function checkSecrets(root, log) {
           file: path.relative(root, file),
           line: i + 1,
           kind: match[1].toLowerCase(),
+          code: buildSnippet(content, i + 1, { colStart: match.index, colEnd: match.index + match[0].length }),
         });
       }
     });
@@ -674,11 +829,23 @@ async function runGitleaksScan(root, log) {
       return []; // no report written (e.g. nothing found on some gitleaks versions)
     }
     const results = raw.trim() ? JSON.parse(raw) : [];
-    return results.map((r) => ({
-      file: path.relative(root, path.resolve(root, r.File || r.file || '')),
-      line: Number.isInteger(r.StartLine) ? r.StartLine : Number(r.startLine) || 0,
-      kind: String(r.RuleID || r.ruleID || 'secret').toLowerCase(),
-      tool: 'gitleaks',
+    return await Promise.all(results.map(async (r) => {
+      const relFile = path.relative(root, path.resolve(root, r.File || r.file || ''));
+      const line = Number.isInteger(r.StartLine) ? r.StartLine : Number(r.startLine) || 0;
+      const colStart = Number.isInteger(r.StartColumn) ? r.StartColumn - 1 : undefined;
+      const colEnd = Number.isInteger(r.EndColumn) ? r.EndColumn : undefined;
+      let code = null;
+      try {
+        const content = await fsp.readFile(path.join(root, relFile), 'utf8');
+        code = buildSnippet(content, line, { colStart, colEnd });
+      } catch { /* best-effort only */ }
+      return {
+        file: relFile,
+        line,
+        kind: String(r.RuleID || r.ruleID || 'secret').toLowerCase(),
+        tool: 'gitleaks',
+        code,
+      };
     }));
   } catch (e) {
     log(`⚠ gitleaks scan skipped: ${e.message}`);
@@ -705,11 +872,13 @@ async function checkAiGovernance(root) {
 
     const lines = content.split(/\r?\n/);
     lines.forEach((line, i) => {
-      if (AI_INVOKE_REGEX.test(line)) {
+      const match = line.match(AI_INVOKE_REGEX);
+      if (match) {
         findings.push({
           file: path.relative(root, file),
           line: i + 1,
           snippet: line.trim().slice(0, 120),
+          code: buildSnippet(content, i + 1, { colStart: match.index, colEnd: match.index + match[0].length }),
         });
       }
     });
@@ -729,6 +898,7 @@ Review ONLY for:
 
 Coverage rules:
 - Do not stop at the first issue. Enumerate all distinct blocking findings in the provided files.
+- Never summarize or collapse multiple occurrences of the same problem into a single finding (e.g. never write something like "fix these 10 occurrences" or "occurs throughout the file"). Every single occurrence gets its own finding object with its own exact file and line number, even if the wording is otherwise identical.
 - Do not invent package versions. Only recommend a concrete dependency upgrade when the target version is known/published; otherwise recommend replacing the dependency or pinning to the latest available safe version.
 - Do not flag SMTP as insecure when secure=false is paired with port 587 (STARTTLS submission mode).
 - Do not flag hardcoded SMTP secrets unless a non-empty credential literal is present in code/config.
@@ -737,8 +907,12 @@ Classification rules:
 - Dangerous dependency findings must be category "dependency" and level "error".
 - Exploitable security findings should be category "security" and level "error".
 
+Writing style for the "issue" field:
+- Write for a non-technical reader (e.g. a project manager), not a developer. Explain in plain language what could go wrong in the real world and why it matters, without jargon (avoid unexplained terms like "injection", "sanitize", "deserialization", "SSRF" — describe the risk in everyday words instead).
+- Keep the "recommendation" field technical and actionable — that one is for the developer who will fix it.
+
 Respond with ONLY a JSON object in this schema:
-{"findings":[{"file":"<path>","line":<number>,"category":"security|dependency","level":"error","issue":"<one sentence>","recommendation":"<short actionable fix>"}]}
+{"findings":[{"file":"<path>","line":<number>,"category":"security|dependency","level":"error","issue":"<one plain-language sentence, no jargon>","recommendation":"<short actionable technical fix>"}]}
 If nothing is found respond {"findings":[]}.`;
 
 const LLM_QUALITY_PROMPT = `You are a senior software engineer performing a code quality and encapsulation review. You will receive source files from a project, each preceded by a "===== FILE: <path> =====" header with numbered lines.
@@ -749,34 +923,68 @@ Review ONLY for:
 Noise-control rules:
 - Do not report module-level constants or private closures as encapsulation issues unless they are actually exposed for external mutation.
 - Do not suggest broad architectural rewrites when a targeted/local change is sufficient.
+- Never summarize or collapse multiple occurrences of the same problem into a single finding (e.g. never write something like "fix these 10 occurrences" or "occurs throughout the file"). Every single occurrence gets its own finding object with its own exact file and line number, even if the wording is otherwise identical.
 
 Classification rules:
 - Findings from this pass are advisory and may use level "warning".
 - Use category "encapsulation" or "quality".
 
+Writing style for the "issue" field:
+- Write for a non-technical reader (e.g. a project manager), not a developer. Explain in plain language what is wrong and why it matters for the project, without jargon.
+- Keep the "recommendation" field technical and actionable — that one is for the developer who will fix it.
+
 Respond with ONLY a JSON object in this schema:
-{"findings":[{"file":"<path>","line":<number>,"category":"encapsulation|quality","level":"warning","issue":"<one sentence>","recommendation":"<short actionable fix>"}]}
+{"findings":[{"file":"<path>","line":<number>,"category":"encapsulation|quality","level":"warning","issue":"<one plain-language sentence, no jargon>","recommendation":"<short actionable technical fix>"}]}
 If nothing is found respond {"findings":[]}.`;
 
-async function llmChat(sourceBlock, systemPrompt) {
-  const res = await fetch(`${LLM_SCAN_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(300_000),
-    body: JSON.stringify({
-      model: LLM_SCAN_MODEL,
-      stream: false,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: sourceBlock },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`LLM endpoint returned HTTP ${res.status}`);
+// Logs every request/response exchanged with the local LLM to stdout (and,
+// when a phase `log` callback is given, into the UI's live log too) — so a
+// timeout can be traced to the exact call, payload size, and elapsed time.
+function traceLlmCall(label, { url, model, timeoutMs, chars }, log) {
+  const line = `[llm] → ${label} POST ${url} model=${model} timeout=${timeoutMs}ms payload=${chars} chars`;
+  console.log(line);
+  if (log) log(line);
+  const startedAt = Date.now();
+  return (outcome, detail = '') => {
+    const elapsed = Date.now() - startedAt;
+    const result = `[llm] ← ${label} ${outcome} in ${elapsed}ms${detail ? ' — ' + detail : ''}`;
+    console.log(result);
+    if (log) log(result);
+  };
+}
+
+async function llmChat(sourceBlock, systemPrompt, log, label = 'chat') {
+  const timeoutMs = 300_000;
+  const { url, model, headers } = llmTarget();
+  const finish = traceLlmCall(`${label} [${LLM_PROVIDER}]`, { url, model, timeoutMs, chars: sourceBlock.length }, log);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({
+        model,
+        stream: false,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: sourceBlock },
+        ],
+      }),
+    });
+  } catch (e) {
+    finish(e.name === 'TimeoutError' ? 'TIMED OUT' : 'FAILED', e.message);
+    throw e;
+  }
+  if (!res.ok) {
+    finish('HTTP ERROR', String(res.status));
+    throw new Error(`LLM endpoint returned HTTP ${res.status}`);
+  }
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content ?? '';
+  finish('OK', `${text.length} chars returned`);
   try {
     const parsed = JSON.parse(text);
     return Array.isArray(parsed.findings) ? parsed.findings : [];
@@ -916,12 +1124,24 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
 }
 
 async function checkLlmDeepScan(root, log) {
-  // Probe the endpoint first so a missing llama.cpp fails soft with a clear message.
-  try {
-    const probe = await fetch(`${LLM_SCAN_URL}/health`, { signal: AbortSignal.timeout(3000) });
-    if (!probe.ok) throw new Error(`HTTP ${probe.status}`);
-  } catch (e) {
-    return { available: false, reason: `No LLM endpoint at ${LLM_SCAN_URL} (${e.message})` };
+  if (LLM_PROVIDER === 'openai') {
+    // OpenAI has no cheap health probe worth spending a request on — just
+    // confirm the API key is configured before burning chunks against it.
+    if (!OPENAI_API_KEY) {
+      return { available: false, reason: 'OPENAI_API_KEY is not set (LLM_PROVIDER=openai).' };
+    }
+    log(`[llm] provider=openai model=${OPENAI_MODEL} base=${OPENAI_BASE_URL}`);
+  } else {
+    // Probe the endpoint first so a missing llama.cpp fails soft with a clear message.
+    const finishProbe = traceLlmCall('health-probe', { url: `${LLM_SCAN_URL}/health`, model: LLM_SCAN_MODEL, timeoutMs: 3000, chars: 0 }, log);
+    try {
+      const probe = await fetch(`${LLM_SCAN_URL}/health`, { signal: AbortSignal.timeout(3000) });
+      if (!probe.ok) throw new Error(`HTTP ${probe.status}`);
+      finishProbe('OK', String(probe.status));
+    } catch (e) {
+      finishProbe(e.name === 'TimeoutError' ? 'TIMED OUT' : 'FAILED', e.message);
+      return { available: false, reason: `No LLM endpoint at ${LLM_SCAN_URL} (${e.message})` };
+    }
   }
 
   // Collect candidate source files, numbered lines, chunked by char budget.
@@ -936,31 +1156,61 @@ async function checkLlmDeepScan(root, log) {
   if (files.length === 0) return { available: true, findings: [], scanned: 0 };
 
   const chunks = [];
+  const chunkFiles = [];
   const filesByRel = new Map();
   let current = '';
+  let currentFiles = [];
   for (const f of files) {
     filesByRel.set(f.rel, f.content);
     const numbered = f.content
       .split(/\r?\n/)
       .map((l, i) => `${i + 1}: ${l}`)
       .join('\n');
-    const block = `===== FILE: ${f.rel} =====\n${numbered}\n\n`;
+    const header = `===== FILE: ${f.rel} =====\n`;
+    const body = `${numbered}\n\n`;
+    const block = header + body;
+
+    if (block.length > LLM_CHUNK_CHARS) {
+      // The file alone doesn't fit one chunk's budget. Split it across
+      // several sequential chunks instead of silently truncating it — every
+      // line still gets scanned, just across more (smaller, faster) requests.
+      if (current) {
+        chunks.push(current);
+        chunkFiles.push(currentFiles);
+        current = '';
+        currentFiles = [];
+      }
+      const sliceLen = Math.max(1000, LLM_CHUNK_CHARS - header.length - 40);
+      const totalParts = Math.ceil(body.length / sliceLen);
+      for (let part = 0, offset = 0; offset < body.length; part++, offset += sliceLen) {
+        chunks.push(`${header}(part ${part + 1}/${totalParts}, continued)\n${body.slice(offset, offset + sliceLen)}`);
+        chunkFiles.push([f.rel]);
+      }
+      continue;
+    }
+
     if (current && current.length + block.length > LLM_CHUNK_CHARS) {
       chunks.push(current);
+      chunkFiles.push(currentFiles);
       current = '';
+      currentFiles = [];
     }
-    current += block.length > LLM_CHUNK_CHARS ? block.slice(0, LLM_CHUNK_CHARS) : block;
+    current += block;
+    currentFiles.push(f.rel);
   }
-  if (current) chunks.push(current);
+  if (current) {
+    chunks.push(current);
+    chunkFiles.push(currentFiles);
+  }
 
   log(`Model: ${LLM_SCAN_MODEL} @ ${LLM_SCAN_URL} — ${files.length} files in ${chunks.length} chunk(s), 2 review passes (security/dependency + quality/encapsulation)...`);
 
   const findings = [];
   const npmVersionCache = new Map();
   for (let i = 0; i < chunks.length; i++) {
-    log(`Analyzing chunk ${i + 1}/${chunks.length} [security/dependency]...`);
+    log(`Chunk ${i + 1}/${chunks.length} — files: ${chunkFiles[i].join(', ')}\n  security: injection (SQL/command/template), path traversal, SSRF, insecure deserialization, XSS, broken auth/authz, weak crypto, unsafe eval/exec, prototype pollution, insecure temp files, missing input validation\n  dependency: risky/malicious/deprecated-vulnerable packages in manifests/lockfiles\n  encapsulation: leaky abstractions, exposed mutable internals, missing boundaries, excess coupling\n  quality: complexity hotspots, duplicated logic, poor separation of concerns, fragile API shapes`);
     try {
-      const chunkFindings = await llmChat(chunks[i], LLM_SECURITY_DEP_PROMPT);
+      const chunkFindings = await llmChat(chunks[i], LLM_SECURITY_DEP_PROMPT, log, `chunk ${i + 1}/${chunks.length} security/dependency`);
       for (const f of chunkFindings) {
         if (f && typeof f.file === 'string' && f.issue) {
           const category = ['security', 'dependency', 'encapsulation', 'quality'].includes(f.category)
@@ -975,6 +1225,7 @@ async function checkLlmDeepScan(root, log) {
             level,
             issue: String(f.issue).slice(0, 300),
             recommendation: String(f.recommendation || '').slice(0, 300),
+            code: buildSnippet(filesByRel.get(f.file), Number.isInteger(f.line) ? f.line : 0),
           };
           const validated = await validateLlmFinding(normalized, filesByRel, npmVersionCache, log);
           if (validated) findings.push(validated);
@@ -984,21 +1235,22 @@ async function checkLlmDeepScan(root, log) {
       log(`⚠ Chunk ${i + 1} security/dependency pass skipped: ${e.message}`);
     }
 
-    log(`Analyzing chunk ${i + 1}/${chunks.length} [quality/encapsulation]...`);
     try {
-      const chunkFindings = await llmChat(chunks[i], LLM_QUALITY_PROMPT);
+      const chunkFindings = await llmChat(chunks[i], LLM_QUALITY_PROMPT, log, `chunk ${i + 1}/${chunks.length} quality/encapsulation`);
       for (const f of chunkFindings) {
         if (f && typeof f.file === 'string' && f.issue) {
           const category = ['encapsulation', 'quality'].includes(f.category)
             ? f.category
             : 'quality';
+          const lineNum = Number.isInteger(f.line) ? f.line : 0;
           findings.push({
             file: f.file,
-            line: Number.isInteger(f.line) ? f.line : 0,
+            line: lineNum,
             category,
             level: LLM_ADVISORY_LEVEL,
             issue: String(f.issue).slice(0, 300),
             recommendation: String(f.recommendation || '').slice(0, 300),
+            code: buildSnippet(filesByRel.get(f.file), lineNum),
           });
         }
       }
@@ -1175,6 +1427,71 @@ async function runActionsLocally(root, wfFile, log) {
       await fsp.rm(localGithubDir, { recursive: true, force: true }).catch(() => {});
     }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 5 (cont.): run the onboarded project's own unit test suite,   */
+/* sandboxed inside a throwaway Docker container (never on the host). */
+/* ------------------------------------------------------------------ */
+
+const DEFAULT_TEST_NODE_MAJOR = 22; // oldest LTS with `node:sqlite` and other modern built-ins
+
+async function readPackageJson(root) {
+  try {
+    return JSON.parse(await fsp.readFile(path.join(root, 'package.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function detectNpmTestScript(pkg) {
+  const testScript = pkg?.scripts?.test;
+  if (!testScript || /\bno test specified\b/.test(testScript)) return null;
+  return testScript;
+}
+
+// Respects an `engines.node` minimum if the project declares one newer than
+// our default, so containers running the test suite have whatever modern
+// built-ins (e.g. `node:sqlite`) the project's own code expects.
+function resolveTestNodeImage(pkg) {
+  const engineNode = pkg?.engines?.node;
+  const declaredMajor = engineNode ? parseInt(String(engineNode).match(/(\d+)/)?.[1], 10) : NaN;
+  const major = Number.isInteger(declaredMajor) ? Math.max(DEFAULT_TEST_NODE_MAJOR, declaredMajor) : DEFAULT_TEST_NODE_MAJOR;
+  return `node:${major}-alpine`;
+}
+
+async function runProjectUnitTests(root, log) {
+  const pkg = await readPackageJson(root);
+  const testScript = detectNpmTestScript(pkg);
+  if (!testScript) {
+    log('No `test` script found in package.json — skipping unit test run.');
+    return { ran: false };
+  }
+
+  try {
+    await runTool('docker', ['info', '--format', '{{.ServerVersion}}'], os.tmpdir());
+  } catch {
+    throw new Error('Cannot run project unit tests: Docker daemon is not running (start Docker Desktop).');
+  }
+
+  const image = resolveTestNodeImage(pkg);
+  log(`Detected npm test script: "${testScript}". Running it in an isolated ${image} container (no host access, no network beyond install)...`);
+  const args = [
+    'run', '--rm',
+    '-v', `${root}:/repo`,
+    '-w', '/repo',
+    image,
+    'sh', '-c', 'npm ci --no-audit --no-fund || npm install --no-audit --no-fund && npm test',
+  ];
+  try {
+    await runToolStreaming('docker', args, os.tmpdir(), (line) => log(line.slice(0, 400)), {
+      timeoutMs: 10 * 60_000,
+    });
+  } catch (e) {
+    throw new Error(`Project unit tests failed: ${e.message}`);
+  }
+  log('✓ Project unit tests passed.');
+  return { ran: true };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1386,42 +1703,114 @@ async function archivePhase6Payload(root, projectId, log) {
   }
 }
 
-const INSIGHT_SYSTEM_PROMPT = `You are a concise DevOps incident explainer.
-Explain only the real reason this phase failed and the next concrete fix.
-Answer in plain language, no CI jargon, max ~180 words.
-If logs contain multiple issues, focus on the blockers that made the phase fail.`;
+const INSIGHT_SYSTEM_PROMPT = `You are a DevOps incident explainer writing for a non-technical reader (e.g. a project manager).
+Explain the real reason this phase failed and the next concrete fix, in plain language with no CI/security jargon.
+If the log or issue list contains several distinct blockers, do NOT summarize them together (never say something like "fix all N issues" or "address all blocking findings") — write one short, numbered paragraph per distinct blocker, each naming its file/line when known and explaining, concretely, what is wrong with THAT one and why it matters. Skip issues that were already overridden or resolved.`;
 
-async function generateFailureInsight(failedPhase, error, record) {
+const INSIGHT_ISSUES_SYSTEM_PROMPT = `You are a DevOps incident explainer writing for a non-technical reader (e.g. a project manager).
+The pipeline was blocked because a list of specific flagged issues were never overridden or fixed. You will receive that exact list as JSON.
+Write one short, numbered paragraph per issue in the list — never collapse or summarize multiple issues into one paragraph, and never write generic advice like "fix all N issues". Each paragraph must:
+- Reference that issue's file and line (when present).
+- Explain, in plain language with no jargon, what is concretely wrong with that specific instance and why it matters.
+- End with one concrete next step for that specific issue.
+Cover every issue in the list, in the order given. Keep each paragraph to 2-3 sentences.`;
+
+async function llmAvailable() {
+  if (LLM_PROVIDER === 'openai') return !!OPENAI_API_KEY;
   try {
     const probe = await fetch(`${LLM_SCAN_URL}/health`, { signal: AbortSignal.timeout(3000) });
-    if (!probe.ok) return null;
+    return probe.ok;
   } catch {
+    return false;
+  }
+}
+
+async function llmComplete(systemPrompt, userContent, { temperature = 0.2, timeoutMs = 120_000, label = 'complete' } = {}) {
+  const { url, model, headers } = llmTarget();
+  const finish = traceLlmCall(`${label} [${LLM_PROVIDER}]`, { url, model, timeoutMs, chars: userContent.length });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({
+        model,
+        stream: false,
+        temperature,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+      }),
+    });
+  } catch (e) {
+    finish(e.name === 'TimeoutError' ? 'TIMED OUT' : 'FAILED', e.message);
     return null;
   }
-
-  // Full log of the failed phase, keeping the tail if enormous.
-  const logs = (record[failedPhase]?.logs || []).join('\n').slice(-18_000);
-  const res = await fetch(`${LLM_SCAN_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(120_000),
-    body: JSON.stringify({
-      model: LLM_SCAN_MODEL,
-      stream: false,
-      temperature: 0.2,
-      messages: [
-        { role: 'system', content: INSIGHT_SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: `Pipeline phase ${failedPhase} ("${PHASE_TITLES[failedPhase] || 'Unknown'}") failed.\nReported error: ${error}\n\nFull step log:\n${logs}`,
-        },
-      ],
-    }),
-  });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    finish('HTTP ERROR', String(res.status));
+    return null;
+  }
   const data = await res.json();
   const text = (data.choices?.[0]?.message?.content || '').trim();
+  finish('OK', `${text.length} chars returned`);
   return text || null;
+}
+
+/**
+ * @param {Array} unresolvedIssues - when the failure is the review gate
+ *   rejecting unoverridden findings, the exact structured issue list, so
+ *   every one of them gets its own explanation instead of a vague summary.
+ */
+async function generateFailureInsight(failedPhase, error, record, unresolvedIssues) {
+  if (!(await llmAvailable())) return null;
+
+  if (Array.isArray(unresolvedIssues) && unresolvedIssues.length > 0) {
+    const payload = unresolvedIssues.map((i, idx) => ({
+      number: idx + 1,
+      file: i.file || null,
+      line: i.line || null,
+      category: i.category,
+      severity: i.severity,
+      summary: i.summary,
+    }));
+    return await llmComplete(
+      INSIGHT_ISSUES_SYSTEM_PROMPT,
+      `Pipeline phase ${failedPhase} ("${PHASE_TITLES[failedPhase] || 'Unknown'}") failed.\n${JSON.stringify(payload, null, 2)}`,
+      { label: `failure-insight phase ${failedPhase} (issues)` }
+    );
+  }
+
+  // Generic phase failure (crash, tooling error, etc.) — no structured issue
+  // list exists, so ground the explanation in the phase's own full log.
+  const logs = (record[failedPhase]?.logs || []).join('\n').slice(-18_000);
+  return await llmComplete(
+    INSIGHT_SYSTEM_PROMPT,
+    `Pipeline phase ${failedPhase} ("${PHASE_TITLES[failedPhase] || 'Unknown'}") failed.\nReported error: ${error}\n\nFull step log:\n${logs}`,
+    { label: `failure-insight phase ${failedPhase} (log)` }
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-issue AI explanation (on-demand, cached — see /api/issues/explain) */
+/* ------------------------------------------------------------------ */
+
+const ISSUE_EXPLAIN_PROMPT = `You are explaining one single flagged code issue to a non-technical reader (e.g. a project manager), using the exact code snippet shown.
+Write 2-4 sentences in plain language with no jargon: what is concretely wrong in THIS snippet, why it matters in the real world, and what should change. Do not just restate the technical summary you were given — actually explain it. Do not discuss anything beyond this one issue.`;
+
+function issueExplanationHash({ category, file, line, summary }) {
+  return crypto.createHash('sha256')
+    .update(`${category}|${file || ''}|${line || 0}|${summary}`)
+    .digest('hex');
+}
+
+async function explainIssueForHuman(issue) {
+  const codeBlock = Array.isArray(issue.snippet?.lines)
+    ? issue.snippet.lines.map((l) => `${l.number}: ${l.text}`).join('\n').slice(0, 4000)
+    : '(no code snippet available)';
+  const user = `Category: ${issue.category}\nSeverity: ${issue.severity}\nLocation: ${issue.file || 'unknown'}${issue.line ? ':' + issue.line : ''}\nTechnical summary: ${issue.summary}\n\nCode:\n${codeBlock}`;
+  return await llmComplete(ISSUE_EXPLAIN_PROMPT, user, { temperature: 0.3, timeoutMs: 60_000, label: `issue-explain ${issue.category}:${issue.file || '?'}:${issue.line || 0}` });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1431,7 +1820,7 @@ async function generateFailureInsight(failedPhase, error, record) {
 const PHASE_TITLES = {
   1: 'Input & Metadata Configuration',
   2: 'GxP Validation Documents',
-  3: 'Extraction & Structure Audit',
+  3: 'Extraction, Structure Audit & Unit Tests',
   4: 'Security & AI Compliance Scan',
   5: 'Org Governance CI (GitHub Actions via act)',
   6: 'Provisioning & Shipping',
@@ -1625,6 +2014,67 @@ app.get('/api/projects/:id', (req, res) => {
   res.json(project);
 });
 
+// Flagged issues for one project — same shape whether the run is still in
+// progress (read from the live in-memory pipeline state) or long finished
+// (read from the `issues` table), so the UI can show the list at any time.
+app.get('/api/projects/:id/issues', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid project id.' });
+  if (!store.projectExists(id)) return res.status(404).json({ error: 'Project not found.' });
+  res.json({ ok: true, issues: store.getProjectIssues(id) });
+});
+
+// Same, but addressable by the in-flight job id while a pipeline is still
+// streaming — lets the UI show the issue list mid-run, before Phase 6.
+app.get('/api/pipeline/:jobId/issues', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const live = runningRuns.get(jobId);
+  if (live) {
+    return res.json({ ok: true, running: true, issues: live.allIssues, projectId: live.projectId });
+  }
+  const projectId = store.getProjectIdByJobId(jobId);
+  if (projectId === null) return res.status(404).json({ error: 'Unknown job id.' });
+  res.json({ ok: true, running: false, issues: store.getProjectIssues(projectId), projectId });
+});
+
+// On-demand, non-technical AI explanation of a single flagged issue's code
+// snippet (shown as the hover tooltip in the UI). Cached in the DB by a
+// stable hash of the issue's identity, so opening the same finding again —
+// even in a different run — never re-triggers the LLM call.
+app.post('/api/issues/explain', async (req, res) => {
+  const body = req.body || {};
+  const category = String(body.category || '').trim();
+  const summary = String(body.summary || '').trim();
+  if (!category || !summary) {
+    return res.status(400).json({ error: 'category and summary are required.' });
+  }
+  const issue = {
+    category,
+    severity: ['error', 'warning'].includes(body.severity) ? body.severity : 'warning',
+    file: body.file ? String(body.file).slice(0, 500) : null,
+    line: Number.isInteger(body.line) ? body.line : null,
+    summary: summary.slice(0, 500),
+    snippet: body.snippet && typeof body.snippet === 'object' && Array.isArray(body.snippet.lines)
+      ? body.snippet
+      : null,
+  };
+
+  const hash = issueExplanationHash(issue);
+  const cached = store.getCachedIssueExplanation(hash);
+  if (cached) return res.json({ ok: true, explanation: cached, cached: true });
+
+  if (!(await llmAvailable())) {
+    return res.json({ ok: true, explanation: null, cached: false, reason: 'AI explanation service unavailable.' });
+  }
+  try {
+    const explanation = await explainIssueForHuman(issue);
+    if (explanation) store.cacheIssueExplanation(hash, explanation);
+    res.json({ ok: true, explanation, cached: false });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/pipeline/:jobId/review-decision', (req, res) => {
   const jobId = String(req.params.jobId || '').trim();
   const proceed = req.body?.proceed === true;
@@ -1646,6 +2096,94 @@ app.post('/api/pipeline/:jobId/review-decision', (req, res) => {
   });
   if (!ok) return res.status(404).json({ error: 'No pending review decision for this job.' });
   res.json({ ok: true });
+});
+
+// Turns a completed simulation (dryRun) into the real thing: provisions and
+// pushes the exact snapshot that was already validated, without re-running
+// phases 1-5. Still hard-gated on any blocking finding that hasn't been
+// justified — same rule as the live review gate, just re-checked here
+// against the project's current (possibly since-updated) issue list.
+app.post('/api/projects/:projectId/effectivate', async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isInteger(projectId)) return res.status(400).json({ error: 'Invalid project id.' });
+
+  cleanupExpiredEffectivations();
+  const pending = pendingEffectivations.get(projectId);
+  if (!pending) {
+    return res.status(404).json({ error: 'No simulation output available to effectivate for this project (missing, expired, or already effectivated).' });
+  }
+
+  const issues = store.getProjectIssues(projectId);
+  // Issues already justified at the live review gate (during the
+  // simulation itself) are already `status: 'overridden'` in the DB — don't
+  // demand a second justification for those here, only for ones still open.
+  const stillOpen = issues.filter((i) => i.status !== 'overridden');
+  const requestedOverrides = Array.isArray(req.body?.overrides) ? req.body.overrides : [];
+  const { ok, unresolvedErrors, applied } = validateOverrides(stillOpen, requestedOverrides);
+
+  if (!ok) {
+    return res.status(409).json({
+      error: `${unresolvedErrors.length} blocking finding(s) still need to be checked + justified before this simulation can be effectivated.`,
+      needsReview: true,
+      issues,
+    });
+  }
+
+  let actor = null;
+  if (applied.length > 0) {
+    actor = resolveActor(req);
+    if (!actor) {
+      return res.status(401).json({ error: 'Log in, or provide actor {email,name}, to submit overrides.', needsReview: true, issues });
+    }
+  }
+
+  const { org, repo, sourceBackupDir } = pending;
+  const publishDir = sourceBackupDir + '-effectivate-publish';
+  const effectivateLogs = ['Effectivating simulation — provisioning + pushing the previously validated snapshot.'];
+  const log = (message) => {
+    effectivateLogs.push(message);
+    try { store.upsertStep(projectId, 6, PHASE_TITLES[6], 'running', effectivateLogs.join('\n')); } catch { /* best-effort */ }
+  };
+
+  try {
+    const backupStat = await fsp.stat(sourceBackupDir).catch(() => null);
+    if (!backupStat || !backupStat.isDirectory()) {
+      pendingEffectivations.delete(projectId);
+      return res.status(410).json({ error: 'Simulation snapshot is no longer available (expired or already effectivated). Re-run the simulation to try again.' });
+    }
+
+    if (applied.length > 0) {
+      const byPhase = new Map();
+      for (const item of applied) {
+        const p = item.issue.phase;
+        if (!byPhase.has(p)) byPhase.set(p, []);
+        byPhase.get(p).push(item);
+      }
+      for (const [p, group] of byPhase) {
+        await recordOverrides({ projectId, jobId: `effectivate-${projectId}`, org, repo, phase: p, actor, applied: group });
+      }
+      store.replaceProjectIssues(projectId, issues, applied.map(({ issue }) => issue.id).concat(
+        issues.filter((i) => i.status === 'overridden').map((i) => i.id)
+      ));
+    }
+
+    await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
+    await cloneDirectoryWithoutSymlinks(sourceBackupDir, publishDir);
+    await archivePhase6Payload(publishDir, projectId, log);
+    const { repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log);
+
+    store.finishProject('success', null, repoUrl, prUrl || null, projectId);
+    effectivateLogs.push(`✓ Effectivated — repository live at ${repoUrl}`);
+    store.upsertStep(projectId, 6, PHASE_TITLES[6], 'success', effectivateLogs.join('\n'));
+    pendingEffectivations.delete(projectId);
+    await fsp.rm(sourceBackupDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
+    res.json({ ok: true, repoUrl, prUrl });
+  } catch (e) {
+    effectivateLogs.push(`✗ Effectivate failed: ${e.message}`);
+    store.upsertStep(projectId, 6, PHASE_TITLES[6], 'failed', effectivateLogs.join('\n'));
+    res.status(502).json({ error: `Effectivate failed: ${e.message}` });
+  }
 });
 
 app.post('/api/pipeline/validate-all', async (req, res) => {
@@ -1749,16 +2287,20 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     const projectRoot = await resolveProjectRoot(stagingDir);
 
     log2('Check 1 — scanning for raw environment files (.env*)...');
-    const envOffenders = await checkEnvFiles(projectRoot);
-    if (envOffenders.length > 0) {
-      log2(`✗ ${envOffenders.length} forbidden environment file(s) found:`);
-      envOffenders.forEach((f) => log2(`    ✗ ${f}`));
+    const envCheck = await checkEnvFiles(projectRoot);
+    if (envCheck.ignored.length > 0) {
+      log2(`ℹ ${envCheck.ignored.length} .env file(s) found but already excluded by this project's .gitignore — not blocking: ${envCheck.ignored.join(', ')}`);
+    }
+    if (envCheck.blocking.length > 0) {
+      log2(`✗ ${envCheck.blocking.length} forbidden environment file(s) found:`);
+      envCheck.blocking.forEach((f) => log2(`    ✗ ${f}`));
       throw Object.assign(
-        new Error(`Raw environment files detected (${envOffenders.length}). Remove them before validation.`),
+        new Error(`Raw environment files detected (${envCheck.blocking.length}). Remove them before validation.`),
         { phase: 3 }
       );
     }
     log2('✓ Check 1 passed — no raw environment files present.');
+    await runProjectUnitTests(projectRoot, log2);
     status(3, 'success');
 
     status(4, 'running');
@@ -1821,6 +2363,10 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
         await recordOverrides({ projectId, jobId, org, repo, phase: 4, actor, applied });
       }
       if (!ok) {
+        log3(`✗ ${unresolvedErrors.length} blocking finding(s) were not overridden:`);
+        unresolvedErrors.forEach((issue) =>
+          log3(`    ✗ [${issue.category}] ${issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : 'Phase 4'} — ${issue.summary}`)
+        );
         throw Object.assign(
           new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.`),
           { phase: 4 }
@@ -2006,16 +2552,20 @@ app.post('/api/pipeline/onboard', async (req, res) => {
     log2('Created immutable source snapshot for final publish phase.');
 
     log2('Check 1 — scanning for raw environment files (.env*)...');
-    const envOffenders = await checkEnvFiles(projectRoot);
-    if (envOffenders.length > 0) {
-      log2(`✗ ${envOffenders.length} forbidden environment file(s) found:`);
-      envOffenders.forEach((f) => log2(`    ✗ ${f}`));
+    const envCheck = await checkEnvFiles(projectRoot);
+    if (envCheck.ignored.length > 0) {
+      log2(`ℹ ${envCheck.ignored.length} .env file(s) found but already excluded by this project's .gitignore — not blocking: ${envCheck.ignored.join(', ')}`);
+    }
+    if (envCheck.blocking.length > 0) {
+      log2(`✗ ${envCheck.blocking.length} forbidden environment file(s) found:`);
+      envCheck.blocking.forEach((f) => log2(`    ✗ ${f}`));
       throw Object.assign(
-        new Error(`Raw environment files detected (${envOffenders.length}). Remove them before onboarding.`),
+        new Error(`Raw environment files detected (${envCheck.blocking.length}). Remove them before onboarding.`),
         { phase: 3 }
       );
     }
     log2('✓ Check 1 passed — no raw environment files present.');
+    await runProjectUnitTests(projectRoot, log2);
     status(3, 'success');
 
     status(4, 'running');
@@ -2075,6 +2625,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
         await recordOverrides({ projectId, jobId, org, repo, phase: 4, actor, applied });
       }
       if (!ok) {
+        log3(`✗ ${unresolvedErrors.length} blocking finding(s) were not overridden:`);
+        unresolvedErrors.forEach((issue) =>
+          log3(`    ✗ [${issue.category}] ${issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : 'Phase 4'} — ${issue.summary}`)
+        );
         throw Object.assign(
           new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.`),
           { phase: 4 }
@@ -2239,6 +2793,7 @@ app.post(
   };
 
   const jobId = crypto.randomUUID();
+  send({ type: 'job', jobId });
   const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', jobId);
   const sourceBackupDir = stagingDir + '-source-backup';
   const publishDir = stagingDir + '-publish';
@@ -2264,239 +2819,335 @@ app.post(
     if (Array.isArray(parsed)) gxpLinks = parsed;
   } catch { /* validated in phase 2 */ }
 
+  // Issues/failures accumulate here from every phase instead of aborting the
+  // stream immediately. They are only surfaced — and gated — together, right
+  // before phase 6 (provisioning/push), so a single run always shows the full
+  // picture instead of stopping at the first thing that went wrong.
+  const allIssues = [];
+  let phase1Ok = false;
+  let phase3Ok = false;
+  let projectRoot = null;
+  let keepSourceBackupDir = false;
+
+  const runState = { org, repo, projectId: null, allIssues };
+  runningRuns.set(jobId, runState);
+  const persistIssuesSnapshot = (overriddenIds) => {
+    if (runState.projectId === null) return;
+    try { store.replaceProjectIssues(runState.projectId, allIssues, overriddenIds); } catch { /* best-effort */ }
+  };
+
   try {
     /* ---------------- Phase 1: input validation ---------------- */
     status(1, 'running');
     const log1 = phaseLog(1);
+    try {
+      if (!zipFile && dirFiles.length === 0) {
+        throw new Error('No ZIP archive or folder upload received.');
+      }
+      if (dirFiles.length > 0 && !Array.isArray(relPaths)) {
+        throw new Error('Folder upload metadata is invalid: paths must be an array.');
+      }
+      if (!GITHUB_NAME_REGEX.test(org)) {
+        throw new Error(`Invalid GitHub organization name: "${org}"`);
+      }
+      if (!REPO_NAME_REGEX.test(repo) || repo === '.' || repo === '..') {
+        throw new Error(`Invalid repository name: "${repo}"`);
+      }
 
-    if (!zipFile && dirFiles.length === 0) {
-      throw Object.assign(new Error('No ZIP archive or folder upload received.'), { phase: 1 });
+      log1(`Job ${jobId}`);
+      if (zipFile) {
+        log1(`Archive: ${zipFile.originalname} (${(zipFile.size / 1024).toFixed(1)} KB)`);
+      } else {
+        const totalMb = dirFiles.reduce((sum, f) => sum + f.size, 0) / 1048576;
+        log1(`Folder upload: ${dirFiles.length} files (${totalMb.toFixed(1)} MB)`);
+      }
+      log1(`Target: ${org}/${repo} (private)`);
+      log1(`GxP-regulated process: ${isGxp ? 'YES — validation documents are mandatory' : 'no'}`);
+      if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
+      projectId = store.createProject(jobId, org, repo, isGxp);
+      runState.projectId = projectId;
+      for (const id of Object.keys(record)) persistPhase(Number(id));
+      status(1, 'success');
+      phase1Ok = true;
+    } catch (err) {
+      log1(`✗ ${err.message}`);
+      status(1, 'failed', { error: err.message });
+      allIssues.push({
+        id: 'phase1::input-validation', phase: 1, category: 'input-validation',
+        severity: 'error', summary: err.message, file: null, line: null,
+      });
+      persistIssuesSnapshot();
     }
-    if (dirFiles.length > 0 && !Array.isArray(relPaths)) {
-      throw Object.assign(new Error('Folder upload metadata is invalid: paths must be an array.'), { phase: 1 });
-    }
-    if (!GITHUB_NAME_REGEX.test(org)) {
-      throw Object.assign(new Error(`Invalid GitHub organization name: "${org}"`), { phase: 1 });
-    }
-    if (!REPO_NAME_REGEX.test(repo) || repo === '.' || repo === '..') {
-      throw Object.assign(new Error(`Invalid repository name: "${repo}"`), { phase: 1 });
-    }
-
-    log1(`Job ${jobId}`);
-    if (zipFile) {
-      log1(`Archive: ${zipFile.originalname} (${(zipFile.size / 1024).toFixed(1)} KB)`);
-    } else {
-      const totalMb = dirFiles.reduce((sum, f) => sum + f.size, 0) / 1048576;
-      log1(`Folder upload: ${dirFiles.length} files (${totalMb.toFixed(1)} MB)`);
-    }
-    log1(`Target: ${org}/${repo} (private)`);
-    log1(`GxP-regulated process: ${isGxp ? 'YES — validation documents are mandatory' : 'no'}`);
-    if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
-    projectId = store.createProject(jobId, org, repo, isGxp);
-    for (const id of Object.keys(record)) persistPhase(Number(id));
-    status(1, 'success');
 
     /* ---------------- Phase 2: GxP validation documents ---------------- */
-    if (!isGxp) {
+    if (!phase1Ok) {
+      phaseLog(2)('Skipped — blocked by Phase 1 failure (no project record to attach documents to).');
+      status(2, 'skipped');
+    } else if (!isGxp) {
       phaseLog(2)('Process declared non-GxP — no validation documents required.');
       status(2, 'skipped');
     } else {
       status(2, 'running');
       const logG = phaseLog(2);
-
-      const validLinks = [];
-      for (const l of gxpLinks) {
-        const url = String(l?.url || '').trim();
-        let parsed = null;
-        try { parsed = new URL(url); } catch { /* invalid */ }
-        if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
-          throw Object.assign(new Error(`Invalid GxP document link: "${url}" (must be http/https).`), { phase: 2 });
+      try {
+        const validLinks = [];
+        for (const l of gxpLinks) {
+          const url = String(l?.url || '').trim();
+          let parsed = null;
+          try { parsed = new URL(url); } catch { /* invalid */ }
+          if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+            throw new Error(`Invalid GxP document link: "${url}" (must be http/https).`);
+          }
+          validLinks.push({ url, name: String(l?.name || '').trim() || parsed.hostname + parsed.pathname });
         }
-        validLinks.push({ url, name: String(l?.name || '').trim() || parsed.hostname + parsed.pathname });
-      }
 
-      if (gxpDocFiles.length === 0 && validLinks.length === 0) {
-        throw Object.assign(
-          new Error('GxP process declared but no validation documents provided. Attach at least one document (upload or link).'),
-          { phase: 2 }
-        );
-      }
+        if (gxpDocFiles.length === 0 && validLinks.length === 0) {
+          throw new Error('GxP process declared but no validation documents provided. Attach at least one document (upload or link).');
+        }
 
-      logG(`Collecting ${gxpDocFiles.length} uploaded document(s) and ${validLinks.length} link(s)...`);
-      for (const doc of gxpDocFiles) {
-        const data = await fsp.readFile(doc.path);
-        store.addUploadDocument(projectId, doc.originalname, doc.mimetype || null, doc.size, data);
-        logG(`✓ Archived upload: ${doc.originalname} (${(doc.size / 1024).toFixed(1)} KB)`);
+        logG(`Collecting ${gxpDocFiles.length} uploaded document(s) and ${validLinks.length} link(s)...`);
+        for (const doc of gxpDocFiles) {
+          const data = await fsp.readFile(doc.path);
+          store.addUploadDocument(projectId, doc.originalname, doc.mimetype || null, doc.size, data);
+          logG(`✓ Archived upload: ${doc.originalname} (${(doc.size / 1024).toFixed(1)} KB)`);
+        }
+        for (const link of validLinks) {
+          store.addLinkDocument(projectId, link.name, link.url);
+          logG(`✓ Archived link: ${link.name} → ${link.url}`);
+        }
+        logG(`✓ ${gxpDocFiles.length + validLinks.length} GxP validation document(s) saved to the database.`);
+        status(2, 'success');
+      } catch (err) {
+        logG(`✗ ${err.message}`);
+        status(2, 'failed', { error: err.message });
+        allIssues.push({
+          id: 'phase2::gxp-documents', phase: 2, category: 'gxp-documents',
+          severity: 'error', summary: err.message, file: null, line: null,
+        });
+        persistIssuesSnapshot();
       }
-      for (const link of validLinks) {
-        store.addLinkDocument(projectId, link.name, link.url);
-        logG(`✓ Archived link: ${link.name} → ${link.url}`);
-      }
-      logG(`✓ ${gxpDocFiles.length + validLinks.length} GxP validation document(s) saved to the database.`);
-      status(2, 'success');
     }
 
     /* ---------------- Phase 3: extraction + structure audit ---------------- */
     status(3, 'running');
     const log2 = phaseLog(3);
+    try {
+      await fsp.mkdir(stagingDir, { recursive: true });
+      log2(`Staging directory: ${stagingDir}`);
 
-    await fsp.mkdir(stagingDir, { recursive: true });
-    log2(`Staging directory: ${stagingDir}`);
+      let staged;
+      if (zipFile) {
+        staged = await extractZip(zipFile.path, stagingDir, log2);
+        log2(`Extracted ${staged.fileCount} files (${(staged.totalBytes / 1024).toFixed(1)} KB).`);
+      } else {
+        staged = await stageDirectoryUpload(dirFiles, relPaths, stagingDir, log2);
+        log2(`Staged ${staged.fileCount} files (${(staged.totalBytes / 1024).toFixed(1)} KB) from folder upload.`);
+      }
 
-    let staged;
-    if (zipFile) {
-      staged = await extractZip(zipFile.path, stagingDir, log2);
-      log2(`Extracted ${staged.fileCount} files (${(staged.totalBytes / 1024).toFixed(1)} KB).`);
-    } else {
-      staged = await stageDirectoryUpload(dirFiles, relPaths, stagingDir, log2);
-      log2(`Staged ${staged.fileCount} files (${(staged.totalBytes / 1024).toFixed(1)} KB) from folder upload.`);
+      projectRoot = await resolveProjectRoot(stagingDir);
+      if (projectRoot !== stagingDir) {
+        log2(`Detected single top-level folder — project root: ${path.basename(projectRoot)}/`);
+      }
+
+      await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
+      log2('Created immutable source snapshot for final publish phase.');
+
+      log2('Check 1 — scanning for raw environment files (.env*)...');
+      const envCheck = await checkEnvFiles(projectRoot);
+      if (envCheck.ignored.length > 0) {
+        log2(`ℹ ${envCheck.ignored.length} .env file(s) found but already excluded by this project's .gitignore — not blocking: ${envCheck.ignored.join(', ')}`);
+      }
+      if (envCheck.blocking.length > 0) {
+        log2(`✗ ${envCheck.blocking.length} forbidden environment file(s) found:`);
+        envCheck.blocking.forEach((f) => log2(`    ✗ ${f}`));
+        throw new Error(`Raw environment files detected (${envCheck.blocking.length}). Remove them and re-upload.`);
+      }
+      log2('✓ Check 1 passed — no raw environment files present.');
+      await runProjectUnitTests(projectRoot, log2);
+      status(3, 'success');
+      phase3Ok = true;
+    } catch (err) {
+      log2(`✗ ${err.message}`);
+      status(3, 'failed', { error: err.message });
+      allIssues.push({
+        id: 'phase3::structure-audit', phase: 3, category: 'structure-audit',
+        severity: 'error', summary: err.message, file: null, line: null,
+      });
+      persistIssuesSnapshot();
     }
-
-    const projectRoot = await resolveProjectRoot(stagingDir);
-    if (projectRoot !== stagingDir) {
-      log2(`Detected single top-level folder — project root: ${path.basename(projectRoot)}/`);
-    }
-
-    await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
-    log2('Created immutable source snapshot for final publish phase.');
-
-    log2('Check 1 — scanning for raw environment files (.env*)...');
-    const envOffenders = await checkEnvFiles(projectRoot);
-    if (envOffenders.length > 0) {
-      log2(`✗ ${envOffenders.length} forbidden environment file(s) found:`);
-      envOffenders.forEach((f) => log2(`    ✗ ${f}`));
-      throw Object.assign(
-        new Error(`Raw environment files detected (${envOffenders.length}). Remove them and re-upload.`),
-        { phase: 3 }
-      );
-    }
-    log2('✓ Check 1 passed — no raw environment files present.');
-    status(3, 'success');
 
     /* ---------------- Phase 4: security + AI compliance ---------------- */
-    status(4, 'running');
-    const log3 = phaseLog(4);
-
-    log3('Check 2 — scanning text files for hardcoded credentials...');
-    const secrets = await checkSecrets(projectRoot, log3);
-    log3(`Scanned ${secrets.scanned} text files.`);
-    if (secrets.findings.length > 0) {
-      log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
-      secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+    if (!phase3Ok) {
+      phaseLog(4)('Skipped — blocked by Phase 3 failure (no staged project root to scan).');
+      status(4, 'skipped');
     } else {
-      log3('✓ Check 2 passed — no credential leakage detected.');
+      status(4, 'running');
+      const log3 = phaseLog(4);
+      try {
+        log3('Check 2 — scanning text files for hardcoded credentials...');
+        const secrets = await checkSecrets(projectRoot, log3);
+        log3(`Scanned ${secrets.scanned} text files.`);
+        if (secrets.findings.length > 0) {
+          log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
+          secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+        } else {
+          log3('✓ Check 2 passed — no credential leakage detected.');
+        }
+
+        log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
+        const governance = await checkAiGovernance(projectRoot);
+        log3(`Audited ${governance.scanned} source files.`);
+        if (governance.findings.length > 0) {
+          log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
+          governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
+        } else {
+          log3('✓ Check 4 passed — all AI invocations are governed.');
+        }
+
+        log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
+        const llm = await checkLlmDeepScan(projectRoot, log3);
+        if (!llm.available) {
+          log3(`⚠ Deep-scan skipped: ${llm.reason}`);
+        } else if (llm.findings.length === 0) {
+          log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
+        } else {
+          log3(`LLM reported ${llm.findings.length} finding(s):`);
+          llm.findings.forEach((f) =>
+            log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
+          );
+        }
+
+        const issues = collectPhase4Issues({ secrets, governance, llm });
+        for (const issue of issues) allIssues.push({ ...issue, phase: 4 });
+        if (issues.length > 0) {
+          log3(`⚠ ${issues.length} flagged issue(s) (${issues.filter((i) => i.severity === 'error').length} blocking) — will be presented for final review before push.`);
+        }
+        persistIssuesSnapshot();
+        status(4, 'success');
+      } catch (err) {
+        log3(`✗ ${err.message}`);
+        status(4, 'failed', { error: err.message });
+        allIssues.push({
+          id: 'phase4::security-scan', phase: 4, category: 'security-scan',
+          severity: 'error', summary: err.message, file: null, line: null,
+        });
+        persistIssuesSnapshot();
+      }
     }
 
-    log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-    const governance = await checkAiGovernance(projectRoot);
-    log3(`Audited ${governance.scanned} source files.`);
-    if (governance.findings.length > 0) {
-      log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
-      governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
+    /* ---------------- Phase 5: local GitHub Actions run (act) ---------------- */
+    if (!phase3Ok) {
+      phaseLog(5)('Skipped — blocked by Phase 3 failure (no staged project root to run CI against).');
+      status(5, 'skipped');
     } else {
-      log3('✓ Check 4 passed — all AI invocations are governed.');
+      status(5, 'running');
+      const log4 = phaseLog(5);
+      try {
+        const tooling = await actTooling();
+        if (!tooling.ok) {
+          log4(`⚠ Local CI skipped: ${tooling.reason}`);
+          log4('⚠ The org governance workflows will still gate the repo on GitHub after push.');
+          status(5, 'success');
+        } else {
+          const wfFile = await fetchGovernanceWorkflow(workflowDir, log4);
+          log4(`Executing org governance workflows locally with act (event: ${ACT_EVENT}).`);
+          await runActionsLocally(projectRoot, wfFile, log4);
+          log4('✓ All org governance jobs passed locally.');
+          status(5, 'success');
+        }
+      } catch (err) {
+        log4(`✗ ${err.message}`);
+        status(5, 'failed', { error: err.message });
+        allIssues.push({
+          id: 'phase5::governance-ci', phase: 5, category: 'governance-ci',
+          severity: 'error', summary: err.message, file: null, line: null,
+        });
+        persistIssuesSnapshot();
+      }
     }
 
-    log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-    const llm = await checkLlmDeepScan(projectRoot, log3);
-    if (!llm.available) {
-      log3(`⚠ Deep-scan skipped: ${llm.reason}`);
-    } else if (llm.findings.length === 0) {
-      log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
-    } else {
-      log3(`LLM reported ${llm.findings.length} finding(s):`);
-      llm.findings.forEach((f) =>
-        log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
-      );
-    }
+    /* ---------------- Final review gate — every issue from every phase, ----
+       ---------------- shown together right before provisioning/push. ----- */
+    let repoUrl = null;
+    let prUrl = null;
+    status(6, 'running');
+    const log6 = phaseLog(6);
 
-    const issues = collectPhase4Issues({ secrets, governance, llm });
-
-    if (issues.length > 0) {
-      log3(`⚠ ${issues.length} flagged issue(s) (${issues.filter((i) => i.severity === 'error').length} blocking) — waiting for user decision.`);
+    if (allIssues.length > 0) {
+      const errorCount = allIssues.filter((i) => i.severity === 'error').length;
+      log6(`⚠ ${allIssues.length} issue(s) accumulated across the run (${errorCount} blocking) — waiting for final review before provisioning/push.`);
       const decisionPromise = reviewDecisions.wait(jobId);
-      send({
-        type: 'review_required',
-        phase: 4,
-        jobId,
-        issues,
-      });
+      send({ type: 'review_required', phase: 6, jobId, issues: allIssues });
       const decision = await decisionPromise;
 
-      const { ok, unresolvedErrors, applied } = validateOverrides(issues, decision.overrides || []);
+      const { ok, unresolvedErrors, applied } = validateOverrides(allIssues, decision.overrides || []);
+      persistIssuesSnapshot(applied.map(({ issue }) => issue.id));
       if (applied.length > 0) {
-        log3(`⚠ ${applied.length} flagged issue(s) overridden by ${decision.actor.email}:`);
-        applied.forEach(({ issue, justification }) => log3(`    ⚠ [override] [${issue.severity}] ${issue.file}:${issue.line} — ${issue.summary} — "${justification}"`));
-        await recordOverrides({ projectId, jobId, org, repo, phase: 4, actor: decision.actor, applied });
+        const byPhase = new Map();
+        for (const item of applied) {
+          const p = item.issue.phase;
+          if (!byPhase.has(p)) byPhase.set(p, []);
+          byPhase.get(p).push(item);
+        }
+        for (const [p, group] of byPhase) {
+          log6(`⚠ ${group.length} flagged issue(s) from Phase ${p} overridden by ${decision.actor.email}:`);
+          group.forEach(({ issue, justification }) =>
+            log6(`    ⚠ [override] [${issue.severity}] ${issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : `Phase ${issue.phase}`} — ${issue.summary} — "${justification}"`)
+          );
+          await recordOverrides({ projectId, jobId, org, repo, phase: p, actor: decision.actor, applied: group });
+        }
       }
 
       if (!decision.proceed) {
         throw Object.assign(
-          new Error('Pipeline interrupted by user after reviewing flagged issues.'),
-          { phase: 4 }
+          new Error('Pipeline interrupted by user after reviewing all flagged issues.'),
+          { phase: 6 }
         );
       }
       if (!ok) {
+        log6(`✗ ${unresolvedErrors.length} blocking finding(s) were not overridden:`);
+        unresolvedErrors.forEach((issue) =>
+          log6(`    ✗ [Phase ${issue.phase}] [${issue.category}] ${issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : 'unknown location'} — ${issue.summary}`)
+        );
         throw Object.assign(
-          new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Override each with a justification, or fix them.`),
-          { phase: 4 }
+          new Error(`${unresolvedErrors.length} unresolved blocking finding(s) remain across the run. Override each with a justification, or fix them and re-run.`),
+          { phase: 6, unresolvedErrors }
         );
       }
-      log3('✓ User chose to continue after reviewing flagged issues.');
-    }
-
-    status(4, 'success');
-
-    /* ---------------- Phase 5: local GitHub Actions run (act) ---------------- */
-    status(5, 'running');
-    const log4 = phaseLog(5);
-
-    const tooling = await actTooling();
-    if (!tooling.ok) {
-      log4(`⚠ Local CI skipped: ${tooling.reason}`);
-      log4('⚠ The org governance workflows will still gate the repo on GitHub after push.');
-      status(5, 'success');
-    } else {
-      const wfFile = await fetchGovernanceWorkflow(workflowDir, log4);
-      log4(`Executing org governance workflows locally with act (event: ${ACT_EVENT}).`);
-      await runActionsLocally(projectRoot, wfFile, log4);
-      log4('✓ All org governance jobs passed locally.');
-      status(5, 'success');
+      log6('✓ User chose to continue after reviewing all flagged issues.');
     }
 
     /* ---------------- Phase 6: provisioning + shipping ---------------- */
-    let repoUrl = null;
-    let prUrl = null;
     if (dryRun) {
-      const log5 = phaseLog(6);
-      log5('Simulation mode (dryRun) — all checks passed; skipping repository provisioning and push.');
+      log6('Simulation mode (dryRun) — all checks passed; skipping repository provisioning and push.');
+      log6('The validated snapshot is kept so this run can be effectivated (provisioned + pushed for real) later, still gated on any unresolved blocking findings.');
       status(6, 'skipped');
       if (projectId !== null) {
         store.finishProject('success', null, null, null, projectId);
+        cleanupExpiredEffectivations();
+        pendingEffectivations.set(projectId, { org, repo, sourceBackupDir, createdAt: Date.now() });
+        keepSourceBackupDir = true;
       }
     } else {
-      status(6, 'running');
-      const log5 = phaseLog(6);
-
       const backupStat = await fsp.stat(sourceBackupDir).catch(() => null);
       if (!backupStat || !backupStat.isDirectory()) {
-        throw Object.assign(new Error('Immutable source snapshot is missing before phase 6.'), { phase: 6 });
+        throw Object.assign(new Error('Immutable source snapshot is missing before phase 6 — an earlier phase failed to produce a publishable project.'), { phase: 6 });
       }
       await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
       await cloneDirectoryWithoutSymlinks(sourceBackupDir, publishDir);
-      log5('Prepared clean publish workspace from immutable source snapshot.');
+      log6('Prepared clean publish workspace from immutable source snapshot.');
 
-      await archivePhase6Payload(publishDir, projectId, log5);
+      await archivePhase6Payload(publishDir, projectId, log6);
 
-      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log5));
-      log5(`✓ Repository live at ${repoUrl}`);
+      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log6));
+      log6(`✓ Repository live at ${repoUrl}`);
       status(6, 'success', { repoUrl, prUrl });
 
       if (projectId !== null) {
         store.finishProject('success', null, repoUrl, prUrl || null, projectId);
       }
     }
-    send({ type: 'done', ok: true, dryRun, repoUrl, prUrl });
+    send({ type: 'done', ok: true, dryRun, repoUrl, prUrl, effectivatable: dryRun && keepSourceBackupDir, projectId });
   } catch (err) {
     const phase = err.phase || currentPhase;
     phaseLog(phase)(`✗ ${err.message}`);
@@ -2507,7 +3158,7 @@ app.post(
     let insight = null;
     send({ type: 'insight', phase, state: 'generating' });
     try {
-      insight = await generateFailureInsight(phase, err.message, record);
+      insight = await generateFailureInsight(phase, err.message, record, err.unresolvedErrors);
     } catch { /* insight is best-effort */ }
     send(insight
       ? { type: 'insight', phase, state: 'ready', text: insight }
@@ -2529,6 +3180,7 @@ app.post(
     }
     send({ type: 'done', ok: false, error: err.message, phase });
   } finally {
+    runningRuns.delete(jobId);
     // Persist every phase's state and logs for the onboarding history panel.
     if (projectId !== null) {
       try {
@@ -2541,9 +3193,13 @@ app.post(
       }
     }
     // Forceful cleanup regardless of outcome: staging dir, the uploaded ZIP,
-    // and any multer temp files not yet moved into staging.
+    // and any multer temp files not yet moved into staging. The one exception
+    // is the source snapshot of a successful simulation, kept for a later
+    // "Effectivate" call — see pendingEffectivations.
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
-    await fsp.rm(sourceBackupDir, { recursive: true, force: true }).catch(() => {});
+    if (!keepSourceBackupDir) {
+      await fsp.rm(sourceBackupDir, { recursive: true, force: true }).catch(() => {});
+    }
     await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
     await fsp.rm(workflowDir, { recursive: true, force: true }).catch(() => {});
     if (zipFile) await fsp.rm(zipFile.path, { force: true }).catch(() => {});
