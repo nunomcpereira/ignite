@@ -6,6 +6,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
   db.exec(`
     PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS projects (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id      TEXT UNIQUE NOT NULL,

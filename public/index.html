@@ -240,7 +240,13 @@
           <p class="text-sm font-semibold text-slate-800">Flagged issues</p>
           <p id="issuesViewSubtitle" class="text-xs text-slate-500 mt-0.5">Read-only — issue-by-issue detail, updated live as the run progresses.</p>
         </div>
-        <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        <div class="flex items-center gap-3 shrink-0">
+          <button id="issuesViewDownloadBtn" type="button"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+            Download ⤓
+          </button>
+          <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
       </div>
       <div id="issuesViewList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
     </div>
@@ -265,7 +271,7 @@
     const PHASES = [
       { id: 1, title: 'Input & Metadata Configuration', desc: 'Validate archive and target repository metadata' },
       { id: 2, title: 'GxP Validation Documents', desc: 'Mandatory for GxP processes · documents archived to the database' },
-      { id: 3, title: 'Extraction, Structure Audit & Unit Tests', desc: 'Unpack to staging · deny raw .env* files · run the project\'s own `npm test` in an isolated Docker container' },
+      { id: 3, title: 'Extraction, Structure Audit & Unit Tests', desc: 'Unpack to staging · deny raw .env* files · auto-detect Node/Go/Rust/Python/Java and run its native test suite in an isolated Docker container' },
       { id: 4, title: 'Security & AI Compliance Scan', desc: 'Credential leak regex · LangChain/LangGraph governance · LLM deep-scan' },
       { id: 5, title: 'Org Governance CI — GitHub Actions', desc: 'Runs devops-governance org workflows locally in Docker via act' },
       { id: 6, title: 'Provisioning & Shipping', desc: 'git init · gh repo create --private · push to main' },
@@ -394,7 +400,17 @@
     function renderPipeline() {
       pipelineEl.innerHTML = PHASES.map((p, idx) => {
         const ph = state.phases[p.id] || { state: 'pending', logs: [] };
-        const meta = STATE_META[ph.state];
+        // The scan can complete (state 'success') while still carrying
+        // findings deferred to the final review gate — flag that distinctly
+        // instead of a bare green "Success" next to a log full of ✗ lines.
+        const hasFlaggedIssues = ph.state === 'success' && (ph.issueCount || 0) > 0;
+        const meta = hasFlaggedIssues
+          ? {
+              label: ph.blockingCount > 0 ? `Flagged (${ph.blockingCount} blocking)` : `Flagged (${ph.issueCount})`,
+              chip: 'bg-amber-50 text-amber-700 border-amber-200',
+              ring: STATE_META.success.ring,
+            }
+          : STATE_META[ph.state];
         const hasLogs = ph.logs.length > 0;
         const isLast = idx === PHASES.length - 1;
         const durationMs = ph.startedAt ? (ph.endedAt || Date.now()) - ph.startedAt : null;
@@ -695,6 +711,20 @@
       </div>`;
     }
 
+    // One malformed issue (unexpected shape from an older run, a partial
+    // snippet, etc.) must not blank the entire list — render it as a plain
+    // fallback row instead of letting the exception abort the whole .map().
+    function safeRenderIssueCard(issue, idx, opts) {
+      try {
+        return renderIssueCard(issue, idx, opts);
+      } catch (e) {
+        console.error('Could not render issue card', idx, issue, e);
+        return `<div class="border border-slate-200 rounded-lg p-3 text-xs text-slate-500">
+          Could not display this finding (${escapeHtml(issue?.category || 'unknown')} — ${escapeHtml(issue?.file || 'unknown location')}).
+        </div>`;
+      }
+    }
+
     function wireIssueListInteractions(list) {
       list.querySelectorAll('.view-code-toggle').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -709,15 +739,80 @@
     // Anytime, read-only issues viewer — usable while a run is still in
     // progress (live, polled from the running pipeline) or long after it
     // finished (from the project history panel).
-    function openIssuesViewer(issues, subtitle) {
+    function openIssuesViewer(issues, subtitle, meta = {}) {
       const modal = $('issuesViewModal');
       const list = $('issuesViewList');
       $('issuesViewSubtitle').textContent = subtitle || 'Read-only — issue-by-issue detail.';
       list.innerHTML = issues.length
-        ? issues.map((issue, idx) => renderIssueCard(issue, idx, { interactive: false })).join('')
+        ? issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: false })).join('')
         : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
       wireIssueListInteractions(list);
+
+      const downloadBtn = $('issuesViewDownloadBtn');
+      downloadBtn.classList.toggle('hidden', issues.length === 0);
+      downloadBtn.onclick = () => downloadIssuesReport(issues, meta);
+
       modal.classList.remove('hidden');
+    }
+
+    /* One line per finding: severity, category, exact file:line, summary,
+       fix, and a short code excerpt — plain enough to hand straight to an
+       AI assistant (or a human) as a fix worklist. */
+    // Mirrors server.js's SECRET_REGEX (key/token/password-like assignments)
+    // so a "secret" finding's own evidence line never reproduces the actual
+    // credential value in a file meant to be copy-pasted/shared elsewhere.
+    const SECRET_VALUE_REGEX = /(password|aws_secret|api_key|token|private_key)(\s*[:=]\s*['" \t]*)([a-zA-Z0-9_\-.~]{6,})/gi;
+    function redactSecrets(text) {
+      return text.replace(SECRET_VALUE_REGEX, (_, key, sep) => `${key}${sep}[REDACTED]`);
+    }
+
+    function buildIssuesReport(issues, meta = {}) {
+      const title = meta.org && meta.repo ? `${meta.org}/${meta.repo}` : 'Ignite flagged issues';
+      const lines = [];
+      lines.push(`# Flagged issues — ${title}`);
+      lines.push(`Generated: ${new Date().toISOString()}`);
+      lines.push(`Total: ${issues.length} (${issues.filter((i) => i.severity === 'error').length} blocking)`);
+      lines.push('');
+      issues.forEach((issue, i) => {
+        const loc = issue.file ? `${issue.file}${issue.line ? ':' + issue.line : ''}` : (issue.phase ? `Phase ${issue.phase}` : 'unknown location');
+        lines.push(`## ${i + 1}. [${(issue.severity || 'warning').toUpperCase()}] ${issue.category || 'issue'} — ${loc}`);
+        if (issue.status === 'overridden') lines.push('(already acknowledged/overridden in a previous review)');
+        lines.push('');
+        lines.push(issue.summary || '(no summary)');
+        if (issue.recommendation) {
+          lines.push('');
+          lines.push(`Fix: ${issue.recommendation}`);
+        }
+        if (issue.snippet && Array.isArray(issue.snippet.lines) && issue.snippet.lines.length) {
+          lines.push('');
+          lines.push('```');
+          issue.snippet.lines.forEach((l) => {
+            const marker = l.number === issue.snippet.highlightLine ? '>' : ' ';
+            const text = issue.category === 'secret' ? redactSecrets(l.text) : l.text;
+            lines.push(`${marker} ${l.number}: ${text}`);
+          });
+          lines.push('```');
+        }
+        lines.push('');
+      });
+      return lines.join('\n');
+    }
+
+    function downloadIssuesReport(issues, meta = {}) {
+      const text = buildIssuesReport(issues, meta);
+      const slug = meta.org && meta.repo
+        ? `${meta.org}-${meta.repo}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-')
+        : 'ignite';
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const blob = new Blob([text], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${slug}-flagged-issues-${stamp}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
     }
     $('issuesViewCloseBtn').addEventListener('click', () => $('issuesViewModal').classList.add('hidden'));
     $('issuesViewModal').addEventListener('click', (ev) => {
@@ -734,7 +829,8 @@
         const data = await res.json();
         openIssuesViewer(data.issues || [], data.running
           ? 'Read-only — updates as later phases run. Overrides are only settled at the final review gate.'
-          : 'Read-only — final result of this run.');
+          : 'Read-only — final result of this run.',
+          { org: orgInput.value.trim(), repo: repoInput.value.trim() });
       } catch {
         openIssuesViewer([], 'Could not load issues for this run.');
       }
@@ -750,7 +846,7 @@
       const stopBtn = $('reviewStopBtn');
       errorEl.textContent = '';
 
-      list.innerHTML = issues.map((issue, idx) => renderIssueCard(issue, idx, { interactive: true })).join('');
+      list.innerHTML = issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: true })).join('');
       wireIssueListInteractions(list);
 
       const bulkBar = $('reviewBulkBar');
@@ -894,12 +990,23 @@
             ${prUrl ? `<p class="text-xs text-emerald-700 mt-3">Onboarding PR (auto-merges on green checks): <a href="${prUrl}" target="_blank" rel="noopener" class="underline underline-offset-2 font-mono">${prUrl}</a></p>` : ''}
           </div>`;
       } else {
+        const canEffectivate = !!effectivatable && projectId != null;
         resultBanner.innerHTML = `
           <div class="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center shadow-card">
             <p class="text-rose-800 font-semibold mb-1">Pipeline halted${phase ? ` at Phase ${phase}` : ''}</p>
             <p class="text-sm text-rose-600">${escapeHtml(error || 'Unknown error')}</p>
             <p class="text-xs text-slate-500 mt-3">Fix the violations above, re-zip, and try again. Staging files were cleaned up.</p>
+            ${canEffectivate ? `
+            <p class="text-xs text-slate-500 mt-3">Every flagged finding was already scanned and validated — if all blocking findings are acknowledged/justified, you can still ship this exact snapshot without re-uploading:</p>
+            <button type="button" id="effectivateBtn" data-project-id="${projectId}"
+                    class="mt-2 text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md">
+              Effectivate — provision &amp; push for real
+            </button>
+            <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden"></p>` : ''}
           </div>`;
+        if (canEffectivate) {
+          $('effectivateBtn').addEventListener('click', () => attemptEffectivate(projectId, []));
+        }
       }
       resultBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
@@ -908,10 +1015,34 @@
     /* Effectivate — turn a completed simulation into a real          */
     /* provision + push, still gated on unresolved blocking findings  */
     /* ------------------------------------------------------------ */
+    // Phase 6 logs are written incrementally server-side (store.upsertStep)
+    // while /effectivate is still in flight, but that's a single blocking
+    // POST — poll the project's steps so Phase 6's card lights up and
+    // streams logs like phases 1-5 do during a live run, instead of staying
+    // stuck on "Skipped" until the request finally resolves.
+    async function pollPhase6Log(projectId) {
+      try {
+        const project = await (await fetch(`/api/projects/${projectId}`)).json();
+        const step = (project.steps || []).find((s) => s.phase === 6);
+        if (!step) return;
+        const ph = state.phases[6];
+        ph.state = step.state;
+        ph.logs = step.logs ? step.logs.split('\n') : [];
+        if (!ph.endedAt && (step.state === 'success' || step.state === 'failed')) ph.endedAt = Date.now();
+        renderPipeline();
+      } catch { /* best-effort — next tick will retry */ }
+    }
+
     async function attemptEffectivate(projectId, overrides, actor) {
       const errEl = document.getElementById('effectivateError');
       const btn = document.getElementById('effectivateBtn');
       if (btn) { btn.disabled = true; btn.textContent = 'Effectivating…'; }
+
+      state.phases[6] = { state: 'running', logs: [], startedAt: Date.now(), endedAt: null };
+      renderPipeline();
+      startPhaseDurationTicker();
+      const pollTimer = setInterval(() => pollPhase6Log(projectId), 1000);
+
       try {
         const res = await fetch(`/api/projects/${projectId}/effectivate`, {
           method: 'POST',
@@ -919,7 +1050,11 @@
           body: JSON.stringify({ overrides, actor }),
         });
         const data = await res.json();
+        await pollPhase6Log(projectId);
         if ((res.status === 409 || res.status === 401) && data.needsReview) {
+          state.phases[6].state = 'pending';
+          state.phases[6].logs = [];
+          renderPipeline();
           openEffectivateReview(projectId, data.issues || []);
           return;
         }
@@ -930,8 +1065,14 @@
         }
         showResult(true, { repoUrl: data.repoUrl, prUrl: data.prUrl, dryRun: false });
       } catch (e) {
+        state.phases[6].state = 'failed';
+        state.phases[6].logs.push(`✗ Could not reach server: ${e.message}`);
+        renderPipeline();
         if (errEl) { errEl.textContent = `Could not reach server: ${e.message}`; errEl.classList.remove('hidden'); }
         if (btn) { btn.disabled = false; btn.textContent = 'Effectivate — provision & push for real'; }
+      } finally {
+        clearInterval(pollTimer);
+        if (!Object.values(state.phases).some((p) => p.state === 'running')) stopPhaseDurationTicker();
       }
     }
 
@@ -948,7 +1089,7 @@
       proceedBtn.textContent = 'Effectivate';
       stopBtn.textContent = 'Cancel';
 
-      list.innerHTML = issues.map((issue, idx) => renderIssueCard(issue, idx, { interactive: issue.status !== 'overridden' })).join('');
+      list.innerHTML = issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: issue.status !== 'overridden' })).join('');
       wireIssueListInteractions(list);
 
       const bulkBar = $('reviewBulkBar');
@@ -1337,6 +1478,8 @@
         // earlier phase's failure), so every phase's status is authoritative.
         const ph = state.phases[ev.phase];
         ph.state = ev.state;
+        ph.issueCount = ev.issueCount || 0;
+        ph.blockingCount = ev.blockingCount || 0;
         if (ev.state === 'running') {
           ph.startedAt = Date.now();
           ph.endedAt = null;
@@ -1420,7 +1563,7 @@
               </div>
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
             </button>
-            ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-count="${p.issue_count}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
+            ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
             <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold mt-0.5" data-id="${p.id}" title="Delete this project">✕</button>
           </div>
           <div class="hist-detail hidden px-5 pb-4"></div>
@@ -1434,7 +1577,8 @@
           try {
             const res = await fetch(`/api/projects/${id}/issues`);
             const data = await res.json();
-            openIssuesViewer(data.issues || [], `Read-only — ${data.issues?.length || 0} issue(s) flagged for this project.`);
+            openIssuesViewer(data.issues || [], `Read-only — ${data.issues?.length || 0} issue(s) flagged for this project.`,
+              { org: btn.dataset.org, repo: btn.dataset.repo });
           } catch {
             openIssuesViewer([], 'Could not load issues for this project.');
           }

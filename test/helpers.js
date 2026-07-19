@@ -10,15 +10,30 @@ const SERVER_PATH = require.resolve('../server.js');
  * Re-requires server.js with a fresh module cache after applying env var
  * overrides, since CONFIG (and the gitleaks toggles derived from it) are
  * computed once at module load time. Pass `undefined` for a key to unset it.
+ *
+ * Also points the re-required server.js at its own throwaway sqlite file
+ * (unless the caller already set IGNITE_DB_PATH) instead of the real
+ * ignite.db — otherwise every test file that re-requires server.js opens a
+ * fresh connection to the same on-disk dev database, which both corrupts
+ * dev data and races other test files under node --test's default
+ * parallelism ("database is locked").
  */
 function withServerEnv(env, fn) {
   return async (...args) => {
     const prev = {};
-    for (const k of Object.keys(env)) {
+    const setEnv = (k, v) => {
       prev[k] = process.env[k];
-      if (env[k] === undefined) delete process.env[k];
-      else process.env[k] = env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    };
+    for (const k of Object.keys(env)) setEnv(k, env[k]);
+
+    let tmpDbDir = null;
+    if (!('IGNITE_DB_PATH' in env)) {
+      tmpDbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-test-db-'));
+      setEnv('IGNITE_DB_PATH', path.join(tmpDbDir, 'test.db'));
     }
+
     delete require.cache[SERVER_PATH];
     try {
       const mod = require(SERVER_PATH);
@@ -29,6 +44,7 @@ function withServerEnv(env, fn) {
         else process.env[k] = prev[k];
       }
       delete require.cache[SERVER_PATH];
+      if (tmpDbDir) await fs.rm(tmpDbDir, { recursive: true, force: true }).catch(() => {});
     }
   };
 }

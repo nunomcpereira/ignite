@@ -97,7 +97,7 @@ function loadConfig() {
 
 const CONFIG = loadConfig();
 
-const store = createDbStore(path.join(__dirname, 'ignite.db'));
+const store = createDbStore(process.env.IGNITE_DB_PATH || path.join(__dirname, 'ignite.db'));
 store.abortStaleRunningProjects();
 
 const PORT = process.env.PORT || CONFIG.port;
@@ -1460,11 +1460,106 @@ function resolveTestNodeImage(pkg) {
   return `node:${major}-alpine`;
 }
 
+async function fileExists(p) {
+  return fsp.stat(p).then(() => true).catch(() => false);
+}
+
+// Each detector inspects the staged project root for that language's own
+// marker file(s) and, if present, returns the Docker image + shell command
+// used to install deps and run its native test suite. A project can match
+// more than one (e.g. a Node frontend next to a Go backend) — all matches
+// run, in this fixed order, and any one failing fails the phase.
+const LANGUAGE_TEST_RUNNERS = [
+  {
+    language: 'Node.js',
+    async detect(root) {
+      const pkg = await readPackageJson(root);
+      const testScript = detectNpmTestScript(pkg);
+      if (!testScript) return null;
+      return {
+        detail: `npm test script: "${testScript}"`,
+        image: resolveTestNodeImage(pkg),
+        command: 'npm ci --no-audit --no-fund || npm install --no-audit --no-fund && npm test',
+      };
+    },
+  },
+  {
+    language: 'Go',
+    async detect(root) {
+      if (!await fileExists(path.join(root, 'go.mod'))) return null;
+      return {
+        detail: '`go.mod` found',
+        image: 'golang:1.23-alpine',
+        command: 'go test ./...',
+      };
+    },
+  },
+  {
+    language: 'Rust',
+    async detect(root) {
+      if (!await fileExists(path.join(root, 'Cargo.toml'))) return null;
+      return {
+        detail: '`Cargo.toml` found',
+        image: 'rust:1-slim',
+        command: 'cargo test --locked || cargo test',
+      };
+    },
+  },
+  {
+    language: 'Python',
+    async detect(root) {
+      const hasProjectFile = await fileExists(path.join(root, 'pyproject.toml'))
+        || await fileExists(path.join(root, 'setup.py'))
+        || await fileExists(path.join(root, 'requirements.txt'));
+      if (!hasProjectFile) return null;
+      return {
+        detail: 'Python project file found (pyproject.toml/setup.py/requirements.txt)',
+        image: 'python:3.12-slim',
+        command: [
+          'pip install --quiet --no-input --disable-pip-version-check pytest',
+          '(test -f requirements.txt && pip install --quiet --no-input --disable-pip-version-check -r requirements.txt || true)',
+          '(test -f pyproject.toml -o -f setup.py && pip install --quiet --no-input --disable-pip-version-check -e . || true)',
+          'pytest',
+        ].join(' && '),
+      };
+    },
+  },
+  {
+    language: 'Java (Maven)',
+    async detect(root) {
+      if (!await fileExists(path.join(root, 'pom.xml'))) return null;
+      return {
+        detail: '`pom.xml` found',
+        image: 'maven:3-eclipse-temurin-21',
+        command: 'mvn --batch-mode --no-transfer-progress test',
+      };
+    },
+  },
+  {
+    language: 'Java (Gradle)',
+    async detect(root) {
+      const hasGradle = await fileExists(path.join(root, 'build.gradle'))
+        || await fileExists(path.join(root, 'build.gradle.kts'));
+      if (!hasGradle) return null;
+      const hasWrapper = await fileExists(path.join(root, 'gradlew'));
+      return {
+        detail: hasWrapper ? '`build.gradle(.kts)` + gradlew wrapper found' : '`build.gradle(.kts)` found',
+        image: 'gradle:8-jdk21',
+        command: hasWrapper ? 'chmod +x ./gradlew && ./gradlew test --no-daemon' : 'gradle test --no-daemon',
+      };
+    },
+  },
+];
+
 async function runProjectUnitTests(root, log) {
-  const pkg = await readPackageJson(root);
-  const testScript = detectNpmTestScript(pkg);
-  if (!testScript) {
-    log('No `test` script found in package.json — skipping unit test run.');
+  const matches = [];
+  for (const runner of LANGUAGE_TEST_RUNNERS) {
+    const match = await runner.detect(root);
+    if (match) matches.push({ language: runner.language, ...match });
+  }
+
+  if (matches.length === 0) {
+    log('No recognized test project (package.json/go.mod/Cargo.toml/pyproject.toml/setup.py/requirements.txt/pom.xml/build.gradle) — skipping unit test run.');
     return { ran: false };
   }
 
@@ -1474,24 +1569,25 @@ async function runProjectUnitTests(root, log) {
     throw new Error('Cannot run project unit tests: Docker daemon is not running (start Docker Desktop).');
   }
 
-  const image = resolveTestNodeImage(pkg);
-  log(`Detected npm test script: "${testScript}". Running it in an isolated ${image} container (no host access, no network beyond install)...`);
-  const args = [
-    'run', '--rm',
-    '-v', `${root}:/repo`,
-    '-w', '/repo',
-    image,
-    'sh', '-c', 'npm ci --no-audit --no-fund || npm install --no-audit --no-fund && npm test',
-  ];
-  try {
-    await runToolStreaming('docker', args, os.tmpdir(), (line) => log(line.slice(0, 400)), {
-      timeoutMs: 10 * 60_000,
-    });
-  } catch (e) {
-    throw new Error(`Project unit tests failed: ${e.message}`);
+  for (const { language, detail, image, command } of matches) {
+    log(`Detected ${language} project (${detail}). Running its test suite in an isolated ${image} container (no host access, no network beyond dependency install)...`);
+    const args = [
+      'run', '--rm',
+      '-v', `${root}:/repo`,
+      '-w', '/repo',
+      image,
+      'sh', '-c', command,
+    ];
+    try {
+      await runToolStreaming('docker', args, os.tmpdir(), (line) => log(line.slice(0, 400)), {
+        timeoutMs: 10 * 60_000,
+      });
+    } catch (e) {
+      throw new Error(`${language} unit tests failed: ${e.message}`);
+    }
+    log(`✓ ${language} unit tests passed.`);
   }
-  log('✓ Project unit tests passed.');
-  return { ran: true };
+  return { ran: true, languages: matches.map((m) => m.language) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2828,6 +2924,15 @@ app.post(
   let phase3Ok = false;
   let projectRoot = null;
   let keepSourceBackupDir = false;
+  // Set once the immutable snapshot exists (i.e. structure audit passed) and
+  // cleared once the code actually ships for real. Anything that ends the
+  // run in between — a dry run, the user stopping at the review gate,
+  // unresolved findings, even a governance-CI failure (this app already lets
+  // the human override that at the final gate) — leaves a resumable
+  // snapshot behind so "Effectivate" can finish the job later instead of
+  // forcing a full re-upload + re-scan.
+  let snapshotReady = false;
+  let shippedForReal = false;
 
   const runState = { org, repo, projectId: null, allIssues };
   runningRuns.set(jobId, runState);
@@ -2951,6 +3056,7 @@ app.post(
 
       await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
       log2('Created immutable source snapshot for final publish phase.');
+      snapshotReady = true;
 
       log2('Check 1 — scanning for raw environment files (.env*)...');
       const envCheck = await checkEnvFiles(projectRoot);
@@ -3019,11 +3125,16 @@ app.post(
 
         const issues = collectPhase4Issues({ secrets, governance, llm });
         for (const issue of issues) allIssues.push({ ...issue, phase: 4 });
+        const blockingCount = issues.filter((i) => i.severity === 'error').length;
         if (issues.length > 0) {
-          log3(`⚠ ${issues.length} flagged issue(s) (${issues.filter((i) => i.severity === 'error').length} blocking) — will be presented for final review before push.`);
+          log3(`⚠ ${issues.length} flagged issue(s) (${blockingCount} blocking) — will be presented for final review before push.`);
         }
         persistIssuesSnapshot();
-        status(4, 'success');
+        // The scan itself completed cleanly either way — findings (if any)
+        // are deferred to the final review gate, not a phase 4 failure — but
+        // the client still needs the count to avoid showing a bare "Success"
+        // next to a log full of ✗ [error] lines.
+        status(4, 'success', { issueCount: issues.length, blockingCount });
       } catch (err) {
         log3(`✗ ${err.message}`);
         status(4, 'failed', { error: err.message });
@@ -3124,9 +3235,6 @@ app.post(
       status(6, 'skipped');
       if (projectId !== null) {
         store.finishProject('success', null, null, null, projectId);
-        cleanupExpiredEffectivations();
-        pendingEffectivations.set(projectId, { org, repo, sourceBackupDir, createdAt: Date.now() });
-        keepSourceBackupDir = true;
       }
     } else {
       const backupStat = await fsp.stat(sourceBackupDir).catch(() => null);
@@ -3142,12 +3250,13 @@ app.post(
       ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log6));
       log6(`✓ Repository live at ${repoUrl}`);
       status(6, 'success', { repoUrl, prUrl });
+      shippedForReal = true;
 
       if (projectId !== null) {
         store.finishProject('success', null, repoUrl, prUrl || null, projectId);
       }
     }
-    send({ type: 'done', ok: true, dryRun, repoUrl, prUrl, effectivatable: dryRun && keepSourceBackupDir, projectId });
+    send({ type: 'done', ok: true, dryRun, repoUrl, prUrl, effectivatable: snapshotReady && !shippedForReal, projectId });
   } catch (err) {
     const phase = err.phase || currentPhase;
     phaseLog(phase)(`✗ ${err.message}`);
@@ -3178,9 +3287,14 @@ app.post(
     if (projectId !== null) {
       try { store.finishProject('failed', err.message, null, null, projectId); } catch { /* best-effort */ }
     }
-    send({ type: 'done', ok: false, error: err.message, phase });
+    send({ type: 'done', ok: false, error: err.message, phase, effectivatable: snapshotReady && !shippedForReal, projectId });
   } finally {
     runningRuns.delete(jobId);
+    if (snapshotReady && !shippedForReal && projectId !== null) {
+      cleanupExpiredEffectivations();
+      pendingEffectivations.set(projectId, { org, repo, sourceBackupDir, createdAt: Date.now() });
+      keepSourceBackupDir = true;
+    }
     // Persist every phase's state and logs for the onboarding history panel.
     if (projectId !== null) {
       try {
@@ -3194,7 +3308,8 @@ app.post(
     }
     // Forceful cleanup regardless of outcome: staging dir, the uploaded ZIP,
     // and any multer temp files not yet moved into staging. The one exception
-    // is the source snapshot of a successful simulation, kept for a later
+    // is the source snapshot of a run that didn't ship for real (dry run,
+    // stopped at review, unresolved findings, CI failure) — kept for a later
     // "Effectivate" call — see pendingEffectivations.
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     if (!keepSourceBackupDir) {
@@ -3227,4 +3342,5 @@ module.exports = {
   checkAiGovernance,
   runGitleaksScan,
   loadConfig,
+  runProjectUnitTests,
 };
