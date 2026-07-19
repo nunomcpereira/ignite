@@ -15,7 +15,13 @@
   },
   "github": {
     "orgs": "ai-governance-poc-2026",
-    "bootstrapBranch": "ignite"
+    "bootstrapBranch": "ignite",
+    "oauth": {
+      "clientId": "",
+      "clientSecret": "",
+      "redirectUri": "http://localhost:3000/api/auth/github/callback",
+      "scope": "repo"
+    }
   },
   "governance": {
     "repo": "ai-governance-poc-2026/devops-governance",

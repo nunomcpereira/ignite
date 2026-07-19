@@ -51,8 +51,9 @@ function isValidEmail(email) {
 /**
  * @param {object} store - createDbStore() instance
  * @param {object} authConfig - CONFIG.auth: { mode, allowSelfRegistration, oidc: {...} }
+ * @param {object} githubConfig - CONFIG.github: { orgs, bootstrapBranch, oauth: {...} }
  */
-function createAuth(store, authConfig = {}) {
+function createAuth(store, authConfig = {}, githubConfig = {}) {
   const mode = authConfig.mode === 'oidc' ? 'oidc' : 'standalone';
   const allowSelfRegistration = authConfig.allowSelfRegistration !== false;
   const secureCookies = process.env.NODE_ENV === 'production';
@@ -219,7 +220,94 @@ function createAuth(store, authConfig = {}) {
     });
   }
 
-  return { router, attachUser, requireAuth, mode };
+  /*
+   * GitHub account connection — independent of how the user logged into
+   * Ignite (standalone or OIDC). Provisioning (Phase 6: repo creation +
+   * push) must run as the actual person who submitted the project, not a
+   * shared `gh auth login` session on the server host, so each Ignite user
+   * connects their own GitHub account once via OAuth and we hold their
+   * access token for that purpose.
+   */
+  const githubOauth = githubConfig.oauth || {};
+  const pendingGithubStates = new Map(); // state -> { userId, createdAt }
+
+  router.get('/api/auth/github/status', (req, res) => {
+    if (!req.user) return res.json({ connected: false });
+    const conn = store.getGithubConnection(req.user.id);
+    res.json({ connected: !!conn, login: conn?.github_login || null });
+  });
+
+  router.get('/api/auth/github/connect', requireAuth, (req, res) => {
+    if (!githubOauth.clientId || !githubOauth.redirectUri) {
+      return res.status(503).json({ error: 'GitHub OAuth is not configured: set github.oauth.clientId, clientSecret, and redirectUri.' });
+    }
+    const state = crypto.randomBytes(24).toString('hex');
+    pendingGithubStates.set(state, { userId: req.user.id, createdAt: Date.now() });
+    for (const [s, v] of pendingGithubStates) if (Date.now() - v.createdAt > 10 * 60_000) pendingGithubStates.delete(s);
+
+    const url = new URL('https://github.com/login/oauth/authorize');
+    url.searchParams.set('client_id', githubOauth.clientId);
+    url.searchParams.set('redirect_uri', githubOauth.redirectUri);
+    url.searchParams.set('scope', githubOauth.scope || 'repo');
+    url.searchParams.set('state', state);
+    res.redirect(url.toString());
+  });
+
+  router.get('/api/auth/github/callback', async (req, res) => {
+    try {
+      const { code, state } = req.query;
+      const pending = state && pendingGithubStates.get(String(state));
+      if (!pending) throw new Error('Unknown or expired GitHub OAuth state.');
+      pendingGithubStates.delete(String(state));
+      if (!req.user || req.user.id !== pending.userId) {
+        throw new Error('GitHub connection must be completed in the same session that started it.');
+      }
+
+      const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          client_id: githubOauth.clientId,
+          client_secret: githubOauth.clientSecret,
+          code,
+          redirect_uri: githubOauth.redirectUri,
+        }),
+      });
+      const tokenData = await tokenRes.json();
+      if (!tokenData.access_token) {
+        throw new Error(tokenData.error_description || tokenData.error || 'GitHub did not return an access token.');
+      }
+
+      const userRes = await fetch('https://api.github.com/user', {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`,
+          'User-Agent': 'ignite-onboarding-gatekeeper',
+        },
+      });
+      const ghUser = await userRes.json();
+      if (!ghUser.login) throw new Error('Could not read the GitHub account login.');
+
+      store.upsertGithubConnection(req.user.id, ghUser.login, tokenData.access_token, tokenData.scope || '');
+      res.redirect('/');
+    } catch (err) {
+      res.status(401).send(`GitHub connection failed: ${escapeHtml(err.message)}`);
+    }
+  });
+
+  router.post('/api/auth/github/disconnect', requireAuth, (req, res) => {
+    store.deleteGithubConnection(req.user.id);
+    res.json({ ok: true });
+  });
+
+  /* Resolves the GitHub access token to use for provisioning/pushing this
+     request's project — the connected user's own token, never a fallback
+     to any ambient host-level `gh auth login` session. */
+  function resolveGithubToken(req) {
+    if (!req.user) return null;
+    return store.getGithubConnection(req.user.id)?.access_token || null;
+  }
+
+  return { router, attachUser, requireAuth, resolveGithubToken, mode };
 }
 
 function escapeHtml(s) {

@@ -33,7 +33,11 @@ function loadConfig() {
   const defaults = {
     port: 3000,
     llm: { url: 'http://localhost:8050', model: 'default', mode: 'warn', maxFiles: 40, chunkChars: 10_000 },
-    github: { orgs: '', bootstrapBranch: 'ignite' },
+    github: {
+      orgs: '',
+      bootstrapBranch: 'ignite',
+      oauth: { clientId: '', clientSecret: '', redirectUri: '', scope: 'repo' },
+    },
     governance: {
       repo: 'ai-governance-poc-2026/devops-governance',
       workflow: 'ai-guardrails-orchestrator.yml',
@@ -108,7 +112,7 @@ const MAX_SCAN_FILE_BYTES = 5 * 1024 * 1024; // skip huge files in text scans
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
-const auth = createAuth(store, CONFIG.auth);
+const auth = createAuth(store, CONFIG.auth, CONFIG.github);
 app.use(auth.attachUser);
 app.use(auth.router);
 
@@ -356,12 +360,12 @@ async function* walkFiles(root) {
   }
 }
 
-function runTool(tool, args, cwd) {
+function runTool(tool, args, cwd, { env: envOverride = {} } = {}) {
   return new Promise((resolve, reject) => {
     const safeTool = sanitizeCommand(tool);
     const safeArgs = sanitizeCliArgs(args);
     const safeCwd = sanitizeCwd(cwd);
-    const env = sanitizeEnv({ ...process.env, GIT_TERMINAL_PROMPT: '0' });
+    const env = sanitizeEnv({ ...process.env, GIT_TERMINAL_PROMPT: '0', ...envOverride });
 
     const execute = (command) => execFile(
       command,
@@ -1594,14 +1598,25 @@ async function runProjectUnitTests(root, log) {
 /* Phase 5: git + gh shipping                                          */
 /* ------------------------------------------------------------------ */
 
-async function shipToGitHub(root, org, repo, log) {
+async function shipToGitHub(root, org, repo, log, ghToken) {
+  if (!ghToken) {
+    throw new Error(
+      'No GitHub account connected for this request. Connect your own GitHub account ' +
+      '(GET /api/auth/github/connect, or the "Connect GitHub" button in the UI) before ' +
+      'provisioning a repository — Phase 6 no longer falls back to the server\'s own gh session.'
+    );
+  }
+  const ghEnv = { GH_TOKEN: ghToken };
+  const git = (args, cwd = root) => runTool('git', args, cwd, { env: ghEnv });
+  const gh = (args, cwd = root) => runTool('gh', args, cwd, { env: ghEnv });
+
   const safeOrg = sanitizeCliArg(org, 'Organization name');
   const safeRepo = sanitizeCliArg(repo, 'Repository name');
   const fullName = `${safeOrg}/${safeRepo}`;
   const isCreateValidation422 = (msg) => /HTTP 422/i.test(String(msg || ''));
   const repoExistsOnGitHub = async (owner, name) => {
     try {
-      await runTool('gh', ['api', `repos/${owner}/${name}`], root);
+      await gh(['api', `repos/${owner}/${name}`], root);
       return true;
     } catch {
       return false;
@@ -1614,14 +1629,13 @@ async function shipToGitHub(root, org, repo, log) {
     log('Reusing repository initialized during the local CI phase.');
   } else {
     log('$ git init -b main');
-    await runTool('git', ['init', '-b', 'main'], root);
+    await git(['init', '-b', 'main'], root);
 
     log('$ git add .');
-    await runTool('git', ['add', '.'], root);
+    await git(['add', '.'], root);
 
     log('$ git commit -m "chore: initial compliant code drop via onboarding gatekeeper"');
-    await runTool(
-      'git',
+    await git(
       [
         '-c', 'user.name=Onboarding Gatekeeper',
         '-c', 'user.email=gatekeeper@localhost',
@@ -1651,14 +1665,14 @@ async function shipToGitHub(root, org, repo, log) {
 
   log(`$ gh api POST orgs/${safeOrg}/repos (private, auto_init)`);
   try {
-    await runTool('gh', ['api', '-X', 'POST', `orgs/${safeOrg}/repos`,
+    await gh(['api', '-X', 'POST', `orgs/${safeOrg}/repos`,
       '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
   } catch (e) {
     if (/404/.test(e.message)) {
       // Personal account, not an organization.
       log(`"${safeOrg}" is not an org — creating under the authenticated user.`);
       try {
-        await runTool('gh', ['api', '-X', 'POST', 'user/repos',
+        await gh(['api', '-X', 'POST', 'user/repos',
           '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
       } catch (fallbackErr) {
         if (isCreateValidation422(fallbackErr.message)) {
@@ -1685,14 +1699,14 @@ async function shipToGitHub(root, org, repo, log) {
   }
 
   try {
-    await runTool('gh', ['api', '-X', 'PATCH', `repos/${fullName}`, '-F', 'allow_auto_merge=true'], root);
+    await gh(['api', '-X', 'PATCH', `repos/${fullName}`, '-F', 'allow_auto_merge=true'], root);
     log('Enabled auto-merge on the repository.');
   } catch {
     log('⚠ Could not enable auto-merge — the PR will need a manual merge once checks pass.');
   }
 
   log(`$ git remote add origin "${remoteUrl}"`);
-  await runTool('git', ['remote', 'add', 'origin', remoteUrl], root);
+  await git(['remote', 'add', 'origin', remoteUrl], root);
 
   // Repo initialization is asynchronous — and org rulesets with required
   // workflows can block the creation of main entirely. Wait briefly for it.
@@ -1700,7 +1714,7 @@ async function shipToGitHub(root, org, repo, log) {
   let mainExists = false;
   for (let attempt = 1; attempt <= 8; attempt++) {
     try {
-      await runTool('git', [...gitCred, 'fetch', 'origin', 'main'], root);
+      await git([...gitCred, 'fetch', 'origin', 'main'], root);
       mainExists = true;
       break;
     } catch {
@@ -1713,22 +1727,22 @@ async function shipToGitHub(root, org, repo, log) {
     // Replay our commit on top of GitHub's init commit; on conflicts
     // (e.g. the project ships its own README.md) our version wins.
     log('$ git rebase -X theirs origin/main');
-    await runTool('git', [...gitId, 'rebase', '-X', 'theirs', 'origin/main'], root);
+    await git([...gitId, 'rebase', '-X', 'theirs', 'origin/main'], root);
   }
 
   log(`$ git push -u origin HEAD:${ONBOARD_BRANCH}`);
-  await runTool('git', [...gitCred, 'push', '-u', 'origin', `HEAD:${ONBOARD_BRANCH}`], root);
-  const { stdout: sha } = await runTool('git', ['rev-parse', 'HEAD'], root);
+  await git([...gitCred, 'push', '-u', 'origin', `HEAD:${ONBOARD_BRANCH}`], root);
+  const { stdout: sha } = await git(['rev-parse', 'HEAD'], root);
 
   if (!mainExists) {
     // Try to create main directly from the compliant commit (works in
     // orgs/accounts without a required-workflow ruleset on main).
     log('$ gh api POST git/refs (create main from onboarding commit)');
     try {
-      await runTool('gh', ['api', '-X', 'POST', `repos/${fullName}/git/refs`,
+      await gh(['api', '-X', 'POST', `repos/${fullName}/git/refs`,
         '-f', 'ref=refs/heads/main', '-f', `sha=${sha}`], root);
       log('✓ main created directly — no ruleset restriction on this repo.');
-      await runTool('gh', ['api', '-X', 'PATCH', `repos/${fullName}`, '-f', 'default_branch=main'], root)
+      await gh(['api', '-X', 'PATCH', `repos/${fullName}`, '-f', 'default_branch=main'], root)
         .then(() => log('✓ Default branch set to main.'))
         .catch(() => log('⚠ Could not set main as the default branch — adjust in repo settings.'));
       log(`✓ Code is live on main.`);
@@ -1737,7 +1751,7 @@ async function shipToGitHub(root, org, repo, log) {
       // Deadlock: the ruleset blocks ALL creation of main (even GitHub's
       // auto-init), but the required workflow can only run on a PR whose
       // base is main. No client-side flow can satisfy it.
-      await runTool('gh', ['api', '-X', 'PATCH', `repos/${fullName}`,
+      await gh(['api', '-X', 'PATCH', `repos/${fullName}`,
         '-f', `default_branch=${ONBOARD_BRANCH}`], root).catch(() => {});
       log(`⚠ The org ruleset blocks creating "main" in new repos (bootstrap deadlock: the required workflow can only run on a PR, and a PR needs main to exist).`);
       log(`✓ Code shipped to "${ONBOARD_BRANCH}", now the repository's default branch.`);
@@ -1747,7 +1761,7 @@ async function shipToGitHub(root, org, repo, log) {
   }
 
   log('$ gh pr create --base main');
-  const { stdout: prOut } = await runTool('gh', [
+  const { stdout: prOut } = await gh([
     'pr', 'create',
     '--repo', fullName,
     '--base', 'main',
@@ -1759,7 +1773,7 @@ async function shipToGitHub(root, org, repo, log) {
   log(`✓ Pull request opened: ${prUrl}`);
 
   try {
-    await runTool('gh', ['pr', 'merge', prUrl, '--auto', '--squash'], root);
+    await gh(['pr', 'merge', prUrl, '--auto', '--squash'], root);
     log('✓ Auto-merge armed — the PR merges itself when the required workflow passes.');
   } catch (e) {
     log(`⚠ Auto-merge could not be armed (${e.message}). Merge manually once checks pass.`);
@@ -1768,7 +1782,7 @@ async function shipToGitHub(root, org, repo, log) {
   log('Waiting for the required org workflow to run on GitHub...');
   try {
     await runToolStreaming('gh', ['pr', 'checks', prUrl, '--watch', '--interval', '15'],
-      root, (line) => log(line.slice(0, 300)), { timeoutMs: 20 * 60_000 });
+      root, (line) => log(line.slice(0, 300)), { timeoutMs: 20 * 60_000, env: ghEnv });
     log('✓ All remote required checks passed — auto-merge will land the PR on main.');
   } catch (e) {
     throw new Error(`Remote governance checks did not pass (${e.message}). PR left open for review: ${prUrl}`);
@@ -2203,6 +2217,15 @@ app.post('/api/projects/:projectId/effectivate', async (req, res) => {
   const projectId = Number(req.params.projectId);
   if (!Number.isInteger(projectId)) return res.status(400).json({ error: 'Invalid project id.' });
 
+  const ghToken = auth.resolveGithubToken(req);
+  if (!ghToken) {
+    return res.status(401).json({
+      error: req.user
+        ? 'Connect your GitHub account before effectivating (GET /api/auth/github/connect).'
+        : 'Log in and connect your GitHub account before effectivating.',
+    });
+  }
+
   cleanupExpiredEffectivations();
   const pending = pendingEffectivations.get(projectId);
   if (!pending) {
@@ -2266,7 +2289,7 @@ app.post('/api/projects/:projectId/effectivate', async (req, res) => {
     await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});
     await cloneDirectoryWithoutSymlinks(sourceBackupDir, publishDir);
     await archivePhase6Payload(publishDir, projectId, log);
-    const { repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log);
+    const { repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log, ghToken);
 
     store.finishProject('success', null, repoUrl, prUrl || null, projectId);
     effectivateLogs.push(`✓ Effectivated — repository live at ${repoUrl}`);
@@ -2549,6 +2572,18 @@ app.post('/api/pipeline/onboard', async (req, res) => {
   const gxpLinks = Array.isArray(body.gxpLinks) ? body.gxpLinks : [];
   const requestedOverrides = Array.isArray(body.overrides) ? body.overrides : [];
 
+  // Provisioning (Phase 6) must run as the actual caller's own GitHub
+  // account, not a shared host-level `gh auth login` session — fail fast
+  // rather than burning phases 1-5 only to find this out at the finish line.
+  const ghToken = dryRun ? null : auth.resolveGithubToken(req);
+  if (!dryRun && !ghToken) {
+    return res.status(401).json({
+      error: req.user
+        ? 'Connect your GitHub account before onboarding for real (GET /api/auth/github/connect), or pass dryRun: true.'
+        : 'Log in and connect your GitHub account before onboarding for real, or pass dryRun: true.',
+    });
+  }
+
   const jobId = crypto.randomUUID();
   const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `${jobId}-onboard`);
   const sourceBackupDir = stagingDir + '-source-backup';
@@ -2776,7 +2811,7 @@ app.post('/api/pipeline/onboard', async (req, res) => {
 
       await archivePhase6Payload(publishDir, projectId, log5);
 
-      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log5));
+      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log5, ghToken));
       log5(`✓ Repository live at ${repoUrl}`);
       status(6, 'success', { repoUrl, prUrl });
 
@@ -2922,6 +2957,7 @@ app.post(
   const allIssues = [];
   let phase1Ok = false;
   let phase3Ok = false;
+  let ghToken = null;
   let projectRoot = null;
   let keepSourceBackupDir = false;
   // Set once the immutable snapshot exists (i.e. structure audit passed) and
@@ -2957,6 +2993,20 @@ app.post(
       }
       if (!REPO_NAME_REGEX.test(repo) || repo === '.' || repo === '..') {
         throw new Error(`Invalid repository name: "${repo}"`);
+      }
+      // Provisioning (Phase 6) must run as the actual caller's own GitHub
+      // account, not a shared host-level `gh auth login` session — fail
+      // fast rather than burning phases 1-5 only to find this out at the
+      // finish line. Dry runs never reach Phase 6, so they're exempt.
+      if (!dryRun) {
+        ghToken = auth.resolveGithubToken(req);
+        if (!ghToken) {
+          throw new Error(
+            req.user
+              ? 'Connect your GitHub account before running for real (GET /api/auth/github/connect), or check "Simulation mode".'
+              : 'Log in and connect your GitHub account before running for real, or check "Simulation mode".'
+          );
+        }
       }
 
       log1(`Job ${jobId}`);
@@ -3247,7 +3297,7 @@ app.post(
 
       await archivePhase6Payload(publishDir, projectId, log6);
 
-      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log6));
+      ({ repoUrl, prUrl } = await shipToGitHub(publishDir, org, repo, log6, ghToken));
       log6(`✓ Repository live at ${repoUrl}`);
       status(6, 'success', { repoUrl, prUrl });
       shippedForReal = true;

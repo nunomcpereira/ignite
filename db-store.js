@@ -96,6 +96,13 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       explanation TEXT NOT NULL,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS github_connections (
+      user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      github_login TEXT NOT NULL,
+      access_token TEXT NOT NULL,
+      scope        TEXT,
+      connected_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   const stmt = {
@@ -184,6 +191,16 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
        ON CONFLICT(hash) DO UPDATE SET explanation = excluded.explanation`
     ),
     getProjectByJobId: db.prepare('SELECT id FROM projects WHERE job_id = ?'),
+
+    upsertGithubConnection: db.prepare(
+      `INSERT INTO github_connections (user_id, github_login, access_token, scope)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id)
+       DO UPDATE SET github_login = excluded.github_login, access_token = excluded.access_token,
+                     scope = excluded.scope, connected_at = datetime('now')`
+    ),
+    getGithubConnection: db.prepare('SELECT * FROM github_connections WHERE user_id = ?'),
+    deleteGithubConnection: db.prepare('DELETE FROM github_connections WHERE user_id = ?'),
   };
 
   return {
@@ -274,6 +291,20 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     deleteSession(sessionId) {
       stmt.deleteSession.run(sessionId);
+    },
+
+    /* ---------------- GitHub OAuth connection (per ignite user) ---------------- */
+
+    upsertGithubConnection(userId, githubLogin, accessToken, scope) {
+      stmt.upsertGithubConnection.run(userId, githubLogin, accessToken, scope || null);
+    },
+
+    getGithubConnection(userId) {
+      return stmt.getGithubConnection.get(userId);
+    },
+
+    deleteGithubConnection(userId) {
+      stmt.deleteGithubConnection.run(userId);
     },
 
     /* ---------------- audit log: overrides ---------------- */
