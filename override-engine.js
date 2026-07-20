@@ -12,20 +12,54 @@ function buildIssueId({ category, file, line }) {
   return `${category}::${file || 'unknown'}::${line ?? 0}`;
 }
 
+// Fixed 0-10 severity score per category, independent of the blocking/warning
+// (error/warning) status — the latter drives override gating, this drives
+// "how bad is this really" for triage. Warning-level findings in an
+// otherwise error-scored category (e.g. an LLM 'security' finding demoted to
+// warning by LLM_ADVISORY_LEVEL) score at half the category's base, floored
+// at 1 so nothing flagged reads as a 0.
+const CATEGORY_SCORES = {
+  secret: 10,
+  'ai-governance': 7,
+  security: 8,
+  dependency: 7,
+  encapsulation: 3,
+  quality: 2,
+  'structure-audit': 8,
+  'gxp-documents': 5,
+  'governance-ci': 7,
+  'input-validation': 4,
+  'security-scan': 6,
+};
+
+/**
+ * @param {{ category: string, severity: 'error'|'warning' }} issue
+ * @returns {number} 0-10 severity score
+ */
+function scoreForIssue({ category, severity }) {
+  const base = Object.prototype.hasOwnProperty.call(CATEGORY_SCORES, category)
+    ? CATEGORY_SCORES[category]
+    : (severity === 'error' ? 7 : 3);
+  return severity === 'warning' ? Math.max(1, Math.round(base / 2)) : base;
+}
+
 /**
  * @param {{ findings: Array<{file,line,kind}> }} secrets
  * @param {{ findings: Array<{file,line,snippet}> }} governance
  * @param {{ available: boolean, findings: Array<{file,line,category,level,issue,recommendation}> }} llm
- * @returns {Array<{id, category, severity, summary, file, line}>}
+ * @returns {Array<{id, category, severity, score, summary, file, line}>}
  */
 function collectPhase4Issues({ secrets, governance, llm }) {
   const issues = [];
 
   for (const f of secrets.findings) {
+    const category = 'secret';
+    const severity = 'error';
     issues.push({
-      id: buildIssueId({ category: 'secret', file: f.file, line: f.line }),
-      category: 'secret',
-      severity: 'error',
+      id: buildIssueId({ category, file: f.file, line: f.line }),
+      category,
+      severity,
+      score: scoreForIssue({ category, severity }),
       summary: `Hardcoded ${f.kind}`,
       file: f.file,
       line: f.line,
@@ -34,10 +68,13 @@ function collectPhase4Issues({ secrets, governance, llm }) {
   }
 
   for (const f of governance.findings) {
+    const category = 'ai-governance';
+    const severity = 'error';
     issues.push({
-      id: buildIssueId({ category: 'ai-governance', file: f.file, line: f.line }),
-      category: 'ai-governance',
-      severity: 'error',
+      id: buildIssueId({ category, file: f.file, line: f.line }),
+      category,
+      severity,
+      score: scoreForIssue({ category, severity }),
       summary: `Ungoverned AI invocation (missing recursion_limit): ${f.snippet}`,
       file: f.file,
       line: f.line,
@@ -47,10 +84,13 @@ function collectPhase4Issues({ secrets, governance, llm }) {
 
   if (llm && llm.available) {
     for (const f of llm.findings) {
+      const category = f.category;
+      const severity = f.level === 'error' ? 'error' : 'warning';
       issues.push({
-        id: buildIssueId({ category: f.category, file: f.file, line: f.line }),
-        category: f.category,
-        severity: f.level === 'error' ? 'error' : 'warning',
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
         summary: f.issue + (f.recommendation ? ` | fix: ${f.recommendation}` : ''),
         file: f.file,
         line: f.line,
@@ -92,4 +132,4 @@ function validateOverrides(issues, overrides) {
   return { ok: unresolvedErrors.length === 0, unresolvedErrors, applied };
 }
 
-module.exports = { buildIssueId, collectPhase4Issues, validateOverrides };
+module.exports = { buildIssueId, collectPhase4Issues, validateOverrides, scoreForIssue };

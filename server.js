@@ -23,7 +23,7 @@ const path = require('path');
 const { createDbStore } = require('./db-store');
 const { createReviewDecisionStore } = require('./review-decisions-store');
 const { createAuth, isValidEmail } = require('./auth');
-const { collectPhase4Issues, validateOverrides } = require('./override-engine');
+const { collectPhase4Issues, validateOverrides, scoreForIssue } = require('./override-engine');
 
 /* ------------------------------------------------------------------ */
 /* Configuration: config.json < environment variables                  */
@@ -51,7 +51,7 @@ function loadConfig() {
       smtp: { host: '', port: 587, secure: false, user: '' },
     },
     auth: {
-      mode: 'standalone', // 'standalone' | 'oidc'
+      mode: 'standalone', // 'standalone' | 'oidc' | 'github'
       allowSelfRegistration: true,
       oidc: { issuer: '', clientId: '', clientSecret: '', redirectUri: '', scope: 'openid email profile' },
     },
@@ -467,6 +467,26 @@ function sanitizeUploadRelativePath(rawPath) {
  * Long-running command with live line-by-line output streaming (used for
  * `act`, whose runs take minutes and produce continuous logs).
  */
+// eslint-disable-next-line no-control-regex
+const ANSI_REGEX = /\x1b\[[0-9;]*[a-zA-Z]/g;
+const FAILURE_LINE_REGEX = /❌|::error|error:|fatal:|\bfailure\b/i;
+
+// A non-zero exit code alone ("`act` exited with code 1.") tells you nothing
+// about what actually broke — the real cause is buried in the streamed
+// stdout/stderr. Pull out every line that looks like an actual failure
+// (marked with ❌, "Error:", "fatal:", "Failure -", etc.), deduped, so a
+// caller can either summarize it (extractFailureDetail) or report each one
+// as its own finding instead of one generic "exited with code N" blob.
+function extractFailureLines(lines) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of lines) {
+    const l = raw.replace(ANSI_REGEX, '').trim();
+    if (l && FAILURE_LINE_REGEX.test(l) && !seen.has(l)) { seen.add(l); out.push(l); }
+  }
+  return out;
+}
+
 function runToolStreaming(tool, args, cwd, onLine, { timeoutMs = 15 * 60_000, env = {} } = {}) {
   return new Promise((resolve, reject) => {
     const safeTool = sanitizeCommand(tool);
@@ -504,19 +524,25 @@ function runToolStreaming(tool, args, cwd, onLine, { timeoutMs = 15 * 60_000, en
     }, timeoutMs);
 
     let pending = { out: '', err: '' };
+    const capturedLines = [];
     const feed = (key) => (chunk) => {
       pending[key] += chunk.toString();
       const lines = pending[key].split('\n');
       pending[key] = lines.pop();
-      lines.forEach((l) => { if (l.trim()) onLine(l); });
+      lines.forEach((l) => { if (l.trim()) { capturedLines.push(l); onLine(l); } });
     };
     child.stdout.on('data', feed('out'));
     child.stderr.on('data', feed('err'));
     child.on('error', (err) => { clearTimeout(timer); reject(err); });
     child.on('close', (code) => {
       clearTimeout(timer);
-      Object.values(pending).forEach((rest) => { if (rest.trim()) onLine(rest); });
-      code === 0 ? resolve() : reject(new Error(`\`${commandLabel}\` exited with code ${code}.`));
+      Object.values(pending).forEach((rest) => { if (rest.trim()) { capturedLines.push(rest); onLine(rest); } });
+      if (code === 0) { resolve(); return; }
+      const failureLines = extractFailureLines(capturedLines);
+      const detail = failureLines.length ? `Cause: ${failureLines.slice(-3).join(' | ')}` : '';
+      const err = new Error(`\`${commandLabel}\` exited with code ${code}.${detail ? ` ${detail}` : ''}`);
+      err.failureLines = failureLines;
+      reject(err);
     });
   });
 }
@@ -2957,6 +2983,7 @@ app.post(
   const allIssues = [];
   let phase1Ok = false;
   let phase3Ok = false;
+  let projectRootReady = false;
   let ghToken = null;
   let projectRoot = null;
   let keepSourceBackupDir = false;
@@ -3029,7 +3056,7 @@ app.post(
       status(1, 'failed', { error: err.message });
       allIssues.push({
         id: 'phase1::input-validation', phase: 1, category: 'input-validation',
-        severity: 'error', summary: err.message, file: null, line: null,
+        severity: 'error', score: scoreForIssue({ category: 'input-validation', severity: 'error' }), summary: err.message, file: null, line: null,
       });
       persistIssuesSnapshot();
     }
@@ -3077,7 +3104,7 @@ app.post(
         status(2, 'failed', { error: err.message });
         allIssues.push({
           id: 'phase2::gxp-documents', phase: 2, category: 'gxp-documents',
-          severity: 'error', summary: err.message, file: null, line: null,
+          severity: 'error', score: scoreForIssue({ category: 'gxp-documents', severity: 'error' }), summary: err.message, file: null, line: null,
         });
         persistIssuesSnapshot();
       }
@@ -3107,6 +3134,7 @@ app.post(
       await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
       log2('Created immutable source snapshot for final publish phase.');
       snapshotReady = true;
+      projectRootReady = true;
 
       log2('Check 1 — scanning for raw environment files (.env*)...');
       const envCheck = await checkEnvFiles(projectRoot);
@@ -3127,13 +3155,18 @@ app.post(
       status(3, 'failed', { error: err.message });
       allIssues.push({
         id: 'phase3::structure-audit', phase: 3, category: 'structure-audit',
-        severity: 'error', summary: err.message, file: null, line: null,
+        severity: 'error', score: scoreForIssue({ category: 'structure-audit', severity: 'error' }), summary: err.message, file: null, line: null,
       });
       persistIssuesSnapshot();
     }
 
     /* ---------------- Phase 4: security + AI compliance ---------------- */
-    if (!phase3Ok) {
+    // Gated on the project actually being staged on disk (projectRootReady),
+    // not on Phase 3 passing outright — a blocking .env file or failing unit
+    // test still leaves a scannable checkout, and this run's whole point is
+    // to surface every issue across every phase together, not stop at the
+    // first one (see the allIssues comment above).
+    if (!projectRootReady) {
       phaseLog(4)('Skipped — blocked by Phase 3 failure (no staged project root to scan).');
       status(4, 'skipped');
     } else {
@@ -3190,14 +3223,14 @@ app.post(
         status(4, 'failed', { error: err.message });
         allIssues.push({
           id: 'phase4::security-scan', phase: 4, category: 'security-scan',
-          severity: 'error', summary: err.message, file: null, line: null,
+          severity: 'error', score: scoreForIssue({ category: 'security-scan', severity: 'error' }), summary: err.message, file: null, line: null,
         });
         persistIssuesSnapshot();
       }
     }
 
     /* ---------------- Phase 5: local GitHub Actions run (act) ---------------- */
-    if (!phase3Ok) {
+    if (!projectRootReady) {
       phaseLog(5)('Skipped — blocked by Phase 3 failure (no staged project root to run CI against).');
       status(5, 'skipped');
     } else {
@@ -3219,10 +3252,24 @@ app.post(
       } catch (err) {
         log4(`✗ ${err.message}`);
         status(5, 'failed', { error: err.message });
-        allIssues.push({
-          id: 'phase5::governance-ci', phase: 5, category: 'governance-ci',
-          severity: 'error', summary: err.message, file: null, line: null,
-        });
+        // `act` (and git/gh/docker) failing only ever surfaces a generic
+        // "exited with code N" — worthless as a single finding. When the
+        // output actually contained recognizable failure lines (❌, "Error:",
+        // "Failure -", ...), report each one as its own issue instead of
+        // collapsing them into that one meaningless blob.
+        if (Array.isArray(err.failureLines) && err.failureLines.length > 0) {
+          err.failureLines.forEach((failureLine, i) => {
+            allIssues.push({
+              id: `phase5::governance-ci::${i}`, phase: 5, category: 'governance-ci',
+              severity: 'error', score: scoreForIssue({ category: 'governance-ci', severity: 'error' }), summary: failureLine, file: null, line: null,
+            });
+          });
+        } else {
+          allIssues.push({
+            id: 'phase5::governance-ci', phase: 5, category: 'governance-ci',
+            severity: 'error', score: scoreForIssue({ category: 'governance-ci', severity: 'error' }), summary: err.message, file: null, line: null,
+          });
+        }
         persistIssuesSnapshot();
       }
     }
@@ -3280,7 +3327,9 @@ app.post(
 
     /* ---------------- Phase 6: provisioning + shipping ---------------- */
     if (dryRun) {
-      log6('Simulation mode (dryRun) — all checks passed; skipping repository provisioning and push.');
+      log6(allIssues.length > 0
+        ? 'Simulation mode (dryRun) — all flagged issues were fixed or overridden; skipping repository provisioning and push.'
+        : 'Simulation mode (dryRun) — all checks passed; skipping repository provisioning and push.');
       log6('The validated snapshot is kept so this run can be effectivated (provisioned + pushed for real) later, still gated on any unresolved blocking findings.');
       status(6, 'skipped');
       if (projectId !== null) {

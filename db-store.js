@@ -45,7 +45,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       email         TEXT UNIQUE NOT NULL,
       name          TEXT,
-      provider      TEXT NOT NULL DEFAULT 'local' CHECK (provider IN ('local','oidc')),
+      provider      TEXT NOT NULL DEFAULT 'local' CHECK (provider IN ('local','oidc','github')),
       password_hash TEXT,
       external_id   TEXT,
       created_at    TEXT NOT NULL DEFAULT (datetime('now'))
@@ -83,6 +83,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       phase        INTEGER,
       category     TEXT NOT NULL,
       severity     TEXT NOT NULL,
+      score        INTEGER,
       summary      TEXT NOT NULL,
       file         TEXT,
       line         INTEGER,
@@ -104,6 +105,14 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       connected_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+
+  // Migration for DBs created before the issues.score column existed —
+  // CREATE TABLE IF NOT EXISTS above is a no-op on an already-existing table.
+  try {
+    db.exec('ALTER TABLE issues ADD COLUMN score INTEGER');
+  } catch (e) {
+    if (!/duplicate column/i.test(e.message)) throw e;
+  }
 
   const stmt = {
     insertProject: db.prepare('INSERT INTO projects (job_id, org, repo, gxp) VALUES (?, ?, ?, ?)'),
@@ -149,8 +158,14 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
        ON CONFLICT(provider, external_id)
        DO UPDATE SET email = excluded.email, name = excluded.name`
     ),
+    upsertGithubUser: db.prepare(
+      `INSERT INTO users (email, name, provider, external_id) VALUES (?, ?, 'github', ?)
+       ON CONFLICT(provider, external_id)
+       DO UPDATE SET email = excluded.email, name = excluded.name`
+    ),
     getUserByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
     getUserByOidcSub: db.prepare(`SELECT * FROM users WHERE provider = 'oidc' AND external_id = ?`),
+    getUserByGithubId: db.prepare(`SELECT * FROM users WHERE provider = 'github' AND external_id = ?`),
     getUserById: db.prepare('SELECT id, email, name, provider, created_at FROM users WHERE id = ?'),
 
     insertSession: db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)'),
@@ -174,11 +189,11 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     deleteProjectIssues: db.prepare('DELETE FROM issues WHERE project_id = ?'),
     insertIssue: db.prepare(
-      `INSERT INTO issues (project_id, issue_id, phase, category, severity, summary, file, line, snippet_json, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
     getProjectIssues: db.prepare(
-      `SELECT issue_id, phase, category, severity, summary, file, line, snippet_json, status, created_at
+      `SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, status, created_at
        FROM issues WHERE project_id = ? ORDER BY id`
     ),
     countOpenIssues: db.prepare(
@@ -272,6 +287,11 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       return stmt.getUserByOidcSub.get(externalId);
     },
 
+    upsertGithubUser(email, name, externalId) {
+      stmt.upsertGithubUser.run(email, name || null, externalId);
+      return stmt.getUserByGithubId.get(externalId);
+    },
+
     getUserByEmail(email) {
       return stmt.getUserByEmail.get(email);
     },
@@ -335,6 +355,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
           Number.isInteger(issue.phase) ? issue.phase : null,
           issue.category,
           issue.severity,
+          typeof issue.score === 'number' ? issue.score : null,
           issue.summary,
           issue.file || null,
           issue.line ?? null,
@@ -350,6 +371,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
         phase: row.phase,
         category: row.category,
         severity: row.severity,
+        score: row.score,
         summary: row.summary,
         file: row.file,
         line: row.line,

@@ -204,6 +204,9 @@
         <p class="text-sm font-semibold text-slate-800">Final review — all flagged issues, before provisioning &amp; push</p>
         <p class="text-xs text-slate-500 mt-0.5">Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.</p>
       </div>
+      <div class="px-6 pt-3 flex justify-end">
+        <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline">Expand all code ▸</button>
+      </div>
       <div id="reviewBulkBar" class="hidden px-6 pt-3 pb-1 border-b border-slate-100 bg-slate-50">
         <div class="flex items-center gap-2 text-[11px] text-slate-600">
           <label class="flex items-center gap-1.5 cursor-pointer select-none">
@@ -241,6 +244,10 @@
           <p id="issuesViewSubtitle" class="text-xs text-slate-500 mt-0.5">Read-only — issue-by-issue detail, updated live as the run progresses.</p>
         </div>
         <div class="flex items-center gap-3 shrink-0">
+          <button id="issuesViewExpandAllBtn" type="button"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+            Expand all code ▸
+          </button>
           <button id="issuesViewDownloadBtn" type="button"
                   class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
             Download ⤓
@@ -358,6 +365,15 @@
           <div class="flex items-center justify-center gap-3 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
             <span class="text-xs text-slate-500">Not signed in — required to attribute guideline overrides.</span>
             <a href="/api/auth/oidc/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with company IdP →</a>
+          </div>`;
+        return;
+      }
+
+      if (authState.mode === 'github') {
+        bar.innerHTML = `
+          <div class="flex items-center justify-center gap-3 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+            <span class="text-xs text-slate-500">Not signed in — required to attribute guideline overrides.</span>
+            <a href="/api/auth/github/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with GitHub →</a>
           </div>`;
         return;
       }
@@ -714,6 +730,16 @@
       const statusBadge = !interactive && issue.status === 'overridden'
         ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">OVERRIDDEN</span>'
         : '';
+      // Fixed per-category 0-10 severity score (see override-engine.js
+      // scoreForIssue) — independent of the blocking/warning badge, which
+      // only reflects override-gating status. Older persisted issues from
+      // before this field existed simply omit the chip.
+      const scoreTier = typeof issue.score === 'number'
+        ? (issue.score >= 8 ? 'bg-rose-50 text-rose-700 border-rose-200' : issue.score >= 5 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200')
+        : null;
+      const scoreBadge = scoreTier
+        ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${scoreTier}" title="Severity score (0-10)">${issue.score}/10</span>`
+        : '';
       const hasSnippet = !!(issue.snippet && Array.isArray(issue.snippet.lines) && issue.snippet.lines.length);
       const viewCodeBtn = hasSnippet
         ? `<button type="button" class="view-code-toggle text-[11px] font-semibold text-brand-600 hover:underline" data-idx="${idx}">View code ▸</button>`
@@ -736,6 +762,7 @@
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
               ${badge}
+              ${scoreBadge}
               ${statusBadge}
               ${issue.phase ? `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">PHASE ${issue.phase}</span>` : ''}
               <span class="text-[10px] font-semibold text-slate-400 uppercase">${escapeHtml(issue.category)}</span>
@@ -764,14 +791,31 @@
       }
     }
 
-    function wireIssueListInteractions(list) {
-      list.querySelectorAll('.view-code-toggle').forEach((btn) => {
+    function setViewCodeState(list, btn, expanded) {
+      const block = list.querySelector(`.code-preview[data-idx="${btn.dataset.idx}"]`);
+      if (!block) return;
+      block.classList.toggle('hidden', !expanded);
+      btn.textContent = expanded ? 'Hide code ▾' : 'View code ▸';
+    }
+
+    function wireIssueListInteractions(list, expandAllBtn) {
+      const toggles = Array.from(list.querySelectorAll('.view-code-toggle'));
+      toggles.forEach((btn) => {
         btn.addEventListener('click', () => {
-          const block = list.querySelector(`.code-preview[data-idx="${btn.dataset.idx}"]`);
-          const nowHidden = block.classList.toggle('hidden');
-          btn.textContent = nowHidden ? 'View code ▸' : 'Hide code ▾';
+          const nowHidden = list.querySelector(`.code-preview[data-idx="${btn.dataset.idx}"]`).classList.contains('hidden');
+          setViewCodeState(list, btn, nowHidden);
+          if (expandAllBtn) expandAllBtn.textContent = toggles.every((b) => b.textContent.startsWith('Hide')) ? 'Collapse all code ▾' : 'Expand all code ▸';
         });
       });
+      if (expandAllBtn) {
+        expandAllBtn.classList.toggle('hidden', toggles.length === 0);
+        expandAllBtn.textContent = 'Expand all code ▸';
+        expandAllBtn.onclick = () => {
+          const expand = expandAllBtn.textContent.startsWith('Expand');
+          toggles.forEach((btn) => setViewCodeState(list, btn, expand));
+          expandAllBtn.textContent = expand ? 'Collapse all code ▾' : 'Expand all code ▸';
+        };
+      }
       attachAiTooltips(list);
     }
 
@@ -785,7 +829,7 @@
       list.innerHTML = issues.length
         ? issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: false })).join('')
         : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
-      wireIssueListInteractions(list);
+      wireIssueListInteractions(list, $('issuesViewExpandAllBtn'));
 
       const downloadBtn = $('issuesViewDownloadBtn');
       downloadBtn.classList.toggle('hidden', issues.length === 0);
@@ -814,7 +858,8 @@
       lines.push('');
       issues.forEach((issue, i) => {
         const loc = issue.file ? `${issue.file}${issue.line ? ':' + issue.line : ''}` : (issue.phase ? `Phase ${issue.phase}` : 'unknown location');
-        lines.push(`## ${i + 1}. [${(issue.severity || 'warning').toUpperCase()}] ${issue.category || 'issue'} — ${loc}`);
+        const scoreTag = typeof issue.score === 'number' ? ` (${issue.score}/10)` : '';
+        lines.push(`## ${i + 1}. [${(issue.severity || 'warning').toUpperCase()}]${scoreTag} ${issue.category || 'issue'} — ${loc}`);
         if (issue.status === 'overridden') lines.push('(already acknowledged/overridden in a previous review)');
         lines.push('');
         lines.push(issue.summary || '(no summary)');
@@ -886,7 +931,7 @@
       errorEl.textContent = '';
 
       list.innerHTML = issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: true })).join('');
-      wireIssueListInteractions(list);
+      wireIssueListInteractions(list, $('reviewExpandAllBtn'));
 
       const bulkBar = $('reviewBulkBar');
       const selectAllCb = $('reviewSelectAll');
@@ -1129,7 +1174,7 @@
       stopBtn.textContent = 'Cancel';
 
       list.innerHTML = issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: issue.status !== 'overridden' })).join('');
-      wireIssueListInteractions(list);
+      wireIssueListInteractions(list, $('reviewExpandAllBtn'));
 
       const bulkBar = $('reviewBulkBar');
       const selectAllCb = $('reviewSelectAll');

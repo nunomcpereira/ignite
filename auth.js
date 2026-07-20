@@ -2,10 +2,12 @@
 
 /**
  * Pluggable authentication: AUTH_MODE = 'standalone' (local email/password
- * accounts) or 'oidc' (delegate to a company IdP — Okta/Entra/Auth0/any
- * standards-compliant OIDC provider). Both modes converge on the same
- * session-cookie + `req.user` shape, which is what audit-log attribution
- * (who overrode a flagged guideline) relies on downstream.
+ * accounts), 'oidc' (delegate to a company IdP — Okta/Entra/Auth0/any
+ * standards-compliant OIDC provider), or 'github' (sign in with a GitHub
+ * account via github.oauth — also connects that account for push in the
+ * same step). All modes converge on the same session-cookie + `req.user`
+ * shape, which is what audit-log attribution (who overrode a flagged
+ * guideline) relies on downstream.
  */
 
 const crypto = require('crypto');
@@ -54,7 +56,7 @@ function isValidEmail(email) {
  * @param {object} githubConfig - CONFIG.github: { orgs, bootstrapBranch, oauth: {...} }
  */
 function createAuth(store, authConfig = {}, githubConfig = {}) {
-  const mode = authConfig.mode === 'oidc' ? 'oidc' : 'standalone';
+  const mode = ['oidc', 'github'].includes(authConfig.mode) ? authConfig.mode : 'standalone';
   const allowSelfRegistration = authConfig.allowSelfRegistration !== false;
   const secureCookies = process.env.NODE_ENV === 'production';
 
@@ -229,7 +231,7 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
    * access token for that purpose.
    */
   const githubOauth = githubConfig.oauth || {};
-  const pendingGithubStates = new Map(); // state -> { userId, createdAt }
+  const pendingGithubStates = new Map(); // state -> { userId, isLogin, createdAt }
 
   router.get('/api/auth/github/status', (req, res) => {
     if (!req.user) return res.json({ connected: false });
@@ -237,21 +239,31 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
     res.json({ connected: !!conn, login: conn?.github_login || null });
   });
 
-  router.get('/api/auth/github/connect', requireAuth, (req, res) => {
+  function startGithubOauth(req, res, { isLogin }) {
     if (!githubOauth.clientId || !githubOauth.redirectUri) {
       return res.status(503).json({ error: 'GitHub OAuth is not configured: set github.oauth.clientId, clientSecret, and redirectUri.' });
     }
     const state = crypto.randomBytes(24).toString('hex');
-    pendingGithubStates.set(state, { userId: req.user.id, createdAt: Date.now() });
+    pendingGithubStates.set(state, { userId: isLogin ? null : req.user.id, isLogin, createdAt: Date.now() });
     for (const [s, v] of pendingGithubStates) if (Date.now() - v.createdAt > 10 * 60_000) pendingGithubStates.delete(s);
 
     const url = new URL('https://github.com/login/oauth/authorize');
     url.searchParams.set('client_id', githubOauth.clientId);
     url.searchParams.set('redirect_uri', githubOauth.redirectUri);
-    url.searchParams.set('scope', githubOauth.scope || 'repo');
+    // Signing in (identity) additionally needs the account's email; connecting
+    // an already-signed-in user to push on their behalf only needs 'repo'.
+    url.searchParams.set('scope', isLogin ? `${githubOauth.scope || 'repo'} user:email` : githubOauth.scope || 'repo');
     url.searchParams.set('state', state);
     res.redirect(url.toString());
-  });
+  }
+
+  // Sign in to Ignite itself via GitHub identity — only meaningful when
+  // auth.mode === 'github' (the standalone/OIDC modes have their own login).
+  if (mode === 'github') {
+    router.get('/api/auth/github/login', (req, res) => startGithubOauth(req, res, { isLogin: true }));
+  }
+
+  router.get('/api/auth/github/connect', requireAuth, (req, res) => startGithubOauth(req, res, { isLogin: false }));
 
   router.get('/api/auth/github/callback', async (req, res) => {
     try {
@@ -259,7 +271,7 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
       const pending = state && pendingGithubStates.get(String(state));
       if (!pending) throw new Error('Unknown or expired GitHub OAuth state.');
       pendingGithubStates.delete(String(state));
-      if (!req.user || req.user.id !== pending.userId) {
+      if (!pending.isLogin && (!req.user || req.user.id !== pending.userId)) {
         throw new Error('GitHub connection must be completed in the same session that started it.');
       }
 
@@ -278,19 +290,31 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
         throw new Error(tokenData.error_description || tokenData.error || 'GitHub did not return an access token.');
       }
 
-      const userRes = await fetch('https://api.github.com/user', {
-        headers: {
-          Authorization: `Bearer ${tokenData.access_token}`,
-          'User-Agent': 'ignite-onboarding-gatekeeper',
-        },
-      });
+      const authHeaders = {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        'User-Agent': 'ignite-onboarding-gatekeeper',
+      };
+      const userRes = await fetch('https://api.github.com/user', { headers: authHeaders });
       const ghUser = await userRes.json();
       if (!ghUser.login) throw new Error('Could not read the GitHub account login.');
 
-      store.upsertGithubConnection(req.user.id, ghUser.login, tokenData.access_token, tokenData.scope || '');
+      if (pending.isLogin) {
+        let email = ghUser.email;
+        if (!email) {
+          const emailsRes = await fetch('https://api.github.com/user/emails', { headers: authHeaders });
+          const emails = await emailsRes.json();
+          const primary = Array.isArray(emails) && (emails.find((e) => e.primary && e.verified) || emails.find((e) => e.verified));
+          email = primary?.email || `${ghUser.login}@users.noreply.github.com`;
+        }
+        const user = store.upsertGithubUser(email, ghUser.name || ghUser.login, String(ghUser.id));
+        issueSession(res, user.id);
+        store.upsertGithubConnection(user.id, ghUser.login, tokenData.access_token, tokenData.scope || '');
+      } else {
+        store.upsertGithubConnection(req.user.id, ghUser.login, tokenData.access_token, tokenData.scope || '');
+      }
       res.redirect('/');
     } catch (err) {
-      res.status(401).send(`GitHub connection failed: ${escapeHtml(err.message)}`);
+      res.status(401).send(`GitHub authentication failed: ${escapeHtml(err.message)}`);
     }
   });
 
