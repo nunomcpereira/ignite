@@ -31,18 +31,39 @@ A single-page web app that acts as a compliance gate for onboarding code into a 
 
 ## Pipeline Checks
 
-| Phase | Check | Failure condition |
-|---|---|---|
-| 2 | Structure audit | Any file named `.env` or `.env.*` anywhere in the tree |
-| 3 | Secret leakage | Line matches `/(password\|aws_secret\|api_key\|token\|private_key)\s*[:=]\s*['" \t]*[a-zA-Z0-9_\-.~]{10,}/i` in any text file (binaries, `node_modules`, `.git`, etc. excluded). Optionally supplemented by [gitleaks](https://github.com/gitleaks/gitleaks) — see below. |
-| 3 | AI governance | A `.py`/`.js`/`.ts` file calls `.invoke(` / `.stream(` / `.ainvoke(` / `.astream(` but never mentions `recursion_limit` |
-| 3 | LLM deep-scan (always on) | A local LLM reports critical/high vulnerabilities **and** `LLM_SCAN_MODE=block`; otherwise findings are advisory (amber). Skipped softly if the endpoint is down. |
-| 4 | Org governance CI (act) | Any job of the central `ai-guardrails-orchestrator.yml` fails when executed locally in Docker. Soft-skipped if `act`/Docker are unavailable. |
-| 5 | Shipping | Any `git`/`gh` command exits non-zero |
+Six phases, run in order. Phases 1, 3, and 6 always run — everything downstream depends on them. Phases 2, 4, and 5 can be turned on/off in `config.json` (see [Configurable phases](#configurable-phases--gxp) below); a disabled phase is hidden from the UI entirely and never checked, not just skipped.
 
-### Phase 4 — running the org's GitHub Actions locally
+| Phase | Check | Failure condition | Configurable? |
+|---|---|---|---|
+| 1 | Input & metadata | Invalid org/repo name, missing GitHub auth | Always on |
+| 2 | GxP validation documents | GxP declared but no validation document (upload or link) attached | **Off by default** — see [GxP](#configurable-phases--gxp) |
+| 3 | Structure audit | Any file named `.env` or `.env.*` anywhere in the tree | Always on |
+| 3 | License compliance | A dependency manifest declares a package with a commercial/proprietary/unrecognized license (red = blocking error, copyleft = warning), or a `LICENSE`/`LICENCE` file anywhere in the tree contains commercial/proprietary terms (e.g. a `Licensee:` grant). Runs first inside Phase 3, before the throwing checks, so findings survive a failed structure audit. See [Dependency & license compliance](#dependency--license-compliance-ort--licensee--depsdev). | Always on |
+| 3 | Unit tests | The project's native test suite (Node/Go/Rust/Python/Java, auto-detected) fails in an isolated Docker container | Always on |
+| 4 | Secret leakage | Line matches `/(password\|aws_secret\|api_key\|token\|private_key)\s*[:=]\s*['" \t]*[a-zA-Z0-9_\-.~]{10,}/i` in any text file (binaries, `node_modules`, `.git`, etc. excluded). Optionally supplemented by [gitleaks](#gitleaks) — see below. | On/off |
+| 4 | AI governance | A `.py`/`.js`/`.ts` file calls `.invoke(` / `.stream(` / `.ainvoke(` / `.astream(` but never mentions `recursion_limit` | On/off |
+| 4 | LLM deep-scan | A local LLM reports critical/high vulnerabilities **and** `LLM_SCAN_MODE=block`; otherwise findings are advisory (amber). Skipped softly if the endpoint is down. | On/off |
+| 5 | Org governance CI (act) | Any job of the central `ai-guardrails-orchestrator.yml` fails when executed locally in Docker. Soft-skipped if `act`/Docker are unavailable. | On/off |
+| 6 | Shipping | Any `git`/`gh` command exits non-zero | Always on (`dryRun` is the "don't ship" switch, not a phase toggle) |
 
-Instead of replicating the logic of the centrally defined governance workflows, Phase 4 executes the **real** workflow files with [`act`](https://github.com/nektos/act):
+### Configurable phases + GxP
+
+`config.json`'s optional `phases` array overrides any phase's title, description, or `enabled` state by `id` — anything not listed keeps its built-in default:
+
+```jsonc
+"phases": [
+  { "id": 2, "enabled": true },                                     // turn GxP on
+  { "id": 5, "enabled": false, "title": "Org Governance CI (off)" }  // turn a phase off + relabel it
+]
+```
+
+- **Phase 2 (GxP) defaults to disabled** — most orgs onboarding through Ignite aren't running a GxP-regulated process, so the "Is this a GxP-regulated process?" question and mandatory validation-document upload are hidden from the UI until explicitly enabled. A client that sends `gxp: true` while Phase 2 is disabled is ignored server-side too — disabling it is a real "not checked", not just a UI hide.
+- **Phases 1, 3, and 6 can't be disabled** — Phase 3 stages the project every later phase scans/ships, Phase 1 creates the project record, and Phase 6 is the pipeline's actual purpose (`dryRun` is how you skip shipping without disabling a phase). An `enabled: false` override on these ids is silently ignored.
+- Title/description overrides apply everywhere the phase is named: the UI timeline, `GET /api/config`, and failure emails.
+
+### Phase 5 — running the org's GitHub Actions locally
+
+Instead of replicating the logic of the centrally defined governance workflows, Phase 5 executes the **real** workflow files with [`act`](https://github.com/nektos/act):
 
 1. The orchestrator (`ai-guardrails-orchestrator.yml`) is fetched fresh from `ai-governance-poc-2026/devops-governance@main` via `gh api` and cached outside the project tree (never committed/pushed).
 2. `act pull_request -W <orchestrator>` runs it against the staged project in Docker (`catthehacker/ubuntu:act-latest` runner image). The reusable sub-workflows it `uses:` (node/python/java/rust/go/ai-agent/security pipelines) are resolved from GitHub at run time — exactly as they would be in a real PR, so local results match the remote gate.
@@ -52,9 +73,46 @@ Requires `brew install act` and a running Docker daemon; if either is missing th
 
 A failed check halts the pipeline, reports offending file paths and line numbers in the phase's terminal widget, marks downstream phases **Skipped**, and cleans up staging.
 
-### Optional gitleaks-powered secret scan
+## External tools
 
-The regex secret scan always runs. If [gitleaks](https://github.com/gitleaks/gitleaks) is installed and enabled in config, it runs as an additional pass over the same staging tree and its findings (tagged `tool: "gitleaks"`) are merged in — deduped against anything the regex already caught at the same file/line. Disabled by default; if it's enabled but the binary isn't found, the scan soft-fails back to regex-only results (a warning is logged, nothing blocks the pipeline).
+Ignite integrates with three optional external tools for dependency/license and secret scanning. **All three are soft dependencies** — Ignite works without any of them installed, falling back to its own built-in scanner, and never fails a run because one is missing. `GET /api/tools/status` reports live connected/disconnected state for each (also shown as a panel in the top-right corner of the UI, next to the sign-in button); which one actually ran shows up in the Dependencies view's "Engine:" line and in Phase 3's terminal log.
+
+| Tool | What it does in Ignite | Install |
+|---|---|---|
+| [ORT](https://oss-review-toolkit.org/ort/) (OSS Review Toolkit) | Resolves real per-dependency licenses straight from each ecosystem's package manager/lockfile (Maven, NPM, Cargo, Go modules, pip) — far more accurate than regex-parsing manifests. Ignite runs `ort analyze` against the staged project and reads back `analyzer-result.json`. | See [Installing ORT](#installing-ort) below — no Homebrew formula; it's a ~250 MB release archive. |
+| [licensee](https://github.com/licensee/licensee) | GitHub's own license-detection gem — identifies the *project's own* declared license (root `LICENSE` file) for the "This project's own declared license" row in the Dependencies view. Independent of the per-dependency scan above. | `gem install licensee` (needs Ruby ≥ 3.0 — macOS system Ruby is 2.6, see below). |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | Supplemental secret scanner. Ignite's own regex secret scan always runs regardless; gitleaks, if installed **and enabled in config** (`security.gitleaks.enabled`, off by default), runs as an extra pass over the same staged files and its findings are merged in — deduped against anything the regex scan already caught at the same file/line. | `brew install gitleaks` |
+
+### Installing ORT
+
+ORT isn't on Homebrew. Download a release archive and symlink the binary onto `PATH`:
+
+```bash
+mkdir -p ~/tools && cd ~/tools
+gh release download 91.1.0 -R oss-review-toolkit/ort -p 'ort-91.1.0.tgz'
+tar xzf ort-91.1.0.tgz
+ln -sf ~/tools/ort-91.1.0/bin/ort /opt/homebrew/bin/ort   # or anywhere else on PATH
+ort --version   # sanity check
+```
+
+Requires a JDK ≥ 21 on `PATH` (`brew install openjdk`). ORT resolves each ecosystem independently and needs that ecosystem's own tooling/lockfile to do it — e.g. NPM needs a `package-lock.json` (`allowDynamicVersions` isn't set), Cargo needs the `cargo` binary, pip needs `python-inspector`. When ORT can't resolve an ecosystem, Ignite's `scanDependencyLicenses` falls back to its own manifest parser + deps.dev lookup **for that ecosystem only** — the rest of the manifests still use ORT's results (`engine: "ort+fallback"` in the Dependencies view, vs. plain `"ort"` when it resolved everything or `"fallback"` when it isn't installed at all).
+
+ORT also only populates each manifest's real file path (`java/pom.xml`, not a placeholder) when it can detect VCS context — Ignite handles this automatically by `git init`-ing a throwaway commit in the staging directory before invoking `ort analyze` (skipped if the upload already contains a `.git`), so this isn't something you need to set up yourself.
+
+### Installing licensee
+
+macOS ships Ruby 2.6, which licensee's dependencies don't support. Install a newer Ruby via Homebrew first:
+
+```bash
+brew install ruby
+/opt/homebrew/opt/ruby/bin/gem install licensee
+ln -sf /opt/homebrew/lib/ruby/gems/*/bin/licensee /opt/homebrew/bin/licensee
+licensee version   # sanity check
+```
+
+### gitleaks
+
+The regex secret scan always runs. If gitleaks is installed and enabled in config, it runs as an additional pass over the same staging tree and its findings (tagged `tool: "gitleaks"`) are merged in — deduped against anything the regex already caught at the same file/line. Disabled by default; if it's enabled but the binary isn't found, the scan soft-fails back to regex-only results (a warning is logged, nothing blocks the pipeline).
 
 ```jsonc
 "security": {
@@ -65,6 +123,14 @@ The regex secret scan always runs. If [gitleaks](https://github.com/gitleaks/git
   }
 }
 ```
+
+### Dependency & license compliance (ORT / licensee / deps.dev)
+
+Every pipeline run (interactive, `validate-all`, and `onboard`) scans dependency manifests and LICENSE files as part of Phase 3, automatically — no separate action needed. Findings show up as regular, file-level, overridable issues (category `license-compliance`) alongside secrets/AI-governance findings, gate the run the same way, and highlight the exact line in Ignite Studio's file viewer.
+
+- **Per-dependency licenses:** ORT if installed (see above), else this app's own manifest parsers (`package.json`, `Cargo.toml`, `requirements.txt`, `go.mod`, `pom.xml`) + a lookup against the public [deps.dev](https://deps.dev) API. Classified into three tiers: green (permissive OSS: MIT, Apache-2.0, BSD, ...), amber/copyleft (GPL, AGPL, LGPL, MPL, ...), red/commercial (SSPL, BUSL, `Commercial`/`Proprietary`, or anything unrecognized — unrecognized is treated as risk until reviewed, not assumed safe).
+- **The project's own license:** licensee if installed (project root only), plus a dependency-free scan of every `LICENSE`/`LICENCE` file anywhere in the tree (not just the root — a multi-language monorepo has one per module) for commercial/proprietary language, extracting `Licensee:`/`Licensor:` fields when present.
+- On demand, the same scan is also available standalone: `POST /api/dependencies/check` with `{ "projectPath": "..." }` (agent/CI use), or via the "Dependencies" button in Ignite Studio (useful for a byte-for-byte look at every manifest's raw compliance table, independent of the issue list).
 
 ## Hardening notes
 
@@ -119,13 +185,19 @@ All settings live in `config.json` next to `server.js` (environment variables ov
       "binary": "gitleaks",
       "configPath": ""
     }
-  }
+  },
+  // Optional per-phase title/description/enabled overrides — see
+  // "Configurable phases + GxP" above. Omit entirely to keep every
+  // built-in default (Phase 2/GxP disabled, everything else enabled).
+  "phases": [
+    { "id": 2, "enabled": true }
+  ]
 }
 ```
 
 ### Failure emails
 
-When any phase fails, Ignite emails a detailed report to `notifications.to`: target repo, failed phase, a status table of all five phases, and the full terminal logs of every failed phase.
+When any phase fails, Ignite emails a detailed report to `notifications.to`: target repo, failed phase, a status table of all six phases, and the full terminal logs of every failed phase.
 
 - **With SMTP credentials** (`smtp.host`+`user`+`pass` set): sends through that server. For Gmail, create an [app password](https://myaccount.google.com/apppasswords) and paste it into `pass` — your normal account password will not work.
 - **Without credentials**: falls back to the local `sendmail` binary. The message is handed to the OS mail system, but delivery to external addresses (Gmail) is unreliable without a configured relay — set the app password for dependable delivery.
@@ -361,3 +433,29 @@ regex hits at the same file/line, and the soft-fail path when gitleaks is
 enabled but the binary is missing. A fake `gitleaks` CLI stand-in
 (`test/helpers.js`) is used so the suite doesn't require a real gitleaks
 install.
+
+`test/license-scan.test.js` covers the ORT/licensee integration the same
+way — `test/helpers.js`'s `makeFakeLicenseTools` writes fake `ort`/`licensee`
+CLIs onto a throwaway PATH so `runOrtAnalyze`/`runLicenseeDetect`/
+`scanDependencyLicenses` are exercised (parsing, tier classification, the
+`ort+fallback` merge when ORT only resolves some ecosystems, and soft-skip
+to the built-in fallback when both tools are missing/broken) without either
+tool actually installed.
+
+### End-to-end (Playwright)
+
+```bash
+npm run test:e2e
+```
+
+Spawns a real Ignite server on a throwaway port, uploads the
+`aigovernancedevops/vulnerable-app-multilang` fixture through the actual
+browser UI, and drives it through Ignite Studio:
+
+- `e2e/studio-license-issues.spec.js` — proves license-compliance findings
+  appear automatically in the review gate and in Studio's file tree/issue
+  panel/line highlights, with no manual "Dependencies" click needed.
+- `e2e/ort-licensee-engines.spec.js` — spawns the server with fake ORT/
+  licensee CLIs on PATH and asserts the Dependencies view reports
+  `Engine: ORT (OSS Review Toolkit)` and the licensee-detected project
+  license, proving the real tool-invocation path (not just the fallback).

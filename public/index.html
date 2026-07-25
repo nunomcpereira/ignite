@@ -55,8 +55,11 @@
       <p class="text-sm text-slate-500">Onboarding gatekeeper — upload a project · pass compliance gates · ship to GitHub</p>
     </header>
 
-    <!-- Auth bar -->
-    <div id="authBar" class="max-w-md mx-auto mb-8 text-sm"></div>
+    <!-- Auth bar + external tools status, stacked in the top-right corner -->
+    <div class="fixed top-4 right-4 z-40 flex flex-col items-end gap-2">
+      <div id="authBar" class="text-sm"></div>
+      <div id="toolsBar" class="text-sm"></div>
+    </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-8 items-start">
     <main class="min-w-0">
@@ -107,8 +110,10 @@
         </div>
       </div>
 
-      <!-- GxP declaration + mandatory validation documents -->
-      <div class="mt-5 border border-slate-200 rounded-xl p-4 bg-slate-50/60">
+      <!-- GxP declaration + mandatory validation documents — hidden unless
+           Phase 2 is enabled server-side (config.json's phases[id=2].enabled;
+           off by default), see applyServerConfig(). -->
+      <div id="gxpFeatureBlock" class="hidden mt-5 border border-slate-200 rounded-xl p-4 bg-slate-50/60">
         <p class="text-xs font-semibold text-slate-600 mb-2">Is this a GxP-regulated process?</p>
         <div class="flex items-center gap-4">
           <label class="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
@@ -157,6 +162,11 @@
     </section>
 
     <!-- Pipeline stepper -->
+    <div id="historyViewBanner" class="hidden mb-3 flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-xl px-4 py-2.5">
+      <svg class="w-4 h-4 text-violet-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <p class="flex-1 min-w-0 text-xs text-violet-700"><span class="font-semibold">Viewing history</span> — <span id="historyViewLabel"></span> — read-only.</p>
+      <button id="historyViewBackBtn" type="button" class="text-xs font-semibold text-violet-700 hover:underline shrink-0">Back to live ✕</button>
+    </div>
     <div class="flex items-center justify-end">
       <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
         View flagged issues
@@ -218,7 +228,10 @@
           <button type="button" id="reviewFilterErrors" class="text-rose-600 hover:underline">Errors only</button>
           <button type="button" id="reviewFilterWarnings" class="text-amber-600 hover:underline">Warnings only</button>
         </div>
-        <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline">Expand all code ▸</button>
+        <div class="flex items-center gap-3">
+          <button type="button" id="reviewStudioBtn" class="text-[11px] font-semibold text-violet-600 hover:underline">Open in Ignite Studio ⧉</button>
+          <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline">Expand all code ▸</button>
+        </div>
       </div>
       <div id="reviewBulkBar" class="hidden px-6 pt-3 pb-1 border-b border-slate-100 bg-slate-50">
         <div class="flex items-center gap-2 text-[11px] text-slate-600">
@@ -244,6 +257,50 @@
         <p id="reviewError" class="text-xs text-rose-600 flex-1"></p>
         <button id="reviewStopBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Stop pipeline</button>
         <button id="reviewProceedBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ignite Studio: full-screen file tree + editor + AI-fix panel, only
+       reachable while a run is paused at the review gate (staging dir still
+       on disk). Not a real route — a full-viewport overlay over the app. -->
+  <div id="studioView" class="hidden fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-3 sm:p-6">
+    <div class="bg-slate-100 rounded-2xl shadow-2xl w-full h-full max-w-[1600px] flex flex-col overflow-hidden">
+      <div class="flex items-center gap-3 px-5 py-3 bg-slate-900 text-white shrink-0 rounded-t-2xl">
+        <span class="text-sm font-semibold">🧪 Ignite Studio</span>
+        <span id="studioSubtitle" class="text-xs text-slate-400"></span>
+        <span class="flex-1"></span>
+        <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700">📦 Dependencies</button>
+        <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700">Rescan ↻</button>
+        <button id="studioCloseBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-600 hover:bg-slate-800">Close ✕</button>
+      </div>
+      <p id="studioError" class="hidden text-xs text-rose-600 bg-rose-50 border-b border-rose-200 px-5 py-2"></p>
+      <div id="studioSummaryBar" class="hidden text-[11px] text-slate-600 bg-white border-b border-slate-100 px-5 py-2"></div>
+      <div class="flex-1 min-h-0 flex overflow-hidden">
+        <!-- File tree -->
+        <div class="w-64 shrink-0 border-r border-slate-200 bg-white overflow-y-auto flex flex-col">
+          <div class="sticky top-0 bg-white border-b border-slate-100">
+            <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Files</p>
+            <input id="studioTreeFilter" type="text" placeholder="Filter files…" class="w-[calc(100%-1.5rem)] mx-3 my-2 text-[11px] px-2 py-1 rounded border border-slate-200" />
+          </div>
+          <div id="studioTree" class="text-xs flex-1 overflow-y-auto"></div>
+        </div>
+        <!-- Code pane -->
+        <div class="flex-1 min-w-0 flex flex-col border-r border-slate-200 bg-white">
+          <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
+            <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate">Select a file from the tree ←</span>
+            <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100">📦 View license compliance for this manifest</button>
+            <span id="studioDirtyBadge" class="hidden text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">UNSAVED</span>
+            <button id="studioEditBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50">Edit</button>
+            <button id="studioSaveBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">Save + rescan</button>
+          </div>
+          <div id="studioCodeWrap" class="flex-1 min-h-0 overflow-auto font-mono text-[12px] leading-relaxed"></div>
+        </div>
+        <!-- Issue detail -->
+        <div class="w-96 shrink-0 bg-white overflow-y-auto">
+          <p class="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest sticky top-0 bg-white border-b border-slate-100">Issue detail</p>
+          <div id="studioIssuePanel" class="p-3 text-xs text-slate-500"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -288,9 +345,13 @@
     /* Pipeline model                                                */
     /* ------------------------------------------------------------ */
     const MAX_ZIP_MB = 250;
-    const PHASES = [
+    // Fallback used only until /api/config answers (or if it fails) —
+    // mirrors server.js's DEFAULT_PHASE_META exactly, phase 2 excluded to
+    // match its default-disabled state. applyServerConfig() replaces this
+    // with the server's actual (possibly config-overridden) phase list —
+    // the single source of truth — and re-renders.
+    let PHASES = [
       { id: 1, title: 'Input & Metadata Configuration', desc: 'Validate archive and target repository metadata' },
-      { id: 2, title: 'GxP Validation Documents', desc: 'Mandatory for GxP processes · documents archived to the database' },
       { id: 3, title: 'Extraction, Structure Audit & Unit Tests', desc: 'Unpack to staging · deny raw .env* files · auto-detect Node/Go/Rust/Python/Java and run its native test suite in an isolated Docker container' },
       { id: 4, title: 'Security & AI Compliance Scan', desc: 'Credential leak regex · LangChain/LangGraph governance · LLM deep-scan' },
       { id: 5, title: 'Org Governance CI — GitHub Actions', desc: 'Runs devops-governance org workflows locally in Docker via act' },
@@ -355,6 +416,18 @@
       });
     }
 
+    // Small hover-triggered tooltip (info dot + bubble) — used to explain
+    // *why* signing in matters without permanently taking up space next to
+    // the sign-in link in the top-right corner.
+    function authTooltip(text) {
+      return `<span class="relative inline-flex group">
+        <span class="w-4 h-4 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 text-[10px] font-bold cursor-default select-none">i</span>
+        <span class="pointer-events-none absolute top-full right-0 mt-1.5 w-56 rounded-lg bg-slate-800 text-white text-[11px] leading-snug px-2.5 py-1.5 opacity-0 scale-95 origin-top-right transition duration-100 group-hover:opacity-100 group-hover:scale-100 shadow-lg z-50">
+          ${escapeHtml(text)}
+        </span>
+      </span>`;
+    }
+
     function renderAuthBar() {
       const bar = $('authBar');
       if (authState.user) {
@@ -375,8 +448,8 @@
 
       if (authState.mode === 'oidc') {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-3 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
-            <span class="text-xs text-slate-500">Not signed in — required to attribute guideline overrides.</span>
+          <div class="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+            ${authTooltip('Not signed in — required to attribute guideline overrides.')}
             <a href="/api/auth/oidc/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with company IdP →</a>
           </div>`;
         return;
@@ -384,8 +457,8 @@
 
       if (authState.mode === 'github') {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-3 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
-            <span class="text-xs text-slate-500">Not signed in — required to attribute guideline overrides.</span>
+          <div class="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+            ${authTooltip('Not signed in — required to attribute guideline overrides.')}
             <a href="/api/auth/github/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with GitHub →</a>
           </div>`;
         return;
@@ -659,6 +732,8 @@
     function resetPhases() {
       PHASES.forEach((p) => { state.phases[p.id] = { state: 'pending', logs: [], startedAt: null, endedAt: null }; });
       state.jobId = null;
+      state.historyView = null;
+      $('historyViewBanner').classList.add('hidden');
       updateViewIssuesButton();
       resultBanner.classList.add('hidden');
       resultBanner.innerHTML = '';
@@ -667,6 +742,33 @@
       insightCard.innerHTML = '';
       renderPipeline();
     }
+
+    // Renders a finished/failed onboarding run from the history panel into
+    // the same phase-card UI a live run uses, instead of the cramped nested
+    // <details> log dump in the history detail itself. Purely a client-side
+    // remap of already-fetched project.steps — no new endpoint needed.
+    function loadHistoryRunIntoMain(p) {
+      if (state.running) {
+        window.alert('A pipeline run is currently in progress — wait for it to finish (or stop it) before viewing history in the main view.');
+        return;
+      }
+      const stepsByPhase = new Map((p.steps || []).map((s) => [s.phase, s]));
+      PHASES.forEach((ph) => {
+        const s = stepsByPhase.get(ph.id);
+        const entry = { state: s ? s.state : 'pending', logs: s && s.logs ? s.logs.split('\n') : [], startedAt: null, endedAt: null };
+        if (ph.id === 4 && entry.state === 'success' && Number(p.issue_count) > 0) {
+          entry.issueCount = Number(p.issue_count);
+        }
+        state.phases[ph.id] = entry;
+      });
+      state.historyView = { org: p.org, repo: p.repo, id: p.id };
+      $('historyViewLabel').textContent = `${p.org}/${p.repo}`;
+      $('historyViewBanner').classList.remove('hidden');
+      renderPipeline();
+      pipelineEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    $('historyViewBackBtn').addEventListener('click', () => resetPhases());
 
     /* 12s -> "12s", 90s -> "1m 30s", 3700s -> "1h 1m" */
     function formatDuration(ms) {
@@ -757,6 +859,16 @@
       const viewCodeBtn = hasSnippet
         ? `<button type="button" class="view-code-toggle text-[11px] font-semibold text-brand-600 hover:underline" data-idx="${idx}">View code ▸</button>`
         : '';
+      // Studio needs a real staged file to browse/edit, and only exists
+      // while this run is paused at the review gate (interactive === true
+      // implies that context) — never shown on the read-only history/issues
+      // viewer, which has no staging dir left to open.
+      const studioBtn = interactive && issue.file
+        ? `<button type="button" class="open-studio-btn text-[11px] font-semibold text-violet-600 hover:underline" data-idx="${idx}" data-issue="${escapeAttr(JSON.stringify({
+            id: issue.id, category: issue.category, severity: issue.severity, file: issue.file,
+            line: issue.line, summary: issue.summary, snippet: issue.snippet,
+          }))}">Open in Studio ⧉</button>`
+        : '';
       const snippetHtml = hasSnippet
         ? `<div class="code-preview hidden" data-idx="${idx}">${renderSnippet(issue.snippet, issue)}</div>`
         : '';
@@ -781,6 +893,7 @@
               <span class="text-[10px] font-semibold text-slate-400 uppercase">${escapeHtml(issue.category)}</span>
               <span class="text-[11px] font-mono text-slate-400">${loc}</span>
               ${viewCodeBtn}
+              ${studioBtn}
             </div>
             <p class="text-xs text-slate-700 mt-1">${escapeHtml(issue.summary)}</p>
             ${snippetHtml}
@@ -855,6 +968,15 @@
         };
       }
       attachAiTooltips(list);
+
+      list.querySelectorAll('.open-studio-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          if (!state.reviewJobId) return;
+          try {
+            openStudio(state.reviewJobId, JSON.parse(btn.dataset.issue), { fromReview: true });
+          } catch { openStudio(state.reviewJobId, null, { fromReview: true }); }
+        });
+      });
     }
 
     // Anytime, read-only issues viewer — usable while a run is still in
@@ -960,6 +1082,7 @@
 
     function handleReviewRequired(ev) {
       const issues = ev.issues || [];
+      state.reviewJobId = ev.jobId;
       const modal = $('reviewModal');
       const list = $('reviewIssueList');
       const actorRow = $('reviewActorRow');
@@ -967,6 +1090,8 @@
       const proceedBtn = $('reviewProceedBtn');
       const stopBtn = $('reviewStopBtn');
       errorEl.textContent = '';
+
+      $('reviewStudioBtn').onclick = () => openStudio(state.reviewJobId, null, { fromReview: true });
 
       list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: true })).join('');
       wireIssueListInteractions(list, $('reviewExpandAllBtn'));
@@ -1088,6 +1213,568 @@
     }
     $('reviewCloseBtn').addEventListener('click', () => $('reviewStopBtn').click());
 
+    /* ------------------------------------------------------------ */
+    /* External tools status — ORT, licensee, gitleaks. Each one is an     */
+    /* optional enhancement Ignite soft-skips to a built-in fallback for   */
+    /* when missing (see server.js's ortTooling/licenseeTooling/           */
+    /* gitleaksTooling), so this panel is purely informational.            */
+    /* ------------------------------------------------------------ */
+    const TOOLS_META = {
+      ort: {
+        label: 'ORT',
+        info: 'OSS Review Toolkit — resolves real dependency licenses from lockfiles/package managers across every ecosystem in one pass. When missing, license compliance falls back to this app’s own manifest parsers + deps.dev lookups.',
+      },
+      licensee: {
+        label: 'licensee',
+        info: 'GitHub’s license-detection gem — identifies this project’s own declared license (root LICENSE file) for the Dependencies view. When missing, that one row is simply omitted; per-dependency and per-file license findings are unaffected.',
+      },
+      gitleaks: {
+        label: 'gitleaks',
+        info: 'Supplemental secret scanner — runs as an extra pass over the same staged files when enabled in config, merged with (never replacing) Ignite’s built-in regex secret scan. Off by default even when installed; enable via security.gitleaks.enabled.',
+      },
+    };
+
+    function renderToolsBar(status) {
+      const bar = $('toolsBar');
+      if (!status) { bar.innerHTML = ''; return; }
+      const rows = Object.entries(TOOLS_META).map(([key, meta]) => {
+        const s = status[key] || { ok: false };
+        const connected = !!s.ok && s.enabled !== false;
+        const dotClass = connected ? 'bg-emerald-500' : 'bg-slate-300';
+        const textClass = connected ? 'text-emerald-700' : 'text-slate-400';
+        let statusLabel = connected ? 'Connected' : 'Disconnected';
+        if (s.ok && s.enabled === false) statusLabel = 'Installed (disabled)';
+        return `<div class="flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full ${dotClass} shrink-0"></span>
+          <span class="text-[11px] font-semibold text-slate-700">${escapeHtml(meta.label)}</span>
+          <span class="text-[11px] ${textClass}">${escapeHtml(statusLabel)}</span>
+          ${authTooltip(s.ok ? meta.info : `${meta.info} (${s.reason || 'not detected'})`)}
+        </div>`;
+      }).join('');
+      bar.innerHTML = `<div class="flex flex-col gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-card">
+        <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">External tools</span>
+        ${rows}
+      </div>`;
+    }
+
+    async function loadToolsStatus() {
+      try {
+        const status = await (await fetch('/api/tools/status')).json();
+        renderToolsBar(status);
+      } catch {
+        renderToolsBar(null);
+      }
+    }
+
+    /* ------------------------------------------------------------ */
+    /* Ignite Studio — file tree + editor + AI-fix panel, only reachable */
+    /* while the review gate is paused for this job (see server.js's    */
+    /* reviewActive gate — every request below 409s once it's not).     */
+    /* ------------------------------------------------------------ */
+    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null };
+
+    function studioIssuesForFile(relPath) {
+      return studioState.issues.filter((i) => i.file === relPath);
+    }
+
+    function studioShowError(msg) {
+      const el = $('studioError');
+      if (!msg) { el.classList.add('hidden'); el.textContent = ''; return; }
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    async function openStudio(jobId, issue, { fromReview = false } = {}) {
+      if (!jobId) return;
+      studioState.jobId = jobId;
+      studioState.fromReview = fromReview;
+      studioState.currentPath = null;
+      studioState.suggestion = null;
+      $('studioSubtitle').textContent = `job ${jobId}`;
+      if (fromReview) {
+        // The review modal's Continue/Stop buttons resolve the review-gate
+        // decision (server.js's reviewDecisions.resolve) and end the run —
+        // leaving it open behind Studio let you finish the review while
+        // Studio was still browsing a now-dead job, which is exactly what
+        // produced the "Review is not active" error. Hide it while Studio
+        // is open; closeStudio() re-shows it with fresh issues, but only
+        // when it was actually the thing Studio was opened from — opening
+        // Studio later from a finished run's result banner has no pending
+        // review to reopen.
+        $('reviewModal').classList.add('hidden');
+      }
+      $('studioView').classList.remove('hidden');
+      studioShowError(null);
+      $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading file tree…</p>';
+      $('studioTree').innerHTML = '';
+      $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+
+      try {
+        const issuesRes = await (await fetch(`/api/pipeline/${jobId}/issues`)).json();
+        // Phase-4 findings plus phase-3 license-compliance ones — both are
+        // file-addressable, so both belong on the tree badges and file views.
+        studioState.issues = (issuesRes.issues || []).filter((i) => i.phase === 4 || i.category === 'license-compliance');
+      } catch { studioState.issues = []; }
+      renderStudioSummaryBar();
+
+      try {
+        const res = await fetch(`/api/pipeline/${jobId}/studio/tree`);
+        if (!res.ok) throw new Error((await res.json()).error || 'Could not load file tree.');
+        const data = await res.json();
+        renderStudioTree(data.files || []);
+        $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Select a file from the tree.</p>';
+      } catch (e) {
+        studioShowError(e.message);
+        $('studioCodeWrap').innerHTML = '';
+        return;
+      }
+
+      if (issue && issue.file) {
+        await openStudioFile(issue.file);
+        selectStudioIssue(issue);
+      }
+    }
+
+    function closeStudio() {
+      $('studioView').classList.add('hidden');
+      if (studioState.dirty) {
+        // Unsaved edits are only ever written on explicit Save — closing
+        // Studio never silently persists (or silently discards) a pending
+        // edit sitting in the textarea, it's just gone from view.
+      }
+      // Only reopen the review modal if Studio was actually opened from it —
+      // opening Studio later from a finished run's result banner ("kept"
+      // source, post-review) has no pending review to reopen or resubmit.
+      if (studioState.fromReview && studioState.jobId) {
+        fetch(`/api/pipeline/${studioState.jobId}/issues`)
+          .then((r) => r.json())
+          .then((data) => handleReviewRequired({ jobId: studioState.jobId, phase: 6, issues: data.issues || [] }))
+          .catch(() => {});
+      }
+    }
+    $('studioCloseBtn').addEventListener('click', closeStudio);
+
+    // Fortify-style project-wide audit summary — total counts by severity
+    // and a breakdown by category, shown once up top instead of only ever
+    // being visible one file at a time.
+    function renderStudioSummaryBar() {
+      const bar = $('studioSummaryBar');
+      if (studioState.issues.length === 0) {
+        bar.innerHTML = '<span class="text-emerald-600 font-semibold">✓ No open scan or license findings in this project.</span>';
+        bar.classList.remove('hidden');
+        return;
+      }
+      const errorCount = studioState.issues.filter((i) => i.severity === 'error').length;
+      const warningCount = studioState.issues.length - errorCount;
+      const byCategory = new Map();
+      studioState.issues.forEach((i) => byCategory.set(i.category, (byCategory.get(i.category) || 0) + 1));
+      const catHtml = [...byCategory.entries()]
+        .map(([cat, n]) => `<span class="ml-3 text-slate-400">${escapeHtml(cat)}: <span class="font-semibold text-slate-600">${n}</span></span>`)
+        .join('');
+      bar.innerHTML = `<span class="font-semibold text-rose-600">${errorCount} error${errorCount === 1 ? '' : 's'}</span>` +
+        `<span class="ml-2 font-semibold text-amber-600">${warningCount} warning${warningCount === 1 ? '' : 's'}</span>` +
+        `<span class="ml-2 text-slate-400">across ${new Set(studioState.issues.map((i) => i.file)).size} file(s)</span>${catHtml}`;
+      bar.classList.remove('hidden');
+    }
+
+    // Client-side filename filter over the already-fetched tree — folders
+    // stay visible whenever a descendant matches.
+    $('studioTreeFilter').addEventListener('input', (ev) => {
+      const q = ev.target.value.trim().toLowerCase();
+      const tree = $('studioTree');
+      tree.querySelectorAll('.studio-file-btn').forEach((btn) => {
+        btn.parentElement.classList.toggle('hidden', !!q && !btn.dataset.path.toLowerCase().includes(q));
+      });
+      tree.querySelectorAll('details').forEach((d) => {
+        const anyVisible = !!d.querySelector('.studio-file-btn:not(.hidden)') || !!d.querySelector('button.studio-file-btn') && [...d.querySelectorAll('.studio-file-btn')].some((b) => !b.parentElement.classList.contains('hidden'));
+        d.classList.toggle('hidden', !!q && !anyVisible);
+      });
+    });
+
+    /* ---------------- Dependencies view (Black Duck-style license -------
+       ---------------- compliance: red = commercial/unknown, warning = ----
+       ---------------- copyleft/"community edition", green = permissive ---
+       ---------------- open source). See server.js's scanDependencyLicenses. */
+    const STUDIO_TIER_META = {
+      green:   { label: 'OPEN SOURCE', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+      warning: { label: 'COPYLEFT',    chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+      red:     { label: 'COMMERCIAL/RISK', chip: 'bg-rose-50 text-rose-700 border-rose-200' },
+    };
+
+    async function openStudioDependencies() {
+      studioState.currentPath = null;
+      studioMarkActiveFile(null);
+      $('studioFilePath').textContent = 'Dependency license compliance';
+      $('studioDirtyBadge').classList.add('hidden');
+      $('studioEditBtn').classList.add('hidden');
+      $('studioSaveBtn').classList.add('hidden');
+      $('studioManifestBtn').classList.add('hidden');
+      $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+      $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Scanning dependency manifests (ORT if installed, else deps.dev lookups)…</p>';
+      studioShowError(null);
+      try {
+        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/dependencies`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not scan dependencies.');
+        renderStudioDependencies(data);
+      } catch (e) {
+        studioShowError(e.message);
+        $('studioCodeWrap').innerHTML = '';
+      }
+    }
+    $('studioDepsBtn').addEventListener('click', openStudioDependencies);
+
+    function studioTierRow(dep) {
+      const meta = STUDIO_TIER_META[dep.tier] || STUDIO_TIER_META.red;
+      return `<tr class="border-b border-slate-100">
+        <td class="px-3 py-1.5 font-mono text-[11px]">${escapeHtml(dep.name)}</td>
+        <td class="px-3 py-1.5 font-mono text-[11px] text-slate-400">${escapeHtml(dep.version || dep.versionRange || '?')}</td>
+        <td class="px-3 py-1.5 text-[11px]">${escapeHtml((dep.licenses || []).join(', ') || '—')}</td>
+        <td class="px-3 py-1.5"><span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip}">${meta.label}</span></td>
+        <td class="px-3 py-1.5 text-[11px] text-slate-500">${escapeHtml(dep.reason || '')}</td>
+      </tr>`;
+    }
+
+    function renderStudioDependencies(data) {
+      const allDeps = (data.manifests || []).flatMap((m) => m.dependencies.map((d) => ({ ...d, manifest: m.file })));
+      const counts = { green: 0, warning: 0, red: 0 };
+      allDeps.forEach((d) => { counts[d.tier] = (counts[d.tier] || 0) + 1; });
+
+      const projectLicenseHtml = data.projectLicense
+        ? `<div class="mb-4 p-3 rounded-lg border ${STUDIO_TIER_META[data.projectLicense.tier].chip}">
+             <span class="text-[10px] font-bold uppercase">This project's own declared license</span>
+             <p class="text-sm font-semibold mt-1">${escapeHtml(data.projectLicense.spdxId)}</p>
+             <p class="text-[11px] mt-0.5">${escapeHtml(data.projectLicense.reason)}</p>
+           </div>`
+        : '';
+
+      const summaryHtml = `
+        <div class="flex items-center gap-4 mb-4 text-xs">
+          <span class="font-semibold text-slate-500">Engine: ${escapeHtml({
+            ort: 'ORT (OSS Review Toolkit)',
+            'ort+fallback': 'ORT (OSS Review Toolkit) + built-in scan/deps.dev for ecosystems ORT could not resolve',
+            fallback: 'built-in scan + deps.dev',
+          }[data.engine] || data.engine)}</span>
+          <span class="font-semibold text-emerald-600">${counts.green} open source</span>
+          <span class="font-semibold text-amber-600">${counts.warning} copyleft</span>
+          <span class="font-semibold text-rose-600">${counts.red} commercial/risk</span>
+        </div>`;
+
+      if (allDeps.length === 0) {
+        $('studioCodeWrap').innerHTML = `<div class="p-4">${projectLicenseHtml}${summaryHtml}<p class="text-slate-400 text-sm">No dependency manifests (package.json / Cargo.toml / requirements.txt / go.mod / pom.xml) with declared dependencies were found.</p></div>`;
+        return;
+      }
+
+      const byManifest = new Map();
+      allDeps.forEach((d) => {
+        if (!byManifest.has(d.manifest)) byManifest.set(d.manifest, []);
+        byManifest.get(d.manifest).push(d);
+      });
+
+      const tablesHtml = [...byManifest.entries()].map(([manifest, deps]) => `
+        <p class="text-[11px] font-mono font-semibold text-slate-500 mt-4 mb-1">${escapeHtml(manifest)}</p>
+        <table class="w-full text-left border border-slate-200 rounded-lg overflow-hidden">
+          <thead class="bg-slate-50 text-[10px] font-semibold text-slate-400 uppercase">
+            <tr><th class="px-3 py-1.5">Package</th><th class="px-3 py-1.5">Version</th><th class="px-3 py-1.5">License(s)</th><th class="px-3 py-1.5">Compliance</th><th class="px-3 py-1.5">Note</th></tr>
+          </thead>
+          <tbody>${deps.map(studioTierRow).join('')}</tbody>
+        </table>`).join('');
+
+      $('studioCodeWrap').innerHTML = `<div class="p-4">${projectLicenseHtml}${summaryHtml}${tablesHtml}</div>`;
+    }
+
+    function studioTreeToNested(files) {
+      const root = { dirs: new Map(), files: [] };
+      for (const f of files) {
+        const parts = f.path.split('/');
+        let node = root;
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (!node.dirs.has(parts[i])) node.dirs.set(parts[i], { dirs: new Map(), files: [] });
+          node = node.dirs.get(parts[i]);
+        }
+        node.files.push({ path: f.path, name: parts[parts.length - 1], size: f.size });
+      }
+      return root;
+    }
+
+    function renderStudioTreeNode(node, depth) {
+      let html = '';
+      for (const [name, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+        html += `<details open class="border-b border-slate-50">
+          <summary class="px-2 py-1 cursor-pointer hover:bg-slate-50 select-none" style="padding-left:${depth * 14 + 8}px">📁 ${escapeHtml(name)}</summary>
+          ${renderStudioTreeNode(child, depth + 1)}
+        </details>`;
+      }
+      for (const f of [...node.files].sort((a, b) => a.name.localeCompare(b.name))) {
+        const issueCount = studioIssuesForFile(f.path).length;
+        html += `<button type="button" class="studio-file-btn w-full text-left px-2 py-1 hover:bg-brand-50 flex items-center gap-1.5" style="padding-left:${depth * 14 + 24}px" data-path="${escapeAttr(f.path)}">
+          <span class="flex-1 min-w-0 truncate">${escapeHtml(f.name)}</span>
+          ${issueCount > 0 ? `<span class="text-[9px] font-bold px-1 py-0.5 rounded-full bg-rose-100 text-rose-700 shrink-0">${issueCount}</span>` : ''}
+        </button>`;
+      }
+      return html;
+    }
+
+    function renderStudioTree(files) {
+      const tree = studioTreeToNested(files);
+      $('studioTree').innerHTML = renderStudioTreeNode(tree, 0);
+      $('studioTree').querySelectorAll('.studio-file-btn').forEach((btn) => {
+        btn.addEventListener('click', () => openStudioFile(btn.dataset.path));
+      });
+    }
+
+    function studioMarkActiveFile(relPath) {
+      $('studioTree').querySelectorAll('.studio-file-btn').forEach((btn) => {
+        btn.classList.toggle('bg-brand-100', btn.dataset.path === relPath);
+      });
+    }
+
+    async function openStudioFile(relPath) {
+      studioShowError(null);
+      if (studioState.dirty && !window.confirm('Discard unsaved changes to the current file?')) return;
+      studioState.currentPath = relPath;
+      studioState.editing = false;
+      studioState.dirty = false;
+      studioState.suggestion = null;
+      studioMarkActiveFile(relPath);
+      $('studioFilePath').textContent = relPath;
+      $('studioDirtyBadge').classList.add('hidden');
+      $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading…</p>';
+      try {
+        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/file?path=${encodeURIComponent(relPath)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not load file.');
+        studioState.originalContent = data.content;
+        renderStudioCodeView(data.content);
+        $('studioEditBtn').classList.remove('hidden');
+        $('studioSaveBtn').classList.add('hidden');
+      } catch (e) {
+        studioShowError(e.message);
+        $('studioCodeWrap').innerHTML = '';
+        $('studioEditBtn').classList.add('hidden');
+      }
+      renderStudioIssueListForFile(relPath);
+
+      const isManifest = STUDIO_MANIFEST_FILES.has(relPath.split('/').pop());
+      $('studioManifestBtn').classList.toggle('hidden', !isManifest);
+    }
+    const STUDIO_MANIFEST_FILES = new Set(['package.json', 'Cargo.toml', 'requirements.txt', 'go.mod', 'pom.xml']);
+    $('studioManifestBtn').addEventListener('click', openStudioDependencies);
+
+    // Numbers this file's issues in the same order the issue panel lists
+    // them (studioIssuesForFile's order), so a badge on line N in the code
+    // pane and the badge on a card in the panel always mean the same issue.
+    function studioLineIssueMap(relPath) {
+      const map = new Map(); // line -> [{ num, issue }]
+      studioIssuesForFile(relPath).forEach((issue, i) => {
+        if (!issue.line) return;
+        if (!map.has(issue.line)) map.set(issue.line, []);
+        map.get(issue.line).push({ num: i + 1, issue });
+      });
+      return map;
+    }
+
+    function renderStudioCodeView(content) {
+      const lineIssues = studioState.currentPath ? studioLineIssueMap(studioState.currentPath) : new Map();
+      const lines = content.split(/\r?\n/);
+      const rows = lines.map((text, i) => {
+        const n = i + 1;
+        const hits = lineIssues.get(n) || [];
+        const hasError = hits.some((h) => h.issue.severity === 'error');
+        const isSelected = !studioState.suggestion && hits.some((h) => h.issue.id === studioState.selectedIssue?.id);
+        const bg = hits.length === 0 ? '' : isSelected
+          ? (hasError ? 'bg-rose-100' : 'bg-amber-100')
+          : (hasError ? 'bg-rose-50' : 'bg-amber-50');
+        const badges = hits.map((h) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}" title="${escapeAttr(h.issue.summary)}">${h.num}</span>`).join('');
+        return `<div class="flex ${bg}">` +
+          `<span class="w-10 shrink-0 text-right pr-2 text-slate-400 select-none border-r border-slate-100">${n}</span>` +
+          `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span></div>`;
+      }).join('');
+      $('studioCodeWrap').innerHTML = `<pre class="m-0">${rows}</pre>`;
+    }
+
+    function studioEnterEditMode() {
+      studioState.editing = true;
+      $('studioCodeWrap').innerHTML = `<textarea id="studioTextarea" class="w-full h-full p-2 font-mono text-[12px] leading-relaxed resize-none outline-none" spellcheck="false"></textarea>`;
+      const ta = $('studioTextarea');
+      ta.value = studioState.originalContent;
+      ta.addEventListener('input', () => {
+        studioState.dirty = ta.value !== studioState.originalContent;
+        $('studioDirtyBadge').classList.toggle('hidden', !studioState.dirty);
+      });
+      $('studioEditBtn').classList.add('hidden');
+      $('studioSaveBtn').classList.remove('hidden');
+    }
+    $('studioEditBtn').addEventListener('click', studioEnterEditMode);
+
+    async function studioSaveAndRescan() {
+      const ta = $('studioTextarea');
+      if (!ta || !studioState.currentPath) return;
+      const content = ta.value;
+      studioShowError(null);
+      $('studioSaveBtn').disabled = true;
+      $('studioSaveBtn').textContent = 'Saving…';
+      try {
+        const putRes = await fetch(`/api/pipeline/${studioState.jobId}/studio/file`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: studioState.currentPath, content }),
+        });
+        const putData = await putRes.json();
+        if (!putRes.ok) throw new Error(putData.error || 'Could not save file.');
+        studioState.originalContent = content;
+        studioState.dirty = false;
+        $('studioDirtyBadge').classList.add('hidden');
+        await studioRescan();
+        renderStudioIssueListForFile(studioState.currentPath);
+      } catch (e) {
+        studioShowError(e.message);
+      } finally {
+        $('studioSaveBtn').disabled = false;
+        $('studioSaveBtn').textContent = 'Save + rescan';
+      }
+    }
+    $('studioSaveBtn').addEventListener('click', studioSaveAndRescan);
+
+    async function studioRescan() {
+      studioShowError(null);
+      const btn = $('studioRescanBtn');
+      btn.disabled = true;
+      btn.textContent = 'Rescanning…';
+      try {
+        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/rescan`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Rescan failed.');
+        studioState.issues = (data.issues || []).filter((i) => i.phase === 4 || i.category === 'license-compliance');
+        renderStudioTree(await studioCurrentFiles());
+        if (studioState.currentPath) studioMarkActiveFile(studioState.currentPath);
+        const resolvedNote = data.resolvedIds?.length ? `${data.resolvedIds.length} issue(s) resolved.` : 'No issues resolved by this change.';
+        $('studioIssuePanel').innerHTML = `<p class="text-emerald-600 font-semibold">${resolvedNote}</p>` + $('studioIssuePanel').innerHTML;
+      } catch (e) {
+        studioShowError(e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Rescan ↻';
+      }
+    }
+    $('studioRescanBtn').addEventListener('click', () => studioRescan());
+
+    // Rescan already returns the fresh issue list but not the file tree —
+    // re-derive tree file paths from the tree endpoint so issue-count badges
+    // stay accurate without walking the tree ourselves client-side.
+    async function studioCurrentFiles() {
+      try {
+        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/tree`);
+        const data = await res.json();
+        return data.files || [];
+      } catch { return []; }
+    }
+
+    function renderStudioIssueListForFile(relPath) {
+      const issues = studioIssuesForFile(relPath);
+      studioState.selectedIssue = null;
+      if (issues.length === 0) {
+        $('studioIssuePanel').innerHTML = '<p>No flagged issues in this file.</p>';
+        return;
+      }
+      $('studioIssuePanel').innerHTML = issues.map((issue, i) => `
+        <button type="button" class="studio-issue-pick w-full text-left border border-slate-200 rounded-lg p-2 mb-2 hover:border-violet-300 flex gap-2" data-i="${i}">
+          <span class="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold shrink-0 mt-0.5 ${issue.severity === 'error' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}">${i + 1}</span>
+          <span class="flex-1 min-w-0">
+            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${issue.severity === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'}">${issue.severity.toUpperCase()}</span>
+            <span class="text-[10px] font-mono text-slate-400 ml-1">line ${issue.line || '?'}</span>
+            <p class="text-[11px] text-slate-700 mt-1">${escapeHtml(issue.summary)}</p>
+          </span>
+        </button>`).join('');
+      // Refresh the code pane's numbered badges to match — but never while
+      // the user has the textarea open, or this would blow away an
+      // in-progress edit.
+      if (!studioState.editing) renderStudioCodeView(studioState.originalContent);
+      $('studioIssuePanel').querySelectorAll('.studio-issue-pick').forEach((btn) => {
+        btn.addEventListener('click', () => selectStudioIssue(issues[Number(btn.dataset.i)]));
+      });
+    }
+
+    async function selectStudioIssue(issue) {
+      studioState.selectedIssue = issue;
+      if (!studioState.editing) renderStudioCodeView(studioState.originalContent);
+      const explainId = `studio-explain-${issue.id}`;
+      const fixId = `studio-fix-${issue.id}`;
+      $('studioIssuePanel').innerHTML = `
+        <div class="border border-slate-200 rounded-lg p-2 mb-3">
+          <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${issue.severity === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'}">${issue.severity.toUpperCase()}</span>
+          <span class="text-[10px] font-semibold text-slate-400 uppercase ml-1">${escapeHtml(issue.category)}</span>
+          <span class="text-[10px] font-mono text-slate-400 ml-1">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</span>
+          <p class="text-xs text-slate-700 mt-1.5">${escapeHtml(issue.summary)}</p>
+        </div>
+        <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2">Explain this issue</button>
+        <div id="${explainId}-body" class="text-[11px] text-slate-600 mb-3"></div>
+        <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 mb-2">Suggest AI fix</button>
+        <div id="${fixId}-body" class="text-[11px] text-slate-600"></div>
+        <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-3">← Back to file's issues</button>`;
+
+      $('studio-back-to-file-list').addEventListener('click', () => renderStudioIssueListForFile(studioState.currentPath));
+
+      $(explainId).addEventListener('click', async () => {
+        $(`${explainId}-body`).textContent = 'Asking the AI…';
+        try {
+          const res = await fetch('/api/issues/explain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              category: issue.category, severity: issue.severity, file: issue.file,
+              line: issue.line, summary: issue.summary, snippet: issue.snippet,
+            }),
+          });
+          const data = await res.json();
+          $(`${explainId}-body`).textContent = data.explanation || data.reason || 'No explanation available.';
+        } catch {
+          $(`${explainId}-body`).textContent = 'Could not fetch an explanation.';
+        }
+      });
+
+      $(fixId).addEventListener('click', async () => {
+        $(`${fixId}-body`).innerHTML = '<p>Asking the AI for a fix…</p>';
+        try {
+          const res = await fetch('/api/issues/suggest-fix', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              category: issue.category, severity: issue.severity, file: issue.file,
+              line: issue.line, summary: issue.summary, snippet: issue.snippet,
+            }),
+          });
+          const data = await res.json();
+          if (!data.suggestion || data.suggestion.replacement == null) {
+            $(`${fixId}-body`).innerHTML = `<p class="text-slate-500">${escapeHtml(data.suggestion?.explanation || data.reason || 'No fix could be suggested for this snippet.')}</p>`;
+            return;
+          }
+          studioState.suggestion = data.suggestion;
+          $(`${fixId}-body`).innerHTML = `
+            <p class="mb-2">${escapeHtml(data.suggestion.explanation)}</p>
+            <p class="text-[10px] font-semibold text-slate-400 uppercase mb-1">Suggested replacement (lines ${data.suggestion.startLine}-${data.suggestion.endLine})</p>
+            <pre class="bg-emerald-50 border border-emerald-200 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap mb-2">${escapeHtml(data.suggestion.replacement)}</pre>
+            <button type="button" id="studio-apply-fix" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">Apply into editor</button>`;
+          $('studio-apply-fix').addEventListener('click', studioApplySuggestion);
+        } catch {
+          $(`${fixId}-body`).innerHTML = '<p class="text-rose-500">Could not fetch a fix suggestion.</p>';
+        }
+      });
+    }
+
+    function studioApplySuggestion() {
+      const s = studioState.suggestion;
+      if (!s || s.replacement == null) return;
+      if (!studioState.editing) studioEnterEditMode();
+      const ta = $('studioTextarea');
+      const lines = ta.value.split(/\r?\n/);
+      const before = lines.slice(0, s.startLine - 1);
+      const after = lines.slice(s.endLine);
+      ta.value = [...before, ...s.replacement.split(/\r?\n/), ...after].join('\n');
+      studioState.dirty = ta.value !== studioState.originalContent;
+      $('studioDirtyBadge').classList.toggle('hidden', !studioState.dirty);
+    }
+
     function showResult(ok, { repoUrl, prUrl, error, phase, dryRun, effectivatable, projectId } = {}) {
       resultBanner.classList.remove('hidden');
       if (ok && dryRun) {
@@ -1097,14 +1784,22 @@
             <p class="text-brand-800 font-semibold mb-1">Simulation complete — all checks passed</p>
             <p class="text-sm text-brand-700">Dry run only: no repository was created and nothing was pushed to GitHub.</p>
             ${canEffectivate ? `
-            <button type="button" id="effectivateBtn" data-project-id="${projectId}"
-                    class="mt-4 text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25">
-              Effectivate — provision &amp; push for real
-            </button>
+            <div class="mt-4 flex items-center justify-center gap-2">
+              <button type="button" id="effectivateBtn" data-project-id="${projectId}"
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25">
+                Effectivate — provision &amp; push for real
+              </button>
+              <button type="button" id="resultStudioBtn"
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50">
+                Open in Ignite Studio ⧉
+              </button>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-2">This snapshot's source stays browsable in Studio until you start a new run, the server restarts, or it expires (24h) — same lifetime as Effectivate.</p>
             <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden"></p>` : ''}
           </div>`;
         if (canEffectivate) {
           $('effectivateBtn').addEventListener('click', () => attemptEffectivate(projectId, []));
+          $('resultStudioBtn').addEventListener('click', () => openStudio(state.jobId, null));
         }
       } else if (ok) {
         resultBanner.innerHTML = `
@@ -1126,14 +1821,21 @@
             <p class="text-xs text-slate-500 mt-3">Fix the violations above, re-zip, and try again. Staging files were cleaned up.</p>
             ${canEffectivate ? `
             <p class="text-xs text-slate-500 mt-3">Every flagged finding was already scanned and validated — if all blocking findings are acknowledged/justified, you can still ship this exact snapshot without re-uploading:</p>
-            <button type="button" id="effectivateBtn" data-project-id="${projectId}"
-                    class="mt-2 text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md">
-              Effectivate — provision &amp; push for real
-            </button>
+            <div class="mt-2 flex items-center justify-center gap-2">
+              <button type="button" id="effectivateBtn" data-project-id="${projectId}"
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md">
+                Effectivate — provision &amp; push for real
+              </button>
+              <button type="button" id="resultStudioBtn"
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50">
+                Open in Ignite Studio ⧉
+              </button>
+            </div>
             <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden"></p>` : ''}
           </div>`;
         if (canEffectivate) {
           $('effectivateBtn').addEventListener('click', () => attemptEffectivate(projectId, []));
+          $('resultStudioBtn').addEventListener('click', () => openStudio(state.jobId, null));
         }
       }
       resultBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1599,17 +2301,28 @@
       }
     });
 
+    // Phases the server always runs (e.g. Phase 2/GxP, when config-disabled,
+    // still gets an explicit 'skipped' status + log line from the backend —
+    // it isn't shown, checked, or blocking, but the event stream still
+    // mentions it) don't necessarily have an entry in state.phases, since
+    // PHASES was filtered down to only the enabled/displayed ones. Lazily
+    // create a throwaway bucket rather than crashing the whole run on a
+    // phase id the UI isn't rendering.
+    function ensurePhaseState(phase) {
+      return (state.phases[phase] ??= { state: 'pending', logs: [], startedAt: null, endedAt: null });
+    }
+
     function handleEvent(ev) {
       if (ev.type === 'job') {
         state.jobId = ev.jobId;
         updateViewIssuesButton();
       } else if (ev.type === 'log') {
-        state.phases[ev.phase].logs.push(ev.message);
+        ensurePhaseState(ev.phase).logs.push(ev.message);
       } else if (ev.type === 'status') {
         // No client-side inference here: the server explicitly sends
         // 'skipped' for every phase it can't run (e.g. blocked by an
         // earlier phase's failure), so every phase's status is authoritative.
-        const ph = state.phases[ev.phase];
+        const ph = ensurePhaseState(ev.phase);
         ph.state = ev.state;
         ph.issueCount = ev.issueCount || 0;
         ph.blockingCount = ev.blockingCount || 0;
@@ -1643,6 +2356,24 @@
       try {
         const res = await fetch('/api/config');
         const cfg = await res.json();
+
+        // Phase list — server.js's PHASE_META is the source of truth for
+        // both titles/descriptions and which phases are enabled at all.
+        // Disabled phases (Phase 2/GxP, off by default) are dropped from
+        // the timeline entirely rather than shown greyed out, matching
+        // "hidden and therefore not checked" — the backend enforces the
+        // "not checked" half, this is the "hidden" half.
+        if (Array.isArray(cfg.phases) && cfg.phases.length > 0) {
+          PHASES = cfg.phases.filter((p) => p.enabled).map(({ id, title, desc }) => ({ id, title, desc }));
+          if (!state.running && !state.jobId) resetPhases();
+        }
+        const gxpEnabled = Array.isArray(cfg.phases) && cfg.phases.some((p) => p.id === 2 && p.enabled);
+        $('gxpFeatureBlock').classList.toggle('hidden', !gxpEnabled);
+        if (!gxpEnabled) {
+          $('gxpNo').checked = true;
+          state.gxp = false;
+        }
+
         const orgs = cfg.orgs || [];
         if (orgs.length === 0) return;
         if (orgs.length === 1) {
@@ -1762,6 +2493,10 @@
         detail.innerHTML = '<p class="text-xs text-rose-500">Could not load project details.</p>';
         return;
       }
+      // getProject() doesn't carry issue_count (only the /api/projects list
+      // query does) — read it back off the count already stamped on the
+      // list row's "N issues" button rather than adding another fetch.
+      p.issue_count = Number(item.querySelector('.hist-view-issues')?.dataset.count || 0);
 
       const stepsHtml = (p.steps || []).map((s) => {
         const meta = STATE_META[s.state] || STATE_META.pending;
@@ -1804,6 +2539,10 @@
           </div>`).join('')}</div>`;
 
       detail.innerHTML = `
+        <button type="button" class="hist-load-main-btn flex items-center gap-1.5 text-[11px] font-semibold text-brand-600 hover:underline mb-2.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
+          Load into main view
+        </button>
         ${p.repo_url ? `<a href="${escapeHtml(p.repo_url)}" target="_blank" rel="noopener" class="block text-[11px] font-mono text-brand-600 hover:text-brand-800 underline underline-offset-2 truncate mb-2">${escapeHtml(p.repo_url)}</a>` : ''}
         ${(p.status === 'failed' || p.status === 'aborted') && p.error ? `<p class="text-[11px] text-rose-600 mb-2">✗ ${escapeHtml(p.error)}</p>` : ''}
         <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Pipeline steps</p>
@@ -1811,6 +2550,12 @@
         <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Documents${p.gxp ? ' (GxP validation)' : ''}</p>
         <div class="space-y-1.5">${docsHtml}</div>
         ${overridesHtml}`;
+
+      detail.querySelector('.hist-load-main-btn').addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        loadHistoryRunIntoMain(p);
+      });
     }
 
     $('historyRefreshBtn').addEventListener('click', loadProjects);
@@ -1819,6 +2564,7 @@
     resetPhases();
     applyServerConfig();
     loadAuthState();
+    loadToolsStatus();
     loadProjects();
   </script>
 </body>

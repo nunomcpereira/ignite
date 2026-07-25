@@ -12,10 +12,15 @@ function createReviewDecisionStore() {
     wait(jobId, timeoutMs = 5 * 60_000) {
       const safeJobId = normalizeJobId(jobId);
       return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          pending.delete(safeJobId);
-          resolve({ proceed: false, reason: 'timeout' });
-        }, timeoutMs);
+        let timer;
+        const arm = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            pending.delete(safeJobId);
+            resolve({ proceed: false, reason: 'timeout' });
+          }, timeoutMs);
+        };
+        arm();
 
         pending.set(safeJobId, {
           resolve: (decision) => {
@@ -23,6 +28,11 @@ function createReviewDecisionStore() {
             pending.delete(safeJobId);
             resolve(decision);
           },
+          // Re-arms the timeout without resolving — called while Ignite
+          // Studio is actively being used during the review pause, so an
+          // in-progress fix session outlives the default 5-minute window;
+          // an abandoned tab still times out normally.
+          touch: arm,
         });
       });
     },
@@ -32,6 +42,14 @@ function createReviewDecisionStore() {
       const entry = pending.get(safeJobId);
       if (!entry) return false;
       entry.resolve(decision);
+      return true;
+    },
+
+    touch(jobId) {
+      const safeJobId = normalizeJobId(jobId);
+      const entry = pending.get(safeJobId);
+      if (!entry) return false;
+      entry.touch();
       return true;
     },
   };

@@ -57,5 +57,9 @@
       "binary": "gitleaks",
       "configPath": ""
     }
-  }
+  },
+  "phases": [
+    { "id": 2, "enabled": true },
+    { "id": 5, "enabled": false, "title": "Org Governance CI (disabled at this org)" }
+  ]
 }

@@ -30,6 +30,7 @@ const CATEGORY_SCORES = {
   'governance-ci': 7,
   'input-validation': 4,
   'security-scan': 6,
+  'license-compliance': 6,
 };
 
 /**
@@ -103,6 +104,54 @@ function collectPhase4Issues({ secrets, governance, llm }) {
 }
 
 /**
+ * Turns dependency-manifest license findings (`scanDependencyLicenses`'s
+ * `manifests`) and raw LICENSE-file findings (`scanProjectLicenseFiles`) into
+ * the same addressable-issue shape as `collectPhase4Issues`, so commercial/
+ * copyleft/unrecognized licenses gate a run exactly like a hardcoded secret
+ * does, instead of only ever showing up in the on-demand Dependencies view.
+ * @param {{ manifests: Array<{file, dependencies: Array<{name, version, versionRange, tier, reason}>}>, licenseFiles: Array<{file, line, tier, reason}> }} scan
+ * @returns {Array<{id, category, severity, score, summary, file, line}>}
+ */
+function collectLicenseIssues({ manifests, licenseFiles }) {
+  const issues = [];
+  const category = 'license-compliance';
+
+  for (const manifest of manifests || []) {
+    for (const dep of manifest.dependencies || []) {
+      if (dep.tier === 'green') continue;
+      const severity = dep.tier === 'red' ? 'error' : 'warning';
+      const file = manifest.file;
+      // The dep name (not its line) keeps the id stable across edits that
+      // shift lines, so overrides survive unrelated manifest changes.
+      issues.push({
+        id: `${buildIssueId({ category, file, line: null })}::${dep.name}`,
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: `${dep.name}@${dep.version || dep.versionRange || '?'} — ${dep.reason}`,
+        file,
+        line: dep.line ?? null,
+      });
+    }
+  }
+
+  for (const lf of licenseFiles || []) {
+    const severity = lf.tier === 'red' ? 'error' : 'warning';
+    issues.push({
+      id: buildIssueId({ category, file: lf.file, line: lf.line }),
+      category,
+      severity,
+      score: scoreForIssue({ category, severity }),
+      summary: lf.reason,
+      file: lf.file,
+      line: lf.line,
+    });
+  }
+
+  return issues;
+}
+
+/**
  * @param {Array} issues - from collectPhase4Issues
  * @param {Array<{issueId, justification}>} overrides - user-submitted
  * @returns {{ ok: boolean, unresolvedErrors: Array, applied: Array<{issue, justification}> }}
@@ -132,4 +181,4 @@ function validateOverrides(issues, overrides) {
   return { ok: unresolvedErrors.length === 0, unresolvedErrors, applied };
 }
 
-module.exports = { buildIssueId, collectPhase4Issues, validateOverrides, scoreForIssue };
+module.exports = { buildIssueId, collectPhase4Issues, collectLicenseIssues, validateOverrides, scoreForIssue };

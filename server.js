@@ -23,7 +23,7 @@ const path = require('path');
 const { createDbStore } = require('./db-store');
 const { createReviewDecisionStore } = require('./review-decisions-store');
 const { createAuth, isValidEmail } = require('./auth');
-const { collectPhase4Issues, validateOverrides, scoreForIssue } = require('./override-engine');
+const { collectPhase4Issues, collectLicenseIssues, validateOverrides, scoreForIssue } = require('./override-engine');
 
 /* ------------------------------------------------------------------ */
 /* Configuration: config.json < environment variables                  */
@@ -62,6 +62,18 @@ function loadConfig() {
       // missing, so this is safe to leave off in environments without it.
       gitleaks: { enabled: false, binary: 'gitleaks', configPath: '' },
     },
+    // Optional per-phase title/description/enabled overrides, e.g.:
+    //   "phases": [{ "id": 4, "enabled": false }]
+    // Matched by id; any phase not listed (or the whole key omitted) keeps
+    // its built-in title/description/enabled state exactly as shipped.
+    // Phases 1 (input validation), 3 (extraction/structure audit) and 6
+    // (provisioning/shipping) can't be disabled — everything downstream
+    // depends on them — so an `enabled: false` override on those ids is
+    // ignored. Phase 2 (GxP) defaults to disabled: most orgs onboarding
+    // through Ignite aren't running a GxP-regulated process, so the
+    // declaration + mandatory validation-document UI stays hidden, and the
+    // phase itself is never checked, until explicitly turned on.
+    phases: [],
   };
   let fileConfig = {};
   try {
@@ -81,6 +93,10 @@ function loadConfig() {
       ])
     );
   const merged = merge(defaults, fileConfig);
+  // `merge` deep-merges plain objects keyed by the *default's* own keys —
+  // useless for an empty-by-default array like `phases`, since there are no
+  // default keys to walk. Arrays are a replace, not a merge.
+  merged.phases = Array.isArray(fileConfig.phases) ? fileConfig.phases : [];
   const smtpPass =
     process.env.NOTIFICATIONS_SMTP_PASS ||
     process.env.SMTP_PASS ||
@@ -328,7 +344,7 @@ const BINARY_EXTENSIONS = Object.freeze(new Set([
 const GITHUB_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // org login rules
 const REPO_NAME_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
 const SAFE_UPLOAD_SEGMENT_REGEX = /^[^\0/\\]+$/;
-const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks']));
+const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort']));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -378,7 +394,7 @@ async function* walkFiles(root) {
   }
 }
 
-function runTool(tool, args, cwd, { env: envOverride = {} } = {}) {
+function runTool(tool, args, cwd, { env: envOverride = {}, allowedExitCodes = [0] } = {}) {
   return new Promise((resolve, reject) => {
     const safeTool = sanitizeCommand(tool);
     const safeArgs = sanitizeCliArgs(args);
@@ -390,7 +406,11 @@ function runTool(tool, args, cwd, { env: envOverride = {} } = {}) {
       safeArgs,
       { cwd: safeCwd, env, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
       (err, stdout, stderr) => {
-        if (err) {
+        // ORT's analyzer exits 2 (not 0) whenever it found issues at/above
+        // its severity threshold — a normal outcome, not a tool failure —
+        // while still writing a complete analyzer-result.json. Callers that
+        // need this (runOrtAnalyze) opt in via allowedExitCodes.
+        if (err && !allowedExitCodes.includes(err.code)) {
           const detail = (stderr || stdout || err.message || '').trim();
           reject(new Error(`\`${command} ${safeArgs.join(' ')}\` failed: ${detail}`));
         } else {
@@ -405,6 +425,8 @@ function runTool(tool, args, cwd, { env: envOverride = {} } = {}) {
       case 'act': return execute('act');
       case 'docker': return execute('docker');
       case 'gitleaks': return execute(GITLEAKS_BINARY);
+      case 'licensee': return execute('licensee');
+      case 'ort': return execute('ort');
       default: return reject(new Error(`Unsupported command: ${safeTool}`));
     }
   });
@@ -566,6 +588,24 @@ function runToolStreaming(tool, args, cwd, onLine, { timeoutMs = 15 * 60_000, en
 }
 
 /**
+ * Resolves a relative path against a root and throws if it escapes that
+ * root (zip-slip-style traversal) — shared by archive extraction and the
+ * Ignite Studio file read/write endpoints, which both accept a
+ * caller-supplied relative path.
+ */
+function resolveWithinRoot(root, relPath) {
+  const entryPath = String(relPath || '').replace(/\\/g, '/');
+  if (!entryPath || entryPath.includes('\0')) {
+    throw new Error('Invalid path.');
+  }
+  const target = path.resolve(root, entryPath);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error(`Blocked path-traversal: ${entryPath}`);
+  }
+  return target;
+}
+
+/**
  * Safe ZIP extraction: rejects entries that escape the staging root
  * (zip-slip), skips symlink entries, and enforces a total-size cap.
  */
@@ -585,10 +625,7 @@ async function extractZip(zipPath, destDir, log) {
       }
 
       // Zip-slip guard: resolved target must stay inside destDir.
-      const target = path.resolve(destDir, entryPath);
-      if (target !== destDir && !target.startsWith(destDir + path.sep)) {
-        throw new Error(`Blocked path-traversal entry in archive: ${entryPath}`);
-      }
+      const target = resolveWithinRoot(destDir, entryPath);
 
       // Skip symlink entries (unix mode stored in high bits of external attrs).
       const unixMode = (Number(entry.attr || 0) >>> 16) & 0xffff;
@@ -1039,6 +1076,8 @@ Coverage rules:
 - Do not invent package versions. Only recommend a concrete dependency upgrade when the target version is known/published; otherwise recommend replacing the dependency or pinning to the latest available safe version.
 - Do not flag SMTP as insecure when secure=false is paired with port 587 (STARTTLS submission mode).
 - Do not flag hardcoded SMTP secrets unless a non-empty credential literal is present in code/config.
+- Do not flag SSRF for a URL built from a server-side environment variable or config file value. Only flag SSRF when the URL (or host/path component of it) is influenced by request-time user input (query params, body, headers, uploaded file contents).
+- Do not flag "API key in headers" or similar as a vulnerability merely because a secret from an environment variable is sent in a request header (e.g. an Authorization: Bearer header built from an API key variable) — that is normal usage. Only flag it if the key is also logged, written to a response, embedded in a URL, or sent over a non-TLS connection.
 
 Classification rules:
 - Dangerous dependency findings must be category "dependency" and level "error".
@@ -1213,7 +1252,7 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
 
     if ((issue.includes('command injection') || issue.includes('user-supplied command') || issue.includes('child_process'))
       && relFile === 'server.js') {
-      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks'\]\)\);/.test(fileText);
+      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort'\]\)\);/.test(fileText);
       const hasStrictSanitizers = /sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(/.test(fileText);
       const isRunnerZone = line >= 200 && line <= 360;
       if (hasCommandAllowlist && hasStrictSanitizers && isRunnerZone) {
@@ -1511,6 +1550,15 @@ function normalizeWorkflowText(text) {
     .replace(/echo\s+"import\s+security\s+from\s+'eslint-plugin-security';\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];"\s*>\s*eslint\.config\.js/g,
       'echo "const security = require(\"eslint-plugin-security\"); module.exports = [security.configs.recommended];" > eslint.config.js')
     .replace(/npx\s+eslint\s+\.\s+--max-warnings(?:\s+|=)0\b/g, 'npx eslint . --max-warnings 1000');
+}
+
+async function gitleaksTooling() {
+  try {
+    await runTool('gitleaks', ['version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`gitleaks` is not installed (brew install gitleaks) or not on PATH.' };
+  }
 }
 
 async function actTooling() {
@@ -2105,17 +2153,82 @@ async function explainIssueForHuman(issue) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Ignite Studio — AI-suggested fix for one issue (see /api/issues/     */
+/* suggest-fix). Suggest-only: never writes anything itself, so there's */
+/* exactly one write path (the studio/file PUT the caller applies to    */
+/* afterward) to reason about.                                          */
+/* ------------------------------------------------------------------ */
+
+const ISSUE_SUGGEST_FIX_PROMPT = `You are a senior software engineer proposing a concrete fix for one single flagged code issue, using the exact numbered code snippet shown.
+Propose a corrected replacement for ONLY the exact line range shown in the snippet (from its first to its last numbered line) — do not rewrite the whole file, do not renumber lines, do not add lines outside that range.
+Respond with ONLY a JSON object in this schema:
+{"explanation":"<1-3 sentences: what changed and why it fixes the issue>","replacement":"<the corrected text for that exact line range, newline-separated, no line-number prefixes>"}
+If you cannot safely propose a fix from the snippet alone, respond {"explanation":"<why not>","replacement":null}.`;
+
+function stripJsonFence(text) {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1] : trimmed;
+}
+
+async function suggestFixForIssue(issue) {
+  if (!Array.isArray(issue.snippet?.lines) || issue.snippet.lines.length === 0) return null;
+  const codeBlock = issue.snippet.lines.map((l) => `${l.number}: ${l.text}`).join('\n').slice(0, 4000);
+  const user = `Category: ${issue.category}\nSeverity: ${issue.severity}\nLocation: ${issue.file || 'unknown'}${issue.line ? ':' + issue.line : ''}\nTechnical summary: ${issue.summary}\n\nCode:\n${codeBlock}`;
+  const text = await llmComplete(ISSUE_SUGGEST_FIX_PROMPT, user, { temperature: 0.2, timeoutMs: 60_000, label: `issue-suggest-fix ${issue.category}:${issue.file || '?'}:${issue.line || 0}` });
+  if (!text) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(stripJsonFence(text));
+  } catch {
+    return null;
+  }
+  if (typeof parsed.replacement !== 'string' && parsed.replacement !== null) return null;
+  return {
+    explanation: String(parsed.explanation || ''),
+    replacement: parsed.replacement,
+    startLine: issue.snippet.startLine,
+    endLine: issue.snippet.startLine + issue.snippet.lines.length - 1,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Failure notifications (email)                                       */
 /* ------------------------------------------------------------------ */
 
-const PHASE_TITLES = {
-  1: 'Input & Metadata Configuration',
-  2: 'GxP Validation Documents',
-  3: 'Extraction, Structure Audit & Unit Tests',
-  4: 'Security & AI Compliance Scan',
-  5: 'Org Governance CI (GitHub Actions via act)',
-  6: 'Provisioning & Shipping',
-};
+// Built-in phase titles/descriptions — CONFIG.phases (config.json) can
+// override title/desc per id; any id it doesn't mention keeps these
+// defaults, and the whole thing is identical to today's hardcoded UI when
+// config.json has no `phases` key at all.
+const DEFAULT_PHASE_META = [
+  { id: 1, title: 'Input & Metadata Configuration', desc: 'Validate archive and target repository metadata', enabled: true },
+  { id: 2, title: 'GxP Validation Documents', desc: 'Mandatory for GxP processes · documents archived to the database', enabled: false },
+  { id: 3, title: 'Extraction, Structure Audit & Unit Tests', desc: 'Unpack to staging · deny raw .env* files · auto-detect Node/Go/Rust/Python/Java and run its native test suite in an isolated Docker container', enabled: true },
+  { id: 4, title: 'Security & AI Compliance Scan', desc: 'Credential leak regex · LangChain/LangGraph governance · LLM deep-scan', enabled: true },
+  { id: 5, title: 'Org Governance CI — GitHub Actions', desc: 'Runs devops-governance org workflows locally in Docker via act', enabled: true },
+  { id: 6, title: 'Provisioning & Shipping', desc: 'git init · gh repo create --private · push to main', enabled: true },
+];
+
+// Phases everything downstream structurally depends on — extraction (3)
+// stages the project every later phase scans/ships, input validation (1)
+// creates the project record, and shipping (6) is the pipeline's actual
+// purpose (dryRun, not a disabled phase, is the "don't ship" switch). An
+// `enabled: false` override on these ids is ignored rather than silently
+// breaking the run.
+const PHASE_ALWAYS_ENABLED = new Set([1, 3, 6]);
+
+const PHASE_META = DEFAULT_PHASE_META.map((def) => {
+  const override = (CONFIG.phases || []).find((p) => Number(p?.id) === def.id) || {};
+  return {
+    id: def.id,
+    title: String(override.title || def.title),
+    desc: String(override.desc || def.desc),
+    enabled: PHASE_ALWAYS_ENABLED.has(def.id) ? true : (override.enabled !== undefined ? Boolean(override.enabled) : def.enabled),
+  };
+});
+
+const PHASE_TITLES = Object.fromEntries(PHASE_META.map((p) => [p.id, p.title]));
+const PHASE_ENABLED = Object.fromEntries(PHASE_META.map((p) => [p.id, p.enabled]));
 
 function buildMailTransport() {
   const { smtp } = CONFIG.notifications;
@@ -2288,7 +2401,22 @@ app.get('/api/config', (req, res) => {
   const orgs = (Array.isArray(raw) ? raw : String(raw).split(','))
     .map((s) => String(s).trim())
     .filter(Boolean);
-  res.json({ orgs });
+  res.json({ orgs, phases: PHASE_META });
+});
+
+// Status of the optional external tools Ignite integrates with but doesn't
+// require — each one soft-skips to a built-in fallback when missing, so this
+// is purely informational (drives the "connected/disconnected" pills in the
+// UI's top-right Tools panel), never gates anything itself.
+app.get('/api/tools/status', async (req, res) => {
+  const [ort, licensee, gitleaks] = await Promise.all([
+    ortTooling(), licenseeTooling(), gitleaksTooling(),
+  ]);
+  res.json({
+    ort: { ...ort, enabled: true },
+    licensee: { ...licensee, enabled: true },
+    gitleaks: { ...gitleaks, enabled: GITLEAKS_ENABLED },
+  });
 });
 
 /* Onboarding history: project list, per-project steps + documents, and
@@ -2328,18 +2456,662 @@ app.get('/api/pipeline/:jobId/issues', (req, res) => {
   res.json({ ok: true, running: false, issues: store.getProjectIssues(projectId), projectId });
 });
 
+/* ------------------------------------------------------------------ */
+/* Ignite Studio — file-tree/editor + rescan. Available in two windows: */
+/*  - 'live': the run is still paused at the review gate — projectRoot   */
+/*    and sourceBackupDir are both on disk, issues live in runState.    */
+/*  - 'kept': the review gate already resolved, but the run didn't ship  */
+/*    for real (dry run / user stopped / unresolved findings / CI       */
+/*    failure) — sourceBackupDir is the one already kept alive by       */
+/*    pendingEffectivations for the "Effectivate" feature (24h TTL,     */
+/*    cleared on Effectivate, or gone on server restart); issues live   */
+/*    in the DB. A run that DID ship for real gets neither: the code is */
+/*    already safely on GitHub, so Studio has nothing to open — fixing  */
+/*    it means a normal PR, not reopening a local copy indefinitely.    */
+/* ------------------------------------------------------------------ */
+
+const STUDIO_MAX_FILE_BYTES = 200_000; // matches the LLM deep-scan per-file cap
+function studioNoopLog() {}
+
+function resolveStudioContext(req, res) {
+  const jobId = String(req.params.jobId || '').trim();
+
+  const runState = runningRuns.get(jobId);
+  if (runState && runState.reviewActive && runState.projectRoot) {
+    reviewDecisions.touch(jobId);
+    return {
+      jobId,
+      root: runState.projectRoot,
+      backupRoot: runState.sourceBackupDir,
+      org: runState.org,
+      repo: runState.repo,
+      getIssues: () => runState.allIssues,
+      replacePhase4: (freshIssues) => {
+        const others = runState.allIssues.filter((i) => i.phase !== 4);
+        runState.allIssues.length = 0;
+        runState.allIssues.push(...others, ...freshIssues);
+        runState.persistIssuesSnapshot();
+      },
+      replaceLicense: (freshIssues) => {
+        const others = runState.allIssues.filter((i) => i.category !== 'license-compliance');
+        runState.allIssues.length = 0;
+        runState.allIssues.push(...others, ...freshIssues);
+        runState.persistIssuesSnapshot();
+      },
+    };
+  }
+
+  const projectId = store.getProjectIdByJobId(jobId);
+  if (projectId !== null) {
+    cleanupExpiredEffectivations();
+    const kept = pendingEffectivations.get(projectId);
+    if (kept) {
+      return {
+        jobId,
+        root: kept.sourceBackupDir,
+        backupRoot: kept.sourceBackupDir,
+        org: kept.org,
+        repo: kept.repo,
+        getIssues: () => store.getProjectIssues(projectId),
+        replacePhase4: (freshIssues) => {
+          const current = store.getProjectIssues(projectId);
+          const overriddenIds = new Set(current.filter((i) => i.status === 'overridden').map((i) => i.id));
+          const merged = [...current.filter((i) => i.phase !== 4), ...freshIssues];
+          store.replaceProjectIssues(projectId, merged, overriddenIds);
+        },
+        replaceLicense: (freshIssues) => {
+          const current = store.getProjectIssues(projectId);
+          const overriddenIds = new Set(current.filter((i) => i.status === 'overridden').map((i) => i.id));
+          const merged = [...current.filter((i) => i.category !== 'license-compliance'), ...freshIssues];
+          store.replaceProjectIssues(projectId, merged, overriddenIds);
+        },
+      };
+    }
+  }
+
+  res.status(409).json({ error: 'This run\'s source is no longer available (already shipped for real, expired, or unknown job).' });
+  return null;
+}
+
+app.get('/api/pipeline/:jobId/studio/tree', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    const files = [];
+    for await (const file of walkFiles(ctx.root)) {
+      const stat = await fsp.stat(file);
+      files.push({ path: path.relative(ctx.root, file), size: stat.size });
+    }
+    res.json({ ok: true, files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/pipeline/:jobId/studio/file', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    const target = resolveWithinRoot(ctx.root, String(req.query.path || ''));
+    const buffer = await fsp.readFile(target);
+    if (looksBinary(buffer)) return res.status(415).json({ error: 'Binary file — cannot display in Studio.' });
+    if (buffer.length > STUDIO_MAX_FILE_BYTES) return res.status(413).json({ error: 'File too large to display in Studio.' });
+    res.json({ ok: true, content: buffer.toString('utf8') });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// In 'live' mode, writes to BOTH the live staging tree and the immutable
+// sourceBackupDir — Phase 6 always clones the publish workspace from
+// sourceBackupDir, never from projectRoot, so a fix written only to
+// projectRoot would validate here but silently vanish from what actually
+// gets pushed. In 'kept' mode root === backupRoot (only sourceBackupDir is
+// still on disk), so it's a single write.
+app.put('/api/pipeline/:jobId/studio/file', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  const relPath = String(req.body?.path || '');
+  const content = req.body?.content;
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) is required.' });
+  try {
+    const liveTarget = resolveWithinRoot(ctx.root, relPath);
+    await fsp.mkdir(path.dirname(liveTarget), { recursive: true });
+    await fsp.writeFile(liveTarget, content, 'utf8');
+    if (ctx.backupRoot !== ctx.root) {
+      const backupTarget = resolveWithinRoot(ctx.backupRoot, relPath);
+      await fsp.mkdir(path.dirname(backupTarget), { recursive: true });
+      await fsp.writeFile(backupTarget, content, 'utf8');
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Re-runs the phase-4 checks against the (now-edited) tree and replaces just
+// that phase's slice of the run's issue list — the other phases' issues are
+// untouched. All three checks are per-file-hash cached (file_scan_cache,
+// same {org, repo} key used for the original scan), so re-scanning after
+// editing one or two files is cheap: everything else is a cache hit.
+app.post('/api/pipeline/:jobId/studio/rescan', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    const cacheKey = { org: ctx.org, repo: ctx.repo };
+    const secrets = await checkSecrets(ctx.root, studioNoopLog, cacheKey);
+    const governance = await checkAiGovernance(ctx.root, cacheKey);
+    const llm = await checkLlmDeepScan(ctx.root, studioNoopLog, cacheKey);
+    const freshIssues = collectPhase4Issues({ secrets, governance, llm }).map((issue) => ({ ...issue, phase: 4 }));
+
+    // License compliance runs alongside the phase 4 checks here too — same
+    // scan Phase 3 runs on a fresh upload (manifests via scanDependencyLicenses
+    // + every LICENSE file in the tree), so "Rescan" picks up dependency/
+    // license changes without needing the separate Dependencies view.
+    const licenseScan = await scanDependencyLicenses(ctx.root, studioNoopLog);
+    const licenseFileFindings = await scanProjectLicenseFiles(ctx.root);
+    const freshLicenseIssues = collectLicenseIssues({ manifests: licenseScan.manifests, licenseFiles: licenseFileFindings })
+      .map((issue) => ({ ...issue, phase: 3 }));
+
+    const previousIssues = ctx.getIssues();
+    const previousPhase4Ids = new Set(previousIssues.filter((i) => i.phase === 4).map((i) => i.id));
+    const previousLicenseIds = new Set(previousIssues.filter((i) => i.category === 'license-compliance').map((i) => i.id));
+    const freshIds = new Set(freshIssues.map((i) => i.id));
+    const freshLicenseIds = new Set(freshLicenseIssues.map((i) => i.id));
+    const resolvedIds = [
+      ...[...previousPhase4Ids].filter((id) => !freshIds.has(id)),
+      ...[...previousLicenseIds].filter((id) => !freshLicenseIds.has(id)),
+    ];
+    const newIds = [
+      ...[...freshIds].filter((id) => !previousPhase4Ids.has(id)),
+      ...[...freshLicenseIds].filter((id) => !previousLicenseIds.has(id)),
+    ];
+
+    ctx.replacePhase4(freshIssues);
+    ctx.replaceLicense(freshLicenseIssues);
+
+    res.json({ ok: true, issues: ctx.getIssues(), resolvedIds, newIds });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Dependency license compliance — Black Duck-style red/warning/green   */
+/* classification, shown in Ignite Studio's "Dependencies" view and     */
+/* exposed standalone via POST /api/dependencies/check for any project  */
+/* path (agent/CI use, same convention as /api/pipeline/validate-all).  */
+/*                                                                       */
+/* Engines, in preference order (each soft-skips to the next if its     */
+/* tool isn't installed — same convention as `act`/gitleaks elsewhere): */
+/*  1. ORT (OSS Review Toolkit) analyzer, if the `ort` CLI is on PATH — */
+/*     resolves actual lockfiles across NPM/Cargo/PyPI/Go/Maven in one  */
+/*     pass, the closest local equivalent to a real Black Duck scan.    */
+/*  2. Fallback: this file's own manifest parsers (package.json,        */
+/*     Cargo.toml, requirements.txt, go.mod, pom.xml) + a per-dependency */
+/*     license lookup against deps.dev's public API.                    */
+/* Independently of either, `licensee` (if installed) detects the       */
+/* project's OWN declared license from its LICENSE file/root content —  */
+/* a different question ("what is this repo licensed under") than the   */
+/* per-dependency scan ("what are its dependencies licensed under").    */
+/* ------------------------------------------------------------------ */
+
+const LICENSE_TIERS = {
+  // Full open source — permissive, no reciprocal/attribution-beyond-notice
+  // obligations. "Green" per the user's own framing.
+  green: new Set([
+    'MIT', 'MIT-0', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'BSD-3-Clause-Clear',
+    'ISC', '0BSD', 'Unlicense', 'Zlib', 'Python-2.0', 'PostgreSQL', 'CC0-1.0', 'WTFPL',
+    'BlueOak-1.0.0', 'BSD-4-Clause', 'X11', 'Artistic-2.0',
+  ]),
+  // Copyleft/reciprocal open-source licenses — still genuinely open source,
+  // but the kind of obligation that pushes many vendors toward a dual
+  // "Community Edition (GPL) / Enterprise (commercial)" split. "Warning".
+  warning: new Set([
+    'GPL-2.0', 'GPL-2.0-only', 'GPL-2.0-or-later', 'GPL-3.0', 'GPL-3.0-only', 'GPL-3.0-or-later',
+    'AGPL-3.0', 'AGPL-3.0-only', 'AGPL-3.0-or-later', 'LGPL-2.1', 'LGPL-2.1-only', 'LGPL-2.1-or-later',
+    'LGPL-3.0', 'LGPL-3.0-only', 'LGPL-3.0-or-later', 'MPL-1.1', 'MPL-2.0', 'EPL-1.0', 'EPL-2.0',
+    'CDDL-1.0', 'CDDL-1.1', 'CeCILL-2.1',
+  ]),
+  // Source-available but not OSI-approved open source — the "commercial
+  // product with the source visible" pattern (SSPL/BUSL/Commons Clause are
+  // exactly the licenses behind most vendors' non-open editions). "Red".
+  red: new Set([
+    'SSPL-1.0', 'BUSL-1.1', 'Commons-Clause', 'UNLICENSED', 'LicenseRef-Proprietary',
+    'Elastic-2.0', 'Elastic-1.0',
+  ]),
+};
+
+function classifyLicenseTier(licenses) {
+  const list = (Array.isArray(licenses) ? licenses : licenses ? [licenses] : [])
+    .filter(Boolean).map((l) => String(l).trim());
+  if (list.length === 0) return { tier: 'red', reason: 'No license identified.' };
+  if (list.some((l) => LICENSE_TIERS.red.has(l) || /commercial|proprietary/i.test(l))) {
+    return { tier: 'red', reason: `Commercial/restrictive license: ${list.join(', ')}` };
+  }
+  if (list.some((l) => LICENSE_TIERS.green.has(l))) {
+    return { tier: 'green', reason: list.join(', ') };
+  }
+  if (list.some((l) => LICENSE_TIERS.warning.has(l))) {
+    return { tier: 'warning', reason: `Copyleft license: ${list.join(', ')}` };
+  }
+  return { tier: 'red', reason: `Unrecognized license — treat as risk until reviewed: ${list.join(', ')}` };
+}
+
+function bestEffortVersion(raw) {
+  const m = String(raw || '').match(/(\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?)/);
+  return m ? m[1] : null;
+}
+
+function parsePackageJsonDeps(content) {
+  try {
+    const json = JSON.parse(content);
+    const deps = { ...(json.dependencies || {}), ...(json.devDependencies || {}) };
+    return Object.entries(deps).map(([name, versionRange]) => ({ name, versionRange: String(versionRange) }));
+  } catch {
+    return [];
+  }
+}
+
+function parseCargoTomlDeps(content) {
+  const deps = [];
+  let inDeps = false;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (/^\[.*\]$/.test(line)) {
+      inDeps = /^\[(dependencies|dev-dependencies|build-dependencies)\]$/.test(line);
+      continue;
+    }
+    if (!inDeps || !line || line.startsWith('#')) continue;
+    const m = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
+    if (!m) continue;
+    const versionMatch = m[2].match(/version\s*=\s*"([^"]+)"/) || m[2].match(/^"([^"]+)"/);
+    deps.push({ name: m[1], versionRange: versionMatch ? versionMatch[1] : m[2].trim() });
+  }
+  return deps;
+}
+
+function parseRequirementsTxtDeps(content) {
+  return content.split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#') && !l.startsWith('-'))
+    .map((l) => {
+      const m = l.match(/^([A-Za-z0-9_.-]+)\s*([=<>!~]{1,2}\s*[0-9A-Za-z.*+-]+)?/);
+      return m ? { name: m[1], versionRange: (m[2] || '').replace(/\s+/g, '') } : null;
+    })
+    .filter(Boolean);
+}
+
+function parseGoModDeps(content) {
+  const deps = [];
+  let inRequire = false;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (/^require\s*\($/.test(line)) { inRequire = true; continue; }
+    if (inRequire && line === ')') { inRequire = false; continue; }
+    const single = line.match(/^require\s+(\S+)\s+(\S+)/);
+    if (single) { deps.push({ name: single[1], versionRange: single[2] }); continue; }
+    if (inRequire && !line.startsWith('//')) {
+      const m = line.match(/^(\S+)\s+(\S+)/);
+      if (m) deps.push({ name: m[1], versionRange: m[2] });
+    }
+  }
+  return deps;
+}
+
+function parsePomXmlDeps(content) {
+  const deps = [];
+  const blocks = content.match(/<dependency>[\s\S]*?<\/dependency>/g) || [];
+  for (const block of blocks) {
+    const groupId = block.match(/<groupId>([^<]+)<\/groupId>/)?.[1]?.trim();
+    const artifactId = block.match(/<artifactId>([^<]+)<\/artifactId>/)?.[1]?.trim();
+    const version = block.match(/<version>([^<]+)<\/version>/)?.[1]?.trim();
+    if (groupId && artifactId) deps.push({ name: `${groupId}:${artifactId}`, versionRange: version || '' });
+  }
+  return deps;
+}
+
+const STUDIO_MANIFESTS = [
+  { file: 'package.json', ecosystem: 'npm', system: 'NPM', parse: parsePackageJsonDeps },
+  { file: 'Cargo.toml', ecosystem: 'cargo', system: 'CARGO', parse: parseCargoTomlDeps },
+  { file: 'requirements.txt', ecosystem: 'pypi', system: 'PYPI', parse: parseRequirementsTxtDeps },
+  { file: 'go.mod', ecosystem: 'go', system: 'GO', parse: parseGoModDeps },
+  { file: 'pom.xml', ecosystem: 'maven', system: 'MAVEN', parse: parsePomXmlDeps },
+];
+const STUDIO_MAX_DEPS_PER_MANIFEST = 60;
+
+// license lookups are immutable per (system, name, version) — cache for the
+// life of the process so re-opening the Dependencies view or re-checking
+// the same project never re-issues the same outbound request.
+const depsDevCache = new Map();
+async function fetchDepsDevLicenses(system, name, version) {
+  const key = `${system}:${name}:${version}`;
+  if (depsDevCache.has(key)) return depsDevCache.get(key);
+  let result;
+  try {
+    const url = `https://api.deps.dev/v3/systems/${system}/packages/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    result = res.ok ? (await res.json()).licenses || [] : null;
+  } catch {
+    result = null;
+  }
+  depsDevCache.set(key, result);
+  return result;
+}
+
+// Best-effort 1-based line of a dependency's declaration inside its
+// manifest, so a license finding can highlight the exact line in the Studio
+// editor instead of a file-level "line ?". Null when not found (ORT-derived
+// results never have manifest text to search).
+function findManifestDepLine(content, depName, ecosystem) {
+  const needle = ecosystem === 'maven'
+    ? `<artifactId>${depName.split(':')[1] || depName}<`
+    : ecosystem === 'npm'
+      ? `"${depName}"`
+      : depName;
+  const idx = content.split(/\r?\n/).findIndex((l) => l.includes(needle));
+  return idx >= 0 ? idx + 1 : null;
+}
+
+async function scanDependencyLicensesFallback(root, { skipEcosystems = new Set() } = {}) {
+  const manifests = [];
+  for await (const file of walkFiles(root)) {
+    const spec = STUDIO_MANIFESTS.find((m) => m.file === path.basename(file));
+    if (!spec || skipEcosystems.has(spec.ecosystem)) continue;
+    const content = await fsp.readFile(file, 'utf8').catch(() => null);
+    if (content == null) continue;
+    const rawDeps = spec.parse(content).slice(0, STUDIO_MAX_DEPS_PER_MANIFEST);
+    const dependencies = await Promise.all(rawDeps.map(async (dep) => {
+      const line = findManifestDepLine(content, dep.name, spec.ecosystem);
+      const version = bestEffortVersion(dep.versionRange);
+      if (!version) {
+        return { name: dep.name, versionRange: dep.versionRange, version: null, line, licenses: [], tier: 'red', reason: 'Could not resolve an exact version to check (range/tag/git ref).' };
+      }
+      const licenses = await fetchDepsDevLicenses(spec.system, dep.name, version);
+      if (licenses === null) {
+        return { name: dep.name, versionRange: dep.versionRange, version, line, licenses: [], tier: 'red', reason: 'License lookup failed (package/version not found upstream).' };
+      }
+      const { tier, reason } = classifyLicenseTier(licenses);
+      return { name: dep.name, versionRange: dep.versionRange, version, line, licenses, tier, reason };
+    }));
+    manifests.push({ file: path.relative(root, file), ecosystem: spec.ecosystem, dependencies });
+  }
+  return manifests;
+}
+
+async function licenseeTooling() {
+  try {
+    await runTool('licensee', ['version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`licensee` is not installed (gem install licensee).' };
+  }
+}
+
+// Detects the PROJECT's OWN declared license (LICENSE file / package
+// metadata) — independent of the per-dependency scan below. Soft-fails to
+// null (Studio just omits the "Project license" row) if licensee isn't
+// installed or finds nothing conclusive.
+async function runLicenseeDetect(root, log) {
+  const tooling = await licenseeTooling();
+  if (!tooling.ok) {
+    log?.(`⚠ Project license detection skipped: ${tooling.reason}`);
+    return null;
+  }
+  try {
+    const { stdout } = await runTool('licensee', ['detect', '--json', root], root);
+    const data = JSON.parse(stdout);
+    const best = (data.licenses || [])[0];
+    if (!best) return null;
+    const { tier, reason } = classifyLicenseTier(best.spdx_id);
+    return { spdxId: best.spdx_id, confidence: data.matched_files?.[0]?.attribution ? 100 : (best.similarity ?? null), tier, reason };
+  } catch (e) {
+    log?.(`⚠ Project license detection failed: ${e.message}`);
+    return null;
+  }
+}
+
+async function ortTooling() {
+  try {
+    await runTool('ort', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`ort` (OSS Review Toolkit) is not installed — falling back to the built-in manifest scan + deps.dev lookup.' };
+  }
+}
+
+// ORT only populates each project's `definition_file_path` (the manifest
+// path we need for per-file issues in Studio) when it can resolve the
+// staging root's VCS — on a bare directory (the normal case: a ZIP/folder
+// upload, never a git checkout) it comes back empty for every project.
+// Best-effort init+commit just so ORT can compute those relative paths;
+// swallows any failure (ORT still runs, just without per-file paths) and
+// never touches a `.git` the upload already brought with it.
+async function ensureGitRootForOrt(root, log) {
+  if (await fsp.access(path.join(root, '.git')).then(() => true, () => false)) return;
+  try {
+    await runTool('git', ['init', '-q'], root);
+    await runTool('git', ['add', '-A'], root);
+    await runTool('git', [
+      '-c', 'user.email=ignite@local', '-c', 'user.name=Ignite',
+      'commit', '-q', '-m', 'ignite-ort-scan', '--no-verify',
+    ], root);
+  } catch (e) {
+    log?.(`⚠ Could not stage a throwaway git repo for ORT's path resolution (non-blocking): ${e.message}`);
+  }
+}
+
+// Runs ORT's Analyzer module, which resolves actual lockfiles (more
+// accurate than this file's own regex-based manifest parsers) across every
+// ecosystem it supports in one pass. Returns null — never throws — on any
+// missing tool, timeout, or unrecognized output shape, so the caller always
+// has the lightweight fallback to drop back to; ORT's analyzer-result.json
+// schema has changed across versions, so field access here is defensive.
+async function runOrtAnalyze(root, log) {
+  const tooling = await ortTooling();
+  if (!tooling.ok) {
+    log?.(`⚠ ORT analyzer skipped: ${tooling.reason}`);
+    return null;
+  }
+  await ensureGitRootForOrt(root, log);
+  const outDir = path.join(os.tmpdir(), `ignite-ort-${crypto.randomBytes(8).toString('hex')}`);
+  try {
+    await fsp.mkdir(outDir, { recursive: true });
+    // exit 2 = "found issues at/above severity threshold" (a normal ORT
+    // outcome, e.g. commercial/unresolved licenses) — the result JSON is
+    // still written; only other exit codes mean the analyzer itself failed.
+    await runTool('ort', ['analyze', '-i', root, '-o', outDir, '-f', 'JSON'], root, { allowedExitCodes: [0, 2] });
+    const raw = await fsp.readFile(path.join(outDir, 'analyzer-result.json'), 'utf8');
+    const data = JSON.parse(raw);
+    const packages = data?.analyzer?.result?.packages || data?.result?.packages || [];
+    if (!Array.isArray(packages) || packages.length === 0) return null;
+
+    // Map each ecosystem to its manifest path via the analyzer's `projects`
+    // list — the one place ORT records definition_file_path. When an
+    // ecosystem has more than one project (e.g. a monorepo with two
+    // package.json's) the path is ambiguous per-package, so that ecosystem
+    // falls back to the old synthetic "(ORT: ecosystem)" grouping label
+    // instead of guessing wrong.
+    const projects = data?.analyzer?.result?.projects || data?.result?.projects || [];
+    const pathByEcosystem = new Map();
+    for (const proj of projects) {
+      const projType = String(proj?.id || '').split(':')[0];
+      const defPath = proj?.definition_file_path || proj?.definitionFilePath || '';
+      if (!projType || !defPath) continue;
+      const ecosystem = projType.toLowerCase();
+      if (pathByEcosystem.has(ecosystem) && pathByEcosystem.get(ecosystem) !== defPath) {
+        pathByEcosystem.set(ecosystem, null); // ambiguous — more than one manifest
+      } else {
+        pathByEcosystem.set(ecosystem, defPath);
+      }
+    }
+
+    const byEcosystem = new Map();
+    for (const entry of packages) {
+      const pkg = entry.package || entry;
+      const id = String(pkg.id || '');
+      const [type, , name, version] = id.split(':'); // "Type:Namespace:Name:Version"
+      if (!type || !name) continue;
+      const declared = pkg.declared_licenses || pkg.declaredLicenses
+        || (pkg.declared_licenses_processed?.spdx_expression ? [pkg.declared_licenses_processed.spdx_expression] : [])
+        || (pkg.declaredLicensesProcessed?.spdxExpression ? [pkg.declaredLicensesProcessed.spdxExpression] : []);
+      const { tier, reason } = classifyLicenseTier(declared);
+      const ecosystem = type.toLowerCase();
+      if (!byEcosystem.has(ecosystem)) byEcosystem.set(ecosystem, []);
+      byEcosystem.get(ecosystem).push({ name, versionRange: version || '', version: version || null, licenses: declared, tier, reason });
+    }
+    return Promise.all([...byEcosystem.entries()].map(async ([ecosystem, dependencies]) => {
+      const realPath = pathByEcosystem.get(ecosystem);
+      if (!realPath) return { file: `(ORT: ${ecosystem})`, ecosystem, dependencies };
+      // Resolve each dependency's declaration line the same way the
+      // deps.dev fallback does, so Studio can highlight the exact line
+      // whether the finding came from ORT or the fallback scanner.
+      const content = await fsp.readFile(path.join(root, realPath), 'utf8').catch(() => null);
+      const withLines = content == null ? dependencies : dependencies.map((dep) => ({
+        ...dep,
+        line: findManifestDepLine(content, dep.name, ecosystem),
+      }));
+      return { file: realPath, ecosystem, dependencies: withLines };
+    }));
+  } catch (e) {
+    log?.(`⚠ ORT analyzer failed, falling back to built-in scan: ${e.message}`);
+    return null;
+  } finally {
+    await fsp.rm(outDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function scanDependencyLicenses(root, log) {
+  const [projectLicense, ortManifests] = await Promise.all([
+    runLicenseeDetect(root, log),
+    runOrtAnalyze(root, log),
+  ]);
+  // ORT resolves per-ecosystem (it needs that ecosystem's lockfile/tooling —
+  // e.g. a package-lock.json for NPM, the `cargo`/`python-inspector` binary
+  // on PATH) — it's common for it to cover some ecosystems in a repo and not
+  // others. Using ORT's results outright for what it *did* resolve, and the
+  // built-in deps.dev fallback only for the rest, means one uncovered
+  // ecosystem never makes every other manifest's findings disappear.
+  const ortEcosystems = new Set((ortManifests || []).map((m) => m.ecosystem));
+  const fallbackManifests = await scanDependencyLicensesFallback(root, { skipEcosystems: ortEcosystems });
+  const manifests = [...(ortManifests || []), ...fallbackManifests];
+  const engine = !ortManifests ? 'fallback' : (fallbackManifests.length > 0 ? 'ort+fallback' : 'ort');
+  if (ortManifests && fallbackManifests.length > 0) {
+    log?.(`ℹ ORT resolved ${[...ortEcosystems].join(', ')} — falling back to deps.dev for the rest (${fallbackManifests.map((m) => m.ecosystem).join(', ')}).`);
+  }
+  return { engine, projectLicense, manifests };
+}
+
+const LICENSE_FILENAME_RE = /^LICEN[CS]E(\.(txt|md))?$/i;
+
+// Dependency-free classification of a LICENSE file's raw text. `licensee`
+// (runLicenseeDetect) only ever inspects the project root and needs the gem
+// installed — this catches every LICENSE file in the tree (a multi-language
+// repo has one per module) purely by pattern-matching, so commercial terms
+// are still caught with no external tooling at all.
+function classifyLicenseText(content) {
+  const commercialMatch = content.match(/commercial|proprietary/i);
+  if (!commercialMatch) return null;
+  const licenseeMatch = content.match(/^\s*Licensee\s*:\s*(.+)$/im);
+  const licensorMatch = content.match(/^\s*Licensor\s*:\s*(.+)$/im);
+  const anchor = licenseeMatch || commercialMatch;
+  const line = content.slice(0, anchor.index).split(/\r?\n/).length;
+  const reason = licenseeMatch
+    ? `Commercial license agreement — Licensee: ${licenseeMatch[1].trim()}${licensorMatch ? `, Licensor: ${licensorMatch[1].trim()}` : ''}.`
+    : 'Commercial/proprietary license terms detected in LICENSE file.';
+  return { tier: 'red', line, reason };
+}
+
+// Walks the whole staged tree (not just the root) for LICENSE/LICENCE files
+// and flags the commercial/proprietary-looking ones. Complements the
+// per-dependency manifest scan above — a manifest can declare only
+// permissive/OSS packages while the repo still ships a commercial LICENSE
+// file for a vendored or non-package-manager-distributed component.
+async function scanProjectLicenseFiles(root) {
+  const findings = [];
+  for await (const file of walkFiles(root)) {
+    if (!LICENSE_FILENAME_RE.test(path.basename(file))) continue;
+    const content = await fsp.readFile(file, 'utf8').catch(() => null);
+    if (content == null) continue;
+    const classified = classifyLicenseText(content);
+    if (classified) findings.push({ file: path.relative(root, file), ...classified });
+  }
+  return findings;
+}
+
+// Runs as part of Phase 3 in every pipeline entry point (interactive
+// streaming, validate-all, onboard) — dependency-manifest licenses (via
+// scanDependencyLicenses, ORT/licensee if installed else the built-in
+// deps.dev fallback) plus the LICENSE-file text scan above, normalized into
+// the same addressable-issue shape phase 4's findings use (collectLicenseIssues)
+// so commercial/copyleft/unrecognized licenses show up — and gate a run —
+// like any other flagged issue, not only in the on-demand Dependencies view.
+// Never throws: a deps.dev network hiccup shouldn't fail structure audit.
+async function runLicenseComplianceCheck(projectRoot, log) {
+  log('Check 5 — dependency & license compliance scan (manifests + LICENSE files)...');
+  try {
+    const [licenseScan, licenseFileFindings] = await Promise.all([
+      scanDependencyLicenses(projectRoot, log),
+      scanProjectLicenseFiles(projectRoot),
+    ]);
+    const licenseIssues = collectLicenseIssues({ manifests: licenseScan.manifests, licenseFiles: licenseFileFindings })
+      .map((issue) => ({ ...issue, phase: 3 }));
+    if (licenseIssues.length > 0) {
+      const blocking = licenseIssues.filter((i) => i.severity === 'error').length;
+      log(`⚠ ${licenseIssues.length} license compliance finding(s) (${blocking} commercial/blocking):`);
+      licenseIssues.forEach((li) => log(`    ${li.severity === 'error' ? '✗' : '⚠'} ${li.file}${li.line ? ':' + li.line : ''} — ${li.summary}`));
+    } else {
+      log('✓ Check 5 passed — no commercial/restrictive licenses detected.');
+    }
+    return licenseIssues;
+  } catch (e) {
+    log(`⚠ License compliance scan failed (non-blocking): ${e.message}`);
+    return [];
+  }
+}
+
+app.get('/api/pipeline/:jobId/studio/dependencies', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    res.json({ ok: true, ...(await scanDependencyLicenses(ctx.root)) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Standalone, job-independent equivalent for agent/CI use — same
+// projectPath convention as /api/pipeline/validate-all.
+app.post('/api/dependencies/check', async (req, res) => {
+  let projectPath;
+  try {
+    projectPath = sanitizeAbsoluteProjectPath(req.body?.projectPath || '');
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  const stat = await fsp.stat(projectPath).catch(() => null);
+  if (!stat || !stat.isDirectory()) {
+    return res.status(400).json({ error: `projectPath does not exist or is not a directory: ${projectPath}` });
+  }
+  try {
+    res.json({ ok: true, projectPath, ...(await scanDependencyLicenses(projectPath)) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // On-demand, non-technical AI explanation of a single flagged issue's code
 // snippet (shown as the hover tooltip in the UI). Cached in the DB by a
 // stable hash of the issue's identity, so opening the same finding again —
 // even in a different run — never re-triggers the LLM call.
-app.post('/api/issues/explain', async (req, res) => {
-  const body = req.body || {};
+// Shared by /api/issues/explain and /api/issues/suggest-fix — both accept
+// the same client-supplied issue shape (category/severity/file/line/summary
+// + optional snippet) and need it validated/trimmed the same way.
+function parseIssueFromBody(body) {
   const category = String(body.category || '').trim();
   const summary = String(body.summary || '').trim();
-  if (!category || !summary) {
-    return res.status(400).json({ error: 'category and summary are required.' });
-  }
-  const issue = {
+  if (!category || !summary) return null;
+  return {
     category,
     severity: ['error', 'warning'].includes(body.severity) ? body.severity : 'warning',
     file: body.file ? String(body.file).slice(0, 500) : null,
@@ -2349,6 +3121,11 @@ app.post('/api/issues/explain', async (req, res) => {
       ? body.snippet
       : null,
   };
+}
+
+app.post('/api/issues/explain', async (req, res) => {
+  const issue = parseIssueFromBody(req.body || {});
+  if (!issue) return res.status(400).json({ error: 'category and summary are required.' });
 
   const hash = issueExplanationHash(issue);
   const cached = store.getCachedIssueExplanation(hash);
@@ -2361,6 +3138,26 @@ app.post('/api/issues/explain', async (req, res) => {
     const explanation = await explainIssueForHuman(issue);
     if (explanation) store.cacheIssueExplanation(hash, explanation);
     res.json({ ok: true, explanation, cached: false });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+// Ignite Studio: AI-suggested fix for one issue's exact snippet range.
+// Suggest-only — never writes to disk itself (see PUT
+// /api/pipeline/:jobId/studio/file for the one write path). Not cached like
+// /explain — a fix is requested at most a handful of times per session.
+app.post('/api/issues/suggest-fix', async (req, res) => {
+  const issue = parseIssueFromBody(req.body || {});
+  if (!issue) return res.status(400).json({ error: 'category and summary are required.' });
+  if (!issue.snippet) return res.status(400).json({ error: 'A code snippet is required to suggest a fix.' });
+
+  if (!(await llmAvailable())) {
+    return res.json({ ok: true, suggestion: null, reason: 'AI fix suggestion service unavailable.' });
+  }
+  try {
+    const suggestion = await suggestFixForIssue(issue);
+    res.json({ ok: true, suggestion });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message });
   }
@@ -2490,7 +3287,10 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
   const body = req.body || {};
   const org = String(body.org || 'local-validation').trim();
   const repo = String(body.repo || 'local-project').trim();
-  const isGxp = body.gxp === true;
+  // Phase 2 disabled by config (default) means GxP isn't a concept this
+  // Ignite install offers at all — a caller passing gxp:true anyway is
+  // ignored rather than honored, matching "hidden and therefore not checked".
+  const isGxp = PHASE_ENABLED[2] && body.gxp === true;
   const runLocalCi = body.runLocalCi !== false;
   const warningDecision = String(body.warningDecision || 'continue').toLowerCase();
   const projectPath = sanitizeAbsoluteProjectPath(body.projectPath || process.cwd());
@@ -2586,6 +3386,12 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     await stageExistingProject(projectPath, stagingDir, log2);
     const projectRoot = await resolveProjectRoot(stagingDir);
 
+    // License compliance runs first — the env-file check and unit tests
+    // below throw on failure, and license findings must survive into the
+    // combined issue list either way (same ordering as the interactive
+    // pipeline).
+    const licenseIssues = await runLicenseComplianceCheck(projectRoot, log2);
+
     log2('Check 1 — scanning for raw environment files (.env*)...');
     const envCheck = await checkEnvFiles(projectRoot);
     if (envCheck.ignored.length > 0) {
@@ -2605,41 +3411,45 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
 
     status(4, 'running');
     const log3 = phaseLog(4);
-
-    log3('Check 2 — scanning text files for hardcoded credentials...');
-    const secrets = await checkSecrets(projectRoot, log3, { org, repo });
-    log3(`Scanned ${secrets.scanned} text files.`);
-    if (secrets.findings.length > 0) {
-      log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
-      secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+    let issues = [...licenseIssues];
+    if (!PHASE_ENABLED[4]) {
+      log3('Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).');
     } else {
-      log3('✓ Check 2 passed — no credential leakage detected.');
-    }
+      log3('Check 2 — scanning text files for hardcoded credentials...');
+      const secrets = await checkSecrets(projectRoot, log3, { org, repo });
+      log3(`Scanned ${secrets.scanned} text files.`);
+      if (secrets.findings.length > 0) {
+        log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
+        secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+      } else {
+        log3('✓ Check 2 passed — no credential leakage detected.');
+      }
 
-    log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-    const governance = await checkAiGovernance(projectRoot, { org, repo });
-    log3(`Audited ${governance.scanned} source files.`);
-    if (governance.findings.length > 0) {
-      log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
-      governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
-    } else {
-      log3('✓ Check 4 passed — all AI invocations are governed.');
-    }
+      log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
+      const governance = await checkAiGovernance(projectRoot, { org, repo });
+      log3(`Audited ${governance.scanned} source files.`);
+      if (governance.findings.length > 0) {
+        log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
+        governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
+      } else {
+        log3('✓ Check 4 passed — all AI invocations are governed.');
+      }
 
-    log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-    const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
-    if (!llm.available) {
-      log3(`⚠ Deep-scan skipped: ${llm.reason}`);
-    } else if (llm.findings.length === 0) {
-      log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
-    } else {
-      log3(`LLM reported ${llm.findings.length} finding(s):`);
-      llm.findings.forEach((f) =>
-        log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
-      );
-    }
+      log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
+      const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
+      if (!llm.available) {
+        log3(`⚠ Deep-scan skipped: ${llm.reason}`);
+      } else if (llm.findings.length === 0) {
+        log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
+      } else {
+        log3(`LLM reported ${llm.findings.length} finding(s):`);
+        llm.findings.forEach((f) =>
+          log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
+        );
+      }
 
-    const issues = collectPhase4Issues({ secrets, governance, llm });
+      issues = [...collectPhase4Issues({ secrets, governance, llm }), ...licenseIssues];
+    }
     const errorIssues = issues.filter((i) => i.severity === 'error');
     const warningIssues = issues.filter((i) => i.severity === 'warning');
 
@@ -2677,7 +3487,10 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
 
     status(5, 'running');
     const log4 = phaseLog(5);
-    if (!runLocalCi) {
+    if (!PHASE_ENABLED[5]) {
+      log4('Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).');
+      status(5, 'skipped');
+    } else if (!runLocalCi) {
       log4('Local CI execution disabled by request (runLocalCi=false).');
       status(5, 'skipped');
     } else {
@@ -2745,7 +3558,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
   const body = req.body || {};
   const org = String(body.org || '').trim();
   const repo = String(body.repo || '').trim();
-  const isGxp = body.gxp === true;
+  // Phase 2 disabled by config (default) means GxP isn't a concept this
+  // Ignite install offers at all — a caller passing gxp:true anyway is
+  // ignored rather than honored, matching "hidden and therefore not checked".
+  const isGxp = PHASE_ENABLED[2] && body.gxp === true;
   const runLocalCi = body.runLocalCi !== false;
   const dryRun = body.dryRun === true;
   const warningDecision = String(body.warningDecision || 'continue').toLowerCase();
@@ -2863,6 +3679,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
     await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
     log2('Created immutable source snapshot for final publish phase.');
 
+    // License compliance runs first — same ordering rationale as the
+    // interactive and validate-all pipelines: the checks below throw.
+    const licenseIssues = await runLicenseComplianceCheck(projectRoot, log2);
+
     log2('Check 1 — scanning for raw environment files (.env*)...');
     const envCheck = await checkEnvFiles(projectRoot);
     if (envCheck.ignored.length > 0) {
@@ -2882,41 +3702,45 @@ app.post('/api/pipeline/onboard', async (req, res) => {
 
     status(4, 'running');
     const log3 = phaseLog(4);
-
-    log3('Check 2 — scanning text files for hardcoded credentials...');
-    const secrets = await checkSecrets(projectRoot, log3, { org, repo });
-    log3(`Scanned ${secrets.scanned} text files.`);
-    if (secrets.findings.length > 0) {
-      log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
-      secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+    let issues = [...licenseIssues];
+    if (!PHASE_ENABLED[4]) {
+      log3('Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).');
     } else {
-      log3('✓ Check 2 passed — no credential leakage detected.');
-    }
+      log3('Check 2 — scanning text files for hardcoded credentials...');
+      const secrets = await checkSecrets(projectRoot, log3, { org, repo });
+      log3(`Scanned ${secrets.scanned} text files.`);
+      if (secrets.findings.length > 0) {
+        log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
+        secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+      } else {
+        log3('✓ Check 2 passed — no credential leakage detected.');
+      }
 
-    log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-    const governance = await checkAiGovernance(projectRoot, { org, repo });
-    log3(`Audited ${governance.scanned} source files.`);
-    if (governance.findings.length > 0) {
-      log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
-      governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
-    } else {
-      log3('✓ Check 4 passed — all AI invocations are governed.');
-    }
+      log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
+      const governance = await checkAiGovernance(projectRoot, { org, repo });
+      log3(`Audited ${governance.scanned} source files.`);
+      if (governance.findings.length > 0) {
+        log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
+        governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
+      } else {
+        log3('✓ Check 4 passed — all AI invocations are governed.');
+      }
 
-    log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-    const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
-    if (!llm.available) {
-      log3(`⚠ Deep-scan skipped: ${llm.reason}`);
-    } else if (llm.findings.length === 0) {
-      log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
-    } else {
-      log3(`LLM reported ${llm.findings.length} finding(s):`);
-      llm.findings.forEach((f) =>
-        log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
-      );
-    }
+      log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
+      const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
+      if (!llm.available) {
+        log3(`⚠ Deep-scan skipped: ${llm.reason}`);
+      } else if (llm.findings.length === 0) {
+        log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
+      } else {
+        log3(`LLM reported ${llm.findings.length} finding(s):`);
+        llm.findings.forEach((f) =>
+          log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
+        );
+      }
 
-    const issues = collectPhase4Issues({ secrets, governance, llm });
+      issues = [...collectPhase4Issues({ secrets, governance, llm }), ...licenseIssues];
+    }
     const errorIssues = issues.filter((i) => i.severity === 'error');
 
     const issuesRequiringOverride =
@@ -2951,7 +3775,11 @@ app.post('/api/pipeline/onboard', async (req, res) => {
 
     status(5, 'running');
     const log4 = phaseLog(5);
-    if (!runLocalCi) {
+    if (!PHASE_ENABLED[5]) {
+      log4('Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).');
+      log4('⚠ The org governance workflows will still gate the repo on GitHub after push.');
+      status(5, 'skipped');
+    } else if (!runLocalCi) {
       log4('Local CI execution disabled by request (runLocalCi=false).');
       status(5, 'skipped');
     } else {
@@ -3123,7 +3951,9 @@ app.post(
 
   const org = (req.body.org || '').trim();
   const repo = (req.body.repo || '').trim();
-  const isGxp = req.body.gxp === 'true';
+  // See the other two pipeline entry points: phase 2 disabled by config
+  // (default) means gxp is ignored even if the client sends it.
+  const isGxp = PHASE_ENABLED[2] && req.body.gxp === 'true';
   const dryRun = req.body.dryRun === 'true';
   let gxpLinks = [];
   try {
@@ -3152,12 +3982,17 @@ app.post(
   let snapshotReady = false;
   let shippedForReal = false;
 
-  const runState = { org, repo, projectId: null, allIssues };
+  // projectRoot/sourceBackupDir/reviewActive are filled in once known (see
+  // below) — Ignite Studio's routes (registered outside this closure) read
+  // them off runningRuns.get(jobId) to browse/edit the live staging tree
+  // while, and only while, this run is paused at the review gate.
+  const runState = { org, repo, projectId: null, allIssues, projectRoot: null, sourceBackupDir: null, reviewActive: false };
   runningRuns.set(jobId, runState);
   const persistIssuesSnapshot = (overriddenIds) => {
     if (runState.projectId === null) return;
     try { store.replaceProjectIssues(runState.projectId, allIssues, overriddenIds); } catch { /* best-effort */ }
   };
+  runState.persistIssuesSnapshot = persistIssuesSnapshot;
 
   try {
     /* ---------------- Phase 1: input validation ---------------- */
@@ -3290,6 +4125,19 @@ app.post(
       log2('Created immutable source snapshot for final publish phase.');
       snapshotReady = true;
       projectRootReady = true;
+      runState.projectRoot = projectRoot;
+      runState.sourceBackupDir = sourceBackupDir;
+
+      // License compliance runs FIRST inside phase 3 — the env-file check and
+      // unit-test run below both throw on failure, and this fixture-style
+      // project can fail either while still having license findings the
+      // review gate must show. Findings are non-throwing issues, so
+      // collecting them before the hard checks loses nothing.
+      const licenseIssues = await runLicenseComplianceCheck(projectRoot, log2);
+      if (licenseIssues.length > 0) {
+        allIssues.push(...licenseIssues);
+        persistIssuesSnapshot();
+      }
 
       log2('Check 1 — scanning for raw environment files (.env*)...');
       const envCheck = await checkEnvFiles(projectRoot);
@@ -3323,6 +4171,9 @@ app.post(
     // first one (see the allIssues comment above).
     if (!projectRootReady) {
       phaseLog(4)('Skipped — blocked by Phase 3 failure (no staged project root to scan).');
+      status(4, 'skipped');
+    } else if (!PHASE_ENABLED[4]) {
+      phaseLog(4)('Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).');
       status(4, 'skipped');
     } else {
       status(4, 'running');
@@ -3388,6 +4239,10 @@ app.post(
     if (!projectRootReady) {
       phaseLog(5)('Skipped — blocked by Phase 3 failure (no staged project root to run CI against).');
       status(5, 'skipped');
+    } else if (!PHASE_ENABLED[5]) {
+      phaseLog(5)('Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).');
+      phaseLog(5)('⚠ The org governance workflows will still gate the repo on GitHub after push.');
+      status(5, 'skipped');
     } else {
       status(5, 'running');
       const log4 = phaseLog(5);
@@ -3440,8 +4295,14 @@ app.post(
       const errorCount = allIssues.filter((i) => i.severity === 'error').length;
       log6(`⚠ ${allIssues.length} issue(s) accumulated across the run (${errorCount} blocking) — waiting for final review before provisioning/push.`);
       const decisionPromise = reviewDecisions.wait(jobId);
+      // Only open for editing while actually paused here — Ignite Studio's
+      // file/rescan routes check this and 409 outside this window, so a run
+      // still mid-scan (or one that already resolved/timed out) never
+      // exposes the staging tree.
+      runState.reviewActive = true;
       send({ type: 'review_required', phase: 6, jobId, issues: allIssues });
       const decision = await decisionPromise;
+      runState.reviewActive = false;
 
       const { ok, unresolvedErrors, applied } = validateOverrides(allIssues, decision.overrides || []);
       persistIssuesSnapshot(applied.map(({ issue }) => issue.id));
@@ -3597,4 +4458,8 @@ module.exports = {
   runGitleaksScan,
   loadConfig,
   runProjectUnitTests,
+  scanDependencyLicenses,
+  runOrtAnalyze,
+  runLicenseeDetect,
+  scanProjectLicenseFiles,
 };

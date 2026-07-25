@@ -87,4 +87,61 @@ process.exit(1);
   return scriptPath;
 }
 
-module.exports = { withServerEnv, makeTempProject, makeFakeGitleaks };
+/**
+ * Writes fake `ort` and `licensee` CLIs into a fresh directory, for
+ * prepending to PATH — server.js resolves both via PATH, so tests (and the
+ * e2e suite) can exercise the real integration code without either tool
+ * installed.
+ *
+ * @param {object} opts
+ * @param {Array}  [opts.ortPackages]  entries for analyzer-result.json's
+ *   analyzer.result.packages; omit to make `ort` fail (soft-skip path).
+ * @param {object} [opts.licenseeJson] JSON for `licensee detect --json`;
+ *   omit to make `licensee` fail (soft-skip path).
+ * @returns {Promise<string>} the bin directory to prepend to PATH
+ */
+async function makeFakeLicenseTools({ ortPackages, licenseeJson } = {}) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-license-tools-'));
+
+  const failScript = '#!/usr/bin/env node\nprocess.exit(1);\n';
+
+  if (ortPackages) {
+    await fs.writeFile(path.join(dir, 'ort-result.json'),
+      JSON.stringify({ analyzer: { result: { packages: ortPackages } } }));
+  }
+  const ortScript = ortPackages
+    ? `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('fake-ort 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'analyze') {
+  const outDir = args[args.indexOf('-o') + 1];
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, 'ort-result.json'), path.join(outDir, 'analyzer-result.json'));
+  process.exit(0);
+}
+process.exit(1);
+`
+    : failScript;
+  await fs.writeFile(path.join(dir, 'ort'), ortScript, { mode: 0o755 });
+
+  if (licenseeJson) {
+    await fs.writeFile(path.join(dir, 'licensee-result.json'), JSON.stringify(licenseeJson));
+  }
+  const licenseeScript = licenseeJson
+    ? `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+if (args[0] === 'version') { process.stdout.write('fake-licensee 9.18.0\\n'); process.exit(0); }
+if (args[0] === 'detect') { process.stdout.write(fs.readFileSync(path.join(__dirname, 'licensee-result.json'), 'utf8')); process.exit(0); }
+process.exit(1);
+`
+    : failScript;
+  await fs.writeFile(path.join(dir, 'licensee'), licenseeScript, { mode: 0o755 });
+
+  return dir;
+}
+
+module.exports = { withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools };
