@@ -8,7 +8,14 @@
  * matter how the pipeline ends.
  */
 
-require('dotenv').config();
+// Test-only override (see test/helpers.js's withServerEnv) so the suite
+// isn't at the mercy of whatever this developer's real .env happens to
+// contain — dotenv only ever fills in vars that are still unset, so a test
+// that deletes GITLEAKS_ENABLED (say) to assert on the *default* would
+// otherwise have it silently re-populated from the real .env on every
+// require(). Pointing at a nonexistent path is a deliberate, documented
+// dotenv no-op (ENOENT), not an error.
+require('dotenv').config({ path: process.env.DOTENV_PATH || require('path').join(__dirname, '.env') });
 
 const express = require('express');
 const multer = require('multer');
@@ -74,13 +81,29 @@ function loadConfig() {
     // declaration + mandatory validation-document UI stays hidden, and the
     // phase itself is never checked, until explicitly turned on.
     phases: [],
+    mcp: {
+      // Auto-starts mcp-server.js (Streamable HTTP transport) as a child
+      // process alongside this one, so MCP clients that want HTTP (rather
+      // than spawning their own stdio instance per the editor's own
+      // .mcp.json) have somewhere to connect without a separate manual
+      // step. Purely additive — stdio-mode MCP (the editor spawning
+      // mcp-server.js itself) works exactly as before regardless of this.
+      autoStart: true,
+      httpPort: 3001,
+    },
   };
+  // Same override convention as IGNITE_DB_PATH — lets the test suite (see
+  // test/helpers.js's withServerEnv) point at an empty fixture file instead
+  // of this developer's real, locally-customized config.json, so tests
+  // asserting on *default* values stay hermetic regardless of what's
+  // actually configured on this machine.
+  const configPath = process.env.IGNITE_CONFIG_PATH || path.join(__dirname, 'config.json');
   let fileConfig = {};
   try {
-    fileConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+    fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (err) {
     if (err.code !== 'ENOENT') {
-      console.error(`config.json is invalid (${err.message}) — using defaults.`);
+      console.error(`${configPath} is invalid (${err.message}) — using defaults.`);
     }
   }
   const merge = (base, over) =>
@@ -112,6 +135,8 @@ function loadConfig() {
   }
   if (process.env.GITLEAKS_BINARY) merged.security.gitleaks.binary = process.env.GITLEAKS_BINARY;
   if (process.env.GITLEAKS_CONFIG_PATH) merged.security.gitleaks.configPath = process.env.GITLEAKS_CONFIG_PATH;
+  if (process.env.MCP_AUTOSTART !== undefined) merged.mcp.autoStart = String(process.env.MCP_AUTOSTART) === 'true';
+  if (process.env.MCP_HTTP_PORT) merged.mcp.httpPort = Number(process.env.MCP_HTTP_PORT);
   return merged;
 }
 
@@ -127,6 +152,16 @@ const MAX_SCAN_FILE_BYTES = 5 * 1024 * 1024; // skip huge files in text scans
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+
+// Onboarded-projects history annotates *how* each run was kicked off — the
+// browser UI, a direct API call (validate-all/onboard hit straight from
+// curl/CI, bypassing MCP), or MCP (mcp-server.js's proxyToIgnite sets this
+// header on every call it makes). Anyone can technically send this header
+// directly, same as any other client-supplied metadata — it's an audit
+// label for the onboarded-projects list, not a trust/security boundary.
+function resolveRequestSource(req, fallback) {
+  return req.get('X-Ignite-Client') === 'mcp' ? 'mcp' : fallback;
+}
 
 const auth = createAuth(store, CONFIG.auth, CONFIG.github);
 app.use(auth.attachUser);
@@ -1011,6 +1046,50 @@ async function runGitleaksScan(root, log) {
   }
 }
 
+// The org governance CI workflow's own raw output only ever names a file
+// ("... matched in: ./server.js"), never a line — it's a `grep -l`-style
+// report, not `grep -n`. Re-locate the actual line by re-scanning that file
+// with the same secret pattern Phase 4's own scan uses, so the finding is
+// still file:line-addressable (View code / Studio highlighting) instead of
+// showing "unknown". Best-effort: any failure (file not found, no matching
+// line) just leaves file/line null, same as before this existed.
+async function resolveGovernanceCiLocation(root, failureLine) {
+  const m = failureLine.match(/matched in:\s*(\S+)/i);
+  if (!m) return { file: null, line: null, code: null };
+  const relPath = m[1].replace(/^\.\//, '').replace(/[),.:;]+$/, '');
+  try {
+    const full = path.join(root, relPath);
+    if (path.relative(root, full).startsWith('..')) return { file: null, line: null, code: null };
+    const content = await fsp.readFile(full, 'utf8');
+    const ext = path.extname(full).toLowerCase();
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(SECRET_REGEX);
+      if (match && isLikelySecretValue(match[2], ext)) {
+        return { file: relPath, line: i + 1, code: buildSnippet(content, i + 1) };
+      }
+    }
+    return { file: relPath, line: null, code: null };
+  } catch {
+    return { file: null, line: null, code: null };
+  }
+}
+
+// `act`/the runner's own wrapper text around a failing job/step — "the job
+// failed", "the container exited non-zero", "this scan step failed" — never
+// carries file/line info of its own and only ever shows up alongside the
+// more specific per-match lines (the ones resolveGovernanceCiLocation can
+// usually place a file on). Once at least one line in the run resolved to a
+// real file, these add nothing but noise; filterGovernanceCiFailureLines
+// drops them — but only then, so a run where NOTHING resolved still shows
+// something rather than going silent.
+const GOVERNANCE_CI_BOILERPLATE_RE = /^Error: Job '.+' failed$|exitcode '\d+': failure$|^\[.+\]\s*❌?\s*Failure - .+\[[\d.]+m?s\]$/i;
+function filterGovernanceCiFailureLines(locatedIssues) {
+  const anyResolved = locatedIssues.some((i) => i.file);
+  if (!anyResolved) return locatedIssues;
+  return locatedIssues.filter((i) => i.file || !GOVERNANCE_CI_BOILERPLATE_RE.test(i.summary));
+}
+
 async function checkAiGovernance(root, cacheKey) {
   const findings = [];
   let scanned = 0;
@@ -1321,12 +1400,20 @@ async function checkLlmDeepScan(root, log, cacheKey) {
   }
 
   // Collect candidate source files, numbered lines, chunked by char budget.
+  // Gitignored files (config.json, .env, etc.) are skipped the same way the
+  // regex secret scan and gitleaks already skip them — a project's own
+  // legitimately-local, never-committed secrets shouldn't get a conflicting
+  // "no credential leakage" from Check 2 and a blocking LLM finding for the
+  // very same file.
+  const gitignorePatterns = await loadGitignorePatterns(root);
   const files = [];
   for await (const file of walkFiles(root)) {
     if (!LLM_SOURCE_EXTS.has(path.extname(file).toLowerCase())) continue;
+    const rel = path.relative(root, file);
+    if (gitignorePatterns.length > 0 && isGitignored(gitignorePatterns, rel)) continue;
     const buffer = await fsp.readFile(file);
     if (looksBinary(buffer) || buffer.length > 200_000) continue;
-    files.push({ rel: path.relative(root, file), content: buffer.toString('utf8'), hash: hashBuffer(buffer) });
+    files.push({ rel, content: buffer.toString('utf8'), hash: hashBuffer(buffer) });
     if (files.length >= LLM_MAX_FILES) break;
   }
   if (files.length === 0) return { available: true, findings: [], scanned: 0, cacheHits: 0 };
@@ -2470,7 +2557,7 @@ app.get('/api/pipeline/:jobId/issues', (req, res) => {
 /*    it means a normal PR, not reopening a local copy indefinitely.    */
 /* ------------------------------------------------------------------ */
 
-const STUDIO_MAX_FILE_BYTES = 200_000; // matches the LLM deep-scan per-file cap
+const STUDIO_MAX_FILE_BYTES = 500_000; // browser-editor cap, independent of the LLM deep-scan's own per-file cap
 function studioNoopLog() {}
 
 function resolveStudioContext(req, res) {
@@ -2784,19 +2871,60 @@ const STUDIO_MAX_DEPS_PER_MANIFEST = 60;
 // life of the process so re-opening the Dependencies view or re-checking
 // the same project never re-issues the same outbound request.
 const depsDevCache = new Map();
-async function fetchDepsDevLicenses(system, name, version) {
+// One deps.dev call returns both licenses and known-vulnerability advisory
+// ids for a (system, name, version) — cached together so the license scan
+// and the vulnerability scan never issue two requests for the same package.
+async function fetchDepsDevPackageInfo(system, name, version) {
   const key = `${system}:${name}:${version}`;
   if (depsDevCache.has(key)) return depsDevCache.get(key);
   let result;
   try {
     const url = `https://api.deps.dev/v3/systems/${system}/packages/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    result = res.ok ? (await res.json()).licenses || [] : null;
+    if (res.ok) {
+      const data = await res.json();
+      result = {
+        licenses: data.licenses || [],
+        advisoryIds: (data.advisoryKeys || []).map((k) => k.id).filter(Boolean),
+      };
+    } else {
+      result = null;
+    }
   } catch {
     result = null;
   }
   depsDevCache.set(key, result);
   return result;
+}
+
+async function fetchDepsDevLicenses(system, name, version) {
+  const info = await fetchDepsDevPackageInfo(system, name, version);
+  return info ? info.licenses : null;
+}
+
+// Advisory details (title/CVSS/aliases) keyed by GHSA/advisory id — also
+// immutable, also cached for the process lifetime.
+const depsDevAdvisoryCache = new Map();
+async function fetchDepsDevAdvisory(id) {
+  if (depsDevAdvisoryCache.has(id)) return depsDevAdvisoryCache.get(id);
+  let result;
+  try {
+    const res = await fetch(`https://api.deps.dev/v3/advisories/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(5000) });
+    result = res.ok ? await res.json() : null;
+  } catch {
+    result = null;
+  }
+  depsDevAdvisoryCache.set(id, result);
+  return result;
+}
+
+// CVSS v3 base score bands (FIRST.org's own qualitative ratings): >=9
+// critical, >=7 high — both block the pipeline. Below that (medium/low) is
+// advisory-only. An advisory with no CVSS score at all (deps.dev doesn't
+// always have one) is treated as medium rather than assumed harmless.
+function classifyVulnerabilitySeverity(cvss3Score) {
+  if (typeof cvss3Score === 'number' && cvss3Score >= 7) return 'error';
+  return 'warning';
 }
 
 // Best-effort 1-based line of a dependency's declaration inside its
@@ -2835,6 +2963,53 @@ async function scanDependencyLicensesFallback(root, { skipEcosystems = new Set()
       return { name: dep.name, versionRange: dep.versionRange, version, line, licenses, tier, reason };
     }));
     manifests.push({ file: path.relative(root, file), ecosystem: spec.ecosystem, dependencies });
+  }
+  return manifests;
+}
+
+// Same manifest-walking/version-resolution as the license scan above, but
+// checking each resolved dependency against deps.dev's aggregated OSV/GHSA
+// advisory data instead of its license. Only known-CVE/GHSA vulnerabilities
+// are ever reported — no static/heuristic guessing about "risky" packages.
+async function scanDependencyVulnerabilities(root) {
+  const manifests = [];
+  for await (const file of walkFiles(root)) {
+    const spec = STUDIO_MANIFESTS.find((m) => m.file === path.basename(file));
+    if (!spec) continue;
+    const content = await fsp.readFile(file, 'utf8').catch(() => null);
+    if (content == null) continue;
+    const rawDeps = spec.parse(content).slice(0, STUDIO_MAX_DEPS_PER_MANIFEST);
+    const dependencies = await Promise.all(rawDeps.map(async (dep) => {
+      const line = findManifestDepLine(content, dep.name, spec.ecosystem);
+      const version = bestEffortVersion(dep.versionRange);
+      if (!version) {
+        return { name: dep.name, versionRange: dep.versionRange, version: null, line, vulnerabilities: [], note: 'Could not resolve an exact version to check (range/tag/git ref).' };
+      }
+      const info = await fetchDepsDevPackageInfo(spec.system, dep.name, version);
+      if (info === null) {
+        return { name: dep.name, versionRange: dep.versionRange, version, line, vulnerabilities: [], note: 'Vulnerability lookup failed (package/version not found upstream).' };
+      }
+      const advisories = await Promise.all(info.advisoryIds.map(fetchDepsDevAdvisory));
+      const vulnerabilities = advisories
+        .filter(Boolean)
+        .map((a) => ({
+          id: a.advisoryKey?.id || null,
+          title: a.title || null,
+          aliases: a.aliases || [],
+          cvss3Score: typeof a.cvss3Score === 'number' ? a.cvss3Score : null,
+          severity: classifyVulnerabilitySeverity(a.cvss3Score),
+          url: a.url || null,
+        }));
+      return { name: dep.name, versionRange: dep.versionRange, version, line, vulnerabilities, note: null };
+    }));
+    // Only keep manifests/deps that actually have something to report — a
+    // vulnerability-free dependency shouldn't clutter the response the way
+    // an unclassified license does (that's inherently a risk; no known CVEs
+    // isn't).
+    const withFindings = dependencies.filter((d) => d.vulnerabilities.length > 0 || d.note);
+    if (withFindings.length > 0) {
+      manifests.push({ file: path.relative(root, file), ecosystem: spec.ecosystem, dependencies: withFindings });
+    }
   }
   return manifests;
 }
@@ -3100,6 +3275,37 @@ app.post('/api/dependencies/check', async (req, res) => {
   }
 });
 
+// Standalone dependency vulnerability scan (known CVE/GHSA advisories via
+// deps.dev) — same projectPath convention as /api/dependencies/check, and
+// the endpoint the MCP server's check_dependency_vulnerabilities tool
+// proxies to.
+app.post('/api/dependencies/vulnerabilities', async (req, res) => {
+  let projectPath;
+  try {
+    projectPath = sanitizeAbsoluteProjectPath(req.body?.projectPath || '');
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  const stat = await fsp.stat(projectPath).catch(() => null);
+  if (!stat || !stat.isDirectory()) {
+    return res.status(400).json({ error: `projectPath does not exist or is not a directory: ${projectPath}` });
+  }
+  try {
+    const manifests = await scanDependencyVulnerabilities(projectPath);
+    const counts = { critical: 0, advisory: 0 };
+    for (const m of manifests) {
+      for (const d of m.dependencies) {
+        for (const v of d.vulnerabilities) {
+          if (v.severity === 'error') counts.critical++; else counts.advisory++;
+        }
+      }
+    }
+    res.json({ ok: true, projectPath, manifests, counts });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // On-demand, non-technical AI explanation of a single flagged issue's code
 // snippet (shown as the hover tooltip in the UI). Cached in the DB by a
 // stable hash of the issue's identity, so opening the same finding again —
@@ -3354,7 +3560,7 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     log1(`Source project path: ${projectPath}`);
     log1(`Target metadata: ${org}/${repo}`);
     log1(`GxP-regulated process: ${isGxp ? 'YES' : 'no'}`);
-    projectId = store.createProject(jobId, org, repo, isGxp);
+    projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'api'));
     for (const id of Object.keys(record)) persistPhase(Number(id));
     status(1, 'success');
 
@@ -3641,7 +3847,7 @@ app.post('/api/pipeline/onboard', async (req, res) => {
     log1(`Target: ${org}/${repo} (private)`);
     log1(`GxP-regulated process: ${isGxp ? 'YES' : 'no'}`);
     if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
-    projectId = store.createProject(jobId, org, repo, isGxp);
+    projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'api'));
     for (const id of Object.keys(record)) persistPhase(Number(id));
     status(1, 'success');
 
@@ -4036,7 +4242,7 @@ app.post(
       log1(`Target: ${org}/${repo} (private)`);
       log1(`GxP-regulated process: ${isGxp ? 'YES — validation documents are mandatory' : 'no'}`);
       if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
-      projectId = store.createProject(jobId, org, repo, isGxp);
+      projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'ui'));
       runState.projectId = projectId;
       for (const id of Object.keys(record)) persistPhase(Number(id));
       status(1, 'success');
@@ -4268,12 +4474,21 @@ app.post(
         // "Failure -", ...), report each one as its own issue instead of
         // collapsing them into that one meaningless blob.
         if (Array.isArray(err.failureLines) && err.failureLines.length > 0) {
-          err.failureLines.forEach((failureLine, i) => {
+          const located = [];
+          for (let i = 0; i < err.failureLines.length; i++) {
+            const failureLine = err.failureLines[i];
+            const loc = projectRootReady
+              ? await resolveGovernanceCiLocation(projectRoot, failureLine)
+              : { file: null, line: null, code: null };
+            located.push({ i, summary: failureLine, file: loc.file, line: loc.line, code: loc.code });
+          }
+          for (const l of filterGovernanceCiFailureLines(located)) {
             allIssues.push({
-              id: `phase5::governance-ci::${i}`, phase: 5, category: 'governance-ci',
-              severity: 'error', score: scoreForIssue({ category: 'governance-ci', severity: 'error' }), summary: failureLine, file: null, line: null,
+              id: `phase5::governance-ci::${l.i}`, phase: 5, category: 'governance-ci',
+              severity: 'error', score: scoreForIssue({ category: 'governance-ci', severity: 'error' }), summary: l.summary,
+              file: l.file, line: l.line, snippet: l.code,
             });
-          });
+          }
         } else {
           allIssues.push({
             id: 'phase5::governance-ci', phase: 5, category: 'governance-ci',
@@ -4449,6 +4664,41 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Ignite (onboarding gatekeeper) running at http://localhost:${PORT}`);
   });
+
+  // Auto-starts the MCP server (Streamable HTTP transport) as a child
+  // process, so `node server.js` / `npm start` is the one command needed —
+  // no separate manual `npm run guidelines:mcp:http` step. Only runs here
+  // (require.main === module), never when server.js is require()'d (tests,
+  // etc.), so the test suite never leaks a spawned child process. Failure
+  // to start (e.g. port already in use) is logged but never fatal to the
+  // main server — MCP over HTTP is an addition, not a dependency.
+  if (CONFIG.mcp.autoStart) {
+    const mcpProc = spawn(
+      process.execPath,
+      [path.join(__dirname, 'mcp-server.js')],
+      {
+        env: {
+          ...process.env,
+          MCP_TRANSPORT: 'http',
+          MCP_HTTP_PORT: String(CONFIG.mcp.httpPort),
+          IGNITE_BASE_URL: `http://localhost:${PORT}`,
+        },
+        stdio: 'inherit',
+      }
+    );
+    mcpProc.on('error', (err) => {
+      console.error(`[mcp] could not start MCP HTTP server: ${err.message}`);
+    });
+    mcpProc.on('exit', (code, signal) => {
+      if (code !== 0 && code !== null) {
+        console.error(`[mcp] MCP HTTP server exited with code ${code}${signal ? ` (signal ${signal})` : ''} — the main server keeps running without it.`);
+      }
+    });
+    const shutdownMcp = () => { mcpProc.kill(); };
+    process.on('exit', shutdownMcp);
+    process.on('SIGINT', () => { shutdownMcp(); process.exit(0); });
+    process.on('SIGTERM', () => { shutdownMcp(); process.exit(0); });
+  }
 }
 
 module.exports = {
@@ -4462,4 +4712,7 @@ module.exports = {
   runOrtAnalyze,
   runLicenseeDetect,
   scanProjectLicenseFiles,
+  resolveGovernanceCiLocation,
+  scanDependencyVulnerabilities,
+  classifyVulnerabilitySeverity,
 };

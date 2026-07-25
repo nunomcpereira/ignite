@@ -61,5 +61,9 @@
   "phases": [
     { "id": 2, "enabled": true },
     { "id": 5, "enabled": false, "title": "Org Governance CI (disabled at this org)" }
-  ]
+  ],
+  "mcp": {
+    "autoStart": true,
+    "httpPort": 3001
+  }
 }

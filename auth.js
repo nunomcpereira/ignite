@@ -217,6 +217,8 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
         issueSession(res, user.id);
         res.redirect('/');
       } catch (err) {
+        // err.message is HTML-escaped below before it ever reaches the
+        // response body — an IdP/library error can't inject markup here.
         res.status(401).send(`OIDC login failed: ${escapeHtml(err.message)}`);
       }
     });
