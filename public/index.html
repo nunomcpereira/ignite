@@ -200,11 +200,24 @@
   <!-- Review / override modal -->
   <div id="reviewModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
-      <div class="px-6 py-4 border-b border-slate-100">
-        <p class="text-sm font-semibold text-slate-800">Final review — all flagged issues, before provisioning &amp; push</p>
-        <p class="text-xs text-slate-500 mt-0.5">Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.</p>
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-slate-800">Final review — all flagged issues, before provisioning &amp; push</p>
+          <p class="text-xs text-slate-500 mt-0.5">Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.</p>
+        </div>
+        <div class="flex items-center gap-3 shrink-0">
+          <button id="reviewDownloadBtn" type="button"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+            Download ⤓
+          </button>
+          <button id="reviewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
       </div>
-      <div class="px-6 pt-3 flex justify-end">
+      <div class="px-6 pt-3 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3 text-[11px] font-semibold">
+          <button type="button" id="reviewFilterErrors" class="text-rose-600 hover:underline">Errors only</button>
+          <button type="button" id="reviewFilterWarnings" class="text-amber-600 hover:underline">Warnings only</button>
+        </div>
         <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline">Expand all code ▸</button>
       </div>
       <div id="reviewBulkBar" class="hidden px-6 pt-3 pb-1 border-b border-slate-100 bg-slate-50">
@@ -756,7 +769,7 @@
                     data-idx="${idx}"></textarea>`
         : '';
       return `
-      <div class="border border-slate-200 rounded-lg p-3" data-issue-idx="${idx}">
+      <div class="border border-slate-200 rounded-lg p-3" data-issue-idx="${idx}" data-severity="${issue.severity}">
         <div class="flex items-start gap-2">
           ${checkboxHtml}
           <div class="flex-1 min-w-0">
@@ -789,6 +802,31 @@
           Could not display this finding (${escapeHtml(issue?.category || 'unknown')} — ${escapeHtml(issue?.file || 'unknown location')}).
         </div>`;
       }
+    }
+
+    // Errors first, then warnings; stable within each group.
+    function sortedIssueIndices(issues) {
+      return issues
+        .map((_, idx) => idx)
+        .sort((a, b) => (issues[a].severity === 'error' ? 0 : 1) - (issues[b].severity === 'error' ? 0 : 1));
+    }
+
+    function applyIssueFilter(list, filter) {
+      list.querySelectorAll('[data-issue-idx]').forEach((el) => {
+        el.classList.toggle('hidden', filter !== 'all' && el.dataset.severity !== filter);
+      });
+    }
+
+    function wireIssueFilterLinks(errorsBtn, warningsBtn, list) {
+      let filter = 'all';
+      const sync = () => {
+        applyIssueFilter(list, filter);
+        errorsBtn.classList.toggle('underline', filter === 'error');
+        warningsBtn.classList.toggle('underline', filter === 'warning');
+      };
+      errorsBtn.onclick = () => { filter = filter === 'error' ? 'all' : 'error'; sync(); };
+      warningsBtn.onclick = () => { filter = filter === 'warning' ? 'all' : 'warning'; sync(); };
+      sync();
     }
 
     function setViewCodeState(list, btn, expanded) {
@@ -930,8 +968,13 @@
       const stopBtn = $('reviewStopBtn');
       errorEl.textContent = '';
 
-      list.innerHTML = issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: true })).join('');
+      list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: true })).join('');
       wireIssueListInteractions(list, $('reviewExpandAllBtn'));
+      wireIssueFilterLinks($('reviewFilterErrors'), $('reviewFilterWarnings'), list);
+
+      const downloadBtn = $('reviewDownloadBtn');
+      downloadBtn.classList.toggle('hidden', issues.length === 0);
+      downloadBtn.onclick = () => downloadIssuesReport(issues, { org: orgInput.value.trim(), repo: repoInput.value.trim() });
 
       const bulkBar = $('reviewBulkBar');
       const selectAllCb = $('reviewSelectAll');
@@ -1043,6 +1086,7 @@
       proceedBtn.onclick = () => submit(true);
       stopBtn.onclick = () => submit(false);
     }
+    $('reviewCloseBtn').addEventListener('click', () => $('reviewStopBtn').click());
 
     function showResult(ok, { repoUrl, prUrl, error, phase, dryRun, effectivatable, projectId } = {}) {
       resultBanner.classList.remove('hidden');
@@ -1173,8 +1217,13 @@
       proceedBtn.textContent = 'Effectivate';
       stopBtn.textContent = 'Cancel';
 
-      list.innerHTML = issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: issue.status !== 'overridden' })).join('');
+      list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: issues[idx].status !== 'overridden' })).join('');
       wireIssueListInteractions(list, $('reviewExpandAllBtn'));
+      wireIssueFilterLinks($('reviewFilterErrors'), $('reviewFilterWarnings'), list);
+
+      const downloadBtn = $('reviewDownloadBtn');
+      downloadBtn.classList.toggle('hidden', issues.length === 0);
+      downloadBtn.onclick = () => downloadIssuesReport(issues, { org: orgInput.value.trim(), repo: repoInput.value.trim() });
 
       const bulkBar = $('reviewBulkBar');
       const selectAllCb = $('reviewSelectAll');

@@ -97,6 +97,16 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       explanation TEXT NOT NULL,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS file_scan_cache (
+      org          TEXT NOT NULL,
+      repo         TEXT NOT NULL,
+      check_name   TEXT NOT NULL,
+      rel_path     TEXT NOT NULL,
+      hash         TEXT NOT NULL,
+      findings_json TEXT NOT NULL,
+      updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (org, repo, check_name, rel_path)
+    );
     CREATE TABLE IF NOT EXISTS github_connections (
       user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       github_login TEXT NOT NULL,
@@ -207,6 +217,17 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     ),
     getProjectByJobId: db.prepare('SELECT id FROM projects WHERE job_id = ?'),
 
+    getFileScanCache: db.prepare(
+      'SELECT rel_path, hash, findings_json FROM file_scan_cache WHERE org = ? AND repo = ? AND check_name = ?'
+    ),
+    deleteFileScanCache: db.prepare(
+      'DELETE FROM file_scan_cache WHERE org = ? AND repo = ? AND check_name = ?'
+    ),
+    insertFileScanCache: db.prepare(
+      `INSERT INTO file_scan_cache (org, repo, check_name, rel_path, hash, findings_json)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+
     upsertGithubConnection: db.prepare(
       `INSERT INTO github_connections (user_id, github_login, access_token, scope)
        VALUES (?, ?, ?, ?)
@@ -311,6 +332,40 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     deleteSession(sessionId) {
       stmt.deleteSession.run(sessionId);
+    },
+
+    /* ---------------- per-file scan cache (skip re-evaluating unchanged files across iterations) ---------------- */
+
+    /**
+     * Keyed by (org, repo, checkName) so each validation check (secrets,
+     * governance, LLM deep-scan, ...) keeps its own cache — a file unchanged
+     * since the previous run of this org/repo gets its stored findings
+     * reused instead of being re-evaluated.
+     */
+    getFileScanCache(org, repo, checkName) {
+      const rows = stmt.getFileScanCache.all(org, repo, checkName);
+      const map = new Map();
+      for (const row of rows) {
+        map.set(row.rel_path, { hash: row.hash, findings: JSON.parse(row.findings_json) });
+      }
+      return map;
+    },
+
+    // Replaces the entire cache for this (org, repo, checkName): files that
+    // no longer exist (deleted/renamed since the last run) are dropped
+    // rather than accumulating forever.
+    replaceFileScanCache(org, repo, checkName, entries) {
+      db.exec('BEGIN');
+      try {
+        stmt.deleteFileScanCache.run(org, repo, checkName);
+        for (const entry of entries) {
+          stmt.insertFileScanCache.run(org, repo, checkName, entry.relPath, entry.hash, JSON.stringify(entry.findings));
+        }
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
     },
 
     /* ---------------- GitHub OAuth connection (per ignite user) ---------------- */

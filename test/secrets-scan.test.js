@@ -26,6 +26,54 @@ test('checkSecrets: regex scan still finds hardcoded credentials (baseline, gitl
   assert.equal(findings[0].tool, undefined, 'regex findings are not tagged with a tool');
 }));
 
+test('checkSecrets: files excluded by the project\'s own .gitignore are not scanned', withServerEnv({}, async (mod) => {
+  const dir = await makeTempProject({
+    '.gitignore': '.env\n',
+    '.env': "OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n",
+    'config.js': `module.exports = { apiKey: "api_key: 'sk_live_1234567890abcdef'" };\n`,
+  });
+  const { findings } = await mod.checkSecrets(dir, noopLog);
+  assert.equal(findings.length, 1, 'only the tracked file is flagged; the gitignored .env is skipped');
+  assert.equal(findings[0].file, 'config.js');
+}));
+
+test('checkSecrets: env-var references (process.env.X, os.environ, getenv) are not flagged as hardcoded', withServerEnv({}, async (mod) => {
+  const dir = await makeTempProject({
+    'llmService.js': [
+      "const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';",
+      "const other = process.env.OTHER_TOKEN;",
+    ].join('\n') + '\n',
+    'app.py': [
+      "import os",
+      "api_key = os.environ.get('API_KEY')",
+      "token = os.getenv('TOKEN_VALUE')",
+    ].join('\n') + '\n',
+  });
+  const { findings } = await mod.checkSecrets(dir, noopLog);
+  assert.deepEqual(findings, [], 'env-var references must not be treated as hardcoded secrets');
+}));
+
+test('checkSecrets: unquoted variable/property references in source code are not hardcoded secrets', withServerEnv({}, async (mod) => {
+  const dir = await makeTempProject({
+    'cpiApi.js': [
+      "const res = await axios.post(tokenUrl, 'grant_type=client_credentials', {",
+      "  auth: { username: clientId, password: clientSecret }",
+      "});",
+      "const token = res.data.access_token;",
+    ].join('\n') + '\n',
+  });
+  const { findings } = await mod.checkSecrets(dir, noopLog);
+  assert.deepEqual(findings, [], 'unquoted identifiers/property access in JS are syntax, never literals');
+}));
+
+test('checkSecrets: unquoted literals in config/env-style files are still flagged', withServerEnv({}, async (mod) => {
+  const dir = await makeTempProject({
+    'settings.yaml': 'api_key: sk_live_1234567890abcdef\n',
+  });
+  const { findings } = await mod.checkSecrets(dir, noopLog);
+  assert.equal(findings.length, 1, 'config formats have no quoting rule, so unquoted long values can still be real secrets');
+}));
+
 test('checkSecrets: gitleaks disabled by default — old regex-only behavior, even if a gitleaks binary is configured', withServerEnv(
   { GITLEAKS_ENABLED: undefined, GITLEAKS_BINARY: '/nonexistent/should-never-run' },
   async (mod) => {

@@ -274,8 +274,26 @@ const LLM_SOURCE_EXTS = Object.freeze(new Set([
   '.java', '.cs', '.sh', '.yaml', '.yml', '.json', '.sql', '.tf',
 ])) ;
 
+// Captures the quote char (if any) separately from the value so callers can
+// tell a string literal from a bare identifier/property-access reference —
+// e.g. `password: clientSecret` or `token = res.data.access_token` are
+// variable references (unquoted is only ever code syntax in a source file),
+// while `apiKey: 'sk-proj-...'` is an inline literal.
 const SECRET_REGEX =
-  /(password|aws_secret|api_key|token|private_key)\s*[:=]\s*['" \t]*[a-zA-Z0-9_\-.~]{10,}/i;
+  /(password|aws_secret|api_key|token|private_key)\s*[:=]\s*(['"]?)([a-zA-Z0-9_\-.~]{10,})/i;
+
+// In source code, an unquoted RHS is always identifier/property-access
+// syntax (a variable, `process.env.X`, `res.data.access_token`, ...) — never
+// a literal. Config/env formats (.env, YAML, INI, ...) have no such quoting
+// rule, so unquoted values there can genuinely be inline secrets.
+const SECRET_SCAN_CODE_EXTS = Object.freeze(new Set([
+  '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py', '.go', '.rb', '.php',
+  '.java', '.kt', '.cs', '.c', '.cpp', '.h', '.hpp', '.swift', '.rs', '.scala',
+]));
+
+function isLikelySecretValue(quote, ext) {
+  return Boolean(quote) || !SECRET_SCAN_CODE_EXTS.has(ext);
+}
 
 /* Optional gitleaks-powered secret scan (see CONFIG.security.gitleaks) */
 const GITLEAKS_ENABLED = Boolean(CONFIG.security.gitleaks.enabled);
@@ -750,6 +768,45 @@ function isGitignored(patterns, relPath) {
   return ignored;
 }
 
+// Shared by checkEnvFiles and checkSecrets: a file this pipeline will never
+// commit/push (because the project's own .gitignore excludes it) poses no
+// leak risk through this pipeline, so both checks exempt it the same way.
+async function loadGitignorePatterns(root) {
+  try {
+    const content = await fsp.readFile(path.join(root, '.gitignore'), 'utf8');
+    return content
+      .split(/\r?\n/)
+      .filter((l) => l.trim() && !l.trim().startsWith('#'))
+      .map(gitignorePatternToRegex);
+  } catch {
+    return []; // no .gitignore at the project root — nothing to exempt
+  }
+}
+
+function hashBuffer(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+/**
+ * Per-file scan-result cache, keyed by (org, repo, checkName). Lets Phase 4's
+ * checks (secrets/governance/LLM deep-scan) skip re-evaluating a file whose
+ * content hash matches what was recorded on the previous run for the same
+ * org/repo, reusing its stored findings instead. `cacheKey` is optional
+ * ({ org, repo }) — callers with no project identity (e.g. tests) simply get
+ * no caching.
+ */
+function loadFileScanCache(cacheKey, checkName) {
+  if (!cacheKey || !cacheKey.org || !cacheKey.repo) return null;
+  return store.getFileScanCache(cacheKey.org, cacheKey.repo, checkName);
+}
+
+// Replaces the full cache for this (org, repo, checkName) with `entries`, so
+// files removed/renamed since the last run don't linger in the DB forever.
+function saveFileScanCache(cacheKey, checkName, entries) {
+  if (!cacheKey || !cacheKey.org || !cacheKey.repo) return;
+  store.replaceFileScanCache(cacheKey.org, cacheKey.repo, checkName, entries);
+}
+
 /**
  * Flags raw .env files in the uploaded project. Returns `blocking` (real env
  * files that must be removed before shipping) separately from `ignored`
@@ -758,14 +815,7 @@ function isGitignored(patterns, relPath) {
  * as an informational note instead of failing the phase).
  */
 async function checkEnvFiles(root) {
-  let gitignorePatterns = [];
-  try {
-    const content = await fsp.readFile(path.join(root, '.gitignore'), 'utf8');
-    gitignorePatterns = content
-      .split(/\r?\n/)
-      .filter((l) => l.trim() && !l.trim().startsWith('#'))
-      .map(gitignorePatternToRegex);
-  } catch { /* no .gitignore at the project root — nothing to exempt */ }
+  const gitignorePatterns = await loadGitignorePatterns(root);
 
   const blocking = [];
   const ignored = [];
@@ -783,13 +833,24 @@ async function checkEnvFiles(root) {
   return { blocking, ignored };
 }
 
-async function checkSecrets(root, log) {
+async function checkSecrets(root, log, cacheKey) {
   const findings = [];
   let scanned = 0;
+  let cacheHits = 0;
+  let gitignoredSkipped = 0;
+  const gitignorePatterns = await loadGitignorePatterns(root);
+  const prevCache = loadFileScanCache(cacheKey, 'secrets');
+  const newCacheEntries = [];
 
   for await (const file of walkFiles(root)) {
     const ext = path.extname(file).toLowerCase();
     if (BINARY_EXTENSIONS.has(ext)) continue;
+
+    const rel = path.relative(root, file);
+    if (gitignorePatterns.length > 0 && isGitignored(gitignorePatterns, rel)) {
+      gitignoredSkipped++;
+      continue;
+    }
 
     const stat = await fsp.stat(file);
     if (stat.size > MAX_SCAN_FILE_BYTES) {
@@ -801,24 +862,45 @@ async function checkSecrets(root, log) {
     if (looksBinary(buffer)) continue;
 
     scanned++;
+    const hash = hashBuffer(buffer);
+    const cached = prevCache && prevCache.get(rel);
+    if (cached && cached.hash === hash) {
+      cacheHits++;
+      findings.push(...cached.findings);
+      newCacheEntries.push({ relPath: rel, hash, findings: cached.findings });
+      continue;
+    }
+
     const content = buffer.toString('utf8');
+    const fileFindings = [];
     const lines = content.split(/\r?\n/);
     lines.forEach((line, i) => {
       const match = line.match(SECRET_REGEX);
-      if (match) {
-        findings.push({
-          file: path.relative(root, file),
+      if (match && isLikelySecretValue(match[2], ext)) {
+        fileFindings.push({
+          file: rel,
           line: i + 1,
           kind: match[1].toLowerCase(),
           code: buildSnippet(content, i + 1, { colStart: match.index, colEnd: match.index + match[0].length }),
         });
       }
     });
+    findings.push(...fileFindings);
+    newCacheEntries.push({ relPath: rel, hash, findings: fileFindings });
   }
+
+  saveFileScanCache(cacheKey, 'secrets', newCacheEntries);
 
   if (GITLEAKS_ENABLED) {
     log('Gitleaks enabled — running supplemental secret-detection scan...');
-    const gitleaksFindings = await runGitleaksScan(root, log);
+    // gitleaks walks the raw filesystem tree itself (--no-git), so it has no
+    // gitignore awareness of its own — filter its findings the same way the
+    // regex scan above was filtered.
+    const gitleaksFindings = (await runGitleaksScan(root, log)).filter((f) => {
+      const ignored = gitignorePatterns.length > 0 && isGitignored(gitignorePatterns, f.file);
+      if (ignored) gitignoredSkipped++;
+      return !ignored;
+    });
     const seen = new Set(findings.map((f) => `${f.file}:${f.line}`));
     let added = 0;
     for (const f of gitleaksFindings) {
@@ -831,7 +913,14 @@ async function checkSecrets(root, log) {
     log(`Gitleaks scan complete — ${gitleaksFindings.length} finding(s), ${added} new.`);
   }
 
-  return { findings, scanned };
+  if (gitignoredSkipped > 0) {
+    log(`ℹ ${gitignoredSkipped} gitignored file(s) excluded from credential scan — not blocking.`);
+  }
+  if (cacheHits > 0) {
+    log(`♻ ${cacheHits} file(s) unchanged since the last run for this org/repo — reused cached results.`);
+  }
+
+  return { findings, scanned, cacheHits };
 }
 
 /**
@@ -885,9 +974,12 @@ async function runGitleaksScan(root, log) {
   }
 }
 
-async function checkAiGovernance(root) {
+async function checkAiGovernance(root, cacheKey) {
   const findings = [];
   let scanned = 0;
+  let cacheHits = 0;
+  const prevCache = loadFileScanCache(cacheKey, 'governance');
+  const newCacheEntries = [];
 
   for await (const file of walkFiles(root)) {
     const ext = path.extname(file).toLowerCase();
@@ -897,24 +989,39 @@ async function checkAiGovernance(root) {
     if (looksBinary(buffer)) continue;
 
     scanned++;
-    const content = buffer.toString('utf8');
-    if (content.includes('recursion_limit')) continue; // governed — compliant
+    const rel = path.relative(root, file);
+    const hash = hashBuffer(buffer);
+    const cached = prevCache && prevCache.get(rel);
+    if (cached && cached.hash === hash) {
+      cacheHits++;
+      findings.push(...cached.findings);
+      newCacheEntries.push({ relPath: rel, hash, findings: cached.findings });
+      continue;
+    }
 
-    const lines = content.split(/\r?\n/);
-    lines.forEach((line, i) => {
-      const match = line.match(AI_INVOKE_REGEX);
-      if (match) {
-        findings.push({
-          file: path.relative(root, file),
-          line: i + 1,
-          snippet: line.trim().slice(0, 120),
-          code: buildSnippet(content, i + 1, { colStart: match.index, colEnd: match.index + match[0].length }),
-        });
-      }
-    });
+    const content = buffer.toString('utf8');
+    const fileFindings = [];
+    if (!content.includes('recursion_limit')) { // governed — compliant otherwise
+      const lines = content.split(/\r?\n/);
+      lines.forEach((line, i) => {
+        const match = line.match(AI_INVOKE_REGEX);
+        if (match) {
+          fileFindings.push({
+            file: rel,
+            line: i + 1,
+            snippet: line.trim().slice(0, 120),
+            code: buildSnippet(content, i + 1, { colStart: match.index, colEnd: match.index + match[0].length }),
+          });
+        }
+      });
+    }
+    findings.push(...fileFindings);
+    newCacheEntries.push({ relPath: rel, hash, findings: fileFindings });
   }
 
-  return { findings, scanned };
+  saveFileScanCache(cacheKey, 'governance', newCacheEntries);
+
+  return { findings, scanned, cacheHits };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1153,7 +1260,7 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
   return finding;
 }
 
-async function checkLlmDeepScan(root, log) {
+async function checkLlmDeepScan(root, log, cacheKey) {
   if (LLM_PROVIDER === 'openai') {
     // OpenAI has no cheap health probe worth spending a request on — just
     // confirm the API key is configured before burning chunks against it.
@@ -1180,17 +1287,39 @@ async function checkLlmDeepScan(root, log) {
     if (!LLM_SOURCE_EXTS.has(path.extname(file).toLowerCase())) continue;
     const buffer = await fsp.readFile(file);
     if (looksBinary(buffer) || buffer.length > 200_000) continue;
-    files.push({ rel: path.relative(root, file), content: buffer.toString('utf8') });
+    files.push({ rel: path.relative(root, file), content: buffer.toString('utf8'), hash: hashBuffer(buffer) });
     if (files.length >= LLM_MAX_FILES) break;
   }
-  if (files.length === 0) return { available: true, findings: [], scanned: 0 };
+  if (files.length === 0) return { available: true, findings: [], scanned: 0, cacheHits: 0 };
+
+  // Skip re-sending a file to the (slow, expensive) LLM if its content hash
+  // matches what was recorded on the previous run for this org/repo — reuse
+  // that file's stored findings instead of re-reviewing unchanged source.
+  const prevCache = loadFileScanCache(cacheKey, 'llm');
+  const cachedFindings = [];
+  const filesToScan = [];
+  let cacheHits = 0;
+  for (const f of files) {
+    const cached = prevCache && prevCache.get(f.rel);
+    if (cached && cached.hash === f.hash) {
+      cacheHits++;
+      cachedFindings.push(...cached.findings);
+    } else {
+      filesToScan.push(f);
+    }
+  }
+
+  if (filesToScan.length === 0) {
+    log(`♻ All ${files.length} candidate file(s) unchanged since the last run for this org/repo — reusing cached LLM findings, no chunks sent.`);
+    return { available: true, findings: cachedFindings, scanned: files.length, cacheHits };
+  }
 
   const chunks = [];
   const chunkFiles = [];
   const filesByRel = new Map();
   let current = '';
   let currentFiles = [];
-  for (const f of files) {
+  for (const f of filesToScan) {
     filesByRel.set(f.rel, f.content);
     const numbered = f.content
       .split(/\r?\n/)
@@ -1233,7 +1362,7 @@ async function checkLlmDeepScan(root, log) {
     chunkFiles.push(currentFiles);
   }
 
-  log(`Model: ${LLM_SCAN_MODEL} @ ${LLM_SCAN_URL} — ${files.length} files in ${chunks.length} chunk(s), 2 review passes (security/dependency + quality/encapsulation)...`);
+  log(`Model: ${LLM_SCAN_MODEL} @ ${LLM_SCAN_URL} — ${filesToScan.length}/${files.length} file(s) changed (${cacheHits} cached, unchanged) in ${chunks.length} chunk(s), 2 review passes (security/dependency + quality/encapsulation)...`);
 
   const findings = [];
   const npmVersionCache = new Map();
@@ -1289,7 +1418,33 @@ async function checkLlmDeepScan(root, log) {
     }
   }
 
-  return { available: true, findings, scanned: files.length };
+  // Persist per-file findings for the files just (re-)scanned, keyed by the
+  // "file" string the model itself reported — if that ever diverges from the
+  // requested rel path, this file's cache entry simply stays empty and it
+  // gets rescanned next run rather than silently losing a real finding.
+  const findingsByFile = new Map();
+  for (const f of findings) {
+    if (!findingsByFile.has(f.file)) findingsByFile.set(f.file, []);
+    findingsByFile.get(f.file).push(f);
+  }
+  const newCacheEntries = filesToScan.map((f) => ({
+    relPath: f.rel,
+    hash: f.hash,
+    findings: findingsByFile.get(f.rel) || [],
+  }));
+  for (const f of files) {
+    const cached = prevCache && prevCache.get(f.rel);
+    if (cached && cached.hash === f.hash) {
+      newCacheEntries.push({ relPath: f.rel, hash: f.hash, findings: cached.findings });
+    }
+  }
+  saveFileScanCache(cacheKey, 'llm', newCacheEntries);
+
+  if (cacheHits > 0) {
+    log(`♻ ${cacheHits} file(s) unchanged since the last run for this org/repo — reused cached LLM findings.`);
+  }
+
+  return { available: true, findings: [...cachedFindings, ...findings], scanned: files.length, cacheHits };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2452,7 +2607,7 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     const log3 = phaseLog(4);
 
     log3('Check 2 — scanning text files for hardcoded credentials...');
-    const secrets = await checkSecrets(projectRoot, log3);
+    const secrets = await checkSecrets(projectRoot, log3, { org, repo });
     log3(`Scanned ${secrets.scanned} text files.`);
     if (secrets.findings.length > 0) {
       log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
@@ -2462,7 +2617,7 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     }
 
     log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-    const governance = await checkAiGovernance(projectRoot);
+    const governance = await checkAiGovernance(projectRoot, { org, repo });
     log3(`Audited ${governance.scanned} source files.`);
     if (governance.findings.length > 0) {
       log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
@@ -2472,7 +2627,7 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     }
 
     log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-    const llm = await checkLlmDeepScan(projectRoot, log3);
+    const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
     if (!llm.available) {
       log3(`⚠ Deep-scan skipped: ${llm.reason}`);
     } else if (llm.findings.length === 0) {
@@ -2729,7 +2884,7 @@ app.post('/api/pipeline/onboard', async (req, res) => {
     const log3 = phaseLog(4);
 
     log3('Check 2 — scanning text files for hardcoded credentials...');
-    const secrets = await checkSecrets(projectRoot, log3);
+    const secrets = await checkSecrets(projectRoot, log3, { org, repo });
     log3(`Scanned ${secrets.scanned} text files.`);
     if (secrets.findings.length > 0) {
       log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
@@ -2739,7 +2894,7 @@ app.post('/api/pipeline/onboard', async (req, res) => {
     }
 
     log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-    const governance = await checkAiGovernance(projectRoot);
+    const governance = await checkAiGovernance(projectRoot, { org, repo });
     log3(`Audited ${governance.scanned} source files.`);
     if (governance.findings.length > 0) {
       log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
@@ -2749,7 +2904,7 @@ app.post('/api/pipeline/onboard', async (req, res) => {
     }
 
     log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-    const llm = await checkLlmDeepScan(projectRoot, log3);
+    const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
     if (!llm.available) {
       log3(`⚠ Deep-scan skipped: ${llm.reason}`);
     } else if (llm.findings.length === 0) {
@@ -3174,7 +3329,7 @@ app.post(
       const log3 = phaseLog(4);
       try {
         log3('Check 2 — scanning text files for hardcoded credentials...');
-        const secrets = await checkSecrets(projectRoot, log3);
+        const secrets = await checkSecrets(projectRoot, log3, { org, repo });
         log3(`Scanned ${secrets.scanned} text files.`);
         if (secrets.findings.length > 0) {
           log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
@@ -3184,7 +3339,7 @@ app.post(
         }
 
         log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-        const governance = await checkAiGovernance(projectRoot);
+        const governance = await checkAiGovernance(projectRoot, { org, repo });
         log3(`Audited ${governance.scanned} source files.`);
         if (governance.findings.length > 0) {
           log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
@@ -3194,7 +3349,7 @@ app.post(
         }
 
         log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-        const llm = await checkLlmDeepScan(projectRoot, log3);
+        const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
         if (!llm.available) {
           log3(`⚠ Deep-scan skipped: ${llm.reason}`);
         } else if (llm.findings.length === 0) {
