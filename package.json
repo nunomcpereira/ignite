@@ -9,7 +9,7 @@
     "guidelines:mcp": "node mcp-server.js",
     "guidelines:mcp:http": "MCP_TRANSPORT=http node mcp-server.js",
     "guidelines:api": "node guidelines-api.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:e2e": "playwright test"
   },
   "engines": {

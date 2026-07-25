@@ -120,6 +120,75 @@ server.registerTool(
   }
 );
 
+// Shared by both dependency-scan tools below — same "thin proxy to a running
+// Ignite server" pattern as onboard_project, so the MCP process itself never
+// needs server.js's manifest parsers/deps.dev client loaded directly.
+async function proxyToIgnite(endpoint, body) {
+  let response;
+  try {
+    response = await fetch(`${IGNITE_BASE_URL}${endpoint}`, {
+      method: 'POST',
+      // Lets Ignite's onboarded-projects history annotate this run as
+      // having come through MCP, distinct from a direct API call hitting
+      // the same endpoint.
+      headers: { 'Content-Type': 'application/json', 'X-Ignite-Client': 'mcp' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    return {
+      content: [{ type: 'text', text: `Could not reach Ignite server at ${IGNITE_BASE_URL}: ${err.message}. Is it running ("npm start")?` }],
+      isError: true,
+    };
+  }
+  const result = await response.json().catch(() => null);
+  if (!result) {
+    return {
+      content: [{ type: 'text', text: `Ignite server returned a non-JSON response (HTTP ${response.status}).` }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    isError: !result.ok,
+  };
+}
+
+server.registerTool(
+  'check_dependency_licenses',
+  {
+    title: 'Check dependency + LICENSE-file license compliance',
+    description:
+      'Scan a local project directory\'s dependency manifests (package.json, Cargo.toml, requirements.txt, go.mod, pom.xml) and every LICENSE/LICENCE file in the tree for commercial/proprietary/copyleft licensing risk. ' +
+      'Uses ORT (OSS Review Toolkit) if installed for real per-dependency license resolution, otherwise falls back to deps.dev lookups; the project\'s own declared license is detected via `licensee` if installed. ' +
+      'Same scan Ignite\'s onboarding pipeline runs automatically in Phase 3 — this lets you run it standalone, outside of onboarding. Requires a running Ignite server (`npm start`) reachable at IGNITE_BASE_URL.',
+    inputSchema: {
+      projectPath: z.string().describe('Absolute path to the project root to scan.'),
+    },
+  },
+  async ({ projectPath }) => {
+    console.error('[mcp] check_dependency_licenses called', { projectPath });
+    return proxyToIgnite('/api/dependencies/check', { projectPath });
+  }
+);
+
+server.registerTool(
+  'check_dependency_vulnerabilities',
+  {
+    title: 'Check dependencies for known security vulnerabilities',
+    description:
+      'Scan a local project directory\'s dependency manifests (package.json, Cargo.toml, requirements.txt, go.mod, pom.xml) for known CVE/GHSA vulnerabilities in the resolved dependency versions, via deps.dev\'s aggregated OSV advisory data. ' +
+      'Reports each vulnerability\'s id, title, CVSS v3 score, and severity (score >= 7 is "error"/blocking, lower is advisory). Only reports real, known advisories — no static/heuristic "risky package" guessing. ' +
+      'Requires a running Ignite server (`npm start`) reachable at IGNITE_BASE_URL.',
+    inputSchema: {
+      projectPath: z.string().describe('Absolute path to the project root to scan.'),
+    },
+  },
+  async ({ projectPath }) => {
+    console.error('[mcp] check_dependency_vulnerabilities called', { projectPath });
+    return proxyToIgnite('/api/dependencies/vulnerabilities', { projectPath });
+  }
+);
+
 server.registerTool(
   'onboard_project',
   {
@@ -152,32 +221,9 @@ server.registerTool(
   },
   async ({ projectPath, org, repo, dryRun, gxp, gxpLinks, runLocalCi, warningDecision, overrides, actor }) => {
     console.error('[mcp] onboard_project called', { projectPath, org, repo, dryRun, gxp });
-    let response;
-    try {
-      response = await fetch(`${IGNITE_BASE_URL}/api/pipeline/onboard`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectPath, org, repo, dryRun, gxp, gxpLinks, runLocalCi, warningDecision, overrides, actor,
-        }),
-      });
-    } catch (err) {
-      return {
-        content: [{ type: 'text', text: `Could not reach Ignite server at ${IGNITE_BASE_URL}: ${err.message}. Is it running ("npm start")?` }],
-        isError: true,
-      };
-    }
-    const result = await response.json().catch(() => null);
-    if (!result) {
-      return {
-        content: [{ type: 'text', text: `Ignite server returned a non-JSON response (HTTP ${response.status}).` }],
-        isError: true,
-      };
-    }
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      isError: !result.ok,
-    };
+    return proxyToIgnite('/api/pipeline/onboard', {
+      projectPath, org, repo, dryRun, gxp, gxpLinks, runLocalCi, warningDecision, overrides, actor,
+    });
   }
 );
 

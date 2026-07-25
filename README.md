@@ -191,7 +191,11 @@ All settings live in `config.json` next to `server.js` (environment variables ov
   // built-in default (Phase 2/GxP disabled, everything else enabled).
   "phases": [
     { "id": 2, "enabled": true }
-  ]
+  ],
+  "mcp": {                        // see "MCP server" below
+    "autoStart": true,
+    "httpPort": 3001
+  }
 }
 ```
 
@@ -313,19 +317,42 @@ pipeline enforces) and a pure checks engine, so guidelines can be applied
 
 ### MCP server
 
-```bash
-npm run guidelines:mcp
-```
+Two ways to run it:
 
-Runs `mcp-server.js` over stdio. Point any MCP client (Claude Code, Claude
-Desktop, etc.) at it. Tools exposed:
+1. **Stdio** (one instance per client, no shared state):
+   ```bash
+   npm run guidelines:mcp
+   ```
+   Point any MCP client (Claude Code, Claude Desktop, etc.) at it directly — example `.mcp.json` entry:
+   ```json
+   {
+     "mcpServers": {
+       "ai-validation-guidelines": {
+         "command": "node",
+         "args": ["/absolute/path/to/ignite/mcp-server.js"]
+       }
+     }
+   }
+   ```
+2. **Streamable HTTP, auto-started with the main server** — `node server.js` / `npm start` automatically spawns `mcp-server.js` as a child process in HTTP mode alongside the main app, listening on `http://localhost:3001/mcp` by default. No separate step needed; a client can just point at that URL. Controlled by `config.json`'s `mcp` section:
+   ```jsonc
+   "mcp": {
+     "autoStart": true,   // env: MCP_AUTOSTART=false to disable
+     "httpPort": 3001     // env: MCP_HTTP_PORT
+   }
+   ```
+   The child inherits the main process's stdout/stderr (its own logs are prefixed `[mcp]`) and is killed when the main server exits; if the port is already taken or the child otherwise fails to start, that's logged but never fatal to the main server. To run it standalone instead: `MCP_TRANSPORT=http npm run guidelines:mcp:http`.
+
+Tools exposed:
 
 - `list_guidelines({ category?, severity? })` — list guidelines, optionally filtered.
 - `get_guideline({ id })` — full detail (description, rationale, remediation) for one guideline.
 - `check_guidelines({ content, path? })` — check a code snippet/file against the automated guidelines.
 - `check_project({ projectPath })` — walk a project directory and check every source file.
+- `check_dependency_licenses({ projectPath })` — the same [dependency + LICENSE-file license compliance scan](#dependency--license-compliance-ort--licensee--depsdev) Phase 3 runs automatically, standalone. Thin proxy to `POST /api/dependencies/check` on a running Ignite server.
+- `check_dependency_vulnerabilities({ projectPath })` — scans resolved dependency versions for known CVE/GHSA advisories via deps.dev's aggregated OSV data (CVSS ≥ 7 is blocking, lower is advisory). Thin proxy to `POST /api/dependencies/vulnerabilities`.
 - `onboard_project({ projectPath, org, repo, dryRun?, gxp?, gxpLinks?, runLocalCi?, warningDecision?, overrides?, actor? })`
-  — runs the **full** onboarding pipeline (phases 1-5, and phase 6 provisioning
+  — runs the **full** onboarding pipeline (all enabled phases, and phase 6 provisioning
   + push if everything passes) against a `POST /api/pipeline/onboard` on a
   running Ignite server. This is a thin proxy: the MCP process itself never
   touches `git`/`gh`, it just calls the HTTP API. Set `dryRun: true` to run
@@ -333,19 +360,6 @@ Desktop, etc.) at it. Tools exposed:
   agent loop before committing to a real push. Requires the Ignite server
   running (`npm start`) and reachable at `IGNITE_BASE_URL` (env, default
   `http://localhost:3000`), with `gh` authenticated on that host.
-
-Example `.mcp.json` entry:
-
-```json
-{
-  "mcpServers": {
-    "ai-validation-guidelines": {
-      "command": "node",
-      "args": ["/absolute/path/to/ignite/mcp-server.js"]
-    }
-  }
-}
-```
 
 ### REST API
 

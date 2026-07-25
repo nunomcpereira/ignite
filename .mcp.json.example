@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ai-validation-guidelines": {
+      "command": "node",
+      "args": ["/absolute/path/to/ignite/mcp-server.js"],
+      "env": {
+        "IGNITE_BASE_URL": "http://localhost:3000"
+      }
+    }
+  }
+}
