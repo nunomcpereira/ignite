@@ -145,13 +145,19 @@
         </div>
       </div>
 
-      <label class="mt-5 flex items-start gap-2 text-xs text-slate-600 cursor-pointer select-none">
-        <input type="checkbox" id="dryRunInput" checked class="accent-brand-600 mt-0.5" />
-        <span>
-          <span class="font-semibold text-slate-700">Simulation mode (dry run)</span>
-          — run every check but skip repository provisioning and push. Nothing is created on GitHub.
-        </span>
-      </label>
+      <!-- Every UI-driven run starts as a simulation (dry run) — every check
+           runs but nothing is provisioned/pushed. The "Effectivate" button
+           on the result banner (see showResult()) is how you turn a passed
+           simulation into a real provision+push. Kept as a real (but hidden)
+           checked checkbox, not a hardcoded constant, so the existing
+           dryRunInput-reading JS below needs no other changes. The API
+           (POST /api/pipeline / /api/pipeline/onboard) is unaffected — it
+           still honors an explicit dryRun: false to skip simulation and ship
+           directly, for agent/CI callers that don't go through this form. -->
+      <input type="checkbox" id="dryRunInput" checked class="hidden" />
+      <p class="mt-5 text-xs text-slate-500">
+        Every run first executes as a simulation — every check runs, nothing is created on GitHub. Once it passes, you'll get an option to provision &amp; push for real.
+      </p>
 
       <button id="startBtn" disabled
         class="mt-4 w-full py-3 rounded-xl text-sm font-semibold transition-all
@@ -531,7 +537,23 @@
       skipped: { label: 'Skipped',  chip: 'bg-amber-50 text-amber-700 border-amber-200', ring: 'border-amber-400 text-amber-500 bg-white' },
     };
 
+    // Backend phase ids are fixed (1-6) and never renumbered — every event,
+    // issue, and history record is keyed by them. The UI's displayed number
+    // is purely positional within the current (possibly filtered) PHASES
+    // list, so disabling e.g. Phase 2 doesn't leave the timeline reading
+    // "1, 3, 4, 5, 6" — everything visible renumbers to "1, 2, 3, 4, 5".
+    function displayPhaseNumber(id) {
+      const idx = PHASES.findIndex((p) => p.id === id);
+      return idx >= 0 ? idx + 1 : id;
+    }
+
     function iconFor(st, id) {
+      // 'flagged' isn't a real backend phase state — it's the client-side
+      // "scan completed but carries findings deferred to the final review
+      // gate" case (see hasFlaggedIssues in renderPipeline). It needs its
+      // own icon, not the plain success checkmark, or the ring/ticker still
+      // visually reads as an unqualified pass next to a "Flagged" chip.
+      if (st === 'flagged') return '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 4.626c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>';
       if (st === 'success') return '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>';
       if (st === 'failed')  return '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
       if (st === 'running') return '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>';
@@ -545,11 +567,16 @@
         // findings deferred to the final review gate — flag that distinctly
         // instead of a bare green "Success" next to a log full of ✗ lines.
         const hasFlaggedIssues = ph.state === 'success' && (ph.issueCount || 0) > 0;
+        // 'flagged' drives both the chip AND the icon/ring — a green
+        // checkmark next to an amber "Flagged (N blocking)" chip still reads
+        // as an unqualified pass at a glance, so the ring/icon need to shift
+        // to amber too, not just the label.
+        const iconState = hasFlaggedIssues ? 'flagged' : ph.state;
         const meta = hasFlaggedIssues
           ? {
               label: ph.blockingCount > 0 ? `Flagged (${ph.blockingCount} blocking)` : `Flagged (${ph.issueCount})`,
               chip: 'bg-amber-50 text-amber-700 border-amber-200',
-              ring: STATE_META.success.ring,
+              ring: 'border-amber-500 text-amber-600 bg-white',
             }
           : STATE_META[ph.state];
         const hasLogs = ph.logs.length > 0;
@@ -564,10 +591,10 @@
           <details class="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-card transition-shadow hover:shadow-cardHover" ${ph.state === 'running' || ph.state === 'failed' ? 'open' : ''}>
             <summary class="flex items-center gap-4 p-4 ${hasLogs ? 'cursor-pointer hover:bg-slate-50' : 'cursor-default'} select-none transition-colors">
               <div class="w-7 h-7 shrink-0 rounded-full border-2 ${meta.ring} flex items-center justify-center text-xs font-bold z-10">
-                ${iconFor(ph.state, p.id)}
+                ${iconFor(iconState, idx + 1)}
               </div>
               <div class="flex-1 min-w-0">
-                <p class="text-sm font-semibold text-slate-800"><span class="text-brand-600 font-bold">Phase ${p.id}</span> <span class="text-slate-300 mx-1">·</span> ${p.title}</p>
+                <p class="text-sm font-semibold text-slate-800"><span class="text-brand-600 font-bold">Phase ${idx + 1}</span> <span class="text-slate-300 mx-1">·</span> ${p.title}</p>
                 <p class="text-xs text-slate-500 truncate">${p.desc}</p>
               </div>
               ${durationHtml}
@@ -601,7 +628,7 @@
     function openPhaseMaximized(phaseId) {
       const p = PHASES.find((x) => x.id === phaseId);
       const ph = state.phases[phaseId] || { logs: [] };
-      $('phaseMaxTitle').textContent = `Phase ${phaseId} · ${p ? p.title : ''}`;
+      $('phaseMaxTitle').textContent = `Phase ${displayPhaseNumber(phaseId)} · ${p ? p.title : ''}`;
       $('phaseMaxBody').innerHTML = ph.logs.map(formatLogLine).join('');
       $('phaseMaxModal').classList.remove('hidden');
     }
@@ -889,7 +916,7 @@
               ${badge}
               ${scoreBadge}
               ${statusBadge}
-              ${issue.phase ? `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">PHASE ${issue.phase}</span>` : ''}
+              ${issue.phase ? `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">PHASE ${displayPhaseNumber(issue.phase)}</span>` : ''}
               <span class="text-[10px] font-semibold text-slate-400 uppercase">${escapeHtml(issue.category)}</span>
               <span class="text-[11px] font-mono text-slate-400">${loc}</span>
               ${viewCodeBtn}
@@ -1017,7 +1044,7 @@
       lines.push(`Total: ${issues.length} (${issues.filter((i) => i.severity === 'error').length} blocking)`);
       lines.push('');
       issues.forEach((issue, i) => {
-        const loc = issue.file ? `${issue.file}${issue.line ? ':' + issue.line : ''}` : (issue.phase ? `Phase ${issue.phase}` : 'unknown location');
+        const loc = issue.file ? `${issue.file}${issue.line ? ':' + issue.line : ''}` : (issue.phase ? `Phase ${displayPhaseNumber(issue.phase)}` : 'unknown location');
         const scoreTag = typeof issue.score === 'number' ? ` (${issue.score}/10)` : '';
         lines.push(`## ${i + 1}. [${(issue.severity || 'warning').toUpperCase()}]${scoreTag} ${issue.category || 'issue'} — ${loc}`);
         if (issue.status === 'overridden') lines.push('(already acknowledged/overridden in a previous review)');
@@ -1506,10 +1533,17 @@
         </details>`;
       }
       for (const f of [...node.files].sort((a, b) => a.name.localeCompare(b.name))) {
-        const issueCount = studioIssuesForFile(f.path).length;
+        const fileIssues = studioIssuesForFile(f.path);
+        const issueCount = fileIssues.length;
+        // Amber when every issue in this file is a warning, red as soon as
+        // any of them is a blocking error — matches the editor's own
+        // per-line coloring instead of always flashing red for the count.
+        const badgeClass = issueCount > 0 && fileIssues.every((i) => i.severity !== 'error')
+          ? 'bg-amber-100 text-amber-700'
+          : 'bg-rose-100 text-rose-700';
         html += `<button type="button" class="studio-file-btn w-full text-left px-2 py-1 hover:bg-brand-50 flex items-center gap-1.5" style="padding-left:${depth * 14 + 24}px" data-path="${escapeAttr(f.path)}">
           <span class="flex-1 min-w-0 truncate">${escapeHtml(f.name)}</span>
-          ${issueCount > 0 ? `<span class="text-[9px] font-bold px-1 py-0.5 rounded-full bg-rose-100 text-rose-700 shrink-0">${issueCount}</span>` : ''}
+          ${issueCount > 0 ? `<span class="text-[9px] font-bold px-1 py-0.5 rounded-full ${badgeClass} shrink-0">${issueCount}</span>` : ''}
         </button>`;
       }
       return html;
@@ -1586,11 +1620,22 @@
           ? (hasError ? 'bg-rose-100' : 'bg-amber-100')
           : (hasError ? 'bg-rose-50' : 'bg-amber-50');
         const badges = hits.map((h) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}" title="${escapeAttr(h.issue.summary)}">${h.num}</span>`).join('');
-        return `<div class="flex ${bg}">` +
+        return `<div class="flex ${bg}" data-line="${n}">` +
           `<span class="w-10 shrink-0 text-right pr-2 text-slate-400 select-none border-r border-slate-100">${n}</span>` +
           `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span></div>`;
       }).join('');
       $('studioCodeWrap').innerHTML = `<pre class="m-0">${rows}</pre>`;
+    }
+
+    // Selecting an issue (from the file's issue list, or opened directly
+    // from a review-gate/history card) should bring its line on-screen even
+    // when it's scrolled well past the viewport — clicking an issue only
+    // highlighting an off-screen row left the user unsure whether anything
+    // happened at all.
+    function scrollStudioToLine(line) {
+      if (!line) return;
+      const row = document.querySelector(`#studioCodeWrap [data-line="${line}"]`);
+      if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
 
     function studioEnterEditMode() {
@@ -1697,7 +1742,10 @@
 
     async function selectStudioIssue(issue) {
       studioState.selectedIssue = issue;
-      if (!studioState.editing) renderStudioCodeView(studioState.originalContent);
+      if (!studioState.editing) {
+        renderStudioCodeView(studioState.originalContent);
+        scrollStudioToLine(issue.line);
+      }
       const explainId = `studio-explain-${issue.id}`;
       const fixId = `studio-fix-${issue.id}`;
       $('studioIssuePanel').innerHTML = `
@@ -1816,7 +1864,7 @@
         const canEffectivate = !!effectivatable && projectId != null;
         resultBanner.innerHTML = `
           <div class="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center shadow-card">
-            <p class="text-rose-800 font-semibold mb-1">Pipeline halted${phase ? ` at Phase ${phase}` : ''}</p>
+            <p class="text-rose-800 font-semibold mb-1">Pipeline halted${phase ? ` at Phase ${displayPhaseNumber(phase)}` : ''}</p>
             <p class="text-sm text-rose-600">${escapeHtml(error || 'Unknown error')}</p>
             <p class="text-xs text-slate-500 mt-3">Fix the violations above, re-zip, and try again. Staging files were cleaned up.</p>
             ${canEffectivate ? `
@@ -2042,10 +2090,12 @@
        proposal — never overwrites something the user typed. */
     let lastProposal = '';
     function proposeRepoName(source) {
+      // Preserve the source's case — REPO_NAME_REGEX (server.js) allows
+      // A-Za-z, and a folder/zip name's case is a deliberate naming choice
+      // the user shouldn't have to retype after dropping it in.
       const slug = source
-        .toLowerCase()
-        .replace(/\.zip$/, '')
-        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/\.zip$/i, '')
+        .replace(/[^A-Za-z0-9._-]+/g, '-')
         .replace(/^[-._]+|[-._]+$/g, '')
         .slice(0, 100);
       if (!slug) return;
@@ -2316,6 +2366,7 @@
       if (ev.type === 'job') {
         state.jobId = ev.jobId;
         updateViewIssuesButton();
+        prependOptimisticRunningProject(ev.jobId);
       } else if (ev.type === 'log') {
         ensurePhaseState(ev.phase).logs.push(ev.message);
       } else if (ev.type === 'status') {
@@ -2402,7 +2453,48 @@
       running: 'bg-brand-50 text-brand-700 border-brand-200',
       aborted: 'bg-slate-100 text-slate-500 border-slate-200',
     };
+    // How the run was kicked off — the browser UI, a direct API call
+    // (validate-all/onboard hit straight from curl/CI, bypassing MCP), or
+    // MCP (mcp-server.js's tools, tagged via the X-Ignite-Client header).
+    const HIST_SOURCE = {
+      ui:  { label: 'UI',  chip: 'bg-slate-50 text-slate-500 border-slate-200' },
+      api: { label: 'API', chip: 'bg-blue-50 text-blue-600 border-blue-200' },
+      mcp: { label: 'MCP', chip: 'bg-violet-50 text-violet-600 border-violet-200' },
+    };
+    function histSourceBadge(source) {
+      const meta = HIST_SOURCE[source] || HIST_SOURCE.ui;
+      return `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip} uppercase shrink-0" title="Onboarded via ${meta.label}">${meta.label}</span>`;
+    }
     const openProjects = new Set(); // ids whose detail view is expanded
+
+    // Optimistic placeholder shown the instant a run starts — the server's
+    // 'job' event fires before store.createProject() has actually inserted
+    // the row, so waiting on a real loadProjects() refresh here would race
+    // the DB write. This is non-interactive (no toggle/issues/delete — there
+    // may not even be a persisted project id yet) and gets fully replaced
+    // by the real entry the moment loadProjects() next runs (on 'done').
+    function prependOptimisticRunningProject(jobId) {
+      const org = (orgInput.value || '').trim();
+      const repo = (repoInput.value || '').trim();
+      if (!org || !repo) return;
+      if (historyList.querySelector(`[data-job-id="${escapeAttr(jobId)}"]`)) return;
+      if (historyList.firstElementChild?.tagName === 'P') historyList.innerHTML = '';
+      const placeholder = document.createElement('div');
+      placeholder.className = 'hist-item';
+      placeholder.dataset.jobId = jobId;
+      placeholder.innerHTML = `
+        <div class="flex items-start gap-2 px-5 py-3.5">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-start gap-2">
+              <p class="flex-1 min-w-0 text-sm font-semibold text-slate-800 truncate">${escapeHtml(org)}/${escapeHtml(repo)}</p>
+              ${histSourceBadge('ui')}
+              <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border ${HIST_STATUS.running} uppercase shrink-0">running</span>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-0.5">Starting…</p>
+          </div>
+        </div>`;
+      historyList.prepend(placeholder);
+    }
 
     async function loadProjects() {
       let projects = [];
@@ -2423,6 +2515,7 @@
               <div class="flex items-start gap-2">
               <p class="flex-1 min-w-0 text-sm font-semibold text-slate-800 truncate">${escapeHtml(p.org)}/${escapeHtml(p.repo)}</p>
               ${p.gxp ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-violet-50 text-violet-700 border-violet-200 shrink-0">GxP</span>' : ''}
+              ${histSourceBadge(p.source)}
               <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border ${HIST_STATUS[p.status] || HIST_STATUS.running} uppercase shrink-0">${escapeHtml(p.status)}</span>
               </div>
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>

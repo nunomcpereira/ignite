@@ -12,6 +12,17 @@ function buildIssueId({ category, file, line }) {
   return `${category}::${file || 'unknown'}::${line ?? 0}`;
 }
 
+// A "secret" living under a test directory/filename (test/, tests/,
+// __tests__/, spec/, *.test.js, *_test.py, *.spec.ts, ...) is far more
+// likely to be a fixture/fake credential than a real leaked one — still
+// worth a look, but not worth blocking the pipeline over. Demoted to a
+// warning rather than dropped entirely, since an occasional real secret
+// does end up copy-pasted into a test fixture.
+const TEST_PATH_RE = /(^|\/)(tests?|__tests__|specs?)(\/|$)|[._-](test|spec)s?\.[^/.]+$/i;
+function isLikelyTestFile(file) {
+  return TEST_PATH_RE.test(String(file || '').replace(/\\/g, '/'));
+}
+
 // Fixed 0-10 severity score per category, independent of the blocking/warning
 // (error/warning) status — the latter drives override gating, this drives
 // "how bad is this really" for triage. Warning-level findings in an
@@ -55,13 +66,14 @@ function collectPhase4Issues({ secrets, governance, llm }) {
 
   for (const f of secrets.findings) {
     const category = 'secret';
-    const severity = 'error';
+    const inTestFile = isLikelyTestFile(f.file);
+    const severity = inTestFile ? 'warning' : 'error';
     issues.push({
       id: buildIssueId({ category, file: f.file, line: f.line }),
       category,
       severity,
       score: scoreForIssue({ category, severity }),
-      summary: `Hardcoded ${f.kind}`,
+      summary: `Hardcoded ${f.kind}${inTestFile ? ' (in a test file — likely a fixture, not a real credential)' : ''}`,
       file: f.file,
       line: f.line,
       snippet: f.code || null,
@@ -86,13 +98,21 @@ function collectPhase4Issues({ secrets, governance, llm }) {
   if (llm && llm.available) {
     for (const f of llm.findings) {
       const category = f.category;
-      const severity = f.level === 'error' ? 'error' : 'warning';
+      // Same "likely a fixture, not a real secret" reasoning as the regex
+      // scan above, extended to the LLM's own credential-shaped security
+      // findings — scoped to credential-sounding text specifically so an
+      // otherwise-real vulnerability (e.g. actual SQL injection) sitting in
+      // a test helper doesn't get blanket-demoted just for its file path.
+      const looksLikeCredential = category === 'security'
+        && /hardcoded|credential|api[ _-]?key|password|secret|token/i.test(f.issue || '');
+      const inTestFile = looksLikeCredential && isLikelyTestFile(f.file);
+      const severity = f.level === 'error' && !inTestFile ? 'error' : 'warning';
       issues.push({
         id: buildIssueId({ category, file: f.file, line: f.line }),
         category,
         severity,
         score: scoreForIssue({ category, severity }),
-        summary: f.issue + (f.recommendation ? ` | fix: ${f.recommendation}` : ''),
+        summary: f.issue + (f.recommendation ? ` | fix: ${f.recommendation}` : '') + (inTestFile ? ' (in a test file — likely a fixture, not a real credential)' : ''),
         file: f.file,
         line: f.line,
         snippet: f.code || null,

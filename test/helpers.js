@@ -29,9 +29,27 @@ function withServerEnv(env, fn) {
     for (const k of Object.keys(env)) setEnv(k, env[k]);
 
     let tmpDbDir = null;
-    if (!('IGNITE_DB_PATH' in env)) {
+    if (!('IGNITE_DB_PATH' in env) || !('IGNITE_CONFIG_PATH' in env) || !('DOTENV_PATH' in env)) {
       tmpDbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-test-db-'));
-      setEnv('IGNITE_DB_PATH', path.join(tmpDbDir, 'test.db'));
+      if (!('IGNITE_DB_PATH' in env)) setEnv('IGNITE_DB_PATH', path.join(tmpDbDir, 'test.db'));
+      // Without this, loadConfig() reads this developer's real, locally-
+      // customized config.json — a test asserting on *default* values (e.g.
+      // "gitleaks is disabled by default") would pass or fail depending on
+      // what's actually configured on whoever's machine runs the suite.
+      // An empty file here means every default in loadConfig() applies.
+      if (!('IGNITE_CONFIG_PATH' in env)) {
+        const emptyConfigPath = path.join(tmpDbDir, 'empty-config.json');
+        await fs.writeFile(emptyConfigPath, '{}');
+        setEnv('IGNITE_CONFIG_PATH', emptyConfigPath);
+      }
+      // Same reasoning, for the real .env — dotenv fills in any var that's
+      // still unset, so a test that deletes e.g. GITLEAKS_ENABLED to assert
+      // on the default would otherwise have it silently re-populated from
+      // this developer's real .env on every require(). A nonexistent path
+      // is a deliberate, documented dotenv no-op.
+      if (!('DOTENV_PATH' in env)) {
+        setEnv('DOTENV_PATH', path.join(tmpDbDir, 'nonexistent.env'));
+      }
     }
 
     delete require.cache[SERVER_PATH];

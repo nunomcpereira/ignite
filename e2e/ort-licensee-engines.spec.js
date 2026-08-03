@@ -63,6 +63,7 @@ test.beforeAll(async () => {
       PORT: String(PORT),
       LLM_SCAN_URL: 'http://127.0.0.1:9',
       LLM_SCAN_TRUSTED_ORIGINS: 'http://127.0.0.1:9',
+      MCP_AUTOSTART: 'false',
     },
     stdio: 'ignore',
   });
