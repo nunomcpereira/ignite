@@ -122,16 +122,14 @@ test('runProjectUnitTests: Python project — pytest runs inside python:slim', a
   await withServerEnv({}, async (mod) => {
     const dir = await makeTempProject({
       'requirements.txt': '',
-      'sample.py': `
-        def add(a, b):
-            return a + b
-      `,
-      'test_sample.py': `
-        from sample import add
+      'sample.py': `def add(a, b):
+    return a + b
+`,
+      'test_sample.py': `from sample import add
 
-        def test_add():
-            assert add(2, 3) == 5
-      `,
+def test_add():
+    assert add(2, 3) == 5
+`,
     });
     const log = collectLog();
     const result = await mod.runProjectUnitTests(dir, log);

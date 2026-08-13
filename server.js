@@ -68,6 +68,102 @@ function loadConfig() {
       // (falls back to regex-only results) if disabled or the binary is
       // missing, so this is safe to leave off in environments without it.
       gitleaks: { enabled: false, binary: 'gitleaks', configPath: '' },
+      // Optional: IaC/container misconfiguration scan (Dockerfiles,
+      // Terraform, Kubernetes manifests, Helm charts) via Trivy's config
+      // scanner (https://github.com/aquasecurity/trivy). Unlike gitleaks,
+      // this is on by default — there's no equivalent built-in check to
+      // "supplement", so Trivy is the primary source of IaC findings when
+      // present. Soft-fails to a small built-in Dockerfile heuristic scan
+      // (unpinned base image tag, missing USER) when disabled or missing.
+      trivy: { enabled: true, binary: 'trivy' },
+      // Optional: supplements trivy's IaC misconfig scan with Checkov's
+      // (https://www.checkov.io/) much larger policy set — same relationship
+      // gitleaks has to the regex secret scan, merged in and deduped by
+      // file/line rather than replacing trivy's findings. On by default —
+      // a heavier (Python) dependency than trivy/hadolint, but still a
+      // soft-skip (no findings, not a failure) if it isn't installed.
+      checkov: { enabled: true, binary: 'checkov' },
+      // Optional: supplements trivy/checkov with hadolint's Dockerfile-only
+      // rule set (https://github.com/hadolint/hadolint) — a small, fast
+      // native binary, so on by default like trivy.
+      hadolint: { enabled: true, binary: 'hadolint' },
+      // Optional: verifies Sigstore/cosign keyless signatures on every
+      // external base image referenced by a Dockerfile FROM (supply-chain
+      // provenance), via `cosign verify` (https://github.com/sigstore/cosign).
+      // On by default. Note this makes a real network call (registry +
+      // Rekor transparency log) per unique image, adding latency and an
+      // external-service dependency to every run that references one — set
+      // COSIGN_ENABLED=false to opt back out if that's undesirable in your
+      // environment. An unsigned/unverifiable image is reported as a
+      // warning, never a blocking error — plenty of legitimate base images
+      // (e.g. plain `ubuntu`) aren't cosign-signed.
+      cosign: { enabled: true, binary: 'cosign', identityRegexp: '.*', issuerRegexp: '.*' },
+      // Optional: semantic pattern-matching SAST via Semgrep OSS
+      // (https://semgrep.dev) — logical flaws and injection-style sinks
+      // beyond what the LLM deep-scan (Phase 4's other security check)
+      // covers on its own. `config` is any semgrep --config value (a
+      // registry pack like "p/security-audit", "auto", or a local rule
+      // file/dir path). On by default; soft-skips (no native fallback —
+      // there isn't a meaningful built-in substitute for a semantic rule
+      // engine) when disabled or not installed.
+      semgrep: { enabled: true, binary: 'semgrep', config: 'p/security-audit' },
+      // Optional: sensitive data-flow (PII/GDPR) tracking via Bearer CLI
+      // (https://github.com/Bearer/bearer) — traces personal data from
+      // source (request params, user objects) to sinks (logs, DB writes,
+      // 3rd-party calls) rather than pattern-matching single lines like
+      // semgrep. On by default. Needs real git context (it shells out to
+      // git for its own bookkeeping) — server.js's ensureGitContextForBearer
+      // bootstraps a throwaway one for a fresh ZIP/folder upload
+      // automatically, so this isn't something you need to set up.
+      bearer: { enabled: true, binary: 'bearer' },
+    },
+    compliance: {
+      // Optional: Compliance & Feature Posture Engine — scans for the
+      // *presence* of security/compliance features (SSO, RBAC, audit
+      // logging, TLS, backups, encryption at rest, rate limiting), not
+      // vulnerabilities. Fully conditioned on Semgrep's presence (shares
+      // security.semgrep's binary/tooling probe — same CLI, a separate
+      // ruleset and enable flag): runs `semgrep --config=<ruleset>`
+      // against ignite-posture-rules.yaml when connected, and soft-falls
+      // back to a built-in regex pattern matcher (same category/tier
+      // model, narrower coverage) when Semgrep is disabled or missing —
+      // this scan never fails a run or blocks the pipeline either way.
+      posture: { enabled: true, ruleset: path.join(__dirname, 'ignite-posture-rules.yaml') },
+    },
+    sbom: {
+      // Optional: generates a CycloneDX SBOM for the staged project via
+      // Syft (https://github.com/anchore/syft), attached as a downloadable
+      // project document. On by default — Syft is a fast, self-contained
+      // native binary. Soft-fails to a minimal manifest-derived component
+      // list (name/version pairs from package.json/requirements.txt/etc,
+      // no dependency graph or standards-format export) when missing, so a
+      // run is never blocked on it.
+      syft: { enabled: true, binary: 'syft' },
+    },
+    metrics: {
+      // Optional: code-duplication detection via jscpd
+      // (https://github.com/kucherenko/jscpd) — flagged clones become
+      // 'code-duplication' issues (quality-level, always a warning, never
+      // blocking). Off by default. No built-in fallback: duplicate-block
+      // detection needs the real tool, so this simply contributes nothing
+      // when disabled/missing.
+      jscpd: { enabled: false, binary: 'jscpd' },
+      // Optional: precise per-language LOC counts via gocloc
+      // (https://github.com/hhatto/gocloc) — purely descriptive, attached
+      // as a downloadable project document (same as the SBOM), never
+      // produces issues. On by default.
+      gocloc: { enabled: true, binary: 'gocloc' },
+    },
+    api: {
+      // Optional: lints OpenAPI/AsyncAPI schema files against Spectral's
+      // built-in rulesets (https://github.com/stoplightio/spectral) — org
+      // REST/AsyncAPI conventions, not just schema validity. `ruleset` is
+      // any spectral --ruleset path/URL; defaults to a small bundled file
+      // (spectral-default-ruleset.yaml) extending spectral:oas +
+      // spectral:asyncapi. On by default. No built-in fallback: schema
+      // linting needs the real rule engine, so this simply contributes
+      // nothing when disabled/missing, or when no matching files exist.
+      spectral: { enabled: true, binary: 'spectral', ruleset: path.join(__dirname, 'spectral-default-ruleset.yaml') },
     },
     // Optional per-phase title/description/enabled overrides, e.g.:
     //   "phases": [{ "id": 4, "enabled": false }]
@@ -135,6 +231,54 @@ function loadConfig() {
   }
   if (process.env.GITLEAKS_BINARY) merged.security.gitleaks.binary = process.env.GITLEAKS_BINARY;
   if (process.env.GITLEAKS_CONFIG_PATH) merged.security.gitleaks.configPath = process.env.GITLEAKS_CONFIG_PATH;
+  if (process.env.TRIVY_ENABLED !== undefined) {
+    merged.security.trivy.enabled = String(process.env.TRIVY_ENABLED) === 'true';
+  }
+  if (process.env.TRIVY_BINARY) merged.security.trivy.binary = process.env.TRIVY_BINARY;
+  if (process.env.CHECKOV_ENABLED !== undefined) {
+    merged.security.checkov.enabled = String(process.env.CHECKOV_ENABLED) === 'true';
+  }
+  if (process.env.CHECKOV_BINARY) merged.security.checkov.binary = process.env.CHECKOV_BINARY;
+  if (process.env.HADOLINT_ENABLED !== undefined) {
+    merged.security.hadolint.enabled = String(process.env.HADOLINT_ENABLED) === 'true';
+  }
+  if (process.env.HADOLINT_BINARY) merged.security.hadolint.binary = process.env.HADOLINT_BINARY;
+  if (process.env.COSIGN_ENABLED !== undefined) {
+    merged.security.cosign.enabled = String(process.env.COSIGN_ENABLED) === 'true';
+  }
+  if (process.env.COSIGN_BINARY) merged.security.cosign.binary = process.env.COSIGN_BINARY;
+  if (process.env.COSIGN_IDENTITY_REGEXP) merged.security.cosign.identityRegexp = process.env.COSIGN_IDENTITY_REGEXP;
+  if (process.env.COSIGN_ISSUER_REGEXP) merged.security.cosign.issuerRegexp = process.env.COSIGN_ISSUER_REGEXP;
+  if (process.env.SEMGREP_ENABLED !== undefined) {
+    merged.security.semgrep.enabled = String(process.env.SEMGREP_ENABLED) === 'true';
+  }
+  if (process.env.SEMGREP_BINARY) merged.security.semgrep.binary = process.env.SEMGREP_BINARY;
+  if (process.env.SEMGREP_CONFIG) merged.security.semgrep.config = process.env.SEMGREP_CONFIG;
+  if (process.env.BEARER_ENABLED !== undefined) {
+    merged.security.bearer.enabled = String(process.env.BEARER_ENABLED) === 'true';
+  }
+  if (process.env.BEARER_BINARY) merged.security.bearer.binary = process.env.BEARER_BINARY;
+  if (process.env.POSTURE_ENABLED !== undefined) {
+    merged.compliance.posture.enabled = String(process.env.POSTURE_ENABLED) === 'true';
+  }
+  if (process.env.POSTURE_RULESET) merged.compliance.posture.ruleset = process.env.POSTURE_RULESET;
+  if (process.env.JSCPD_ENABLED !== undefined) {
+    merged.metrics.jscpd.enabled = String(process.env.JSCPD_ENABLED) === 'true';
+  }
+  if (process.env.JSCPD_BINARY) merged.metrics.jscpd.binary = process.env.JSCPD_BINARY;
+  if (process.env.GOCLOC_ENABLED !== undefined) {
+    merged.metrics.gocloc.enabled = String(process.env.GOCLOC_ENABLED) === 'true';
+  }
+  if (process.env.GOCLOC_BINARY) merged.metrics.gocloc.binary = process.env.GOCLOC_BINARY;
+  if (process.env.SPECTRAL_ENABLED !== undefined) {
+    merged.api.spectral.enabled = String(process.env.SPECTRAL_ENABLED) === 'true';
+  }
+  if (process.env.SPECTRAL_BINARY) merged.api.spectral.binary = process.env.SPECTRAL_BINARY;
+  if (process.env.SPECTRAL_RULESET) merged.api.spectral.ruleset = process.env.SPECTRAL_RULESET;
+  if (process.env.SYFT_ENABLED !== undefined) {
+    merged.sbom.syft.enabled = String(process.env.SYFT_ENABLED) === 'true';
+  }
+  if (process.env.SYFT_BINARY) merged.sbom.syft.binary = process.env.SYFT_BINARY;
   if (process.env.MCP_AUTOSTART !== undefined) merged.mcp.autoStart = String(process.env.MCP_AUTOSTART) === 'true';
   if (process.env.MCP_HTTP_PORT) merged.mcp.httpPort = Number(process.env.MCP_HTTP_PORT);
   return merged;
@@ -351,6 +495,54 @@ const GITLEAKS_ENABLED = Boolean(CONFIG.security.gitleaks.enabled);
 const GITLEAKS_BINARY = String(CONFIG.security.gitleaks.binary || 'gitleaks');
 const GITLEAKS_CONFIG_PATH = String(CONFIG.security.gitleaks.configPath || '');
 
+/* Optional trivy-powered IaC/container misconfig scan (see CONFIG.security.trivy) */
+const TRIVY_ENABLED = Boolean(CONFIG.security.trivy.enabled);
+const TRIVY_BINARY = String(CONFIG.security.trivy.binary || 'trivy');
+
+/* Optional checkov-powered supplemental IaC misconfig scan (see CONFIG.security.checkov) */
+const CHECKOV_ENABLED = Boolean(CONFIG.security.checkov.enabled);
+const CHECKOV_BINARY = String(CONFIG.security.checkov.binary || 'checkov');
+
+/* Optional hadolint-powered supplemental Dockerfile lint (see CONFIG.security.hadolint) */
+const HADOLINT_ENABLED = Boolean(CONFIG.security.hadolint.enabled);
+const HADOLINT_BINARY = String(CONFIG.security.hadolint.binary || 'hadolint');
+
+/* Optional syft-powered SBOM generation (see CONFIG.sbom.syft) */
+const SYFT_ENABLED = Boolean(CONFIG.sbom.syft.enabled);
+const SYFT_BINARY = String(CONFIG.sbom.syft.binary || 'syft');
+
+/* Optional cosign-powered base-image signature verification (see CONFIG.security.cosign) */
+const COSIGN_ENABLED = Boolean(CONFIG.security.cosign.enabled);
+const COSIGN_BINARY = String(CONFIG.security.cosign.binary || 'cosign');
+const COSIGN_IDENTITY_REGEXP = String(CONFIG.security.cosign.identityRegexp || '.*');
+const COSIGN_ISSUER_REGEXP = String(CONFIG.security.cosign.issuerRegexp || '.*');
+
+/* Optional semgrep-powered semantic SAST scan (see CONFIG.security.semgrep) */
+const SEMGREP_ENABLED = Boolean(CONFIG.security.semgrep.enabled);
+const SEMGREP_BINARY = String(CONFIG.security.semgrep.binary || 'semgrep');
+const SEMGREP_CONFIG = String(CONFIG.security.semgrep.config || 'p/security-audit');
+
+/* Optional bearer-powered PII/GDPR data-flow scan (see CONFIG.security.bearer) */
+const BEARER_ENABLED = Boolean(CONFIG.security.bearer.enabled);
+const BEARER_BINARY = String(CONFIG.security.bearer.binary || 'bearer');
+
+/* Optional Compliance & Feature Posture Engine — shares SEMGREP_BINARY (see CONFIG.compliance.posture) */
+const POSTURE_ENABLED = Boolean(CONFIG.compliance.posture.enabled);
+const POSTURE_RULESET = String(CONFIG.compliance.posture.ruleset || path.join(__dirname, 'ignite-posture-rules.yaml'));
+
+/* Optional jscpd-powered code-duplication scan (see CONFIG.metrics.jscpd) */
+const JSCPD_ENABLED = Boolean(CONFIG.metrics.jscpd.enabled);
+const JSCPD_BINARY = String(CONFIG.metrics.jscpd.binary || 'jscpd');
+
+/* Optional gocloc-powered LOC metrics (see CONFIG.metrics.gocloc) */
+const GOCLOC_ENABLED = Boolean(CONFIG.metrics.gocloc.enabled);
+const GOCLOC_BINARY = String(CONFIG.metrics.gocloc.binary || 'gocloc');
+
+/* Optional spectral-powered API schema lint (see CONFIG.api.spectral) */
+const SPECTRAL_ENABLED = Boolean(CONFIG.api.spectral.enabled);
+const SPECTRAL_BINARY = String(CONFIG.api.spectral.binary || 'spectral');
+const SPECTRAL_RULESET = String(CONFIG.api.spectral.ruleset || path.join(__dirname, 'spectral-default-ruleset.yaml'));
+
 const AI_INVOKE_REGEX = /\.(invoke|stream|ainvoke|astream)\(/;
 
 const SKIP_DIRS = Object.freeze(new Set([
@@ -379,7 +571,7 @@ const BINARY_EXTENSIONS = Object.freeze(new Set([
 const GITHUB_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // org login rules
 const REPO_NAME_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
 const SAFE_UPLOAD_SEGMENT_REGEX = /^[^\0/\\]+$/;
-const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort']));
+const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral']));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -462,6 +654,16 @@ function runTool(tool, args, cwd, { env: envOverride = {}, allowedExitCodes = [0
       case 'gitleaks': return execute(GITLEAKS_BINARY);
       case 'licensee': return execute('licensee');
       case 'ort': return execute('ort');
+      case 'trivy': return execute(TRIVY_BINARY);
+      case 'checkov': return execute(CHECKOV_BINARY);
+      case 'hadolint': return execute(HADOLINT_BINARY);
+      case 'syft': return execute(SYFT_BINARY);
+      case 'cosign': return execute(COSIGN_BINARY);
+      case 'semgrep': return execute(SEMGREP_BINARY);
+      case 'bearer': return execute(BEARER_BINARY);
+      case 'jscpd': return execute(JSCPD_BINARY);
+      case 'gocloc': return execute(GOCLOC_BINARY);
+      case 'spectral': return execute(SPECTRAL_BINARY);
       default: return reject(new Error(`Unsupported command: ${safeTool}`));
     }
   });
@@ -1358,7 +1560,7 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
 
     if ((issue.includes('command injection') || issue.includes('user-supplied command') || issue.includes('child_process'))
       && relFile === 'server.js') {
-      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort'\]\)\);/.test(fileText);
+      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral'\]\)\);/.test(fileText);
       const hasStrictSanitizers = /sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(/.test(fileText);
       const isRunnerZone = line >= 200 && line <= 360;
       if (hasCommandAllowlist && hasStrictSanitizers && isRunnerZone) {
@@ -1726,6 +1928,961 @@ async function gitleaksTooling() {
   } catch {
     return { ok: false, reason: '`gitleaks` is not installed (brew install gitleaks) or not on PATH.' };
   }
+}
+
+async function trivyTooling() {
+  try {
+    await runTool('trivy', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`trivy` is not installed (brew install trivy) — falling back to the built-in Dockerfile heuristic scan.' };
+  }
+}
+
+async function checkovTooling() {
+  try {
+    await runTool('checkov', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`checkov` is not installed (pip install checkov / brew install checkov) — its supplemental findings are simply omitted.' };
+  }
+}
+
+// Runs trivy's own JSON report through Ignite's finding shape. Returns null
+// (never throws) on any tool/parse failure so the caller always has the
+// built-in fallback to drop back to.
+async function runTrivyIacScan(root, log) {
+  const reportPath = path.join(
+    os.tmpdir(),
+    `ignite-trivy-${crypto.randomBytes(8).toString('hex')}.json`
+  );
+  try {
+    await runTool('trivy', [
+      'config', '--format', 'json', '--output', reportPath, '--exit-code', '0', '--quiet', root,
+    ], root);
+    let raw;
+    try {
+      raw = await fsp.readFile(reportPath, 'utf8');
+    } catch {
+      return [];
+    }
+    const data = raw.trim() ? JSON.parse(raw) : {};
+    const results = Array.isArray(data.Results) ? data.Results : [];
+    const findings = [];
+    for (const result of results) {
+      const relFile = path.relative(root, path.resolve(root, result.Target || ''));
+      const misconfigs = Array.isArray(result.Misconfigurations) ? result.Misconfigurations : [];
+      let content = null;
+      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+      for (const m of misconfigs) {
+        const line = Number(m.CauseMetadata?.StartLine) || 1;
+        findings.push({
+          file: relFile,
+          line,
+          kind: String(m.ID || 'misconfig').toLowerCase(),
+          tool: 'trivy',
+          severity: String(m.Severity || 'MEDIUM').toLowerCase(),
+          message: m.Title || m.Message || 'IaC misconfiguration',
+          code: content ? buildSnippet(content, line) : null,
+        });
+      }
+    }
+    return findings;
+  } catch (e) {
+    log?.(`⚠ Trivy IaC scan failed: ${e.message}`);
+    return null;
+  } finally {
+    await fsp.unlink(reportPath).catch(() => {});
+  }
+}
+
+// checkov's `--output json` shape differs depending on how many IaC
+// frameworks it detected in `root`: a single object ({check_type, results})
+// when only one, an array of those objects when more than one (e.g. a repo
+// with both a Dockerfile and Terraform). Normalized to an array either way.
+function normalizeCheckovReport(data) {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === 'object' && data.results) return [data];
+  return [];
+}
+
+// Supplements trivy's findings the same way gitleaks supplements the regex
+// secret scan: runs alongside, never replaces. Returns null (never throws)
+// on any tool/parse failure.
+async function runCheckovIacScan(root, log) {
+  try {
+    // `-d .` (not the absolute root) with cwd=root: passing checkov an
+    // absolute -d target makes it report repo_file_path/file_path as full
+    // filesystem-rooted paths (e.g. "/var/folders/.../Dockerfile") instead
+    // of paths relative to the scanned dir, which then produces a bogus
+    // "relFile" once naively stripped of a leading "/" — caught by a real
+    // pipeline run putting the staged project under $TMPDIR.
+    const { stdout } = await runTool('checkov', [
+      '-d', '.', '--output', 'json', '--compact', '--quiet', '--soft-fail',
+    ], root);
+    const data = stdout.trim() ? JSON.parse(stdout) : null;
+    const reports = normalizeCheckovReport(data);
+    const realRoot = await fsp.realpath(root).catch(() => root);
+    const findings = [];
+    for (const report of reports) {
+      const failed = report?.results?.failed_checks;
+      if (!Array.isArray(failed)) continue;
+      for (const c of failed) {
+        const rawPath = String(c.repo_file_path || c.file_path || '');
+        if (!rawPath) continue;
+        const relFile = path.relative(realRoot, path.resolve(realRoot, rawPath.replace(/^\/+/, '')));
+        if (!relFile || relFile.startsWith('..')) continue;
+        const line = Number(c.file_line_range?.[0]) || 1;
+        let content = null;
+        try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+        findings.push({
+          file: relFile,
+          line,
+          kind: String(c.check_id || 'misconfig').toLowerCase(),
+          tool: 'checkov',
+          severity: String(c.severity || 'MEDIUM').toLowerCase(),
+          message: c.check_name || 'IaC misconfiguration',
+          code: content ? buildSnippet(content, line) : null,
+        });
+      }
+    }
+    return findings;
+  } catch (e) {
+    log?.(`⚠ Checkov supplemental scan failed: ${e.message}`);
+    return null;
+  }
+}
+
+// IaC/container misconfiguration scan (Dockerfiles, Terraform, Kubernetes
+// manifests, Helm charts). Trivy is the primary engine — its own file
+// discovery covers every recognized IaC file under `root` in one pass, no
+// per-file walk needed here unlike checkSecrets/checkAiGovernance. Falls
+// back to a small built-in Dockerfile heuristic (unpinned base image tag,
+// missing USER) when trivy is disabled or not installed, so a run is never
+// blocked on it. Checkov (opt-in) supplements whichever engine ran, merged
+// in and deduped by file/line, same relationship gitleaks has to the regex
+// secret scan.
+async function hadolintTooling() {
+  try {
+    await runTool('hadolint', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`hadolint` is not installed (brew install hadolint) — its supplemental findings are simply omitted.' };
+  }
+}
+
+const HADOLINT_LEVEL_TO_SEVERITY = { error: 'high', warning: 'medium', info: 'low', style: 'low' };
+
+// hadolint only understands individual Dockerfiles (no directory/whole-repo
+// mode like trivy/checkov), so this does its own file discovery — same
+// DOCKERFILE_NAME_RE walk the built-in fallback uses — and passes every
+// match as a single multi-file invocation (one JSON array back, one process
+// spawned regardless of how many Dockerfiles the repo has).
+async function runHadolintIacScan(root, log) {
+  try {
+    const dockerfiles = [];
+    for await (const file of walkFiles(root)) {
+      if (DOCKERFILE_NAME_RE.test(path.basename(file))) dockerfiles.push(path.relative(root, file));
+    }
+    if (dockerfiles.length === 0) return [];
+
+    const { stdout } = await runTool('hadolint', ['--format', 'json', ...dockerfiles], root, { allowedExitCodes: [0, 1] });
+    const results = stdout.trim() ? JSON.parse(stdout) : [];
+    const findings = [];
+    for (const r of results) {
+      const relFile = String(r.file || '');
+      const line = Number(r.line) || 1;
+      let content = null;
+      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+      findings.push({
+        file: relFile,
+        line,
+        kind: String(r.code || 'dockerfile-lint').toLowerCase(),
+        tool: 'hadolint',
+        severity: HADOLINT_LEVEL_TO_SEVERITY[r.level] || 'medium',
+        message: r.message || 'Dockerfile lint issue',
+        code: content ? buildSnippet(content, line) : null,
+      });
+    }
+    return findings;
+  } catch (e) {
+    log?.(`⚠ Hadolint supplemental scan failed: ${e.message}`);
+    return null;
+  }
+}
+
+async function checkIacSecurity(root, log) {
+  const trivyTool = TRIVY_ENABLED ? await trivyTooling() : { ok: false, reason: 'trivy is disabled (security.trivy.enabled=false).' };
+  let findings;
+  let engine;
+  if (!trivyTool.ok) {
+    log?.(`⚠ Trivy IaC scan skipped: ${trivyTool.reason}`);
+    findings = await checkIacSecurityFallback(root);
+    engine = 'fallback';
+  } else {
+    log?.('Engine: Trivy CLI (External) — scanning Dockerfiles/Terraform/Kubernetes/Helm for misconfigurations...');
+    const trivyFindings = await runTrivyIacScan(root, log);
+    if (trivyFindings === null) {
+      log?.('⚠ Falling back to the built-in Dockerfile heuristic scan.');
+      findings = await checkIacSecurityFallback(root);
+      engine = 'fallback';
+    } else {
+      findings = trivyFindings;
+      engine = 'trivy';
+    }
+  }
+
+  if (CHECKOV_ENABLED) {
+    const checkovTool = await checkovTooling();
+    if (!checkovTool.ok) {
+      log?.(`⚠ Checkov supplemental scan skipped: ${checkovTool.reason}`);
+    } else {
+      log?.('Engine: Checkov CLI (External) — supplementing with additional IaC policy checks...');
+      const checkovFindings = await runCheckovIacScan(root, log);
+      if (checkovFindings) {
+        // Deduped on file+line+rule-id, not just file+line: trivy and
+        // checkov draw from different rule catalogs and routinely flag
+        // *different* real issues on the same line (e.g. a Dockerfile's
+        // FROM line triggers both an unpinned-tag and a root-user rule) —
+        // collapsing on line alone would silently drop distinct findings.
+        // This only catches true repeats (same tool-neutral rule surfacing
+        // twice), which in practice is rare across two different scanners.
+        const seen = new Set(findings.map((f) => `${f.file}:${f.line}:${f.kind}`));
+        const additional = checkovFindings.filter((f) => !seen.has(`${f.file}:${f.line}:${f.kind}`));
+        findings = [...findings, ...additional];
+        engine = `${engine}+checkov`;
+      }
+    }
+  }
+
+  if (HADOLINT_ENABLED) {
+    const hadolintTool = await hadolintTooling();
+    if (!hadolintTool.ok) {
+      log?.(`⚠ Hadolint supplemental scan skipped: ${hadolintTool.reason}`);
+    } else {
+      log?.('Engine: Hadolint CLI (External) — supplementing with Dockerfile-specific lint checks...');
+      const hadolintFindings = await runHadolintIacScan(root, log);
+      if (hadolintFindings) {
+        const seen = new Set(findings.map((f) => `${f.file}:${f.line}:${f.kind}`));
+        const additional = hadolintFindings.filter((f) => !seen.has(`${f.file}:${f.line}:${f.kind}`));
+        findings = [...findings, ...additional];
+        engine = `${engine}+hadolint`;
+      }
+    }
+  }
+
+  return { findings, engine };
+}
+
+const DOCKERFILE_NAME_RE = /^Dockerfile(\.[A-Za-z0-9_-]+)?$/;
+
+// Engine: Ignite Built-In Pattern Matcher (Fallback) — used only when trivy
+// is unavailable. Deliberately narrow (two well-known Dockerfile smells)
+// rather than an attempt to replicate trivy's much larger rule set.
+async function checkIacSecurityFallback(root) {
+  const findings = [];
+  for await (const file of walkFiles(root)) {
+    const base = path.basename(file);
+    if (!DOCKERFILE_NAME_RE.test(base)) continue;
+
+    const buffer = await fsp.readFile(file);
+    if (looksBinary(buffer)) continue;
+    const content = buffer.toString('utf8');
+    const rel = path.relative(root, file);
+    const lines = content.split(/\r?\n/);
+    let hasUser = false;
+    lines.forEach((line, i) => {
+      const fromMatch = line.match(/^\s*FROM\s+(\S+?)(?:\s+AS\s+\S+)?\s*$/i);
+      if (fromMatch) {
+        const image = fromMatch[1];
+        const hasDigest = image.includes('@sha256:');
+        const tagMatch = image.match(/:([^@\s]+)$/);
+        const isUnpinned = !hasDigest && (!tagMatch || tagMatch[1] === 'latest');
+        if (isUnpinned) {
+          findings.push({
+            file: rel,
+            line: i + 1,
+            kind: 'unpinned-base-image',
+            tool: 'ignite-fallback',
+            severity: 'medium',
+            message: `Base image "${image}" is not pinned to a fixed tag/digest — resolves to whatever "latest" is at build time.`,
+            code: buildSnippet(content, i + 1),
+          });
+        }
+      }
+      if (/^\s*USER\s+\S+/i.test(line)) hasUser = true;
+    });
+    if (!hasUser) {
+      findings.push({
+        file: rel,
+        line: 1,
+        kind: 'container-runs-as-root',
+        tool: 'ignite-fallback',
+        severity: 'medium',
+        message: 'No USER instruction — the container runs as root by default.',
+        code: buildSnippet(content, 1),
+      });
+    }
+  }
+  return findings;
+}
+
+async function syftTooling() {
+  try {
+    await runTool('syft', ['version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`syft` is not installed (brew install syft) — falling back to a minimal manifest-derived component list (no standards-format SBOM).' };
+  }
+}
+
+// Best-effort component list built purely from this app's own manifest
+// parsers (STUDIO_MANIFESTS — the same ones scanDependencyLicensesFallback
+// uses), used only when syft is disabled or not installed. Intentionally
+// minimal: name/version pairs per ecosystem, no dependency graph, no CPEs,
+// no license metadata — real SBOM generation needs the real tool.
+async function generateSbomFallback(root) {
+  const components = [];
+  for await (const file of walkFiles(root)) {
+    const spec = STUDIO_MANIFESTS.find((m) => m.file === path.basename(file));
+    if (!spec) continue;
+    const content = await fsp.readFile(file, 'utf8').catch(() => null);
+    if (content == null) continue;
+    const rawDeps = spec.parse(content).slice(0, STUDIO_MAX_DEPS_PER_MANIFEST);
+    for (const dep of rawDeps) {
+      components.push({ name: dep.name, version: dep.versionRange || null, ecosystem: spec.ecosystem, type: 'library' });
+    }
+  }
+  return { bomFormat: 'ignite-fallback', specVersion: null, components };
+}
+
+// Generates a CycloneDX SBOM for the staged project via Syft, which does
+// its own multi-ecosystem manifest/lockfile discovery in one pass (same
+// relationship trivy has to checkIacSecurityFallback's narrow heuristic).
+// Never throws: returns the built-in fallback component list on any
+// missing-tool/parse failure, so a run is never blocked on it.
+async function generateSbom(root, log) {
+  const tooling = SYFT_ENABLED ? await syftTooling() : { ok: false, reason: 'syft is disabled (sbom.syft.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ Syft SBOM generation skipped: ${tooling.reason}`);
+    return { engine: 'fallback', sbom: await generateSbomFallback(root) };
+  }
+
+  log?.('Engine: Syft CLI (External) — generating a CycloneDX SBOM...');
+  const reportPath = path.join(os.tmpdir(), `ignite-syft-${crypto.randomBytes(8).toString('hex')}.json`);
+  try {
+    await runTool('syft', [root, '-o', `cyclonedx-json=${reportPath}`, '--quiet'], root);
+    const raw = await fsp.readFile(reportPath, 'utf8');
+    const sbom = JSON.parse(raw);
+    return { engine: 'syft', sbom };
+  } catch (e) {
+    log?.(`⚠ Syft SBOM generation failed, falling back to a minimal component list: ${e.message}`);
+    return { engine: 'fallback', sbom: await generateSbomFallback(root) };
+  } finally {
+    await fsp.unlink(reportPath).catch(() => {});
+  }
+}
+
+async function cosignTooling() {
+  try {
+    await runTool('cosign', ['version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`cosign` is not installed (brew install cosign) — base-image signature verification is skipped.' };
+  }
+}
+
+// Collects every external base image referenced by FROM in the project's
+// Dockerfiles, alongside the exact file/line it came from (for Studio
+// addressability). Multi-stage build aliases (`FROM builder` referencing an
+// earlier `AS builder` stage) are excluded — they're not external images
+// and cosign has nothing to verify against.
+async function discoverBaseImages(root) {
+  const occurrences = [];
+  for await (const file of walkFiles(root)) {
+    if (!DOCKERFILE_NAME_RE.test(path.basename(file))) continue;
+    const buffer = await fsp.readFile(file);
+    if (looksBinary(buffer)) continue;
+    const content = buffer.toString('utf8');
+    const rel = path.relative(root, file);
+    const lines = content.split(/\r?\n/);
+    const stageNames = new Set();
+    lines.forEach((line, i) => {
+      const m = line.match(/^\s*FROM\s+(\S+?)(?:\s+AS\s+(\S+))?\s*$/i);
+      if (!m) return;
+      const image = m[1];
+      if (m[2]) stageNames.add(m[2]);
+      if (stageNames.has(image) || image.toLowerCase() === 'scratch') return;
+      occurrences.push({ file: rel, line: i + 1, image });
+    });
+  }
+  return occurrences;
+}
+
+// Verifies Sigstore/cosign keyless signatures on every unique external base
+// image found across the project's Dockerfiles. Each unique image is
+// verified once (cosign verify is a real network call to the image
+// registry + Rekor transparency log) and the result is fanned back out to
+// every file/line occurrence that referenced it. Never throws: any
+// tool/network failure is reported as an "unverifiable" finding rather than
+// aborting the run.
+async function checkImageProvenance(root, log) {
+  const tooling = COSIGN_ENABLED ? await cosignTooling() : { ok: false, reason: 'cosign is disabled (security.cosign.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ Cosign base-image signature check skipped: ${tooling.reason}`);
+    return { findings: [], engine: 'disabled' };
+  }
+
+  const occurrences = await discoverBaseImages(root);
+  if (occurrences.length === 0) return { findings: [], engine: 'cosign' };
+
+  log?.('Engine: Cosign CLI (External) — verifying Sigstore signatures on referenced base images...');
+  const uniqueImages = [...new Set(occurrences.map((o) => o.image))];
+  const verdictByImage = new Map();
+  for (const image of uniqueImages) {
+    try {
+      await runTool('cosign', [
+        'verify',
+        '--certificate-identity-regexp', COSIGN_IDENTITY_REGEXP,
+        '--certificate-oidc-issuer-regexp', COSIGN_ISSUER_REGEXP,
+        image,
+      ], root, { allowedExitCodes: [0] });
+      verdictByImage.set(image, { verified: true });
+      log?.(`✓ ${image} — verifiable Sigstore signature.`);
+    } catch (e) {
+      verdictByImage.set(image, { verified: false, reason: e.message });
+      log?.(`⚠ ${image} — no verifiable Sigstore signature: ${e.message}`);
+    }
+  }
+
+  const findings = [];
+  for (const occ of occurrences) {
+    const verdict = verdictByImage.get(occ.image);
+    if (verdict.verified) continue;
+    let content = null;
+    try { content = await fsp.readFile(path.join(root, occ.file), 'utf8'); } catch { /* best-effort */ }
+    findings.push({
+      file: occ.file,
+      line: occ.line,
+      kind: 'unsigned-base-image',
+      tool: 'cosign',
+      severity: 'warning',
+      message: `Base image "${occ.image}" has no verifiable Sigstore/cosign signature — supply-chain provenance can't be confirmed.`,
+      code: content ? buildSnippet(content, occ.line) : null,
+    });
+  }
+  return { findings, engine: 'cosign' };
+}
+
+async function semgrepTooling() {
+  try {
+    const { stdout } = await runTool('semgrep', ['--version'], os.tmpdir());
+    return { ok: true, version: stdout.trim() || null, path: SEMGREP_BINARY };
+  } catch {
+    return { ok: false, reason: '`semgrep` is not installed (brew install semgrep / pip install semgrep) — semantic SAST and posture findings are simply omitted.' };
+  }
+}
+
+const SEMGREP_SEVERITY_TO_ISSUE = { ERROR: 'error', WARNING: 'warning', INFO: 'warning' };
+
+// Semantic pattern-matching SAST via Semgrep OSS, run over the whole staged
+// project in one pass (semgrep does its own multi-language file discovery).
+// No built-in fallback when disabled/missing — there's no meaningful
+// heuristic substitute for a semantic rule engine, so this simply
+// contributes nothing rather than pretending to.
+// Resolves an external tool's reported file path (which may be absolute
+// and either canonical or not, depending on the tool — Spectral
+// canonicalizes symlinks like macOS's /tmp -> /private/tmp in its output,
+// Semgrep and Checkov generally don't) into a path relative to `root`,
+// regardless of which representation `root` itself was given in or which
+// representation the tool echoed back. realpath-ing *both* sides before
+// diffing is what makes this work either way — canonicalizing only one
+// side (an earlier version of this code did, for both the Spectral and
+// Semgrep call sites) produces a technically-valid but useless
+// "../../../../var/folders/.../root/../../../file" path whenever the two
+// sides end up canonicalized inconsistently.
+async function relativeToRoot(root, targetPath) {
+  const raw = String(targetPath || '');
+  const resolved = path.resolve(root, raw);
+  const [realRoot, realTarget] = await Promise.all([
+    fsp.realpath(root).catch(() => root),
+    fsp.realpath(resolved).catch(() => resolved),
+  ]);
+  return path.relative(realRoot, realTarget);
+}
+
+async function checkSemanticSast(root, log) {
+  const tooling = SEMGREP_ENABLED ? await semgrepTooling() : { ok: false, reason: 'semgrep is disabled (security.semgrep.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ Semgrep semantic SAST scan skipped: ${tooling.reason}`);
+    return { findings: [], engine: 'disabled' };
+  }
+
+  log?.(`Engine: Semgrep CLI (External) — running semantic SAST rules (config: ${SEMGREP_CONFIG})...`);
+  try {
+    const { stdout } = await runTool('semgrep', [
+      'scan', '--config', SEMGREP_CONFIG, '--json', '--quiet', '--metrics', 'off', root,
+    ], root);
+    const data = stdout.trim() ? JSON.parse(stdout) : { results: [] };
+    const results = Array.isArray(data.results) ? data.results : [];
+    const findings = [];
+    for (const r of results) {
+      const relFile = await relativeToRoot(root, r.path);
+      const line = Number(r.start?.line) || 1;
+      let content = null;
+      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+      const semgrepSeverity = String(r.extra?.severity || 'WARNING').toUpperCase();
+      findings.push({
+        file: relFile,
+        line,
+        kind: String(r.check_id || 'semgrep-finding').toLowerCase(),
+        tool: 'semgrep',
+        severity: SEMGREP_SEVERITY_TO_ISSUE[semgrepSeverity] || 'warning',
+        message: r.extra?.message || 'Semgrep finding',
+        code: content ? buildSnippet(content, line) : null,
+      });
+    }
+    return { findings, engine: 'semgrep' };
+  } catch (e) {
+    log?.(`⚠ Semgrep semantic SAST scan failed: ${e.message}`);
+    return { findings: [], engine: 'disabled' };
+  }
+}
+
+async function bearerTooling() {
+  try {
+    await runTool('bearer', ['version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`bearer` is not installed (brew install bearer/tap/bearer) — PII/data-flow findings are simply omitted.' };
+  }
+}
+
+// Bearer shells out to git for its own bookkeeping (default branch,
+// origin URL) and fails outright without it — unlike ORT, which only wants
+// a git root for path resolution and degrades gracefully without one.
+// Ensures a throwaway repo (git init/add/commit, same as
+// ensureGitRootForOrt) *and* fills in a fake origin + remote-tracking HEAD
+// ref, since a fresh ZIP/folder upload has neither. Every step is
+// best-effort: if bearer still can't get a git context after this, the
+// scan below fails soft (empty findings), same as any other tool failure.
+async function ensureGitContextForBearer(root, log) {
+  try {
+    if (!(await fsp.access(path.join(root, '.git')).then(() => true, () => false))) {
+      await runTool('git', ['init', '-q'], root);
+      await runTool('git', ['add', '-A'], root);
+      await runTool('git', [
+        '-c', 'user.email=ignite@local', '-c', 'user.name=Ignite',
+        'commit', '-q', '-m', 'ignite-bearer-scan', '--no-verify', '--allow-empty',
+      ], root);
+    }
+    const { stdout: branch } = await runTool('git', ['symbolic-ref', '--short', 'HEAD'], root);
+    const branchName = branch.trim() || 'main';
+    const hasOrigin = await runTool('git', ['remote', 'get-url', 'origin'], root).then(() => true, () => false);
+    if (!hasOrigin) {
+      await runTool('git', ['remote', 'add', 'origin', 'https://ignite.local/scratch.git'], root);
+    }
+    await runTool('git', ['update-ref', `refs/remotes/origin/${branchName}`, `refs/heads/${branchName}`], root);
+    await runTool('git', ['symbolic-ref', `refs/remotes/origin/HEAD`, `refs/remotes/origin/${branchName}`], root);
+  } catch (e) {
+    log?.(`⚠ Could not fully stage a git context for bearer (non-blocking): ${e.message}`);
+  }
+}
+
+const BEARER_SEVERITY_TO_ISSUE = { critical: 'error', high: 'error', medium: 'warning', low: 'warning', warning: 'warning' };
+
+// Sensitive data-flow (PII/GDPR) SAST via Bearer, which reports findings
+// pre-bucketed by severity ({critical:[...], high:[...], ...}) rather than
+// a flat array like semgrep/trivy. No built-in fallback when disabled or
+// missing — data-flow tracking has no meaningful heuristic substitute.
+async function checkPiiDataFlow(root, log) {
+  const tooling = BEARER_ENABLED ? await bearerTooling() : { ok: false, reason: 'bearer is disabled (security.bearer.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ Bearer PII/data-flow scan skipped: ${tooling.reason}`);
+    return { findings: [], engine: 'disabled' };
+  }
+
+  await ensureGitContextForBearer(root, log);
+  log?.('Engine: Bearer CLI (External) — tracing sensitive data flows (PII/GDPR)...');
+  try {
+    const { stdout } = await runTool('bearer', [
+      'scan', root, '--format', 'json', '--quiet', '--disable-version-check', '--exit-code', '0',
+    ], root);
+    const data = stdout.trim() ? JSON.parse(stdout) : {};
+    const findings = [];
+    for (const [severity, entries] of Object.entries(data)) {
+      if (!Array.isArray(entries)) continue;
+      for (const e of entries) {
+        // `bearer scan` with no --report flag defaults to Bearer's general
+        // "security" report — a much broader SAST rule set (path
+        // traversal, format-string injection, weak crypto, ...) than just
+        // PII/data-flow. Without this filter every one of those generic
+        // findings got mislabeled as "pii-dataflow" (a "Unsanitized
+        // dynamic input in file path" finding has nothing to do with
+        // personal data), which is what this check exists to trace in the
+        // first place — only keep findings Bearer itself tags as
+        // PII/Personal-Data-relevant via category_groups; the rest is
+        // already Semgrep's job (checkSemanticSast) and would just double
+        // up as a mislabeled, noisier duplicate here.
+        const categoryGroups = Array.isArray(e.category_groups) ? e.category_groups : [];
+        const isPii = categoryGroups.some((g) => /pii|personal data/i.test(String(g)));
+        if (!isPii) continue;
+        const relFile = path.relative(root, path.resolve(root, e.full_filename || e.filename || ''));
+        const line = Number(e.line_number) || 1;
+        let content = null;
+        try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+        findings.push({
+          file: relFile,
+          line,
+          kind: String(e.id || 'pii-dataflow').toLowerCase(),
+          tool: 'bearer',
+          severity: BEARER_SEVERITY_TO_ISSUE[severity] || 'warning',
+          message: e.title || 'Sensitive data-flow finding',
+          code: content ? buildSnippet(content, line) : null,
+        });
+      }
+    }
+    return { findings, engine: 'bearer' };
+  } catch (e) {
+    log?.(`⚠ Bearer PII/data-flow scan failed: ${e.message}`);
+    return { findings: [], engine: 'disabled' };
+  }
+}
+
+async function jscpdTooling() {
+  try {
+    await runTool('jscpd', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`jscpd` is not installed (npm install -g jscpd) — duplication findings are simply omitted.' };
+  }
+}
+
+// Code-duplication scan via jscpd, which does its own multi-language file
+// discovery over `root` in one pass. Each clone becomes one finding
+// anchored at its first occurrence, referencing the second in the message
+// (Studio can only address one file/line per finding). No built-in
+// fallback — duplicate-block detection needs the real tool.
+async function checkCodeDuplication(root, log) {
+  const tooling = JSCPD_ENABLED ? await jscpdTooling() : { ok: false, reason: 'jscpd is disabled (metrics.jscpd.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ jscpd duplication scan skipped: ${tooling.reason}`);
+    return { findings: [], engine: 'disabled' };
+  }
+
+  log?.('Engine: jscpd CLI (External) — scanning for duplicated code blocks...');
+  const outDir = path.join(os.tmpdir(), `ignite-jscpd-${crypto.randomBytes(8).toString('hex')}`);
+  try {
+    await runTool('jscpd', [root, '--reporters', 'json', '--output', outDir, '--silent'], root, { allowedExitCodes: [0, 1] });
+    const raw = await fsp.readFile(path.join(outDir, 'jscpd-report.json'), 'utf8').catch(() => null);
+    if (raw === null) return { findings: [], engine: 'jscpd' };
+    const data = JSON.parse(raw);
+    const duplicates = Array.isArray(data.duplicates) ? data.duplicates : [];
+    const findings = [];
+    for (const dup of duplicates) {
+      const relFile = path.relative(root, path.resolve(root, dup.firstFile?.name || ''));
+      const line = Number(dup.firstFile?.startLoc?.line) || 1;
+      const otherFile = dup.secondFile?.name || '?';
+      const otherLine = Number(dup.secondFile?.startLoc?.line) || 1;
+      let content = null;
+      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+      findings.push({
+        file: relFile,
+        line,
+        kind: 'duplicate-code',
+        tool: 'jscpd',
+        severity: 'warning',
+        message: `${dup.lines || 0}-line duplicate block, also found in ${otherFile}:${otherLine}.`,
+        code: content ? buildSnippet(content, line) : null,
+      });
+    }
+    return { findings, engine: 'jscpd' };
+  } catch (e) {
+    log?.(`⚠ jscpd duplication scan failed: ${e.message}`);
+    return { findings: [], engine: 'disabled' };
+  } finally {
+    await fsp.rm(outDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function goclocTooling() {
+  try {
+    await runTool('gocloc', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`gocloc` is not installed (brew install gocloc) — LOC metrics are simply omitted.' };
+  }
+}
+
+// Precise per-language LOC counts via gocloc, which does its own
+// multi-language file discovery over `root` in one pass. Purely
+// descriptive — never produces issues — so the caller attaches the result
+// as a downloadable project document (same treatment as generateSbom),
+// not something collectPhase4Issues touches.
+async function generateLocMetrics(root, log) {
+  const tooling = GOCLOC_ENABLED ? await goclocTooling() : { ok: false, reason: 'gocloc is disabled (metrics.gocloc.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ gocloc LOC metrics skipped: ${tooling.reason}`);
+    return { engine: 'disabled', metrics: null };
+  }
+
+  log?.('Engine: gocloc CLI (External) — computing per-language LOC metrics...');
+  try {
+    // --by-file (rather than gocloc's default per-language-only rollup)
+    // so Studio can offer "click a language, see just its files" — the
+    // per-language `languages` summary below is aggregated from this same
+    // per-file list rather than issuing a second gocloc call.
+    const { stdout } = await runTool('gocloc', ['--by-file', '--output-type', 'json', root], root);
+    const raw = stdout.trim() ? JSON.parse(stdout) : null;
+    if (!raw) return { engine: 'gocloc', metrics: null };
+    const files = await Promise.all((raw.files || []).map(async (f) => ({
+      file: await relativeToRoot(root, f.name),
+      language: f.language,
+      code: f.code,
+      comment: f.comment,
+      blank: f.blank,
+    })));
+    const byLanguage = new Map();
+    for (const f of files) {
+      const agg = byLanguage.get(f.language) || { name: f.language, files: 0, code: 0, comment: 0, blank: 0 };
+      agg.files++; agg.code += f.code; agg.comment += f.comment; agg.blank += f.blank;
+      byLanguage.set(f.language, agg);
+    }
+    const metrics = { languages: [...byLanguage.values()], total: raw.total, files };
+    return { engine: 'gocloc', metrics };
+  } catch (e) {
+    log?.(`⚠ gocloc LOC metrics failed: ${e.message}`);
+    return { engine: 'disabled', metrics: null };
+  }
+}
+
+async function spectralTooling() {
+  try {
+    await runTool('spectral', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`spectral` is not installed (npm install -g @stoplight/spectral-cli) — API schema lint findings are simply omitted.' };
+  }
+}
+
+const API_SCHEMA_TOP_LEVEL_RE = /^\s*("?(openapi|swagger|asyncapi)"?\s*:)/m;
+
+// Spectral (unlike trivy/checkov/jscpd) has no directory-scan mode — it
+// only lints files explicitly passed on the command line — so this does
+// its own discovery: any .yaml/.yml/.json file whose top-level content
+// declares openapi/swagger/asyncapi. Cheap content sniff rather than a
+// filename convention, since these files are named all sorts of things
+// (openapi.yaml, api-spec.json, schema/users.yaml, ...).
+async function discoverApiSchemaFiles(root) {
+  const files = [];
+  for await (const file of walkFiles(root)) {
+    const ext = path.extname(file).toLowerCase();
+    if (!['.yaml', '.yml', '.json'].includes(ext)) continue;
+    const buffer = await fsp.readFile(file).catch(() => null);
+    if (!buffer || looksBinary(buffer)) continue;
+    const content = buffer.toString('utf8');
+    if (API_SCHEMA_TOP_LEVEL_RE.test(content)) files.push(path.relative(root, file));
+  }
+  return files;
+}
+
+const SPECTRAL_SEVERITY_TO_ISSUE = { 0: 'error', 1: 'warning', 2: 'warning', 3: 'warning' };
+
+// Lints every discovered OpenAPI/AsyncAPI file against Spectral's ruleset
+// (org REST/AsyncAPI conventions, not just schema validity). No built-in
+// fallback when disabled/missing — schema linting needs the real rule
+// engine, so this simply contributes nothing rather than pretending to.
+async function checkApiSchemas(root, log) {
+  const tooling = SPECTRAL_ENABLED ? await spectralTooling() : { ok: false, reason: 'spectral is disabled (api.spectral.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ Spectral API schema lint skipped: ${tooling.reason}`);
+    return { findings: [], engine: 'disabled' };
+  }
+
+  const relFiles = await discoverApiSchemaFiles(root);
+  if (relFiles.length === 0) return { findings: [], engine: 'spectral' };
+
+  log?.(`Engine: Spectral CLI (External) — linting ${relFiles.length} OpenAPI/AsyncAPI file(s)...`);
+  try {
+    const { stdout } = await runTool('spectral', [
+      'lint', ...relFiles, '--ruleset', SPECTRAL_RULESET, '--format', 'json', '-q',
+    ], root, { allowedExitCodes: [0, 1] });
+    const results = stdout.trim() ? JSON.parse(stdout) : [];
+    const findings = [];
+    for (const r of results) {
+      const relFile = await relativeToRoot(root, r.source);
+      const line = (Number(r.range?.start?.line) || 0) + 1; // spectral lines are 0-indexed
+      let content = null;
+      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+      findings.push({
+        file: relFile,
+        line,
+        kind: String(r.code || 'api-schema-lint').toLowerCase(),
+        tool: 'spectral',
+        severity: SPECTRAL_SEVERITY_TO_ISSUE[r.severity] || 'warning',
+        message: r.message || 'API schema lint finding',
+        code: content ? buildSnippet(content, line) : null,
+      });
+    }
+    return { findings, engine: 'spectral' };
+  } catch (e) {
+    log?.(`⚠ Spectral API schema lint failed: ${e.message}`);
+    return { findings: [], engine: 'disabled' };
+  }
+}
+
+const POSTURE_CATEGORIES = [
+  'sso-saml-oidc', 'rbac-abac', 'audit-logging', 'siem-log-forwarding',
+  'https-tls', 'backups-dr', 'encryption-at-rest', 'rate-limiting',
+];
+
+// Mirrors ignite-posture-rules.yaml's pattern-regex bodies, narrower in
+// coverage (single JS regex per tier vs. Semgrep's proper multi-file
+// engine) — used only when Semgrep is disabled or not installed. Keeping
+// these in sync with the YAML file is a manual step; a mismatch just means
+// the fallback and Semgrep paths disagree on posture for the affected
+// category, never a crash either way.
+const POSTURE_FALLBACK_PATTERNS = {
+  'sso-saml-oidc': {
+    weak: /passport-saml|passport-openidconnect|passport-oauth2|org\.springframework\.security\.oauth2|org\.keycloak|keycloak-connect|auth0(-java|-spa-js)?|okta-sdk|okta-auth-js|com\.okta|cognito|microsoft-identity-web|omniauth-saml|omniauth-oauth2|ruby-saml|python3-saml|django-allauth/,
+    strong: /new\s+SamlStrategy\(|new\s+OIDCStrategy\(|new\s+Auth0Client\(|new\s+CognitoUserPool\(|OktaAuth\(|@EnableOAuth2Sso|KeycloakInstance\(|Keycloak\(\{|SAML2AuthenticationProvider\(|OidcClient\(/,
+  },
+  'rbac-abac': {
+    weak: /casbin|open-policy-agent|org\.opa|opa-wasm|django-guardian|pundit|cancancan|micronaut-security-annotations/,
+    strong: /@PreAuthorize\(|@PostAuthorize\(|@RolesAllowed\(|@Secured\(|@RequireRole|casbin\.NewEnforcer\(|enforcer\.Enforce\(|opa\.Eval\(|requireRole\(|requirePermission\(|checkPermission\(|authorize!\(|can\?\(/,
+  },
+  'audit-logging': {
+    weak: /AuditLogger|AuditEvent|audit_log|AuditingEntityListener|@Audited|django-auditlog|paper_trail|audited\s/,
+    strong: /auditLogger\.(log|record|emit)\(|AuditLog\.create\(|logger\.audit\(|audit_log\.(info|record|create)\(|PaperTrail\.request|@Audited\b/,
+  },
+  'siem-log-forwarding': {
+    weak: /winston-syslog|fluent-logger|logstash|@opentelemetry|go\.opentelemetry\.io|SyslogAppender|serilog-sinks-syslog|nlog\.targets\.syslog/,
+    strong: /new\s+FluentLogger\(|winston\.transports\.Syslog\(|new\s+LogstashTransport\(|zap\.NewSyslogWriter\(|SyslogAppender\(|OpenTelemetry\.trace\.getTracer\(/,
+  },
+  'https-tls': {
+    weak: /\bhelmet\b|force-ssl|django\.middleware\.security|Rack::SSL|Microsoft\.AspNetCore\.HttpsPolicy/,
+    strong: /helmet\.hsts\(|Strict-Transport-Security|forceSSL|SECURE_SSL_REDIRECT\s*=\s*True|app\.UseHsts\(|https\.createServer\(|config\.force_ssl\s*=\s*true/,
+  },
+  'backups-dr': {
+    weak: /pg_dump|pg_basebackup|mongodump|mysqldump|velero|restic\s|borgbackup/,
+    strong: /backup_retention_period|BackupRetentionPeriod|RetentionPolicy|CreateDBSnapshot|CreateSnapshot\(/,
+  },
+  'encryption-at-rest': {
+    weak: /aws-sdk.*kms|@aws-sdk\/client-kms|com\.amazonaws\.services\.kms|hashicorp\/vault|com\.google\.cloud\.kms|azure-keyvault/,
+    strong: /kms\.encrypt\(|kmsClient\.Encrypt\(|vault\.write\(|createCipheriv\(|Aes\.Encrypt\(|EncryptField\(|Cipher\.getInstance\("AES/,
+  },
+  'rate-limiting': {
+    weak: /express-rate-limit|bucket4j|django-ratelimit|rack-attack|flask-limiter|aspnetcoreratelimit/,
+    strong: /rateLimit\(\{|new\s+RateLimiterRedis\(|Bucket4j\.builder\(|RateLimiter\.create\(|@ratelimit\(|Rack::Attack\.throttle\(/,
+  },
+};
+
+function emptyPostureReport() {
+  const posture = {};
+  for (const cat of POSTURE_CATEGORIES) posture[cat] = { status: 'MISSING', matches: [] };
+  return posture;
+}
+
+// >=1 "strong" (confirmed usage) match => DETECTED. Only "weak" (import/
+// dependency-only) matches => PARTIAL. Neither => MISSING.
+function classifyPostureMatches(matches) {
+  if (matches.some((m) => m.tier === 'strong')) return 'DETECTED';
+  if (matches.length > 0) return 'PARTIAL';
+  return 'MISSING';
+}
+
+// Engine: Ignite Built-In Posture Scanner (Fallback) — used only when
+// Semgrep is unavailable. Same weak/strong two-tier model as the Semgrep
+// ruleset, just a line-by-line JS regex sweep instead of Semgrep's engine.
+async function checkFeaturePostureFallback(root) {
+  const posture = emptyPostureReport();
+  for await (const file of walkFiles(root)) {
+    const ext = path.extname(file).toLowerCase();
+    if (BINARY_EXTENSIONS.has(ext)) continue;
+    const stat = await fsp.stat(file).catch(() => null);
+    if (!stat || stat.size > MAX_SCAN_FILE_BYTES) continue;
+    const buffer = await fsp.readFile(file);
+    if (looksBinary(buffer)) continue;
+    const content = buffer.toString('utf8');
+    const rel = path.relative(root, file);
+    const lines = content.split(/\r?\n/);
+    for (const category of POSTURE_CATEGORIES) {
+      const { weak, strong } = POSTURE_FALLBACK_PATTERNS[category];
+      lines.forEach((line, i) => {
+        const tier = strong.test(line) ? 'strong' : (weak.test(line) ? 'weak' : null);
+        if (!tier) return;
+        posture[category].matches.push({
+          file: rel, line: i + 1, tier, tool: 'ignite-fallback',
+          message: `${category} (${tier} signal, built-in fallback — Semgrep not installed)`,
+          code: buildSnippet(content, i + 1),
+        });
+      });
+    }
+  }
+  for (const category of POSTURE_CATEGORIES) {
+    posture[category].status = classifyPostureMatches(posture[category].matches);
+  }
+  return posture;
+}
+
+// Compliance & Feature Posture Engine — detects the PRESENCE of security/
+// compliance features (SSO, RBAC, audit logging, TLS, backups, encryption
+// at rest, rate limiting), not vulnerabilities, so it's classified as
+// DETECTED/PARTIAL/MISSING per category rather than error/warning issues.
+// Fully conditioned on Semgrep: runs the custom ignite-posture-rules.yaml
+// ruleset when connected, engine-attributed as "Semgrep CLI vX.X (External
+// Posture Scanner)"; soft-falls back to checkFeaturePostureFallback,
+// attributed as "Ignite Built-In Posture Scanner (Fallback)", when
+// disabled or not installed. Semgrep and the fallback never both run for
+// the same category in this design (one soft-conditions the other, not a
+// supplement like checkov/trivy) — the per-(category,file,line,tier) `seen`
+// dedup below still guards against Semgrep itself reporting the same
+// match twice (observed in practice: overlapping regex spans on one line).
+async function checkFeaturePosture(root, log) {
+  const tooling = POSTURE_ENABLED ? await semgrepTooling() : { ok: false, reason: 'posture scan is disabled (compliance.posture.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ Semgrep unavailable for posture scan: ${tooling.reason}`);
+    log?.('Engine: Ignite Built-In Posture Scanner (Fallback)');
+    const posture = await checkFeaturePostureFallback(root);
+    return { engine: 'fallback', posture };
+  }
+
+  log?.(`Engine: Semgrep CLI v${tooling.version} (External Posture Scanner)`);
+  const posture = emptyPostureReport();
+  try {
+    const { stdout } = await runTool('semgrep', [
+      'scan', '--config', POSTURE_RULESET, '--json', '--quiet', '--metrics', 'off', root,
+    ], root, { allowedExitCodes: [0, 1] });
+    const data = stdout.trim() ? JSON.parse(stdout) : { results: [] };
+    const results = Array.isArray(data.results) ? data.results : [];
+    const seen = new Set();
+    for (const r of results) {
+      const category = r.extra?.metadata?.category;
+      const tier = r.extra?.metadata?.tier;
+      if (!category || !posture[category]) continue;
+      const relFile = await relativeToRoot(root, r.path);
+      const line = Number(r.start?.line) || 1;
+      const key = `${category}:${relFile}:${line}:${tier}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let content = null;
+      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+      posture[category].matches.push({
+        file: relFile,
+        line,
+        tier,
+        tool: 'semgrep',
+        message: r.extra?.message || category,
+        code: content ? buildSnippet(content, line) : null,
+      });
+    }
+  } catch (e) {
+    log?.(`⚠ Posture scan failed: ${e.message}`);
+  }
+  for (const category of POSTURE_CATEGORIES) {
+    posture[category].status = classifyPostureMatches(posture[category].matches);
+  }
+  return { engine: 'semgrep', posture };
 }
 
 async function actTooling() {
@@ -2231,6 +3388,21 @@ async function llmAvailable() {
   }
 }
 
+// Short-TTL cache around llmAvailable() — callers (GET /api/config on every
+// page load, plus the AI-explain/AI-fix endpoints) don't need a fresh
+// health-probe on every single call; a stale-for-at-most-15s "available"
+// verdict is harmless since checkLlmDeepScan's own inline health-probe is
+// still the actual gate at scan time.
+let llmAvailableCache = { value: null, expiresAt: 0 };
+async function llmAvailableCached() {
+  if (llmAvailableCache.value !== null && Date.now() < llmAvailableCache.expiresAt) {
+    return llmAvailableCache.value;
+  }
+  const value = await llmAvailable();
+  llmAvailableCache = { value, expiresAt: Date.now() + 15_000 };
+  return value;
+}
+
 async function llmComplete(systemPrompt, userContent, { temperature = 0.2, timeoutMs = 120_000, label = 'complete' } = {}) {
   const { url, model, headers } = llmTarget();
   const finish = traceLlmCall(`${label} [${LLM_PROVIDER}]`, { url, model, timeoutMs, chars: userContent.length });
@@ -2270,7 +3442,7 @@ async function llmComplete(systemPrompt, userContent, { temperature = 0.2, timeo
  *   every one of them gets its own explanation instead of a vague summary.
  */
 async function generateFailureInsight(failedPhase, error, record, unresolvedIssues) {
-  if (!(await llmAvailable())) return null;
+  if (!(await llmAvailableCached())) return null;
 
   if (Array.isArray(unresolvedIssues) && unresolvedIssues.length > 0) {
     const payload = unresolvedIssues.map((i, idx) => ({
@@ -2563,12 +3735,24 @@ async function recordOverrides({ projectId, jobId, org, repo, phase, actor, appl
 
 /* Safe subset of config for the frontend. `orgs` accepts a comma-separated
    string or an array; first entry is the default proposal. */
-app.get('/api/config', (req, res) => {
+app.get('/api/config', async (req, res) => {
   const raw = CONFIG.github.orgs;
   const orgs = (Array.isArray(raw) ? raw : String(raw).split(','))
     .map((s) => String(s).trim())
     .filter(Boolean);
-  res.json({ orgs, phases: PHASE_META });
+  // Phase 4 still runs everything else (secrets/AI-governance/IaC/SAST/
+  // etc.) with no LLM configured or reachable — only its LLM deep-scan
+  // sub-check is skipped — so its displayed name shouldn't claim an "AI"
+  // check ran when it didn't. Only swaps the *unmodified* default title;
+  // an org that already customized phase 4's title via config.json's
+  // `phases` override is left alone.
+  const aiAvailable = await llmAvailableCached();
+  const defaultPhase4Title = DEFAULT_PHASE_META.find((d) => d.id === 4)?.title;
+  const phases = PHASE_META.map((p) => {
+    if (p.id !== 4 || aiAvailable || p.title !== defaultPhase4Title) return p;
+    return { ...p, title: 'Security & Compliance Scan' };
+  });
+  res.json({ orgs, phases });
 });
 
 // Status of the optional external tools Ignite integrates with but doesn't
@@ -2576,13 +3760,23 @@ app.get('/api/config', (req, res) => {
 // is purely informational (drives the "connected/disconnected" pills in the
 // UI's top-right Tools panel), never gates anything itself.
 app.get('/api/tools/status', async (req, res) => {
-  const [ort, licensee, gitleaks] = await Promise.all([
-    ortTooling(), licenseeTooling(), gitleaksTooling(),
+  const [ort, licensee, gitleaks, trivy, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral] = await Promise.all([
+    ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(),
   ]);
   res.json({
     ort: { ...ort, enabled: true },
     licensee: { ...licensee, enabled: true },
     gitleaks: { ...gitleaks, enabled: GITLEAKS_ENABLED },
+    trivy: { ...trivy, enabled: TRIVY_ENABLED },
+    checkov: { ...checkov, enabled: CHECKOV_ENABLED },
+    hadolint: { ...hadolint, enabled: HADOLINT_ENABLED },
+    syft: { ...syft, enabled: SYFT_ENABLED },
+    cosign: { ...cosign, enabled: COSIGN_ENABLED },
+    semgrep: { ...semgrep, enabled: SEMGREP_ENABLED },
+    bearer: { ...bearer, enabled: BEARER_ENABLED },
+    jscpd: { ...jscpd, enabled: JSCPD_ENABLED },
+    gocloc: { ...gocloc, enabled: GOCLOC_ENABLED },
+    spectral: { ...spectral, enabled: SPECTRAL_ENABLED },
   });
 });
 
@@ -2769,7 +3963,8 @@ app.post('/api/pipeline/:jobId/studio/rescan', async (req, res) => {
     const secrets = await checkSecrets(ctx.root, studioNoopLog, cacheKey);
     const governance = await checkAiGovernance(ctx.root, cacheKey);
     const llm = await checkLlmDeepScan(ctx.root, studioNoopLog, cacheKey);
-    const freshIssues = collectPhase4Issues({ secrets, governance, llm }).map((issue) => ({ ...issue, phase: 4 }));
+    const iac = await checkIacSecurity(ctx.root, studioNoopLog);
+    const freshIssues = collectPhase4Issues({ secrets, governance, llm, iac }).map((issue) => ({ ...issue, phase: 4 }));
 
     // License compliance runs alongside the phase 4 checks here too — same
     // scan Phase 3 runs on a fresh upload (manifests via scanDependencyLicenses
@@ -2830,6 +4025,13 @@ const LICENSE_TIERS = {
     'MIT', 'MIT-0', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'BSD-3-Clause-Clear',
     'ISC', '0BSD', 'Unlicense', 'Zlib', 'Python-2.0', 'PostgreSQL', 'CC0-1.0', 'WTFPL',
     'BlueOak-1.0.0', 'BSD-4-Clause', 'X11', 'Artistic-2.0',
+    // SIL Open Font License — OSI-approved, permissive (font-specific
+    // reciprocal clause only restricts *reselling the font itself* under
+    // its own name, not the normal case of bundling it into an app), and
+    // extremely common on npm as the license for @fontsource/* packages.
+    // Missing here meant every @fontsource dependency was a guaranteed
+    // false-positive COMMERCIAL/RISK flag.
+    'OFL-1.1', 'OFL-1.0',
   ]),
   // Copyleft/reciprocal open-source licenses — still genuinely open source,
   // but the kind of obligation that pushes many vendors toward a dual
@@ -2982,6 +4184,81 @@ async function fetchDepsDevLicenses(system, name, version) {
   return info ? info.licenses : null;
 }
 
+// bestEffortVersion (below) extracts the numeric floor of a manifest's
+// version *range* (e.g. "^5.6.0" -> "5.6.0") and looks that up directly —
+// which 404s on deps.dev whenever that exact patch was never actually
+// published (common: many packages skip an exact ".0" release, or it only
+// ever existed as a prerelease/dev build — e.g. real npm history has
+// typescript 5.6.0-beta/5.6.0-dev.* then jumps straight to 5.6.1-rc/5.6.2).
+// A 404 there means "this literal version string doesn't exist", not
+// "this package's license is unknown" — the range still resolves to a
+// real, real-licensed version. This resolves the actual highest published
+// version satisfying the range as a fallback before giving up.
+const depsDevVersionsCache = new Map();
+async function fetchDepsDevVersionList(system, name) {
+  const key = `${system}:${name}`;
+  if (depsDevVersionsCache.has(key)) return depsDevVersionsCache.get(key);
+  let result = null;
+  try {
+    const url = `https://api.deps.dev/v3/systems/${system}/packages/${encodeURIComponent(name)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      result = (data.versions || []).map((v) => v.versionKey?.version).filter(Boolean);
+    }
+  } catch { /* result stays null — caller treats like any other lookup failure */ }
+  depsDevVersionsCache.set(key, result);
+  return result;
+}
+
+function parseSemver(v) {
+  const m = String(v || '').match(/^(\d+)\.(\d+)\.(\d+)/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+function compareSemver(a, b) {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+}
+
+// Deliberately narrow: covers exact pins and npm/cargo-style ^ and ~
+// prefixes, which is what package.json/Cargo.toml ranges actually use in
+// practice. Anything else (>=, workspace:, git refs, ...) is treated as
+// "any published version at or above the floor is acceptable" rather than
+// attempting full range-grammar parsing.
+function satisfiesVersionRange(version, rawRange) {
+  const v = parseSemver(version);
+  // rawRange is the manifest's literal range string (e.g. "^5.6.0") — it
+  // never itself starts with a digit, so parseSemver alone always misses
+  // it (silently making every candidate "satisfy" the range and picking
+  // the single highest published version overall regardless of range,
+  // observed for real against typescript's actual current release line).
+  // bestEffortVersion strips the operator prefix to get the floor first.
+  const floor = parseSemver(bestEffortVersion(rawRange));
+  if (!v || !floor) return true;
+  if (compareSemver(v, floor) < 0) return false;
+  const range = String(rawRange || '').trim();
+  if (range.startsWith('^')) {
+    if (floor[0] > 0) return v[0] === floor[0];
+    if (floor[1] > 0) return v[0] === 0 && v[1] === floor[1];
+    return v[0] === 0 && v[1] === 0 && v[2] === floor[2];
+  }
+  if (range.startsWith('~')) return v[0] === floor[0] && v[1] === floor[1];
+  if (!/[\^~<>=*x]/i.test(range)) return compareSemver(v, floor) === 0; // exact pin
+  return true;
+}
+
+async function resolveBestPublishedVersion(system, name, versionRange) {
+  const versions = await fetchDepsDevVersionList(system, name);
+  if (!versions) return null;
+  const stable = versions.filter((v) => parseSemver(v) && !/[-+]/.test(v)); // no prereleases/build metadata
+  const matching = stable.filter((v) => satisfiesVersionRange(v, versionRange));
+  const pool = matching.length > 0 ? matching : stable;
+  if (pool.length === 0) return null;
+  pool.sort((a, b) => compareSemver(parseSemver(b), parseSemver(a)));
+  return pool[0];
+}
+
 // Advisory details (title/CVSS/aliases) keyed by GHSA/advisory id — also
 // immutable, also cached for the process lifetime.
 const depsDevAdvisoryCache = new Map();
@@ -3035,12 +4312,23 @@ async function scanDependencyLicensesFallback(root, { skipEcosystems = new Set()
       if (!version) {
         return { name: dep.name, versionRange: dep.versionRange, version: null, line, licenses: [], tier: 'red', reason: 'Could not resolve an exact version to check (range/tag/git ref).' };
       }
-      const licenses = await fetchDepsDevLicenses(spec.system, dep.name, version);
+      let licenses = await fetchDepsDevLicenses(spec.system, dep.name, version);
+      let resolvedVersion = version;
+      if (licenses === null) {
+        // The literal floor version doesn't exist upstream — try the
+        // highest real published version the manifest's range actually
+        // resolves to before concluding the lookup genuinely failed.
+        const better = await resolveBestPublishedVersion(spec.system, dep.name, dep.versionRange);
+        if (better && better !== version) {
+          const retryLicenses = await fetchDepsDevLicenses(spec.system, dep.name, better);
+          if (retryLicenses !== null) { licenses = retryLicenses; resolvedVersion = better; }
+        }
+      }
       if (licenses === null) {
         return { name: dep.name, versionRange: dep.versionRange, version, line, licenses: [], tier: 'red', reason: 'License lookup failed (package/version not found upstream).' };
       }
       const { tier, reason } = classifyLicenseTier(licenses);
-      return { name: dep.name, versionRange: dep.versionRange, version, line, licenses, tier, reason };
+      return { name: dep.name, versionRange: dep.versionRange, version: resolvedVersion, line, licenses, tier, reason };
     }));
     manifests.push({ file: path.relative(root, file), ecosystem: spec.ecosystem, dependencies });
   }
@@ -3065,7 +4353,17 @@ async function scanDependencyVulnerabilities(root) {
       if (!version) {
         return { name: dep.name, versionRange: dep.versionRange, version: null, line, vulnerabilities: [], note: 'Could not resolve an exact version to check (range/tag/git ref).' };
       }
-      const info = await fetchDepsDevPackageInfo(spec.system, dep.name, version);
+      let info = await fetchDepsDevPackageInfo(spec.system, dep.name, version);
+      let resolvedVersion = version;
+      if (info === null) {
+        // Same fallback as the license scan: the manifest's literal range
+        // floor may never have been published as an exact version.
+        const better = await resolveBestPublishedVersion(spec.system, dep.name, dep.versionRange);
+        if (better && better !== version) {
+          const retryInfo = await fetchDepsDevPackageInfo(spec.system, dep.name, better);
+          if (retryInfo !== null) { info = retryInfo; resolvedVersion = better; }
+        }
+      }
       if (info === null) {
         return { name: dep.name, versionRange: dep.versionRange, version, line, vulnerabilities: [], note: 'Vulnerability lookup failed (package/version not found upstream).' };
       }
@@ -3080,7 +4378,7 @@ async function scanDependencyVulnerabilities(root) {
           severity: classifyVulnerabilitySeverity(a.cvss3Score),
           url: a.url || null,
         }));
-      return { name: dep.name, versionRange: dep.versionRange, version, line, vulnerabilities, note: null };
+      return { name: dep.name, versionRange: dep.versionRange, version: resolvedVersion, line, vulnerabilities, note: null };
     }));
     // Only keep manifests/deps that actually have something to report — a
     // vulnerability-free dependency shouldn't clutter the response the way
@@ -3335,6 +4633,40 @@ app.get('/api/pipeline/:jobId/studio/dependencies', async (req, res) => {
   }
 });
 
+// Studio report views for the three non-issue Phase 4 artifacts (SBOM, LOC
+// metrics, compliance posture) — same on-demand-recompute pattern as
+// /studio/dependencies above, so Studio can show them live at the review
+// gate without waiting for the pipeline to finish and persist a document.
+app.get('/api/pipeline/:jobId/studio/sbom', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    res.json({ ok: true, ...(await generateSbom(ctx.root, studioNoopLog)) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/pipeline/:jobId/studio/loc-metrics', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    res.json({ ok: true, ...(await generateLocMetrics(ctx.root, studioNoopLog)) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/pipeline/:jobId/studio/posture', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    res.json({ ok: true, ...(await checkFeaturePosture(ctx.root, studioNoopLog)) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Standalone, job-independent equivalent for agent/CI use — same
 // projectPath convention as /api/pipeline/validate-all.
 app.post('/api/dependencies/check', async (req, res) => {
@@ -3417,7 +4749,7 @@ app.post('/api/issues/explain', async (req, res) => {
   const cached = store.getCachedIssueExplanation(hash);
   if (cached) return res.json({ ok: true, explanation: cached, cached: true });
 
-  if (!(await llmAvailable())) {
+  if (!(await llmAvailableCached())) {
     return res.json({ ok: true, explanation: null, cached: false, reason: 'AI explanation service unavailable.' });
   }
   try {
@@ -3438,7 +4770,7 @@ app.post('/api/issues/suggest-fix', async (req, res) => {
   if (!issue) return res.status(400).json({ error: 'category and summary are required.' });
   if (!issue.snippet) return res.status(400).json({ error: 'A code snippet is required to suggest a fix.' });
 
-  if (!(await llmAvailable())) {
+  if (!(await llmAvailableCached())) {
     return res.json({ ok: true, suggestion: null, reason: 'AI fix suggestion service unavailable.' });
   }
   try {
@@ -3734,7 +5066,100 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
         );
       }
 
-      issues = [...collectPhase4Issues({ secrets, governance, llm }), ...licenseIssues];
+      log3('Check 5 — IaC/container misconfiguration scan (Dockerfiles/Terraform/Kubernetes/Helm)...');
+      const iac = await checkIacSecurity(projectRoot, log3);
+      if (iac.findings.length > 0) {
+        log3(`✗ ${iac.findings.length} IaC misconfiguration(s) [engine: ${iac.engine}]:`);
+        iac.findings.forEach((f) => log3(`    ✗ [${f.severity}] ${f.file}:${f.line} — ${f.message || f.kind}`));
+      } else {
+        log3(`✓ Check 5 passed — no IaC misconfigurations detected [engine: ${iac.engine}].`);
+      }
+
+      log3('Generating SBOM...');
+      const { engine: sbomEngine, sbom } = await generateSbom(projectRoot, log3);
+      log3(`✓ SBOM generated [engine: ${sbomEngine}] — ${(sbom.components || []).length} component(s).`);
+      if (projectId !== null) {
+        const sbomBuffer = Buffer.from(JSON.stringify(sbom, null, 2));
+        store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
+      }
+
+      log3('Check 6 — base-image signature/provenance verification (cosign)...');
+      const imageProvenance = await checkImageProvenance(projectRoot, log3);
+      if (imageProvenance.findings.length > 0) {
+        log3(`⚠ ${imageProvenance.findings.length} base image(s) without a verifiable Sigstore signature:`);
+        imageProvenance.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+      } else if (imageProvenance.engine === 'cosign') {
+        log3('✓ Check 6 passed — every referenced base image has a verifiable Sigstore signature (or none was referenced).');
+      } else {
+        log3('✓ Check 6 skipped — cosign disabled or not installed.');
+      }
+
+      log3(`Check 7 — semantic SAST (semgrep, config: ${SEMGREP_CONFIG})...`);
+      const semanticSast = await checkSemanticSast(projectRoot, log3);
+      if (semanticSast.findings.length > 0) {
+        log3(`✗ ${semanticSast.findings.length} semantic SAST finding(s):`);
+        semanticSast.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+      } else if (semanticSast.engine === 'semgrep') {
+        log3('✓ Check 7 passed — no semantic SAST findings.');
+      } else {
+        log3('✓ Check 7 skipped — semgrep disabled or not installed.');
+      }
+
+      log3('Check 8 — PII/GDPR data-flow scan (bearer)...');
+      const piiDataFlow = await checkPiiDataFlow(projectRoot, log3);
+      if (piiDataFlow.findings.length > 0) {
+        log3(`✗ ${piiDataFlow.findings.length} PII/data-flow finding(s):`);
+        piiDataFlow.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+      } else if (piiDataFlow.engine === 'bearer') {
+        log3('✓ Check 8 passed — no PII/data-flow findings.');
+      } else {
+        log3('✓ Check 8 skipped — bearer disabled or not installed.');
+      }
+
+      log3('Check 9 — code duplication scan (jscpd)...');
+      const duplication = await checkCodeDuplication(projectRoot, log3);
+      if (duplication.findings.length > 0) {
+        log3(`⚠ ${duplication.findings.length} duplicate block(s) found:`);
+        duplication.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+      } else if (duplication.engine === 'jscpd') {
+        log3('✓ Check 9 passed — no duplicate blocks above jscpd\'s default threshold.');
+      } else {
+        log3('✓ Check 9 skipped — jscpd disabled or not installed.');
+      }
+
+      log3('Computing LOC metrics...');
+      const { engine: locEngine, metrics: locMetrics } = await generateLocMetrics(projectRoot, log3);
+      if (locMetrics) {
+        log3(`✓ LOC metrics computed [engine: ${locEngine}] — ${locMetrics.total?.code ?? 0} lines of code across ${locMetrics.languages?.length ?? 0} language(s).`);
+        if (projectId !== null) {
+          const locBuffer = Buffer.from(JSON.stringify(locMetrics, null, 2));
+          store.addUploadDocument(projectId, 'loc-metrics.json', 'application/json', locBuffer.length, locBuffer);
+        }
+      }
+
+      log3('Check 10 — API schema lint (spectral, OpenAPI/AsyncAPI)...');
+      const apiSchema = await checkApiSchemas(projectRoot, log3);
+      if (apiSchema.findings.length > 0) {
+        log3(`✗ ${apiSchema.findings.length} API schema lint finding(s):`);
+        apiSchema.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+      } else if (apiSchema.engine === 'spectral') {
+        log3('✓ Check 10 passed — no API schema lint findings (or no OpenAPI/AsyncAPI files found).');
+      } else {
+        log3('✓ Check 10 skipped — spectral disabled or not installed.');
+      }
+
+      log3('Check 11 — Compliance & Feature Posture Scan...');
+      const { engine: postureEngine, posture } = await checkFeaturePosture(projectRoot, log3);
+      for (const category of POSTURE_CATEGORIES) {
+        const { status, matches } = posture[category];
+        log3(`    ${status === 'DETECTED' ? '✓' : status === 'PARTIAL' ? '⚠' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} signal(s))` : ''}`);
+      }
+      if (projectId !== null) {
+        const postureBuffer = Buffer.from(JSON.stringify({ engine: postureEngine, posture }, null, 2));
+        store.addUploadDocument(projectId, 'posture-report.json', 'application/json', postureBuffer.length, postureBuffer);
+      }
+
+      issues = [...collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema }), ...licenseIssues];
     }
     const errorIssues = issues.filter((i) => i.severity === 'error');
     const warningIssues = issues.filter((i) => i.severity === 'warning');
@@ -4025,7 +5450,100 @@ app.post('/api/pipeline/onboard', async (req, res) => {
         );
       }
 
-      issues = [...collectPhase4Issues({ secrets, governance, llm }), ...licenseIssues];
+      log3('Check 5 — IaC/container misconfiguration scan (Dockerfiles/Terraform/Kubernetes/Helm)...');
+      const iac = await checkIacSecurity(projectRoot, log3);
+      if (iac.findings.length > 0) {
+        log3(`✗ ${iac.findings.length} IaC misconfiguration(s) [engine: ${iac.engine}]:`);
+        iac.findings.forEach((f) => log3(`    ✗ [${f.severity}] ${f.file}:${f.line} — ${f.message || f.kind}`));
+      } else {
+        log3(`✓ Check 5 passed — no IaC misconfigurations detected [engine: ${iac.engine}].`);
+      }
+
+      log3('Generating SBOM...');
+      const { engine: sbomEngine, sbom } = await generateSbom(projectRoot, log3);
+      log3(`✓ SBOM generated [engine: ${sbomEngine}] — ${(sbom.components || []).length} component(s).`);
+      if (projectId !== null) {
+        const sbomBuffer = Buffer.from(JSON.stringify(sbom, null, 2));
+        store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
+      }
+
+      log3('Check 6 — base-image signature/provenance verification (cosign)...');
+      const imageProvenance = await checkImageProvenance(projectRoot, log3);
+      if (imageProvenance.findings.length > 0) {
+        log3(`⚠ ${imageProvenance.findings.length} base image(s) without a verifiable Sigstore signature:`);
+        imageProvenance.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+      } else if (imageProvenance.engine === 'cosign') {
+        log3('✓ Check 6 passed — every referenced base image has a verifiable Sigstore signature (or none was referenced).');
+      } else {
+        log3('✓ Check 6 skipped — cosign disabled or not installed.');
+      }
+
+      log3(`Check 7 — semantic SAST (semgrep, config: ${SEMGREP_CONFIG})...`);
+      const semanticSast = await checkSemanticSast(projectRoot, log3);
+      if (semanticSast.findings.length > 0) {
+        log3(`✗ ${semanticSast.findings.length} semantic SAST finding(s):`);
+        semanticSast.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+      } else if (semanticSast.engine === 'semgrep') {
+        log3('✓ Check 7 passed — no semantic SAST findings.');
+      } else {
+        log3('✓ Check 7 skipped — semgrep disabled or not installed.');
+      }
+
+      log3('Check 8 — PII/GDPR data-flow scan (bearer)...');
+      const piiDataFlow = await checkPiiDataFlow(projectRoot, log3);
+      if (piiDataFlow.findings.length > 0) {
+        log3(`✗ ${piiDataFlow.findings.length} PII/data-flow finding(s):`);
+        piiDataFlow.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+      } else if (piiDataFlow.engine === 'bearer') {
+        log3('✓ Check 8 passed — no PII/data-flow findings.');
+      } else {
+        log3('✓ Check 8 skipped — bearer disabled or not installed.');
+      }
+
+      log3('Check 9 — code duplication scan (jscpd)...');
+      const duplication = await checkCodeDuplication(projectRoot, log3);
+      if (duplication.findings.length > 0) {
+        log3(`⚠ ${duplication.findings.length} duplicate block(s) found:`);
+        duplication.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+      } else if (duplication.engine === 'jscpd') {
+        log3('✓ Check 9 passed — no duplicate blocks above jscpd\'s default threshold.');
+      } else {
+        log3('✓ Check 9 skipped — jscpd disabled or not installed.');
+      }
+
+      log3('Computing LOC metrics...');
+      const { engine: locEngine, metrics: locMetrics } = await generateLocMetrics(projectRoot, log3);
+      if (locMetrics) {
+        log3(`✓ LOC metrics computed [engine: ${locEngine}] — ${locMetrics.total?.code ?? 0} lines of code across ${locMetrics.languages?.length ?? 0} language(s).`);
+        if (projectId !== null) {
+          const locBuffer = Buffer.from(JSON.stringify(locMetrics, null, 2));
+          store.addUploadDocument(projectId, 'loc-metrics.json', 'application/json', locBuffer.length, locBuffer);
+        }
+      }
+
+      log3('Check 10 — API schema lint (spectral, OpenAPI/AsyncAPI)...');
+      const apiSchema = await checkApiSchemas(projectRoot, log3);
+      if (apiSchema.findings.length > 0) {
+        log3(`✗ ${apiSchema.findings.length} API schema lint finding(s):`);
+        apiSchema.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+      } else if (apiSchema.engine === 'spectral') {
+        log3('✓ Check 10 passed — no API schema lint findings (or no OpenAPI/AsyncAPI files found).');
+      } else {
+        log3('✓ Check 10 skipped — spectral disabled or not installed.');
+      }
+
+      log3('Check 11 — Compliance & Feature Posture Scan...');
+      const { engine: postureEngine, posture } = await checkFeaturePosture(projectRoot, log3);
+      for (const category of POSTURE_CATEGORIES) {
+        const { status, matches } = posture[category];
+        log3(`    ${status === 'DETECTED' ? '✓' : status === 'PARTIAL' ? '⚠' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} signal(s))` : ''}`);
+      }
+      if (projectId !== null) {
+        const postureBuffer = Buffer.from(JSON.stringify({ engine: postureEngine, posture }, null, 2));
+        store.addUploadDocument(projectId, 'posture-report.json', 'application/json', postureBuffer.length, postureBuffer);
+      }
+
+      issues = [...collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema }), ...licenseIssues];
     }
     const errorIssues = issues.filter((i) => i.severity === 'error');
 
@@ -4498,7 +6016,100 @@ app.post(
           );
         }
 
-        const issues = collectPhase4Issues({ secrets, governance, llm });
+        log3('Check 5 — IaC/container misconfiguration scan (Dockerfiles/Terraform/Kubernetes/Helm)...');
+        const iac = await checkIacSecurity(projectRoot, log3);
+        if (iac.findings.length > 0) {
+          log3(`✗ ${iac.findings.length} IaC misconfiguration(s) [engine: ${iac.engine}]:`);
+          iac.findings.forEach((f) => log3(`    ✗ [${f.severity}] ${f.file}:${f.line} — ${f.message || f.kind}`));
+        } else {
+          log3(`✓ Check 5 passed — no IaC misconfigurations detected [engine: ${iac.engine}].`);
+        }
+
+        log3('Generating SBOM...');
+        const { engine: sbomEngine, sbom } = await generateSbom(projectRoot, log3);
+        log3(`✓ SBOM generated [engine: ${sbomEngine}] — ${(sbom.components || []).length} component(s).`);
+        if (projectId !== null) {
+          const sbomBuffer = Buffer.from(JSON.stringify(sbom, null, 2));
+          store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
+        }
+
+        log3('Check 6 — base-image signature/provenance verification (cosign)...');
+        const imageProvenance = await checkImageProvenance(projectRoot, log3);
+        if (imageProvenance.findings.length > 0) {
+          log3(`⚠ ${imageProvenance.findings.length} base image(s) without a verifiable Sigstore signature:`);
+          imageProvenance.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+        } else if (imageProvenance.engine === 'cosign') {
+          log3('✓ Check 6 passed — every referenced base image has a verifiable Sigstore signature (or none was referenced).');
+        } else {
+          log3('✓ Check 6 skipped — cosign disabled or not installed.');
+        }
+
+        log3(`Check 7 — semantic SAST (semgrep, config: ${SEMGREP_CONFIG})...`);
+        const semanticSast = await checkSemanticSast(projectRoot, log3);
+        if (semanticSast.findings.length > 0) {
+          log3(`✗ ${semanticSast.findings.length} semantic SAST finding(s):`);
+          semanticSast.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+        } else if (semanticSast.engine === 'semgrep') {
+          log3('✓ Check 7 passed — no semantic SAST findings.');
+        } else {
+          log3('✓ Check 7 skipped — semgrep disabled or not installed.');
+        }
+
+        log3('Check 8 — PII/GDPR data-flow scan (bearer)...');
+        const piiDataFlow = await checkPiiDataFlow(projectRoot, log3);
+        if (piiDataFlow.findings.length > 0) {
+          log3(`✗ ${piiDataFlow.findings.length} PII/data-flow finding(s):`);
+          piiDataFlow.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+        } else if (piiDataFlow.engine === 'bearer') {
+          log3('✓ Check 8 passed — no PII/data-flow findings.');
+        } else {
+          log3('✓ Check 8 skipped — bearer disabled or not installed.');
+        }
+
+        log3('Check 9 — code duplication scan (jscpd)...');
+        const duplication = await checkCodeDuplication(projectRoot, log3);
+        if (duplication.findings.length > 0) {
+          log3(`⚠ ${duplication.findings.length} duplicate block(s) found:`);
+          duplication.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+        } else if (duplication.engine === 'jscpd') {
+          log3('✓ Check 9 passed — no duplicate blocks above jscpd\'s default threshold.');
+        } else {
+          log3('✓ Check 9 skipped — jscpd disabled or not installed.');
+        }
+
+        log3('Computing LOC metrics...');
+        const { engine: locEngine, metrics: locMetrics } = await generateLocMetrics(projectRoot, log3);
+        if (locMetrics) {
+          log3(`✓ LOC metrics computed [engine: ${locEngine}] — ${locMetrics.total?.code ?? 0} lines of code across ${locMetrics.languages?.length ?? 0} language(s).`);
+          if (projectId !== null) {
+            const locBuffer = Buffer.from(JSON.stringify(locMetrics, null, 2));
+            store.addUploadDocument(projectId, 'loc-metrics.json', 'application/json', locBuffer.length, locBuffer);
+          }
+        }
+
+        log3('Check 10 — API schema lint (spectral, OpenAPI/AsyncAPI)...');
+        const apiSchema = await checkApiSchemas(projectRoot, log3);
+        if (apiSchema.findings.length > 0) {
+          log3(`✗ ${apiSchema.findings.length} API schema lint finding(s):`);
+          apiSchema.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+        } else if (apiSchema.engine === 'spectral') {
+          log3('✓ Check 10 passed — no API schema lint findings (or no OpenAPI/AsyncAPI files found).');
+        } else {
+          log3('✓ Check 10 skipped — spectral disabled or not installed.');
+        }
+
+        log3('Check 11 — Compliance & Feature Posture Scan...');
+        const { engine: postureEngine, posture } = await checkFeaturePosture(projectRoot, log3);
+        for (const category of POSTURE_CATEGORIES) {
+          const { status, matches } = posture[category];
+          log3(`    ${status === 'DETECTED' ? '✓' : status === 'PARTIAL' ? '⚠' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} signal(s))` : ''}`);
+        }
+        if (projectId !== null) {
+          const postureBuffer = Buffer.from(JSON.stringify({ engine: postureEngine, posture }, null, 2));
+          store.addUploadDocument(projectId, 'posture-report.json', 'application/json', postureBuffer.length, postureBuffer);
+        }
+
+        const issues = collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema });
         for (const issue of issues) allIssues.push({ ...issue, phase: 4 });
         const blockingCount = issues.filter((i) => i.severity === 'error').length;
         if (issues.length > 0) {
@@ -4796,4 +6407,15 @@ module.exports = {
   resolveGovernanceCiLocation,
   scanDependencyVulnerabilities,
   classifyVulnerabilitySeverity,
+  checkIacSecurity,
+  runCheckovIacScan,
+  runHadolintIacScan,
+  generateSbom,
+  checkImageProvenance,
+  checkSemanticSast,
+  checkPiiDataFlow,
+  checkCodeDuplication,
+  generateLocMetrics,
+  checkApiSchemas,
+  checkFeaturePosture,
 };

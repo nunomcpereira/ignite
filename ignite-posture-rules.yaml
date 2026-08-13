@@ -1,0 +1,185 @@
+# Ignite Compliance & Feature Posture Engine — Semgrep rule package.
+#
+# Detects the PRESENCE of security/compliance features (not vulnerabilities)
+# across TypeScript/JavaScript, Java, Go, Python, C#, and Ruby. `generic`
+# mode (plain-text pattern-regex) is used deliberately instead of per-
+# language AST patterns: this ruleset is answering "does this codebase use
+# framework/library X", the same question a tech-detection tool answers,
+# not "is this call-site vulnerable" — a text signature across all six
+# languages in one rule is both more maintainable and equally reliable for
+# that question than six near-duplicate AST rules per category.
+#
+# Every category ships two tiers, read by server.js's checkFeaturePosture:
+#   - "weak"   — an import/dependency/package-manager reference only.
+#   - "strong" — an actual instantiation/call/decorator/annotation site.
+# >=1 strong match => DETECTED. Only weak matches => PARTIAL. Neither => MISSING.
+
+rules:
+  # ---------------------------------------------------------------------
+  # Identity & Access Management
+  # ---------------------------------------------------------------------
+  - id: posture-sso-saml-oidc-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      SSO/SAML/OIDC library referenced (import/dependency only — no
+      confirmed instantiation site found by the -strong rule).
+    metadata:
+      category: sso-saml-oidc
+      tier: weak
+    pattern-regex: (passport-saml|passport-openidconnect|passport-oauth2|org\.springframework\.security\.oauth2|org\.keycloak|keycloak-connect|auth0(-java|-spa-js)?|okta-sdk|okta-auth-js|com\.okta|aws-sdk.*cognito|amazon-cognito-identity|microsoft-identity-web|omniauth-saml|omniauth-oauth2|ruby-saml|python3-saml|django-allauth)
+
+  - id: posture-sso-saml-oidc-strong
+    languages: [generic]
+    severity: INFO
+    message: "SSO/SAML/OIDC provider instantiated/configured."
+    metadata:
+      category: sso-saml-oidc
+      tier: strong
+    pattern-regex: (new\s+SamlStrategy\(|new\s+OIDCStrategy\(|new\s+Auth0Client\(|new\s+CognitoUserPool\(|new\s+CognitoIdentityProviderClient\(|OktaAuth\(|@EnableOAuth2Sso|KeycloakInstance\(|Keycloak\(\{|SAML2AuthenticationProvider\(|OidcClient\()
+
+  - id: posture-rbac-abac-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      RBAC/ABAC policy library referenced (import/dependency only — no
+      confirmed guard/enforcement site found by the -strong rule).
+    metadata:
+      category: rbac-abac
+      tier: weak
+    pattern-regex: (casbin|open-policy-agent|org\.opa|opa-wasm|django-guardian|pundit|cancancan|micronaut-security-annotations)
+
+  - id: posture-rbac-abac-strong
+    languages: [generic]
+    severity: INFO
+    message: "RBAC/ABAC guard/annotation/policy-engine call found."
+    metadata:
+      category: rbac-abac
+      tier: strong
+    pattern-regex: (@PreAuthorize\(|@PostAuthorize\(|@RolesAllowed\(|@Secured\(|@RequireRole|casbin\.NewEnforcer\(|enforcer\.Enforce\(|opa\.Eval\(|requireRole\(|requirePermission\(|checkPermission\(|authorize!\(|can\?\()
+
+  # ---------------------------------------------------------------------
+  # Observability & Operational Audit
+  # ---------------------------------------------------------------------
+  - id: posture-audit-logging-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Audit-logging library/identifier referenced (no confirmed emit call
+      found by the -strong rule).
+    metadata:
+      category: audit-logging
+      tier: weak
+    pattern-regex: (AuditLogger|AuditEvent|audit_log|AuditingEntityListener|@Audited|django-auditlog|paper_trail|audited\s)
+
+  - id: posture-audit-logging-strong
+    languages: [generic]
+    severity: INFO
+    message: "Audit-log event explicitly emitted."
+    metadata:
+      category: audit-logging
+      tier: strong
+    pattern-regex: (auditLogger\.(log|record|emit)\(|AuditLog\.create\(|logger\.audit\(|audit_log\.(info|record|create)\(|PaperTrail\.request|@Audited\b)
+
+  - id: posture-siem-log-forwarding-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      SIEM/log-forwarding library referenced (no confirmed transport
+      instantiation found by the -strong rule).
+    metadata:
+      category: siem-log-forwarding
+      tier: weak
+    pattern-regex: (winston-syslog|fluent-logger|logstash|@opentelemetry|go\.opentelemetry\.io|org\.apache\.logging\.log4j\.core\.appender\.SyslogAppender|serilog-sinks-syslog|nlog\.targets\.syslog)
+
+  - id: posture-siem-log-forwarding-strong
+    languages: [generic]
+    severity: INFO
+    message: "Log/security-event forwarder to a SIEM/collector instantiated."
+    metadata:
+      category: siem-log-forwarding
+      tier: strong
+    pattern-regex: (new\s+FluentLogger\(|winston\.transports\.Syslog\(|new\s+LogstashTransport\(|zap\.NewSyslogWriter\(|SyslogAppender\(|OpenTelemetry\.trace\.getTracer\()
+
+  # ---------------------------------------------------------------------
+  # Data Protection & Infrastructure Maturity
+  # ---------------------------------------------------------------------
+  - id: posture-https-tls-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      TLS/HSTS-related library referenced (no confirmed enforcement site
+      found by the -strong rule).
+    metadata:
+      category: https-tls
+      tier: weak
+    pattern-regex: (\bhelmet\b|force-ssl|django\.middleware\.security|Rack::SSL|Microsoft\.AspNetCore\.HttpsPolicy)
+
+  - id: posture-https-tls-strong
+    languages: [generic]
+    severity: INFO
+    message: "HTTPS/HSTS enforcement or forced-SSL redirect configured."
+    metadata:
+      category: https-tls
+      tier: strong
+    pattern-regex: (helmet\.hsts\(|Strict-Transport-Security|forceSSL|SECURE_SSL_REDIRECT\s*=\s*True|app\.UseHsts\(|https\.createServer\(|config\.force_ssl\s*=\s*true)
+
+  - id: posture-backups-dr-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Backup/disaster-recovery tooling referenced (no confirmed
+      job/schedule/policy found by the -strong rule).
+    metadata:
+      category: backups-dr
+      tier: weak
+    pattern-regex: (pg_dump|pg_basebackup|mongodump|mysqldump|velero|restic\s|borgbackup)
+
+  - id: posture-backups-dr-strong
+    languages: [generic]
+    severity: INFO
+    message: "Backup job/cron schedule or IaC snapshot-retention policy found."
+    metadata:
+      category: backups-dr
+      tier: strong
+    pattern-regex: (cron\(.*(pg_dump|mongodump|mysqldump)|backup_retention_period|BackupRetentionPeriod|RetentionPolicy|CreateDBSnapshot|CreateSnapshot\(|schedule.*backup)
+
+  - id: posture-encryption-at-rest-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Encryption-at-rest / KMS library referenced (no confirmed
+      encrypt/decrypt call found by the -strong rule).
+    metadata:
+      category: encryption-at-rest
+      tier: weak
+    pattern-regex: (aws-sdk.*kms|@aws-sdk/client-kms|com\.amazonaws\.services\.kms|hashicorp/vault|com\.google\.cloud\.kms|azure-keyvault)
+
+  - id: posture-encryption-at-rest-strong
+    languages: [generic]
+    severity: INFO
+    message: "Field/payload encryption via a KMS or crypto library found."
+    metadata:
+      category: encryption-at-rest
+      tier: strong
+    pattern-regex: (kms\.encrypt\(|kmsClient\.Encrypt\(|vault\.write\(|createCipheriv\(|Aes\.Encrypt\(|EncryptField\(|Cipher\.getInstance\("AES)
+
+  - id: posture-rate-limiting-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Rate-limiting/throttling library referenced (no confirmed middleware
+      instantiation found by the -strong rule).
+    metadata:
+      category: rate-limiting
+      tier: weak
+    pattern-regex: (express-rate-limit|bucket4j|django-ratelimit|rack-attack|flask-limiter|aspnetcoreratelimit)
+
+  - id: posture-rate-limiting-strong
+    languages: [generic]
+    severity: INFO
+    message: "Rate-limiting/throttling middleware instantiated."
+    metadata:
+      category: rate-limiting
+      tier: strong
+    pattern-regex: (rateLimit\(\{|new\s+RateLimiterRedis\(|Bucket4j\.builder\(|RateLimiter\.create\(|@ratelimit\(|Rack::Attack\.throttle\()

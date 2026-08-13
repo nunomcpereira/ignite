@@ -173,7 +173,10 @@
       <p class="flex-1 min-w-0 text-xs text-violet-700"><span class="font-semibold">Viewing history</span> — <span id="historyViewLabel"></span> — read-only.</p>
       <button id="historyViewBackBtn" type="button" class="text-xs font-semibold text-violet-700 hover:underline shrink-0">Back to live ✕</button>
     </div>
-    <div class="flex items-center justify-end">
+    <div class="flex items-center justify-end gap-2">
+      <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+        📋 Checks report
+      </button>
       <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
         View flagged issues
       </button>
@@ -222,6 +225,12 @@
           <p class="text-xs text-slate-500 mt-0.5">Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.</p>
         </div>
         <div class="flex items-center gap-3 shrink-0">
+          <button id="reviewImportBtn" type="button"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  title="Import a Download ⤓'d report you've filled in Acknowledge: lines on — checks the matching box and fills its justification for every issue with one">
+            Import acknowledgments ⤒
+          </button>
+          <input id="reviewImportFileInput" type="file" accept=".md,text/markdown,text/plain" class="hidden" />
           <button id="reviewDownloadBtn" type="button"
                   class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
             Download ⤓
@@ -277,6 +286,9 @@
         <span id="studioSubtitle" class="text-xs text-slate-400"></span>
         <span class="flex-1"></span>
         <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700">📦 Dependencies</button>
+        <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700">📄 SBOM</button>
+        <button id="studioLocBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-700">📊 LOC Metrics</button>
+        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700">🛡️ Posture</button>
         <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700">Rescan ↻</button>
         <button id="studioCloseBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-600 hover:bg-slate-800">Close ✕</button>
       </div>
@@ -332,6 +344,33 @@
         </div>
       </div>
       <div id="issuesViewList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
+    </div>
+  </div>
+
+  <!-- Checks report: every check Ignite ran this run, split by area
+       (Security / Quality / Dependencies / API & Schema / Process &
+       Governance), with a pass/clean-or-flagged result per check —
+       complements "View flagged issues" (which lists only the problems)
+       with a full picture of what was actually checked. Rebuilt on demand
+       from the project's persisted issues, so it's available both right
+       after a run and later from the Onboarded Projects history list —
+       nothing extra to store. -->
+  <div id="checksReportModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-slate-800">Checks report</p>
+          <p id="checksReportSubtitle" class="text-xs text-slate-500 mt-0.5">Every check Ignite ran this run, grouped by area.</p>
+        </div>
+        <div class="flex items-center gap-3 shrink-0">
+          <button id="checksReportDownloadBtn" type="button"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+            Download ⤓
+          </button>
+          <button id="checksReportCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
+      </div>
+      <div id="checksReportBody" class="px-6 py-4 space-y-5 overflow-y-auto flex-1"></div>
     </div>
   </div>
 
@@ -1043,10 +1082,15 @@
       lines.push(`Generated: ${new Date().toISOString()}`);
       lines.push(`Total: ${issues.length} (${issues.filter((i) => i.severity === 'error').length} blocking)`);
       lines.push('');
+      lines.push('To acknowledge/override an issue: fill in its `Acknowledge:` line below with your');
+      lines.push('justification (keep it on one line), save this file, and use "Import acknowledgments ⤒"');
+      lines.push('in the review dialog to apply every filled-in line at once. Leave a line blank to skip it.');
+      lines.push('');
       issues.forEach((issue, i) => {
         const loc = issue.file ? `${issue.file}${issue.line ? ':' + issue.line : ''}` : (issue.phase ? `Phase ${displayPhaseNumber(issue.phase)}` : 'unknown location');
         const scoreTag = typeof issue.score === 'number' ? ` (${issue.score}/10)` : '';
         lines.push(`## ${i + 1}. [${(issue.severity || 'warning').toUpperCase()}]${scoreTag} ${issue.category || 'issue'} — ${loc}`);
+        lines.push(`ID: ${issue.id || ''}`);
         if (issue.status === 'overridden') lines.push('(already acknowledged/overridden in a previous review)');
         lines.push('');
         lines.push(issue.summary || '(no summary)');
@@ -1064,9 +1108,91 @@
           });
           lines.push('```');
         }
+        if (issue.status !== 'overridden') {
+          lines.push('');
+          lines.push('Acknowledge: ');
+        }
         lines.push('');
       });
       return lines.join('\n');
+    }
+
+    /* ---------------- Import acknowledgments from a downloaded report ----
+       ---------------- Parses the exact format buildIssuesReport writes: --
+       ---------------- one `ID: <issue.id>` line per issue, optionally ---
+       ---------------- followed (anywhere before the next `ID:`/`## `) --
+       ---------------- by a filled-in `Acknowledge: <justification>` -----
+       ---------------- line. Single-line justifications only — anything --
+       ---------------- after the first newline following "Acknowledge:" -
+       ---------------- is a new issue block, not part of the message. --- */
+    function parseAcknowledgmentsMarkdown(text) {
+      const acks = new Map();
+      let currentId = null;
+      for (const rawLine of String(text || '').split(/\r?\n/)) {
+        const idMatch = rawLine.match(/^ID:\s*(.+?)\s*$/);
+        if (idMatch) { currentId = idMatch[1]; continue; }
+        if (/^##\s/.test(rawLine)) { currentId = null; continue; }
+        const ackMatch = rawLine.match(/^Acknowledge:\s*(.*?)\s*$/);
+        if (ackMatch && currentId && ackMatch[1]) {
+          acks.set(currentId, ackMatch[1]);
+        }
+      }
+      return acks;
+    }
+
+    // Applies a parsed id -> justification map onto an already-rendered
+    // review-modal issue list: checks the box and fills the justification
+    // textarea for every issue whose id matches, same end state as if the
+    // user had done it by hand. Returns counts for a status message.
+    // `applied` counts issue *rows* filled — can exceed acks.size when one
+    // id matches more than one row (buildIssueId is category::file::line,
+    // and two distinct findings can legitimately share that same triple).
+    // `unmatched` counts imported ids that matched zero rows.
+    function applyImportedAcknowledgments(list, issues, acks) {
+      let applied = 0;
+      const matchedIds = new Set();
+      issues.forEach((issue, idx) => {
+        const justification = acks.get(issue.id);
+        if (!justification) return;
+        const cb = list.querySelector(`.override-check[data-idx="${idx}"]`);
+        const ta = list.querySelector(`.override-justification[data-idx="${idx}"]`);
+        if (!cb || !ta) return; // not interactive (e.g. already overridden) — nothing to fill
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change'));
+        ta.value = justification;
+        applied++;
+        matchedIds.add(issue.id);
+      });
+      const unmatched = [...acks.keys()].filter((id) => !matchedIds.has(id)).length;
+      return { applied, unmatched };
+    }
+
+    // Shared by both review-modal openers (handleReviewRequired,
+    // openEffectivateReview) — re-wired each time the modal opens since
+    // `list`/`issues`/`errorEl` are that call's own closures.
+    function wireImportAcknowledgmentsButton(list, issues, errorEl) {
+      const importBtn = $('reviewImportBtn');
+      const fileInput = $('reviewImportFileInput');
+      importBtn.onclick = () => fileInput.click();
+      fileInput.onchange = async () => {
+        const file = fileInput.files?.[0];
+        fileInput.value = '';
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const acks = parseAcknowledgmentsMarkdown(text);
+          if (acks.size === 0) {
+            errorEl.textContent = 'No filled-in "Acknowledge:" lines found in that file.';
+            return;
+          }
+          const { applied, unmatched } = applyImportedAcknowledgments(list, issues, acks);
+          errorEl.textContent = unmatched > 0
+            ? `Imported ${acks.size} acknowledgment(s), applied to ${applied} issue row(s) — ${unmatched} id(s) in the file don't match an issue in this review.`
+            : `Imported ${acks.size} acknowledgment(s), applied to ${applied} issue row(s).`;
+        } catch {
+          errorEl.textContent = 'Could not read that file.';
+        }
+      };
     }
 
     function downloadIssuesReport(issues, meta = {}) {
@@ -1107,6 +1233,148 @@
       }
     });
 
+    /* ---------------- Checks report — every check, split by area --------
+       ---------------- Complements the issues viewer/download (problems ---
+       ---------------- only) with full coverage: every check Ignite runs --
+       ---------------- shows up here even when it found nothing, so a ----
+       ---------------- clean run doesn't read as "nothing was checked". -- */
+    // Only the categories known to run on every single Phase 3/4 execution
+    // (regardless of which findings, if any, they produce) are always
+    // listed — LLM-driven categories (security/quality/dependency/
+    // encapsulation) and phase-level checks (structure-audit, gxp-documents,
+    // governance-ci, input-validation) are conditional (LLM endpoint down,
+    // GxP off, act/Docker missing, ...) and are only shown when they
+    // actually produced a finding, same as an "unknown category" would be.
+    const CHECK_CATALOG = {
+      'secret':             { label: 'Hardcoded secrets (regex + gitleaks)', area: 'Security', always: true },
+      'ai-governance':      { label: 'AI governance (LangChain/LangGraph recursion_limit)', area: 'Security', always: true },
+      'iac-security':       { label: 'IaC/container misconfiguration (Trivy/Checkov/hadolint)', area: 'Security', always: true },
+      'image-provenance':   { label: 'Base-image signature/provenance (Cosign)', area: 'Security', always: true },
+      'semantic-sast':      { label: 'Semantic SAST (Semgrep)', area: 'Security', always: true },
+      'pii-dataflow':       { label: 'PII/GDPR data-flow (Bearer)', area: 'Security', always: true },
+      'security':           { label: 'LLM security deep-scan', area: 'Security', always: false },
+      'security-scan':      { label: 'Org governance CI security scan', area: 'Security', always: false },
+      'quality':            { label: 'LLM code quality review', area: 'Quality', always: false },
+      'code-duplication':   { label: 'Code duplication (jscpd)', area: 'Quality', always: false },
+      'encapsulation':      { label: 'LLM encapsulation review', area: 'Quality', always: false },
+      'dependency':         { label: 'LLM dependency risk review', area: 'Dependencies', always: false },
+      'license-compliance': { label: 'Dependency & LICENSE-file license compliance (ORT/licensee/deps.dev)', area: 'Dependencies', always: true },
+      'api-schema-lint':    { label: 'API schema lint (Spectral)', area: 'API & Schema', always: true },
+      'structure-audit':    { label: 'Structure audit (.env file denial)', area: 'Process & Governance', always: false },
+      'gxp-documents':      { label: 'GxP validation documents', area: 'Process & Governance', always: false },
+      'governance-ci':      { label: 'Org governance CI (act)', area: 'Process & Governance', always: false },
+      'input-validation':   { label: 'Input & metadata validation', area: 'Process & Governance', always: false },
+    };
+    const CHECK_AREA_ORDER = ['Security', 'Quality', 'Dependencies', 'API & Schema', 'Process & Governance', 'Other'];
+
+    function buildChecksReportByArea(issues) {
+      const byCategory = new Map();
+      issues.forEach((i) => {
+        const cat = i.category || 'other';
+        if (!byCategory.has(cat)) byCategory.set(cat, []);
+        byCategory.get(cat).push(i);
+      });
+      const rows = new Map(); // category -> { label, area, findings }
+      for (const [cat, meta] of Object.entries(CHECK_CATALOG)) {
+        if (meta.always || byCategory.has(cat)) {
+          rows.set(cat, { label: meta.label, area: meta.area, findings: byCategory.get(cat) || [] });
+        }
+      }
+      for (const [cat, findings] of byCategory.entries()) {
+        if (!rows.has(cat)) rows.set(cat, { label: cat, area: 'Other', findings });
+      }
+      const byArea = new Map();
+      for (const [cat, row] of rows.entries()) {
+        if (!byArea.has(row.area)) byArea.set(row.area, []);
+        byArea.get(row.area).push({ category: cat, ...row });
+      }
+      return CHECK_AREA_ORDER
+        .filter((area) => byArea.has(area))
+        .map((area) => ({
+          area,
+          checks: byArea.get(area).sort((a, b) => a.label.localeCompare(b.label)),
+        }));
+    }
+
+    function renderChecksReportModal(issues, subtitle, meta = {}) {
+      $('checksReportSubtitle').textContent = subtitle || 'Every check Ignite ran this run, grouped by area.';
+      const byArea = buildChecksReportByArea(issues);
+      $('checksReportBody').innerHTML = byArea.map(({ area, checks }) => `
+        <div>
+          <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">${escapeHtml(area)}</p>
+          <div class="space-y-1.5">
+            ${checks.map(({ label, findings }) => {
+              const errorCount = findings.filter((f) => f.severity === 'error').length;
+              const warningCount = findings.length - errorCount;
+              const clean = findings.length === 0;
+              const chip = clean
+                ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">✓ CLEAN</span>'
+                : `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${errorCount > 0 ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'}">${errorCount > 0 ? `${errorCount} BLOCKING` : `${warningCount} WARNING${warningCount === 1 ? '' : 'S'}`}</span>`;
+              return `<div class="flex items-center justify-between gap-3 text-xs px-3 py-2 rounded-lg border border-slate-100 bg-slate-50/50">
+                <span class="text-slate-700">${escapeHtml(label)}</span>
+                ${chip}
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`).join('') || '<p class="text-xs text-slate-400">No checks to report yet.</p>';
+      $('checksReportDownloadBtn').onclick = () => downloadChecksReport(byArea, meta);
+      $('checksReportModal').classList.remove('hidden');
+    }
+    $('checksReportCloseBtn').addEventListener('click', () => $('checksReportModal').classList.add('hidden'));
+    $('checksReportModal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'checksReportModal') $('checksReportModal').classList.add('hidden');
+    });
+
+    function buildChecksReportText(byArea, meta = {}) {
+      const title = meta.org && meta.repo ? `${meta.org}/${meta.repo}` : 'Ignite checks report';
+      const lines = [`# Checks report — ${title}`, `Generated: ${new Date().toISOString()}`, ''];
+      byArea.forEach(({ area, checks }) => {
+        lines.push(`## ${area}`);
+        checks.forEach(({ label, findings }) => {
+          const errorCount = findings.filter((f) => f.severity === 'error').length;
+          const warningCount = findings.length - errorCount;
+          const result = findings.length === 0 ? 'CLEAN' : `${errorCount} blocking, ${warningCount} warning(s)`;
+          lines.push(`- ${label}: ${result}`);
+        });
+        lines.push('');
+      });
+      return lines.join('\n');
+    }
+
+    function downloadChecksReport(byArea, meta = {}) {
+      const text = buildChecksReportText(byArea, meta);
+      const slug = meta.org && meta.repo
+        ? `${meta.org}-${meta.repo}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-')
+        : 'ignite';
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const blob = new Blob([text], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${slug}-checks-report-${stamp}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function updateViewChecksReportButton() {
+      $('viewChecksReportBtn').classList.toggle('hidden', !state.jobId);
+    }
+    $('viewChecksReportBtn').addEventListener('click', async () => {
+      if (!state.jobId) return;
+      try {
+        const res = await fetch(`/api/pipeline/${state.jobId}/issues`);
+        const data = await res.json();
+        renderChecksReportModal(data.issues || [], data.running
+          ? 'Updates as later phases run.'
+          : 'Final result of this run.',
+          { org: orgInput.value.trim(), repo: repoInput.value.trim() });
+      } catch {
+        renderChecksReportModal([], 'Could not load checks for this run.');
+      }
+    });
+
     function handleReviewRequired(ev) {
       const issues = ev.issues || [];
       state.reviewJobId = ev.jobId;
@@ -1127,6 +1395,8 @@
       const downloadBtn = $('reviewDownloadBtn');
       downloadBtn.classList.toggle('hidden', issues.length === 0);
       downloadBtn.onclick = () => downloadIssuesReport(issues, { org: orgInput.value.trim(), repo: repoInput.value.trim() });
+      $('reviewImportBtn').classList.toggle('hidden', issues.length === 0);
+      wireImportAcknowledgmentsButton(list, issues, errorEl);
 
       const bulkBar = $('reviewBulkBar');
       const selectAllCb = $('reviewSelectAll');
@@ -1241,10 +1511,10 @@
     $('reviewCloseBtn').addEventListener('click', () => $('reviewStopBtn').click());
 
     /* ------------------------------------------------------------ */
-    /* External tools status — ORT, licensee, gitleaks. Each one is an     */
-    /* optional enhancement Ignite soft-skips to a built-in fallback for   */
-    /* when missing (see server.js's ortTooling/licenseeTooling/           */
-    /* gitleaksTooling), so this panel is purely informational.            */
+    /* External tools status — ORT, licensee, gitleaks, Trivy. Each one is */
+    /* an optional enhancement Ignite soft-skips to a built-in fallback    */
+    /* for when missing (see server.js's ortTooling/licenseeTooling/       */
+    /* gitleaksTooling/trivyTooling), so this panel is purely informational.*/
     /* ------------------------------------------------------------ */
     const TOOLS_META = {
       ort: {
@@ -1258,6 +1528,46 @@
       gitleaks: {
         label: 'gitleaks',
         info: 'Supplemental secret scanner — runs as an extra pass over the same staged files when enabled in config, merged with (never replacing) Ignite’s built-in regex secret scan. Off by default even when installed; enable via security.gitleaks.enabled.',
+      },
+      trivy: {
+        label: 'Trivy',
+        info: 'IaC/container misconfiguration scanner — flags issues in Dockerfiles, Terraform, Kubernetes manifests, and Helm charts. On by default when installed; falls back to a small built-in Dockerfile heuristic check (unpinned base image, missing USER) when missing. Toggle via security.trivy.enabled.',
+      },
+      checkov: {
+        label: 'Checkov',
+        info: 'Supplemental IaC policy scanner — merges additional misconfiguration findings alongside Trivy’s (or the built-in fallback’s), deduped by file/line. Off by default; enable via security.checkov.enabled.',
+      },
+      hadolint: {
+        label: 'hadolint',
+        info: 'Supplemental Dockerfile-only linter — merges its own rule set alongside Trivy’s/Checkov’s findings, deduped by file/line. On by default when installed; toggle via security.hadolint.enabled.',
+      },
+      syft: {
+        label: 'Syft',
+        info: 'Generates a CycloneDX SBOM for the staged project, attached as a downloadable project document. On by default when installed; falls back to a minimal manifest-derived component list (no standards-format export) when missing. Toggle via sbom.syft.enabled.',
+      },
+      cosign: {
+        label: 'Cosign',
+        info: 'Verifies Sigstore/cosign keyless signatures on every base image referenced by a Dockerfile FROM — an unsigned/unverifiable image is flagged as an advisory (non-blocking) warning. Off by default (makes a real registry + Rekor network call per image); enable via security.cosign.enabled.',
+      },
+      semgrep: {
+        label: 'Semgrep',
+        info: 'Semantic pattern-matching SAST — logical flaws and injection-style sinks beyond the LLM deep-scan. On by default when installed; no built-in fallback (semantic rule engines can’t be meaningfully approximated). Toggle via security.semgrep.enabled; ruleset via security.semgrep.config.',
+      },
+      bearer: {
+        label: 'Bearer',
+        info: 'Sensitive data-flow (PII/GDPR) tracing — traces personal data from source (request params, user objects) to sinks (logs, DB writes). On by default — needs a real git context, which Ignite stages automatically for a fresh upload. Toggle via security.bearer.enabled.',
+      },
+      jscpd: {
+        label: 'jscpd',
+        info: 'Code-duplication scan — flagged clones become advisory (non-blocking) quality findings. Off by default; no built-in fallback. Toggle via metrics.jscpd.enabled.',
+      },
+      gocloc: {
+        label: 'gocloc',
+        info: 'Per-language LOC metrics, attached as a downloadable project document (never gates a run). On by default when installed. Toggle via metrics.gocloc.enabled.',
+      },
+      spectral: {
+        label: 'Spectral',
+        info: 'Lints every discovered OpenAPI/AsyncAPI file against org REST/AsyncAPI conventions, not just schema validity. On by default when installed; no built-in fallback. Toggle via api.spectral.enabled; ruleset via api.spectral.ruleset.',
       },
     };
 
@@ -1298,7 +1608,7 @@
     /* while the review gate is paused for this job (see server.js's    */
     /* reviewActive gate — every request below 409s once it's not).     */
     /* ------------------------------------------------------------ */
-    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null };
+    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null };
 
     function studioIssuesForFile(relPath) {
       return studioState.issues.filter((i) => i.file === relPath);
@@ -1317,6 +1627,9 @@
       studioState.fromReview = fromReview;
       studioState.currentPath = null;
       studioState.suggestion = null;
+      studioState.categoryFilter = null;
+      studioState.languageFilter = null;
+      studioState.locFilesByLanguage = null;
       $('studioSubtitle').textContent = `job ${jobId}`;
       if (fromReview) {
         // The review modal's Continue/Stop buttons resolve the review-gate
@@ -1381,27 +1694,72 @@
     }
     $('studioCloseBtn').addEventListener('click', closeStudio);
 
+    // The seven external tools that supplement/replace trivy don't each get
+    // their own top-bar button the way SBOM/LOC/Posture do (their findings
+    // land as regular file-level issues instead of a standalone report) —
+    // this fixed list is what makes them show up in the summary bar even
+    // when they found *nothing*, so "connected but clean" doesn't look
+    // indistinguishable from "never ran". Order matches the Phase 4 Check
+    // numbers (5-10) these tools run as.
+    // jscpd (code-duplication) is off by default, unlike the other five —
+    // deliberately excluded from this fixed list so Studio doesn't imply
+    // it ran clean when it may not have run at all; it still appears (via
+    // otherCategories in renderStudioSummaryBar) whenever it's enabled and
+    // actually produces a finding.
+    const STUDIO_TOOL_CATEGORIES = [
+      { slug: 'iac-security', label: 'IaC (Trivy/Checkov/hadolint)' },
+      { slug: 'image-provenance', label: 'Image provenance (Cosign)' },
+      { slug: 'semantic-sast', label: 'Semantic SAST (Semgrep)' },
+      { slug: 'pii-dataflow', label: 'PII/GDPR (Bearer)' },
+      { slug: 'api-schema-lint', label: 'API schema (Spectral)' },
+    ];
+
     // Fortify-style project-wide audit summary — total counts by severity
     // and a breakdown by category, shown once up top instead of only ever
-    // being visible one file at a time.
+    // being visible one file at a time. Always renders a chip for every
+    // STUDIO_TOOL_CATEGORIES entry (0 when clean), plus whatever other
+    // categories (secret, ai-governance, license-compliance, LLM
+    // security/quality/dependency/encapsulation) actually have findings.
     function renderStudioSummaryBar() {
       const bar = $('studioSummaryBar');
-      if (studioState.issues.length === 0) {
-        bar.innerHTML = '<span class="text-emerald-600 font-semibold">✓ No open scan or license findings in this project.</span>';
-        bar.classList.remove('hidden');
-        return;
-      }
       const errorCount = studioState.issues.filter((i) => i.severity === 'error').length;
       const warningCount = studioState.issues.length - errorCount;
       const byCategory = new Map();
       studioState.issues.forEach((i) => byCategory.set(i.category, (byCategory.get(i.category) || 0) + 1));
-      const catHtml = [...byCategory.entries()]
-        .map(([cat, n]) => `<span class="ml-3 text-slate-400">${escapeHtml(cat)}: <span class="font-semibold text-slate-600">${n}</span></span>`)
+      const toolSlugs = new Set(STUDIO_TOOL_CATEGORIES.map((c) => c.slug));
+      const toolLabel = (slug) => STUDIO_TOOL_CATEGORIES.find((c) => c.slug === slug)?.label;
+      const otherCategories = [...byCategory.keys()].filter((cat) => !toolSlugs.has(cat));
+      const allCategories = [...STUDIO_TOOL_CATEGORIES.map((c) => c.slug), ...otherCategories];
+      // Each category is a button, not just a label — click narrows the file
+      // tree to that category's findings (studioSetCategoryFilter), so every
+      // connected external tool's results are reachable from one summary row.
+      const catHtml = allCategories
+        .map((cat) => {
+          const n = byCategory.get(cat) || 0;
+          const active = studioState.categoryFilter === cat;
+          const label = toolLabel(cat) || cat;
+          const dim = n === 0 && !active;
+          return `<button type="button" class="studio-category-chip ml-3 ${active ? 'text-brand-700 underline' : dim ? 'text-slate-300 hover:text-slate-500' : 'text-slate-400 hover:text-slate-600'}" data-category="${escapeAttr(cat)}">${escapeHtml(label)}: <span class="font-semibold ${active ? 'text-brand-700' : dim ? 'text-slate-300' : 'text-slate-600'}">${n}</span></button>`;
+        })
         .join('');
-      bar.innerHTML = `<span class="font-semibold text-rose-600">${errorCount} error${errorCount === 1 ? '' : 's'}</span>` +
-        `<span class="ml-2 font-semibold text-amber-600">${warningCount} warning${warningCount === 1 ? '' : 's'}</span>` +
-        `<span class="ml-2 text-slate-400">across ${new Set(studioState.issues.map((i) => i.file)).size} file(s)</span>${catHtml}`;
+      const languageBadge = studioState.languageFilter
+        ? `<span class="ml-3 text-[10px] font-bold px-1.5 py-0.5 rounded border bg-cyan-50 text-cyan-700 border-cyan-200">Language: ${escapeHtml(studioState.languageFilter)}</span>`
+        : '';
+      bar.innerHTML = `<span class="font-semibold ${errorCount > 0 ? 'text-rose-600' : 'text-emerald-600'}">${errorCount} error${errorCount === 1 ? '' : 's'}</span>` +
+        `<span class="ml-2 font-semibold ${warningCount > 0 ? 'text-amber-600' : 'text-slate-400'}">${warningCount} warning${warningCount === 1 ? '' : 's'}</span>` +
+        `<span class="ml-2 text-slate-400">across ${new Set(studioState.issues.map((i) => i.file)).size} file(s)</span>${catHtml}${languageBadge}` +
+        (studioState.categoryFilter || studioState.languageFilter ? `<button type="button" id="studioClearCategoryFilter" class="ml-3 text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200">✕ clear filter</button>` : '');
       bar.classList.remove('hidden');
+      bar.querySelectorAll('.studio-category-chip').forEach((btn) => {
+        btn.addEventListener('click', () => studioSetCategoryFilter(btn.dataset.category));
+      });
+      const clearBtn = document.getElementById('studioClearCategoryFilter');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+          if (studioState.languageFilter) { studioSetLanguageFilter(studioState.languageFilter); }
+          else { studioSetCategoryFilter(studioState.categoryFilter); }
+        });
+      }
     }
 
     // Client-side filename filter over the already-fetched tree — folders
@@ -1510,6 +1868,154 @@
       $('studioCodeWrap').innerHTML = `<div class="p-4">${projectLicenseHtml}${summaryHtml}${tablesHtml}</div>`;
     }
 
+    /* ---------------- SBOM / LOC metrics / Posture report views ---------
+       ---------------- Same "replace the code pane with a report" pattern
+       ---------------- as Dependencies above — one generic opener plus a
+       ---------------- per-report renderer, backed by the three read-only
+       ---------------- /studio/{sbom,loc-metrics,posture} endpoints. */
+    async function openStudioReport(endpoint, title, loadingText, render) {
+      studioState.currentPath = null;
+      studioMarkActiveFile(null);
+      $('studioFilePath').textContent = title;
+      $('studioDirtyBadge').classList.add('hidden');
+      $('studioEditBtn').classList.add('hidden');
+      $('studioSaveBtn').classList.add('hidden');
+      $('studioManifestBtn').classList.add('hidden');
+      $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+      $('studioCodeWrap').innerHTML = `<p class="p-4 text-slate-400">${escapeHtml(loadingText)}</p>`;
+      studioShowError(null);
+      try {
+        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/${endpoint}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Could not load ${title}.`);
+        render(data);
+      } catch (e) {
+        studioShowError(e.message);
+        $('studioCodeWrap').innerHTML = '';
+      }
+    }
+
+    function studioEngineBadge(engine, externalLabel) {
+      const isExternal = engine && !String(engine).includes('fallback') && engine !== 'disabled';
+      const label = isExternal ? `${externalLabel} (External)` : 'Ignite Built-In (Fallback)';
+      const chip = isExternal ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200';
+      return `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${chip}">Engine: ${escapeHtml(label)}</span>`;
+    }
+
+    function renderStudioSbom(data) {
+      const components = (data.sbom && data.sbom.components) || [];
+      const badge = studioEngineBadge(data.engine, 'Syft CLI');
+      if (components.length === 0) {
+        $('studioCodeWrap').innerHTML = `<div class="p-4">${badge}<p class="mt-3 text-slate-400 text-sm">No components resolved.</p></div>`;
+        return;
+      }
+      const rowsHtml = components.map((c) => `<tr class="border-b border-slate-100">
+        <td class="px-3 py-1.5 font-mono text-[11px]">${escapeHtml(c.name || '?')}</td>
+        <td class="px-3 py-1.5 font-mono text-[11px] text-slate-400">${escapeHtml(c.version || '?')}</td>
+        <td class="px-3 py-1.5 text-[11px]">${escapeHtml(c.type || c.ecosystem || '—')}</td>
+        <td class="px-3 py-1.5 text-[11px] text-slate-500 font-mono truncate max-w-xs">${escapeHtml(c.purl || '')}</td>
+      </tr>`).join('');
+      $('studioCodeWrap').innerHTML = `<div class="p-4">
+        ${badge}
+        <span class="ml-3 text-xs text-slate-500">${components.length} component(s)</span>
+        <table class="w-full text-left border border-slate-200 rounded-lg overflow-hidden mt-3">
+          <thead class="bg-slate-50 text-[10px] font-semibold text-slate-400 uppercase">
+            <tr><th class="px-3 py-1.5">Component</th><th class="px-3 py-1.5">Version</th><th class="px-3 py-1.5">Type</th><th class="px-3 py-1.5">Package URL</th></tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>`;
+    }
+    $('studioSbomBtn').addEventListener('click', () => openStudioReport(
+      'sbom', 'Software Bill of Materials (SBOM)', 'Generating SBOM (Syft if installed, else a manifest-derived component list)…', renderStudioSbom
+    ));
+
+    function renderStudioLocMetrics(data) {
+      const metrics = data.metrics;
+      const badge = studioEngineBadge(data.engine, 'gocloc CLI');
+      if (!metrics) {
+        $('studioCodeWrap').innerHTML = `<div class="p-4">${badge}<p class="mt-3 text-slate-400 text-sm">gocloc is disabled or not installed — no LOC metrics available.</p></div>`;
+        return;
+      }
+      // Index gocloc's --by-file list by language once per render, so
+      // clicking a language row can filter the tree without another fetch
+      // (renderStudioTree reads this via studioState.locFilesByLanguage).
+      const byLanguage = new Map();
+      (metrics.files || []).forEach((f) => {
+        if (!byLanguage.has(f.language)) byLanguage.set(f.language, new Set());
+        byLanguage.get(f.language).add(f.file);
+      });
+      studioState.locFilesByLanguage = byLanguage;
+
+      const languages = [...(metrics.languages || [])].sort((a, b) => b.code - a.code);
+      const rowsHtml = languages.map((l) => {
+        const active = studioState.languageFilter === l.name;
+        return `<tr class="studio-language-row border-b border-slate-100 cursor-pointer hover:bg-slate-50 ${active ? 'bg-cyan-50' : ''}" data-language="${escapeAttr(l.name)}">
+        <td class="px-3 py-1.5 text-[11px] font-semibold ${active ? 'text-cyan-700' : ''}">${escapeHtml(l.name)}</td>
+        <td class="px-3 py-1.5 text-[11px] text-right">${l.files}</td>
+        <td class="px-3 py-1.5 text-[11px] text-right font-semibold text-brand-700">${l.code}</td>
+        <td class="px-3 py-1.5 text-[11px] text-right text-slate-400">${l.comment}</td>
+        <td class="px-3 py-1.5 text-[11px] text-right text-slate-400">${l.blank}</td>
+      </tr>`;
+      }).join('');
+      $('studioCodeWrap').innerHTML = `<div class="p-4">
+        ${badge}
+        <span class="ml-3 text-xs text-slate-500">${metrics.total?.code ?? 0} lines of code across ${languages.length} language(s), ${metrics.total?.files ?? 0} file(s)</span>
+        <p class="text-[11px] text-slate-400 mt-1">Click a language to filter the file tree to just its files.</p>
+        <table class="w-full text-left border border-slate-200 rounded-lg overflow-hidden mt-3">
+          <thead class="bg-slate-50 text-[10px] font-semibold text-slate-400 uppercase">
+            <tr><th class="px-3 py-1.5">Language</th><th class="px-3 py-1.5 text-right">Files</th><th class="px-3 py-1.5 text-right">Code</th><th class="px-3 py-1.5 text-right">Comment</th><th class="px-3 py-1.5 text-right">Blank</th></tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>`;
+      $('studioCodeWrap').querySelectorAll('.studio-language-row').forEach((row) => {
+        row.addEventListener('click', () => studioSetLanguageFilter(row.dataset.language, data));
+      });
+    }
+    $('studioLocBtn').addEventListener('click', () => openStudioReport(
+      'loc-metrics', 'LOC Metrics', 'Computing per-language LOC metrics (gocloc)…', renderStudioLocMetrics
+    ));
+
+    const STUDIO_POSTURE_STATUS_META = {
+      DETECTED: { label: 'DETECTED', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: '✓' },
+      PARTIAL:  { label: 'PARTIAL',  chip: 'bg-amber-50 text-amber-700 border-amber-200',   icon: '⚠' },
+      MISSING:  { label: 'MISSING',  chip: 'bg-slate-100 text-slate-500 border-slate-200',  icon: '·' },
+    };
+    const STUDIO_POSTURE_LABELS = {
+      'sso-saml-oidc': 'SSO / SAML / OIDC', 'rbac-abac': 'RBAC / ABAC',
+      'audit-logging': 'Audit Logging', 'siem-log-forwarding': 'SIEM / Log Forwarding',
+      'https-tls': 'HTTPS / TLS', 'backups-dr': 'Backups & Disaster Recovery',
+      'encryption-at-rest': 'Encryption at Rest', 'rate-limiting': 'Rate Limiting & Throttling',
+    };
+
+    function renderStudioPosture(data) {
+      const posture = data.posture || {};
+      const badge = studioEngineBadge(data.engine, 'Semgrep CLI (Posture)');
+      const cardsHtml = Object.entries(posture).map(([category, { status, matches }]) => {
+        const meta = STUDIO_POSTURE_STATUS_META[status] || STUDIO_POSTURE_STATUS_META.MISSING;
+        const matchesHtml = matches.slice(0, 5).map((m) => `<button type="button" class="studio-posture-match block w-full text-left px-2 py-1 rounded hover:bg-slate-50 font-mono text-[10px] text-slate-500" data-path="${escapeAttr(m.file)}" data-line="${m.line}">${escapeHtml(m.file)}:${m.line} <span class="text-slate-400">(${escapeHtml(m.tier)})</span></button>`).join('');
+        return `<div class="rounded-lg border ${meta.chip} p-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-700">${escapeHtml(STUDIO_POSTURE_LABELS[category] || category)}</span>
+            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip}">${meta.icon} ${meta.label}</span>
+          </div>
+          ${matches.length > 0 ? `<div class="mt-2">${matchesHtml}</div>` : ''}
+        </div>`;
+      }).join('');
+      $('studioCodeWrap').innerHTML = `<div class="p-4">
+        ${badge}
+        <p class="mt-2 text-[11px] text-slate-500">Detects the <em>presence</em> of security/compliance features — not vulnerabilities. DETECTED = confirmed usage found; PARTIAL = only an import/dependency reference found; MISSING = neither.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">${cardsHtml}</div>
+      </div>`;
+      $('studioCodeWrap').querySelectorAll('.studio-posture-match').forEach((btn) => {
+        btn.addEventListener('click', () => openStudioFile(btn.dataset.path));
+      });
+    }
+    $('studioPostureBtn').addEventListener('click', () => openStudioReport(
+      'posture', 'Compliance & Feature Posture', 'Scanning for SSO/RBAC/audit-logging/TLS/backups/encryption/rate-limiting posture (Semgrep if installed, else a built-in scanner)…', renderStudioPosture
+    ));
+
     function studioTreeToNested(files) {
       const root = { dirs: new Map(), files: [] };
       for (const f of files) {
@@ -1550,11 +2056,45 @@
     }
 
     function renderStudioTree(files) {
-      const tree = studioTreeToNested(files);
+      studioState.lastFiles = files;
+      // A category chip in the summary bar (see renderStudioSummaryBar) or
+      // a language row in the LOC Metrics view (see renderStudioLocMetrics)
+      // narrows the tree to just its files — the "single UI" view across
+      // every connected external tool's findings, and now per-language too.
+      // The two filters are mutually exclusive (setting one clears the
+      // other) to keep "what am I looking at" unambiguous.
+      let visible = files;
+      if (studioState.categoryFilter) {
+        visible = visible.filter((f) => studioIssuesForFile(f.path).some((i) => i.category === studioState.categoryFilter));
+      } else if (studioState.languageFilter && studioState.locFilesByLanguage) {
+        const langFiles = studioState.locFilesByLanguage.get(studioState.languageFilter) || new Set();
+        visible = visible.filter((f) => langFiles.has(f.path));
+      }
+      const tree = studioTreeToNested(visible);
       $('studioTree').innerHTML = renderStudioTreeNode(tree, 0);
       $('studioTree').querySelectorAll('.studio-file-btn').forEach((btn) => {
         btn.addEventListener('click', () => openStudioFile(btn.dataset.path));
       });
+    }
+
+    function studioSetCategoryFilter(category) {
+      studioState.languageFilter = null;
+      studioState.categoryFilter = studioState.categoryFilter === category ? null : category;
+      renderStudioSummaryBar();
+      renderStudioTree(studioState.lastFiles || []);
+    }
+
+    // Mirrors studioSetCategoryFilter, but sourced from the LOC Metrics
+    // view's per-language file list (studioState.locFilesByLanguage) rather
+    // than the issues list. Re-renders the LOC Metrics panel itself too, so
+    // the active language row stays visibly highlighted while its filter
+    // is applied to the tree on the left.
+    function studioSetLanguageFilter(language, locData) {
+      studioState.categoryFilter = null;
+      studioState.languageFilter = studioState.languageFilter === language ? null : language;
+      renderStudioTree(studioState.lastFiles || []);
+      renderStudioSummaryBar();
+      if (locData) renderStudioLocMetrics(locData);
     }
 
     function studioMarkActiveFile(relPath) {
@@ -1974,6 +2514,8 @@
       const downloadBtn = $('reviewDownloadBtn');
       downloadBtn.classList.toggle('hidden', issues.length === 0);
       downloadBtn.onclick = () => downloadIssuesReport(issues, { org: orgInput.value.trim(), repo: repoInput.value.trim() });
+      $('reviewImportBtn').classList.toggle('hidden', issues.length === 0);
+      wireImportAcknowledgmentsButton(list, issues, errorEl);
 
       const bulkBar = $('reviewBulkBar');
       const selectAllCb = $('reviewSelectAll');
@@ -2366,6 +2908,7 @@
       if (ev.type === 'job') {
         state.jobId = ev.jobId;
         updateViewIssuesButton();
+        updateViewChecksReportButton();
         prependOptimisticRunningProject(ev.jobId);
       } else if (ev.type === 'log') {
         ensurePhaseState(ev.phase).logs.push(ev.message);
@@ -2520,6 +3063,7 @@
               </div>
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
             </button>
+            <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
             ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
             <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold mt-0.5" data-id="${p.id}" title="Delete this project">✕</button>
           </div>
@@ -2538,6 +3082,26 @@
               { org: btn.dataset.org, repo: btn.dataset.repo });
           } catch {
             openIssuesViewer([], 'Could not load issues for this project.');
+          }
+        });
+      });
+
+      // Rebuilt from the same persisted /api/projects/:id/issues this
+      // project's "N issues" button reads — nothing extra is stored, so
+      // this report is always available for any past run, not just the one
+      // that just finished.
+      historyList.querySelectorAll('.hist-view-checks-report').forEach((btn) => {
+        btn.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const id = Number(btn.dataset.id);
+          try {
+            const res = await fetch(`/api/projects/${id}/issues`);
+            const data = await res.json();
+            renderChecksReportModal(data.issues || [], 'Read-only — checks report for this project.',
+              { org: btn.dataset.org, repo: btn.dataset.repo });
+          } catch {
+            renderChecksReportModal([], 'Could not load checks for this project.');
           }
         });
       });

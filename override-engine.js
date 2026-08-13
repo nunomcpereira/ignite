@@ -42,6 +42,12 @@ const CATEGORY_SCORES = {
   'input-validation': 4,
   'security-scan': 6,
   'license-compliance': 6,
+  'iac-security': 6,
+  'image-provenance': 4,
+  'semantic-sast': 7,
+  'pii-dataflow': 7,
+  'code-duplication': 2,
+  'api-schema-lint': 4,
 };
 
 /**
@@ -59,9 +65,15 @@ function scoreForIssue({ category, severity }) {
  * @param {{ findings: Array<{file,line,kind}> }} secrets
  * @param {{ findings: Array<{file,line,snippet}> }} governance
  * @param {{ available: boolean, findings: Array<{file,line,category,level,issue,recommendation}> }} llm
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [iac]
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [imageProvenance]
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [semanticSast]
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [piiDataFlow]
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [duplication]
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [apiSchema]
  * @returns {Array<{id, category, severity, score, summary, file, line}>}
  */
-function collectPhase4Issues({ secrets, governance, llm }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -93,6 +105,108 @@ function collectPhase4Issues({ secrets, governance, llm }) {
       line: f.line,
       snippet: f.code || null,
     });
+  }
+
+  if (iac) {
+    for (const f of iac.findings) {
+      const category = 'iac-security';
+      const severity = (f.severity === 'critical' || f.severity === 'high') ? 'error' : 'warning';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: `${f.message || f.kind}${f.tool === 'ignite-fallback' ? ' (built-in fallback check — trivy not installed)' : ''}`,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  if (imageProvenance) {
+    for (const f of imageProvenance.findings) {
+      const category = 'image-provenance';
+      const severity = 'warning'; // advisory only — never blocks a run on its own
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  if (semanticSast) {
+    for (const f of semanticSast.findings) {
+      const category = 'semantic-sast';
+      const severity = f.severity === 'error' ? 'error' : 'warning';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  if (piiDataFlow) {
+    for (const f of piiDataFlow.findings) {
+      const category = 'pii-dataflow';
+      const severity = f.severity === 'error' ? 'error' : 'warning';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  if (duplication) {
+    for (const f of duplication.findings) {
+      const category = 'code-duplication';
+      const severity = 'warning'; // always advisory — duplication never blocks a run
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  if (apiSchema) {
+    for (const f of apiSchema.findings) {
+      const category = 'api-schema-lint';
+      const severity = f.severity === 'error' ? 'error' : 'warning';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
   }
 
   if (llm && llm.available) {

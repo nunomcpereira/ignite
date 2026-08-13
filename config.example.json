@@ -56,6 +56,62 @@
       "enabled": false,
       "binary": "gitleaks",
       "configPath": ""
+    },
+    "trivy": {
+      "enabled": true,
+      "binary": "trivy"
+    },
+    "checkov": {
+      "enabled": true,
+      "binary": "checkov"
+    },
+    "hadolint": {
+      "enabled": true,
+      "binary": "hadolint"
+    },
+    "cosign": {
+      "enabled": true,
+      "binary": "cosign",
+      "identityRegexp": ".*",
+      "issuerRegexp": ".*"
+    },
+    "semgrep": {
+      "enabled": true,
+      "binary": "semgrep",
+      "config": "p/security-audit"
+    },
+    "bearer": {
+      "enabled": true,
+      "binary": "bearer"
+    }
+  },
+  "compliance": {
+    "posture": {
+      "enabled": true,
+      "ruleset": ""
+    }
+  },
+  "metrics": {
+    "jscpd": {
+      "enabled": false,
+      "binary": "jscpd"
+    },
+    "gocloc": {
+      "enabled": true,
+      "binary": "gocloc"
+    }
+  },
+  "api": {
+    "spectral": {
+      "enabled": true,
+      "binary": "spectral",
+      "ruleset": ""
+    }
+  },
+  "sbom": {
+    "syft": {
+      "enabled": true,
+      "binary": "syft"
     }
   },
   "phases": [

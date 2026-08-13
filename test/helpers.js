@@ -162,4 +162,255 @@ process.exit(1);
   return dir;
 }
 
-module.exports = { withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools };
+/**
+ * Writes a small Node script that stands in for the real `trivy` CLI, so
+ * tests can exercise the IaC-scan integration without requiring trivy to be
+ * installed. Understands just enough of the real CLI surface: `--version`
+ * and `config ... --output <path>`.
+ */
+async function makeFakeTrivy(results) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-trivy-'));
+  const scriptPath = path.join(dir, 'trivy');
+  const script = `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  process.stdout.write('Version: fake-trivy 1.0.0\\n');
+  process.exit(0);
+}
+if (args[0] === 'config') {
+  const idx = args.indexOf('--output');
+  const outputPath = args[idx + 1];
+  fs.writeFileSync(outputPath, ${JSON.stringify(JSON.stringify({ Results: results }))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `checkov` CLI, so
+ * tests can exercise the supplemental IaC-scan integration without
+ * requiring checkov to be installed. Understands just enough of the real
+ * CLI surface: `--version` and `-d ... --output json`. `report` is written
+ * verbatim as the single-framework object shape ({check_type, results});
+ * pass an array to exercise the multi-framework shape instead.
+ */
+async function makeFakeCheckov(report) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-checkov-'));
+  const scriptPath = path.join(dir, 'checkov');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  process.stdout.write('1.0.0\\n');
+  process.exit(0);
+}
+if (args.includes('-d')) {
+  process.stdout.write(${JSON.stringify(JSON.stringify(report))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `hadolint` CLI, so
+ * tests can exercise the supplemental Dockerfile-lint integration without
+ * requiring hadolint to be installed. Understands just enough of the real
+ * CLI surface: `--version` and `--format json <files...>`.
+ */
+async function makeFakeHadolint(results) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-hadolint-'));
+  const scriptPath = path.join(dir, 'hadolint');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  process.stdout.write('Haskell Dockerfile Linter 1.0.0\\n');
+  process.exit(0);
+}
+if (args[0] === '--format') {
+  process.stdout.write(${JSON.stringify(JSON.stringify(results))});
+  process.exit(${results.length > 0 ? 1 : 0});
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `syft` CLI, so
+ * tests can exercise the SBOM-generation integration without requiring
+ * syft to be installed. Understands just enough of the real CLI surface:
+ * `version` and `<path> -o cyclonedx-json=<file>`.
+ */
+async function makeFakeSyft(sbom) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-syft-'));
+  const scriptPath = path.join(dir, 'syft');
+  const script = `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === 'version') {
+  process.stdout.write('Application: syft\\nVersion: 1.0.0\\n');
+  process.exit(0);
+}
+const outArg = args.find((a) => a.startsWith('cyclonedx-json='));
+if (outArg) {
+  fs.writeFileSync(outArg.slice('cyclonedx-json='.length), ${JSON.stringify(JSON.stringify(sbom))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `cosign` CLI, so
+ * tests can exercise the image-signature integration without requiring
+ * cosign (or real network/registry access) to be installed. `verifiedImages`
+ * is the set of image references that should verify successfully (exit 0);
+ * every other `verify` invocation exits 1, matching cosign's real behavior
+ * for an unsigned/unverifiable image.
+ */
+async function makeFakeCosign(verifiedImages) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-cosign-'));
+  const scriptPath = path.join(dir, 'cosign');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'version') { process.stdout.write('fake-cosign 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'verify') {
+  const image = args[args.length - 1];
+  const verified = ${JSON.stringify(verifiedImages)};
+  if (verified.includes(image)) { process.stdout.write('Verification for ' + image + ' --\\n'); process.exit(0); }
+  process.stderr.write('Error: no signatures found\\n');
+  process.exit(1);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `semgrep` CLI, so
+ * tests can exercise the semantic-SAST integration without requiring
+ * semgrep (or registry/network access) to be installed. Understands just
+ * enough of the real CLI surface: `--version` and `scan --json ...`.
+ */
+async function makeFakeSemgrep(results) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-semgrep-'));
+  const scriptPath = path.join(dir, 'semgrep');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('1.0.0\\n'); process.exit(0); }
+if (args[0] === 'scan') {
+  process.stdout.write(${JSON.stringify(JSON.stringify({ results, errors: [] }))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `bearer` CLI, so
+ * tests can exercise the PII/data-flow integration without requiring
+ * bearer (or its git-context bookkeeping) to be installed. Understands
+ * just enough of the real CLI surface: `version` and `scan ... --format json`.
+ */
+async function makeFakeBearer(bySeverity) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-bearer-'));
+  const scriptPath = path.join(dir, 'bearer');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'version') { process.stdout.write('bearer version 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'scan') {
+  process.stdout.write(${JSON.stringify(JSON.stringify(bySeverity))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `jscpd` CLI, so
+ * tests can exercise the duplication-scan integration without requiring
+ * jscpd to be installed. Understands just enough of the real CLI surface:
+ * `--version` and `<path> --reporters json --output <dir>`.
+ */
+async function makeFakeJscpd(report) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-jscpd-'));
+  const scriptPath = path.join(dir, 'jscpd');
+  const script = `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('cpd 1.0.0\\n'); process.exit(0); }
+const idx = args.indexOf('--output');
+if (idx !== -1) {
+  const outDir = args[idx + 1];
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, 'jscpd-report.json'), ${JSON.stringify(JSON.stringify(report))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `gocloc` CLI, so
+ * tests can exercise the LOC-metrics integration without requiring gocloc
+ * to be installed. Understands just enough of the real CLI surface:
+ * `--version` and `--output-type json <path>`.
+ */
+async function makeFakeGocloc(metrics) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-gocloc-'));
+  const scriptPath = path.join(dir, 'gocloc');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('gocloc 1.0.0\\n'); process.exit(0); }
+if (args.includes('--output-type')) {
+  process.stdout.write(${JSON.stringify(JSON.stringify(metrics))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `spectral` CLI, so
+ * tests can exercise the API-schema-lint integration without requiring
+ * spectral to be installed. Understands just enough of the real CLI
+ * surface: `--version` and `lint ... --format json`.
+ */
+async function makeFakeSpectral(results) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-spectral-'));
+  const scriptPath = path.join(dir, 'spectral');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('1.0.0\\n'); process.exit(0); }
+if (args[0] === 'lint') {
+  process.stdout.write(${JSON.stringify(JSON.stringify(results))});
+  process.exit(${results.length > 0 ? 1 : 0});
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+module.exports = {
+  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral,
+};
