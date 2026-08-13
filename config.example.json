@@ -94,7 +94,9 @@
   "metrics": {
     "jscpd": {
       "enabled": false,
-      "binary": "jscpd"
+      "binary": "jscpd",
+      "minLines": 5,
+      "minTokens": 50
     },
     "gocloc": {
       "enabled": true,

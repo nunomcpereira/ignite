@@ -183,3 +183,48 @@ rules:
       category: rate-limiting
       tier: strong
     pattern-regex: (rateLimit\(\{|new\s+RateLimiterRedis\(|Bucket4j\.builder\(|RateLimiter\.create\(|@ratelimit\(|Rack::Attack\.throttle\()
+
+  # ---------------------------------------------------------------------
+  # Identity & Secret Hygiene — the two most common gaps in an otherwise
+  # well-designed app: single-factor login, and secrets read straight out
+  # of environment variables/config files instead of a managed vault.
+  # ---------------------------------------------------------------------
+  - id: posture-mfa-2fa-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      MFA/2FA (TOTP) library referenced (import/dependency only — no
+      confirmed verification call found by the -strong rule).
+    metadata:
+      category: mfa-2fa
+      tier: weak
+    pattern-regex: (speakeasy|otplib|pyotp|django-otp|devise-two-factor|rotp|com\.warrenstrange\.googleauth|authy)
+
+  - id: posture-mfa-2fa-strong
+    languages: [generic]
+    severity: INFO
+    message: "MFA/2FA (TOTP) code verified at a challenge/login call site."
+    metadata:
+      category: mfa-2fa
+      tier: strong
+    pattern-regex: (speakeasy\.totp\.verify\(|totp\.verify\(|pyotp\.TOTP\(|authenticator\.verify\(|GoogleAuthenticator\(\)\.authorize\(|TwoFactorAuthenticationProvider|verifyMfaChallenge\()
+
+  - id: posture-secrets-management-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Secrets-manager/vault client library referenced (import/dependency
+      only — no confirmed secret-fetch call found by the -strong rule).
+    metadata:
+      category: secrets-management
+      tier: weak
+    pattern-regex: (hashicorp/vault|node-vault|@aws-sdk/client-secrets-manager|azure-keyvault-secrets|com\.google\.cloud\.secretmanager|com\.bettercloud\.vault|doppler|python-dotenv-vault)
+
+  - id: posture-secrets-management-strong
+    languages: [generic]
+    severity: INFO
+    message: "Secret fetched at runtime from a managed vault/secrets manager."
+    metadata:
+      category: secrets-management
+      tier: strong
+    pattern-regex: (vault\.read\(|vaultClient\.read\(|secretsManagerClient\.getSecretValue\(|new\s+SecretClient\(|secretmanager\.accessSecretVersion\(|SecretsManagerClient\(\)\.getSecretValue\()

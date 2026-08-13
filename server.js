@@ -147,7 +147,15 @@ function loadConfig() {
       // blocking). Off by default. No built-in fallback: duplicate-block
       // detection needs the real tool, so this simply contributes nothing
       // when disabled/missing.
-      jscpd: { enabled: false, binary: 'jscpd' },
+      // minLines/minTokens (jscpd's own defaults) are now passed to the
+      // CLI explicitly rather than left implicit, and checkCodeDuplication
+      // additionally drops any reported clone shorter than minLines or
+      // whose duplicated span is pure punctuation (stray closing
+      // brackets/braces) — jscpd's per-clone `lines` count can otherwise
+      // undercount a dense, bracket-heavy line that clears minTokens while
+      // spanning ~1 real line, surfacing single-line/bracket-only
+      // "duplicates" that aren't a meaningful block.
+      jscpd: { enabled: false, binary: 'jscpd', minLines: 5, minTokens: 50 },
       // Optional: precise per-language LOC counts via gocloc
       // (https://github.com/hhatto/gocloc) — purely descriptive, attached
       // as a downloadable project document (same as the SBOM), never
@@ -266,6 +274,8 @@ function loadConfig() {
     merged.metrics.jscpd.enabled = String(process.env.JSCPD_ENABLED) === 'true';
   }
   if (process.env.JSCPD_BINARY) merged.metrics.jscpd.binary = process.env.JSCPD_BINARY;
+  if (process.env.JSCPD_MIN_LINES) merged.metrics.jscpd.minLines = Number(process.env.JSCPD_MIN_LINES);
+  if (process.env.JSCPD_MIN_TOKENS) merged.metrics.jscpd.minTokens = Number(process.env.JSCPD_MIN_TOKENS);
   if (process.env.GOCLOC_ENABLED !== undefined) {
     merged.metrics.gocloc.enabled = String(process.env.GOCLOC_ENABLED) === 'true';
   }
@@ -533,6 +543,8 @@ const POSTURE_RULESET = String(CONFIG.compliance.posture.ruleset || path.join(__
 /* Optional jscpd-powered code-duplication scan (see CONFIG.metrics.jscpd) */
 const JSCPD_ENABLED = Boolean(CONFIG.metrics.jscpd.enabled);
 const JSCPD_BINARY = String(CONFIG.metrics.jscpd.binary || 'jscpd');
+const JSCPD_MIN_LINES = Number(CONFIG.metrics.jscpd.minLines) || 5;
+const JSCPD_MIN_TOKENS = Number(CONFIG.metrics.jscpd.minTokens) || 50;
 
 /* Optional gocloc-powered LOC metrics (see CONFIG.metrics.gocloc) */
 const GOCLOC_ENABLED = Boolean(CONFIG.metrics.gocloc.enabled);
@@ -558,6 +570,18 @@ const SKIP_DIRS = Object.freeze(new Set([
   '.idea',
   '.vscode',
 ])) ;
+
+// Same directory names as SKIP_DIRS, as a regex for external tools that
+// take their own exclude pattern (gocloc's --not-match-d, used with
+// --fullpath) instead of doing the walk themselves — keeps
+// generateLocMetrics's file set in sync with walkFiles's, so a language
+// filtered in Studio's LOC Metrics view always has matching entries in the
+// Studio file tree built from walkFiles. Must be anchored on '/' on both
+// sides (not '^...$') — gocloc matches --not-match-d against the full
+// path, so an unanchored-at-both-ends alternation like '^(node_modules|...)$'
+// only ever matches a path consisting of nothing but that one directory
+// name, never a real nested path like '.../node_modules/pkg/native.c'.
+const SKIP_DIRS_REGEX = `(^|/)(${[...SKIP_DIRS].map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(/|$)`;
 
 const BINARY_EXTENSIONS = Object.freeze(new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
@@ -2385,6 +2409,15 @@ async function semgrepTooling() {
 
 const SEMGREP_SEVERITY_TO_ISSUE = { ERROR: 'error', WARNING: 'warning', INFO: 'warning' };
 
+// "Unsanitized dynamic input in file path" fires from several distinct
+// path-traversal rules across p/security-audit's per-language rule packs,
+// each carrying its own hand-set severity metadata — so the same message
+// text lands as ERROR from one rule/file and WARNING from another with no
+// difference in actual confidence. Forced to warning regardless of which
+// rule matched or which file it fired in, same rationale (and pattern) as
+// BEARER_FORCE_WARNING_TITLES below.
+const SEMGREP_FORCE_WARNING_TITLES = [/unsanitized dynamic input in file path/i];
+
 // Semantic pattern-matching SAST via Semgrep OSS, run over the whole staged
 // project in one pass (semgrep does its own multi-language file discovery).
 // No built-in fallback when disabled/missing — there's no meaningful
@@ -2432,13 +2465,15 @@ async function checkSemanticSast(root, log) {
       let content = null;
       try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
       const semgrepSeverity = String(r.extra?.severity || 'WARNING').toUpperCase();
+      const message = r.extra?.message || 'Semgrep finding';
+      const forcedWarning = SEMGREP_FORCE_WARNING_TITLES.some((re) => re.test(message));
       findings.push({
         file: relFile,
         line,
         kind: String(r.check_id || 'semgrep-finding').toLowerCase(),
         tool: 'semgrep',
-        severity: SEMGREP_SEVERITY_TO_ISSUE[semgrepSeverity] || 'warning',
-        message: r.extra?.message || 'Semgrep finding',
+        severity: forcedWarning ? 'warning' : (SEMGREP_SEVERITY_TO_ISSUE[semgrepSeverity] || 'warning'),
+        message,
         code: content ? buildSnippet(content, line) : null,
       });
     }
@@ -2491,6 +2526,19 @@ async function ensureGitContextForBearer(root, log) {
 
 const BEARER_SEVERITY_TO_ISSUE = { critical: 'error', high: 'error', medium: 'warning', low: 'warning', warning: 'warning' };
 
+// Bearer buckets "Unsanitized external input in code generation" and
+// "Unsanitized dynamic input in file path" under high/critical by default,
+// which blocks a run outright — in practice these rules fire on
+// template/config generation and internal file-path assembly helpers
+// (job/run-id-based archive names, cache paths, etc.) with no attacker-
+// reachable input, so they read as lower-confidence, review-worthy
+// findings rather than hard blockers. Forced to warning regardless of
+// Bearer's own bucket, or of which file/rule instance fired.
+const BEARER_FORCE_WARNING_TITLES = [
+  /unsanitized external input in code generation/i,
+  /unsanitized dynamic input in file path/i,
+];
+
 // Sensitive data-flow (PII/GDPR) SAST via Bearer, which reports findings
 // pre-bucketed by severity ({critical:[...], high:[...], ...}) rather than
 // a flat array like semgrep/trivy. No built-in fallback when disabled or
@@ -2531,13 +2579,15 @@ async function checkPiiDataFlow(root, log) {
         const line = Number(e.line_number) || 1;
         let content = null;
         try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+        const title = e.title || 'Sensitive data-flow finding';
+        const forcedWarning = BEARER_FORCE_WARNING_TITLES.some((re) => re.test(title));
         findings.push({
           file: relFile,
           line,
           kind: String(e.id || 'pii-dataflow').toLowerCase(),
           tool: 'bearer',
-          severity: BEARER_SEVERITY_TO_ISSUE[severity] || 'warning',
-          message: e.title || 'Sensitive data-flow finding',
+          severity: forcedWarning ? 'warning' : (BEARER_SEVERITY_TO_ISSUE[severity] || 'warning'),
+          message: title,
           code: content ? buildSnippet(content, line) : null,
         });
       }
@@ -2573,19 +2623,37 @@ async function checkCodeDuplication(root, log) {
   log?.('Engine: jscpd CLI (External) — scanning for duplicated code blocks...');
   const outDir = path.join(os.tmpdir(), `ignite-jscpd-${crypto.randomBytes(8).toString('hex')}`);
   try {
-    await runTool('jscpd', [root, '--reporters', 'json', '--output', outDir, '--silent'], root, { allowedExitCodes: [0, 1] });
+    await runTool('jscpd', [
+      root, '--reporters', 'json', '--output', outDir, '--silent',
+      '--min-lines', String(JSCPD_MIN_LINES), '--min-tokens', String(JSCPD_MIN_TOKENS),
+    ], root, { allowedExitCodes: [0, 1] });
     const raw = await fsp.readFile(path.join(outDir, 'jscpd-report.json'), 'utf8').catch(() => null);
     if (raw === null) return { findings: [], engine: 'jscpd' };
     const data = JSON.parse(raw);
     const duplicates = Array.isArray(data.duplicates) ? data.duplicates : [];
     const findings = [];
     for (const dup of duplicates) {
+      // Defensive guard on top of --min-lines: jscpd's own `lines` count
+      // can still undercount for a duplicate that's really just
+      // punctuation (a run of closing brackets/braces), so also require
+      // the reported span to actually meet the configured minimum here.
+      const dupLines = Number(dup.lines) || 0;
+      if (dupLines < JSCPD_MIN_LINES) continue;
       const relFile = path.relative(root, path.resolve(root, dup.firstFile?.name || ''));
       const line = Number(dup.firstFile?.startLoc?.line) || 1;
+      const endLine = Number(dup.firstFile?.endLoc?.line) || line;
       const otherFile = dup.secondFile?.name || '?';
       const otherLine = Number(dup.secondFile?.startLoc?.line) || 1;
       let content = null;
       try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+      // Skip blocks whose duplicated span is nothing but punctuation/
+      // whitespace (stray closing braces, brackets, semicolons) — not a
+      // meaningful duplicate even if it cleared the token/line thresholds.
+      if (content) {
+        const spanLines = content.split('\n').slice(line - 1, endLine);
+        const meaningful = spanLines.some((l) => /[A-Za-z0-9_]/.test(l));
+        if (!meaningful) continue;
+      }
       findings.push({
         file: relFile,
         line,
@@ -2632,7 +2700,7 @@ async function generateLocMetrics(root, log) {
     // so Studio can offer "click a language, see just its files" — the
     // per-language `languages` summary below is aggregated from this same
     // per-file list rather than issuing a second gocloc call.
-    const { stdout } = await runTool('gocloc', ['--by-file', '--output-type', 'json', root], root);
+    const { stdout } = await runTool('gocloc', ['--by-file', '--output-type', 'json', '--fullpath', '--not-match-d', SKIP_DIRS_REGEX, root], root);
     const raw = stdout.trim() ? JSON.parse(stdout) : null;
     if (!raw) return { engine: 'gocloc', metrics: null };
     const files = await Promise.all((raw.files || []).map(async (f) => ({
@@ -2734,6 +2802,7 @@ async function checkApiSchemas(root, log) {
 const POSTURE_CATEGORIES = [
   'sso-saml-oidc', 'rbac-abac', 'audit-logging', 'siem-log-forwarding',
   'https-tls', 'backups-dr', 'encryption-at-rest', 'rate-limiting',
+  'mfa-2fa', 'secrets-management',
 ];
 
 // Mirrors ignite-posture-rules.yaml's pattern-regex bodies, narrower in
@@ -2774,6 +2843,14 @@ const POSTURE_FALLBACK_PATTERNS = {
   'rate-limiting': {
     weak: /express-rate-limit|bucket4j|django-ratelimit|rack-attack|flask-limiter|aspnetcoreratelimit/,
     strong: /rateLimit\(\{|new\s+RateLimiterRedis\(|Bucket4j\.builder\(|RateLimiter\.create\(|@ratelimit\(|Rack::Attack\.throttle\(/,
+  },
+  'mfa-2fa': {
+    weak: /speakeasy|otplib|pyotp|django-otp|devise-two-factor|rotp|com\.warrenstrange\.googleauth|authy/,
+    strong: /speakeasy\.totp\.verify\(|totp\.verify\(|pyotp\.TOTP\(|authenticator\.verify\(|GoogleAuthenticator\(\)\.authorize\(|TwoFactorAuthenticationProvider|verifyMfaChallenge\(/,
+  },
+  'secrets-management': {
+    weak: /hashicorp\/vault|node-vault|@aws-sdk\/client-secrets-manager|azure-keyvault-secrets|com\.google\.cloud\.secretmanager|com\.bettercloud\.vault|doppler|python-dotenv-vault/,
+    strong: /vault\.read\(|vaultClient\.read\(|secretsManagerClient\.getSecretValue\(|new\s+SecretClient\(|secretmanager\.accessSecretVersion\(|SecretsManagerClient\(\)\.getSecretValue\(/,
   },
 };
 
@@ -4479,6 +4556,33 @@ async function runOrtAnalyze(root, log) {
     const packages = data?.analyzer?.result?.packages || data?.result?.packages || [];
     if (!Array.isArray(packages) || packages.length === 0) return null;
 
+    // ORT's `packages` list is every resolved package in the graph — direct
+    // AND transitive. Ignite Studio's Dependencies view should mirror what
+    // the fallback manifest scanner shows (dependencies/devDependencies
+    // declared directly in the manifest), not the full resolved tree, so
+    // narrow to just the direct set using the per-ecosystem dependency
+    // graph: `dependency_graphs[<Type>].scopes[<scopeName>]` lists each
+    // scope's root entries, and each root's `root` field is an index
+    // directly into that same graph's `packages` id-string array (verified
+    // against a real `ort analyze` run — NOT a node index into `nodes`,
+    // despite nodes also wrapping a `{ pkg: <packageIndex> }`). A missing/
+    // unrecognized graph for a given ecosystem leaves that ecosystem
+    // unfiltered (old flattened behavior) rather than dropping it.
+    const dependencyGraphs = data?.analyzer?.result?.dependency_graphs || data?.result?.dependencyGraphs || {};
+    const directIdsByType = new Map();
+    for (const [type, graph] of Object.entries(dependencyGraphs)) {
+      const graphPackages = graph?.packages || [];
+      const scopes = graph?.scopes || {};
+      const ids = new Set();
+      for (const roots of Object.values(scopes)) {
+        for (const entry of roots || []) {
+          const id = graphPackages[entry?.root];
+          if (id) ids.add(id);
+        }
+      }
+      if (ids.size > 0) directIdsByType.set(type, ids);
+    }
+
     // Map each ecosystem to its manifest path via the analyzer's `projects`
     // list — the one place ORT records definition_file_path. When an
     // ecosystem has more than one project (e.g. a monorepo with two
@@ -4505,6 +4609,8 @@ async function runOrtAnalyze(root, log) {
       const id = String(pkg.id || '');
       const [type, , name, version] = id.split(':'); // "Type:Namespace:Name:Version"
       if (!type || !name) continue;
+      const directIds = directIdsByType.get(type);
+      if (directIds && !directIds.has(id)) continue; // transitive-only — skip
       const declared = pkg.declared_licenses || pkg.declaredLicenses
         || (pkg.declared_licenses_processed?.spdx_expression ? [pkg.declared_licenses_processed.spdx_expression] : [])
         || (pkg.declaredLicensesProcessed?.spdxExpression ? [pkg.declaredLicensesProcessed.spdxExpression] : []);
@@ -5545,6 +5651,17 @@ app.post('/api/pipeline/onboard', async (req, res) => {
 
       issues = [...collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema }), ...licenseIssues];
     }
+    // Persisted as soon as they're known — including the per-file/line
+    // detail (file, line, summary, snippet) collectPhase4Issues carries —
+    // so this run's "N issues" entry in the recent-projects list is
+    // populated even if phase 4's override gate below throws and the run
+    // never reaches provisioning. Re-persisted after overrides are applied
+    // (see below) so overridden issues flip to status 'overridden' instead
+    // of staying 'open'.
+    let appliedOverrideIds = [];
+    if (projectId !== null) {
+      try { store.replaceProjectIssues(projectId, issues, appliedOverrideIds); } catch { /* best-effort */ }
+    }
     const errorIssues = issues.filter((i) => i.severity === 'error');
 
     const issuesRequiringOverride =
@@ -5563,6 +5680,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
         log3(`⚠ ${applied.length} flagged issue(s) overridden by ${actor.email}:`);
         applied.forEach(({ issue, justification }) => log3(`    ⚠ [override] [${issue.severity}] ${issue.file}:${issue.line} — ${issue.summary} — "${justification}"`));
         await recordOverrides({ projectId, jobId, org, repo, phase: 4, actor, applied });
+        appliedOverrideIds = applied.map(({ issue }) => issue.id);
+        if (projectId !== null) {
+          try { store.replaceProjectIssues(projectId, issues, appliedOverrideIds); } catch { /* best-effort */ }
+        }
       }
       if (!ok) {
         log3(`✗ ${unresolvedErrors.length} blocking finding(s) were not overridden:`);
