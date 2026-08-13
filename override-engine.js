@@ -48,6 +48,7 @@ const CATEGORY_SCORES = {
   'pii-dataflow': 7,
   'code-duplication': 2,
   'api-schema-lint': 4,
+  'dependency-vulnerability': 8,
 };
 
 /**
@@ -286,6 +287,46 @@ function collectLicenseIssues({ manifests, licenseFiles }) {
 }
 
 /**
+ * Turns scanDependencyVulnerabilities' per-dependency CVE/GHSA findings
+ * (deps.dev-backed — see server.js) into the same addressable-issue shape
+ * as collectLicenseIssues, so a known-critical vulnerability in a
+ * dependency gates a run exactly like a commercial license does, instead
+ * of only ever showing up in the on-demand Dependencies view.
+ * @param {{ manifests: Array<{file, dependencies: Array<{name, version, versionRange, line, vulnerabilities: Array<{id, title, aliases, cvss3Score, severity, url}>}>}> }} scan
+ * @returns {Array<{id, category, severity, score, summary, file, line}>}
+ */
+function collectDependencyVulnerabilityIssues({ manifests }) {
+  const issues = [];
+  const category = 'dependency-vulnerability';
+
+  for (const manifest of manifests || []) {
+    for (const dep of manifest.dependencies || []) {
+      for (const vuln of dep.vulnerabilities || []) {
+        const severity = vuln.severity === 'error' ? 'error' : 'warning';
+        const file = manifest.file;
+        const advisoryId = vuln.id || vuln.aliases?.[0] || 'unknown-advisory';
+        // Dep name + advisory id keeps the id stable and unique across
+        // edits and across the (common) case of one dependency carrying
+        // several distinct advisories at the same manifest line.
+        issues.push({
+          id: `${buildIssueId({ category, file, line: dep.line ?? null })}::${dep.name}::${advisoryId}`,
+          category,
+          severity,
+          score: scoreForIssue({ category, severity }),
+          summary: `${dep.name}@${dep.version || dep.versionRange || '?'} — ${advisoryId}`
+            + (vuln.title ? `: ${vuln.title}` : '')
+            + (typeof vuln.cvss3Score === 'number' ? ` (CVSS ${vuln.cvss3Score})` : ''),
+          file,
+          line: dep.line ?? null,
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
  * @param {Array} issues - from collectPhase4Issues
  * @param {Array<{issueId, justification}>} overrides - user-submitted
  * @returns {{ ok: boolean, unresolvedErrors: Array, applied: Array<{issue, justification}> }}
@@ -315,4 +356,7 @@ function validateOverrides(issues, overrides) {
   return { ok: unresolvedErrors.length === 0, unresolvedErrors, applied };
 }
 
-module.exports = { buildIssueId, collectPhase4Issues, collectLicenseIssues, validateOverrides, scoreForIssue };
+module.exports = {
+  buildIssueId, collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues,
+  validateOverrides, scoreForIssue,
+};

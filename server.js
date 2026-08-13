@@ -30,7 +30,9 @@ const path = require('path');
 const { createDbStore } = require('./db-store');
 const { createReviewDecisionStore } = require('./review-decisions-store');
 const { createAuth, isValidEmail } = require('./auth');
-const { collectPhase4Issues, collectLicenseIssues, validateOverrides, scoreForIssue } = require('./override-engine');
+const {
+  collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues, validateOverrides, scoreForIssue,
+} = require('./override-engine');
 
 /* ------------------------------------------------------------------ */
 /* Configuration: config.json < environment variables                  */
@@ -3936,6 +3938,12 @@ function resolveStudioContext(req, res) {
         runState.allIssues.push(...others, ...freshIssues);
         runState.persistIssuesSnapshot();
       },
+      replaceDependencyVulns: (freshIssues) => {
+        const others = runState.allIssues.filter((i) => i.category !== 'dependency-vulnerability');
+        runState.allIssues.length = 0;
+        runState.allIssues.push(...others, ...freshIssues);
+        runState.persistIssuesSnapshot();
+      },
     };
   }
 
@@ -3961,6 +3969,12 @@ function resolveStudioContext(req, res) {
           const current = store.getProjectIssues(projectId);
           const overriddenIds = new Set(current.filter((i) => i.status === 'overridden').map((i) => i.id));
           const merged = [...current.filter((i) => i.category !== 'license-compliance'), ...freshIssues];
+          store.replaceProjectIssues(projectId, merged, overriddenIds);
+        },
+        replaceDependencyVulns: (freshIssues) => {
+          const current = store.getProjectIssues(projectId);
+          const overriddenIds = new Set(current.filter((i) => i.status === 'overridden').map((i) => i.id));
+          const merged = [...current.filter((i) => i.category !== 'dependency-vulnerability'), ...freshIssues];
           store.replaceProjectIssues(projectId, merged, overriddenIds);
         },
       };
@@ -4052,22 +4066,34 @@ app.post('/api/pipeline/:jobId/studio/rescan', async (req, res) => {
     const freshLicenseIssues = collectLicenseIssues({ manifests: licenseScan.manifests, licenseFiles: licenseFileFindings })
       .map((issue) => ({ ...issue, phase: 3 }));
 
+    // Same reasoning as license compliance just above — the deps.dev CVE/GHSA
+    // scan Phase 3 runs on a fresh upload, so an edit that bumps a vulnerable
+    // dependency's version resolves that finding on "Rescan" too.
+    const depVulnManifests = await scanDependencyVulnerabilities(ctx.root);
+    const freshDependencyVulnIssues = collectDependencyVulnerabilityIssues({ manifests: depVulnManifests })
+      .map((issue) => ({ ...issue, phase: 3 }));
+
     const previousIssues = ctx.getIssues();
     const previousPhase4Ids = new Set(previousIssues.filter((i) => i.phase === 4).map((i) => i.id));
     const previousLicenseIds = new Set(previousIssues.filter((i) => i.category === 'license-compliance').map((i) => i.id));
+    const previousDependencyVulnIds = new Set(previousIssues.filter((i) => i.category === 'dependency-vulnerability').map((i) => i.id));
     const freshIds = new Set(freshIssues.map((i) => i.id));
     const freshLicenseIds = new Set(freshLicenseIssues.map((i) => i.id));
+    const freshDependencyVulnIds = new Set(freshDependencyVulnIssues.map((i) => i.id));
     const resolvedIds = [
       ...[...previousPhase4Ids].filter((id) => !freshIds.has(id)),
       ...[...previousLicenseIds].filter((id) => !freshLicenseIds.has(id)),
+      ...[...previousDependencyVulnIds].filter((id) => !freshDependencyVulnIds.has(id)),
     ];
     const newIds = [
       ...[...freshIds].filter((id) => !previousPhase4Ids.has(id)),
       ...[...freshLicenseIds].filter((id) => !previousLicenseIds.has(id)),
+      ...[...freshDependencyVulnIds].filter((id) => !previousDependencyVulnIds.has(id)),
     ];
 
     ctx.replacePhase4(freshIssues);
     ctx.replaceLicense(freshLicenseIssues);
+    ctx.replaceDependencyVulns(freshDependencyVulnIssues);
 
     res.json({ ok: true, issues: ctx.getIssues(), resolvedIds, newIds });
   } catch (e) {
@@ -4729,6 +4755,33 @@ async function runLicenseComplianceCheck(projectRoot, log) {
   }
 }
 
+// Same wiring as runLicenseComplianceCheck immediately above, for
+// scanDependencyVulnerabilities' deps.dev-backed CVE/GHSA findings — that
+// scanner already existed (Studio's Dependencies view, POST
+// /api/dependencies/vulnerabilities, the MCP check_dependency_vulnerabilities
+// tool) but never gated a run; this is what makes a known-critical
+// dependency vulnerability block onboarding the same way a commercial
+// license or a hardcoded secret does. Never throws: a deps.dev network
+// hiccup shouldn't fail structure audit.
+async function runDependencyVulnerabilityCheck(projectRoot, log) {
+  log('Check 6 — dependency vulnerability scan (known CVE/GHSA advisories via deps.dev)...');
+  try {
+    const manifests = await scanDependencyVulnerabilities(projectRoot);
+    const vulnIssues = collectDependencyVulnerabilityIssues({ manifests }).map((issue) => ({ ...issue, phase: 3 }));
+    if (vulnIssues.length > 0) {
+      const blocking = vulnIssues.filter((i) => i.severity === 'error').length;
+      log(`⚠ ${vulnIssues.length} dependency vulnerability finding(s) (${blocking} critical/high — CVSS ≥7):`);
+      vulnIssues.forEach((vi) => log(`    ${vi.severity === 'error' ? '✗' : '⚠'} ${vi.file}${vi.line ? ':' + vi.line : ''} — ${vi.summary}`));
+    } else {
+      log('✓ Check 6 passed — no known vulnerabilities found in resolved dependencies.');
+    }
+    return vulnIssues;
+  } catch (e) {
+    log(`⚠ Dependency vulnerability scan failed (non-blocking): ${e.message}`);
+    return [];
+  }
+}
+
 app.get('/api/pipeline/:jobId/studio/dependencies', async (req, res) => {
   const ctx = resolveStudioContext(req, res);
   if (!ctx) return;
@@ -5113,8 +5166,12 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     // License compliance runs first — the env-file check and unit tests
     // below throw on failure, and license findings must survive into the
     // combined issue list either way (same ordering as the interactive
-    // pipeline).
-    const licenseIssues = await runLicenseComplianceCheck(projectRoot, log2);
+    // pipeline). Dependency vulnerability findings ride along right after —
+    // same non-throwing, must-survive-a-later-failure reasoning.
+    const licenseIssues = [
+      ...await runLicenseComplianceCheck(projectRoot, log2),
+      ...await runDependencyVulnerabilityCheck(projectRoot, log2),
+    ];
 
     log2('Check 1 — scanning for raw environment files (.env*)...');
     const envCheck = await checkEnvFiles(projectRoot);
@@ -5498,7 +5555,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
 
     // License compliance runs first — same ordering rationale as the
     // interactive and validate-all pipelines: the checks below throw.
-    const licenseIssues = await runLicenseComplianceCheck(projectRoot, log2);
+    const licenseIssues = [
+      ...await runLicenseComplianceCheck(projectRoot, log2),
+      ...await runDependencyVulnerabilityCheck(projectRoot, log2),
+    ];
 
     log2('Check 1 — scanning for raw environment files (.env*)...');
     const envCheck = await checkEnvFiles(projectRoot);
@@ -6057,8 +6117,12 @@ app.post(
       // unit-test run below both throw on failure, and this fixture-style
       // project can fail either while still having license findings the
       // review gate must show. Findings are non-throwing issues, so
-      // collecting them before the hard checks loses nothing.
-      const licenseIssues = await runLicenseComplianceCheck(projectRoot, log2);
+      // collecting them before the hard checks loses nothing. Dependency
+      // vulnerability findings ride along right after, same reasoning.
+      const licenseIssues = [
+        ...await runLicenseComplianceCheck(projectRoot, log2),
+        ...await runDependencyVulnerabilityCheck(projectRoot, log2),
+      ];
       if (licenseIssues.length > 0) {
         allIssues.push(...licenseIssues);
         persistIssuesSnapshot();

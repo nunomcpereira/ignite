@@ -1271,12 +1271,18 @@
       'encapsulation':      { label: 'LLM encapsulation review', area: 'Quality', always: false },
       'dependency':         { label: 'LLM dependency risk review', area: 'Dependencies', always: false },
       'license-compliance': { label: 'Dependency & LICENSE-file license compliance (ORT/licensee/deps.dev)', area: 'Dependencies', always: true },
+      'dependency-vulnerability': { label: 'Dependency CVE/GHSA advisories (deps.dev)', area: 'Dependencies', always: true },
       'api-schema-lint':    { label: 'API schema lint (Spectral)', area: 'API & Schema', always: true },
       'structure-audit':    { label: 'Structure audit (.env file denial)', area: 'Process & Governance', always: false },
       'gxp-documents':      { label: 'GxP validation documents', area: 'Process & Governance', always: false },
       'governance-ci':      { label: 'Org governance CI (act)', area: 'Process & Governance', always: false },
       'input-validation':   { label: 'Input & metadata validation', area: 'Process & Governance', always: false },
     };
+    // The two phase-3 categories (license-compliance, dependency-vulnerability)
+    // that are still file-addressable like phase-4 findings, so they belong on
+    // Studio's tree badges/file views too — everything else in phase 3
+    // (structure-audit, gxp-documents) is process-level, not per-file.
+    const STUDIO_PHASE3_CATEGORIES = new Set(['license-compliance', 'dependency-vulnerability']);
     const CHECK_AREA_ORDER = ['Security', 'Quality', 'Dependencies', 'API & Schema', 'Process & Governance', 'Other'];
 
     function buildChecksReportByArea(issues) {
@@ -1663,9 +1669,9 @@
 
       try {
         const issuesRes = await (await fetch(`/api/pipeline/${jobId}/issues`)).json();
-        // Phase-4 findings plus phase-3 license-compliance ones — both are
-        // file-addressable, so both belong on the tree badges and file views.
-        studioState.issues = (issuesRes.issues || []).filter((i) => i.phase === 4 || i.category === 'license-compliance');
+        // Phase-4 findings plus the file-addressable phase-3 categories —
+        // both belong on the tree badges and file views.
+        studioState.issues = (issuesRes.issues || []).filter((i) => i.phase === 4 || STUDIO_PHASE3_CATEGORIES.has(i.category));
       } catch { studioState.issues = []; }
       renderStudioSummaryBar();
 
@@ -2292,7 +2298,7 @@
         const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/rescan`, { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Rescan failed.');
-        studioState.issues = (data.issues || []).filter((i) => i.phase === 4 || i.category === 'license-compliance');
+        studioState.issues = (data.issues || []).filter((i) => i.phase === 4 || STUDIO_PHASE3_CATEGORIES.has(i.category));
         renderStudioTree(await studioCurrentFiles());
         if (studioState.currentPath) studioMarkActiveFile(studioState.currentPath);
         const resolvedNote = data.resolvedIds?.length ? `${data.resolvedIds.length} issue(s) resolved.` : 'No issues resolved by this change.';
