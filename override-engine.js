@@ -49,6 +49,7 @@ const CATEGORY_SCORES = {
   'code-duplication': 2,
   'api-schema-lint': 4,
   'dependency-vulnerability': 8,
+  'malicious-dependency': 9,
 };
 
 /**
@@ -72,9 +73,10 @@ function scoreForIssue({ category, severity }) {
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [piiDataFlow]
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [duplication]
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [apiSchema]
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [maliciousDependencies]
  * @returns {Array<{id, category, severity, score, summary, file, line}>}
  */
-function collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema, maliciousDependencies }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -207,6 +209,23 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, s
         file: f.file,
         line: f.line,
         snippet: f.code || null,
+      });
+    }
+  }
+
+  if (maliciousDependencies) {
+    for (const f of maliciousDependencies.findings) {
+      const category = 'malicious-dependency';
+      const severity = 'error'; // GuardDog's whole purpose is malicious-code heuristics, not style/license findings
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: null,
       });
     }
   }

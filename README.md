@@ -51,6 +51,7 @@ Phase 4's displayed name drops to **"Security & Compliance Scan"** (from "Securi
 | 4 | PII/GDPR data-flow | Bearer traces personal data (request params, user objects) reaching a sink (logs, DB writes, 3rd-party calls) — only findings Bearer itself tags as PII/Personal-Data-relevant; its broader generic-security findings (path traversal, weak crypto, ...) are filtered out rather than mislabeled as PII, since Semgrep already covers that ground. **On by default** — needs a git context, which Ignite stages automatically. | On/off |
 | 4 | Code duplication | jscpd flags a duplicated code block above its default threshold. Always advisory (warning), never blocking. **Off by default.** | Off by default |
 | 4 | API schema lint | Spectral lints every discovered OpenAPI/AsyncAPI file (found by content, not filename) against its bundled ruleset (`spectral:oas` + `spectral:asyncapi` by default). | On/off |
+| 4 | Malicious dependency | GuardDog flags a supply-chain-attack pattern (install-script exfiltration, obfuscated payload, silent network call, typosquatting) in an npm/PyPI dependency, independent of whether a CVE has been published. **On by default** (downloads and inspects every dependency's real package contents — slower/heavier than the rest of Phase 4; set `GUARDDOG_ENABLED=false` to opt out). | On/off |
 | 5 | Org governance CI (act) | Any job of the central `ai-guardrails-orchestrator.yml` fails when executed locally in Docker. Soft-skipped if `act`/Docker are unavailable. | On/off |
 | 6 | Shipping | Any `git`/`gh` command exits non-zero | Always on (`dryRun` is the "don't ship" switch, not a phase toggle) |
 
@@ -85,7 +86,7 @@ A failed check halts the pipeline, reports offending file paths and line numbers
 
 ## External tools
 
-Ignite integrates with thirteen optional external tools (plus a fourteenth compliance-posture check that reuses Semgrep rather than adding its own binary) across dependency/license, secret, IaC/container, supply-chain, SAST, code-metrics, API-schema, and compliance-posture scanning. **Every one is a soft dependency** — Ignite works without any of them installed, falling back to its own built-in scanner (or simply contributing nothing, for tools with no meaningful heuristic substitute), and never fails a run because one is missing. `GET /api/tools/status` reports live connected/disconnected state for each (also shown as a panel in the top-right corner of the UI, next to the sign-in button); which one actually ran shows up in the relevant view's "Engine:" line and in Phase 3/4's terminal log, e.g. `Engine: Trivy CLI (External)` vs. `Engine: Ignite Built-In Pattern Matcher (Fallback)`.
+Ignite integrates with fourteen optional external tools (plus a fifteenth compliance-posture check that reuses Semgrep rather than adding its own binary) across dependency/license, secret, IaC/container, supply-chain, SAST, code-metrics, API-schema, and compliance-posture scanning. **Every one is a soft dependency** — Ignite works without any of them installed, falling back to its own built-in scanner (or simply contributing nothing, for tools with no meaningful heuristic substitute), and never fails a run because one is missing. `GET /api/tools/status` reports live connected/disconnected state for each (also shown as a panel in the top-right corner of the UI, next to the sign-in button); which one actually ran shows up in the relevant view's "Engine:" line and in Phase 3/4's terminal log, e.g. `Engine: Trivy CLI (External)` vs. `Engine: Ignite Built-In Pattern Matcher (Fallback)`.
 
 | Tool | What it does in Ignite | Install |
 |---|---|---|
@@ -103,6 +104,7 @@ Ignite integrates with thirteen optional external tools (plus a fourteenth compl
 | [gocloc](https://github.com/hhatto/gocloc) | Per-language LOC counts, attached as a downloadable project document. Purely descriptive — never produces issues. **On by default.** | `brew install gocloc` |
 | [Spectral](https://github.com/stoplightio/spectral) | Lints every discovered OpenAPI/AsyncAPI file (found by content-sniffing, not filename) against Spectral's ruleset — org REST/AsyncAPI conventions, not just schema validity. **On by default.** Ruleset defaults to the bundled `spectral-default-ruleset.yaml` (`spectral:oas` + `spectral:asyncapi`); point `SPECTRAL_RULESET` at your own for org-specific conventions. | `npm install -g @stoplight/spectral-cli` |
 | **Compliance & Feature Posture Engine** — reuses Semgrep | Classifies presence (`DETECTED`/`PARTIAL`/`MISSING`, never a blocking issue) of SSO/SAML/OIDC, RBAC/ABAC, audit logging, SIEM forwarding, HTTPS/TLS, backups/DR, encryption at rest, and rate limiting across TS/JS, Java, Go, Python, C#, and Ruby, via the bundled `ignite-posture-rules.yaml` ruleset. **On by default**, fully conditioned on Semgrep (no separate binary — reuses the same one above). Falls back to a built-in regex posture scanner (same weak/strong model, narrower coverage) when Semgrep is disabled or missing. | Same as Semgrep above |
+| [GuardDog](https://github.com/DataDog/guarddog) (Datadog) | Malicious-dependency heuristic scan — downloads and statically inspects every npm (`package.json`)/PyPI (`requirements.txt`) dependency's real package contents against Semgrep-based supply-chain-attack rules (install-script exfiltration, obfuscated/encoded payloads, silent network calls, typosquatting). Catches what a CVE database (deps.dev, above) structurally can't: a malicious package with no advisory yet. **On by default** — slower/heavier than the rest of Phase 4 (a real registry fetch + static inspection per dependency); set `GUARDDOG_ENABLED=false` to opt out in environments with many manifest dependencies. No built-in fallback. | `pip install guarddog` |
 
 ### Installing ORT
 
@@ -154,6 +156,38 @@ Every pipeline run (interactive, `validate-all`, and `onboard`) scans dependency
 - On demand, the same scan is also available standalone: `POST /api/dependencies/check` with `{ "projectPath": "..." }` (agent/CI use), or via the "Dependencies" button in Ignite Studio (useful for a byte-for-byte look at every manifest's raw compliance table, independent of the issue list).
 - **Range-floor resolution:** the fallback scanner's naive version pick from a manifest range (`^5.6.0` → look up `5.6.0`) 404s on deps.dev whenever that exact patch was never actually published — common, since plenty of packages skip an exact `.0` release or only ever pre-released it (real example: `typescript@^5.6.0` — npm's history goes `5.6.0-beta` → `5.6.0-dev.*` → `5.6.1-rc` → `5.6.2`, no plain `5.6.0`). Rather than reporting that as a blocking "license unknown" finding, it re-resolves against the package's real published version list and retries with the highest version the range actually matches — a package that's really missing from the registry is still correctly flagged.
 
+## Attack & risk coverage — what each check actually prevents
+
+Every check above exists to stop a specific class of real-world incident, not
+just to produce a finding for its own sake. This table maps each threat to
+the tool/check combination that catches it, and the phase it runs in —
+useful both for security review of Ignite itself and for explaining to a
+team *why* a given gate is blocking their push.
+
+| Threat / attack class | How Ignite catches it | Tool(s) / check | Phase |
+|---|---|---|---|
+| Committed raw `.env`/`.env.*` files leaking live credentials into repo history | Denies any `.env`/`.env.*` file anywhere in the tree (unless already `.gitignore`d) before anything else runs | Built-in structure audit | 3 |
+| Hardcoded secrets in source (API keys, passwords, tokens, private keys) | Regex scan over every text file; gitleaks runs as a supplemental pass over the same tree when enabled, merged and deduped against the regex hits | Built-in regex scan + [gitleaks](#gitleaks) (optional) | 4 |
+| Runaway/uncontrolled AI agent loops — unbounded LangChain/LangGraph `.invoke()`/`.stream()` calls (cost blowup, infinite loops, larger prompt-injection blast radius) | Flags any `.invoke(`/`.stream(`/`.ainvoke(`/`.astream(` call missing `recursion_limit` | Built-in AI-governance regex check | 4 |
+| Injection (SQL/command/template), path traversal, SSRF, insecure deserialization, XSS, broken auth/authz, weak crypto, unsafe `eval`/`exec`, prototype pollution, insecure temp files, missing input validation | Local LLM deep-scan reviews real source for these patterns; Semgrep's `p/security-audit` ruleset catches the same classes via static pattern matching, independently | LLM deep-scan (security pass) + [Semgrep](https://semgrep.dev) | 4 |
+| Dependency with a **known**, already-disclosed CVE/GHSA advisory | Resolves each manifest dependency's real version and cross-references deps.dev's aggregated OSV/GHSA data | Built-in scanner + [deps.dev](https://deps.dev) API | 3 |
+| Dependency that is **malicious but has no advisory yet** — install-script exfiltration, obfuscated/encoded payloads, silent network calls, typosquatting (the gap a CVE database can't cover, since a freshly-published malicious package has nothing to look up) | Downloads and statically inspects each npm/PyPI dependency's actual package contents against Semgrep-based supply-chain-attack heuristics | [GuardDog](https://github.com/DataDog/guarddog) (on by default — heavier, per-package registry fetch) | 4 |
+| Commercial/proprietary/unrecognized dependency licenses creating unreviewed IP/legal exposure; the project's own license terms | Resolves real per-dependency licenses (ORT, or the built-in manifest parser + deps.dev fallback) and classifies green/amber/red; scans every `LICENSE`/`LICENCE` file for commercial/proprietary language | [ORT](https://oss-review-toolkit.org/ort/) / [licensee](https://github.com/licensee/licensee) / deps.dev | 3 |
+| IaC/container misconfiguration — privileged containers, missing resource limits, insecure Terraform/Kubernetes/Helm settings, unpinned base images, missing `USER` | Trivy's config scanner is primary, supplemented by Checkov's larger policy set and hadolint's Dockerfile-only rules, deduped by file/line/rule-id; falls back to a built-in unpinned-tag/missing-`USER` heuristic when none are installed | [Trivy](https://github.com/aquasecurity/trivy) + [Checkov](https://www.checkov.io/) + [hadolint](https://github.com/hadolint/hadolint) | 4 |
+| Supply-chain base-image tampering — a Dockerfile `FROM` image with no verifiable provenance | Verifies Sigstore/cosign keyless signatures on every unique base image referenced; unsigned images are flagged (advisory) | [cosign](https://github.com/sigstore/cosign) | 4 |
+| Logical/semantic vulnerabilities beyond single-line pattern matching | Semgrep's registry rulesets (`p/security-audit` by default) | [Semgrep](https://semgrep.dev) | 4 |
+| PII/GDPR data-flow exposure — personal data (request params, user objects) reaching logs, DB writes, or third-party calls without controls | Traces data flow from source to sink, filtered to Bearer's own PII/Personal-Data-tagged findings only | [Bearer](https://github.com/Bearer/bearer) | 4 |
+| Copy-pasted vulnerable/stale logic drifting out of sync across a codebase | Flags duplicated code blocks above a configurable threshold (advisory — a maintainability/drift risk, not a direct exploit) | [jscpd](https://github.com/kucherenko/jscpd) (off by default) | 4 |
+| Insecure API design/contract violations in OpenAPI/AsyncAPI schemas | Lints every discovered schema file (found by content, not filename) against org REST/AsyncAPI conventions | [Spectral](https://github.com/stoplightio/spectral) | 4 |
+| Missing security/compliance controls that widen the attack surface even with no single vulnerable line — no SSO/MFA, no RBAC, no audit logging, no rate limiting, secrets read from plain env vars instead of a vault, etc. | Classifies *presence* (not vulnerabilities) of eight security/compliance categories as DETECTED/PARTIAL/MISSING via a dedicated Semgrep ruleset; built-in regex fallback when Semgrep is unavailable | Compliance & Feature Posture Engine (reuses Semgrep) | 4 |
+| Org-mandated security/compliance CI gates silently not enforced locally, only caught after a real PR | Runs the actual central `ai-guardrails-orchestrator.yml` (and every workflow it `uses:`) locally via `act`, so local pass/fail matches the real remote gate | [act](https://github.com/nektos/act) + Docker | 5 |
+| Unauthorized/unvetted code reaching the org's GitHub regardless of findings above | Provisioning + push only happens after every enabled phase passes (or every blocking issue is overridden with a justified, attributed, emailed audit record) | The pipeline gate itself (`collectPhase4Issues` / override engine) | 6 |
+| Zip-slip — a malicious archive entry resolving outside the staging directory | Every archive entry's resolved path is verified to stay inside the staging root before extraction; symlink entries are skipped entirely | Built-in extraction guard | pre-1 |
+| Zip-bomb / disk-exhaustion DoS via a malicious or oversized upload | Extracted size capped at 1 GB, upload capped at 250 MB | Built-in size guards | pre-1 |
+| Command injection via org/repo names or shelled-out tool arguments | Every `git`/`gh`/tool invocation uses `execFile` with argument arrays (no shell); org/repo names validated against GitHub's naming rules; commands restricted to a fixed allowlist (`ALLOWED_COMMANDS`) | Built-in sanitizers (`sanitizeCommand`/`sanitizeCliArgs`/`sanitizeCwd`) | all |
+| A repo drifting out of compliance *after* onboarding — a new vulnerable/malicious dependency merged later, with no one notified | Effectivated repos can opt into a scheduled (daily/weekly/monthly) re-check of the default branch (phases 1/3/4/5, no push); on failure, emails the repo's CODEOWNERS contact or files a GitHub issue if none can be resolved | Scheduled re-check + CODEOWNERS check | 3 (ongoing) |
+| A `CODEOWNERS`-less repo silently having no one accountable for findings | Advisory check for a `CODEOWNERS` file (root/`.github`/`docs`) and any email-address owner listed in it, surfaced in the pipeline log and used to route scheduled-check failures | Built-in CODEOWNERS check | 3 |
+
 ## Checks report — every check that ran, split by area
 
 Alongside "View flagged issues" (the problems only, downloadable as Markdown), a **📋 Checks report** button appears next to it — at the top of the page for the run that's live/just finished, and per-project in the Onboarded Projects history list for any past run. It lists every check Ignite performs, grouped by area (Security / Quality / Dependencies / API & Schema), each with a ✓ CLEAN / N WARNING(S) / N BLOCKING result — so a clean run reads as "12 checks ran, all clean" instead of an empty issues list that could just as easily mean "nothing was checked." It's also downloadable as Markdown.
@@ -170,7 +204,7 @@ Studio's top bar (reachable from the review gate, or the "Studio" button on a fi
 
 Findings from the other seven tools (IaC/Checkov/hadolint, cosign, Semgrep, Bearer, jscpd, Spectral) already flow into the same flagged-issues list secrets/AI-governance findings use — the project-wide summary bar just below the header breaks that list down by category (`iac-security`, `image-provenance`, `semantic-sast`, `pii-dataflow`, `code-duplication`, `api-schema-lint`, plus the pre-existing `secret`/`ai-governance`/`license-compliance`/etc.). Each category label is a button: clicking one narrows the file tree to only files with a finding in that category — a quick way to see everything one specific tool flagged without hunting file-by-file — and clicking it again (or the "✕ clear filter" button that appears) restores the full tree. Five of those six (all but jscpd, which is off by default) always show a chip even at zero findings; jscpd's `code-duplication` chip only appears once it's enabled and finds something.
 
-The right-hand "External tools" panel lists live connected/disconnected state for all fourteen tools (thirteen binaries + the posture engine, which shares Semgrep's) — same data as the top-right pill panel outside Studio, via `GET /api/tools/status`.
+The right-hand "External tools" panel lists live connected/disconnected state for all fifteen tools (fourteen binaries + the posture engine, which shares Semgrep's) — same data as the top-right pill panel outside Studio, via `GET /api/tools/status`.
 
 ## Hardening notes
 
@@ -530,7 +564,7 @@ CLIs onto a throwaway PATH so `runOrtAnalyze`/`runLicenseeDetect`/
 to the built-in fallback when both tools are missing/broken) without either
 tool actually installed.
 
-Each of the ten IaC/supply-chain/SAST/metrics/API tools added on top of
+Each of the eleven IaC/supply-chain/SAST/metrics/API tools added on top of
 that has its own test file, following the same pattern (config/env wiring,
 fake-CLI parsing/dedup/soft-fail coverage, plus a real-binary end-to-end
 test that self-skips via `t.skip()` when the tool isn't installed rather
@@ -544,6 +578,7 @@ than failing the suite):
 - `test/metrics-scan.test.js` — jscpd, gocloc
 - `test/spectral-scan.test.js` — spectral
 - `test/posture-scan.test.js` — Compliance & Feature Posture Engine (reuses semgrep; real end-to-end run is against the actual `ignite-posture-rules.yaml`, not a stand-in)
+- `test/guarddog-scan.test.js` — GuardDog malicious-dependency scan
 - `test/deps-version-resolution.test.js` — regression test (hits the real deps.dev API, self-skips if unreachable) for the range-floor-was-never-published false positive: proves `typescript@^5.6.0` and `@tanstack/react-table@^8.20.0` resolve to a real published version instead of a blocking "license unknown" finding, and that a genuinely nonexistent package is still correctly flagged.
 
 ### End-to-end (Playwright)

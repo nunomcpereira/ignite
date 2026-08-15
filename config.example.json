@@ -83,6 +83,10 @@
     "bearer": {
       "enabled": true,
       "binary": "bearer"
+    },
+    "guarddog": {
+      "enabled": true,
+      "binary": "guarddog"
     }
   },
   "compliance": {

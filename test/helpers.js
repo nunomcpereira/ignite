@@ -415,6 +415,34 @@ process.exit(1);
   return scriptPath;
 }
 
+/**
+ * Writes a small Node script that stands in for the real `guarddog` CLI, so
+ * tests can exercise the malicious-dependency integration without requiring
+ * guarddog (or real PyPI/npm registry access) to be installed. Understands
+ * `--version` and `<ecosystem> verify <file> --output-format json`.
+ * `reportByEcosystem` maps 'npm'/'pypi' to the JSON object guarddog would
+ * print for that invocation (keyed by "name==version" per its real output).
+ */
+async function makeFakeGuardDog(reportByEcosystem) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-guarddog-'));
+  const scriptPath = path.join(dir, 'guarddog');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('fake-guarddog 1.0.0\\n'); process.exit(0); }
+const reports = ${JSON.stringify(reportByEcosystem)};
+const ecosystem = args[0];
+if (args[1] === 'verify') {
+  const report = reports[ecosystem] || {};
+  process.stdout.write(JSON.stringify(report));
+  const hasIssues = Object.values(report).some((e) => (e.issues || 0) > 0 || Object.values(e.results || {}).some(Boolean));
+  process.exit(hasIssues ? 1 : 0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
 module.exports = {
-  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral,
+  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral, makeFakeGuardDog,
 };

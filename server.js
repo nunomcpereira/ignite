@@ -118,6 +118,20 @@ function loadConfig() {
       // bootstraps a throwaway one for a fresh ZIP/folder upload
       // automatically, so this isn't something you need to set up.
       bearer: { enabled: true, binary: 'bearer' },
+      // Optional: malicious-dependency heuristic scan via Datadog's GuardDog
+      // (https://github.com/DataDog/guarddog) — Semgrep-based rules that
+      // catch supply-chain-attack patterns (install-script exfiltration,
+      // obfuscated payloads, silent network calls) in npm/PyPI dependencies,
+      // independent of whether a CVE/GHSA advisory has been published yet
+      // (scanDependencyVulnerabilities above only catches already-known
+      // vulnerabilities). On by default — unlike the mostly-static tools
+      // above, GuardDog downloads and inspects every manifest dependency's
+      // actual package contents from the registry, which is slower and
+      // heavier than the rest of Phase 4; set GUARDDOG_ENABLED=false to opt
+      // out in environments with many manifest dependencies. No built-in
+      // fallback: this heuristic can't be meaningfully approximated without
+      // the real tool.
+      guarddog: { enabled: true, binary: 'guarddog' },
     },
     compliance: {
       // Optional: Compliance & Feature Posture Engine — scans for the
@@ -291,6 +305,10 @@ function loadConfig() {
     merged.security.bearer.enabled = String(process.env.BEARER_ENABLED) === 'true';
   }
   if (process.env.BEARER_BINARY) merged.security.bearer.binary = process.env.BEARER_BINARY;
+  if (process.env.GUARDDOG_ENABLED !== undefined) {
+    merged.security.guarddog.enabled = String(process.env.GUARDDOG_ENABLED) === 'true';
+  }
+  if (process.env.GUARDDOG_BINARY) merged.security.guarddog.binary = process.env.GUARDDOG_BINARY;
   if (process.env.POSTURE_ENABLED !== undefined) {
     merged.compliance.posture.enabled = String(process.env.POSTURE_ENABLED) === 'true';
   }
@@ -570,6 +588,10 @@ const SEMGREP_CONFIG = String(CONFIG.security.semgrep.config || 'p/security-audi
 const BEARER_ENABLED = Boolean(CONFIG.security.bearer.enabled);
 const BEARER_BINARY = String(CONFIG.security.bearer.binary || 'bearer');
 
+/* Optional GuardDog-powered malicious-dependency heuristic scan (see CONFIG.security.guarddog) */
+const GUARDDOG_ENABLED = Boolean(CONFIG.security.guarddog.enabled);
+const GUARDDOG_BINARY = String(CONFIG.security.guarddog.binary || 'guarddog');
+
 /* Optional Compliance & Feature Posture Engine — shares SEMGREP_BINARY (see CONFIG.compliance.posture) */
 const POSTURE_ENABLED = Boolean(CONFIG.compliance.posture.enabled);
 const POSTURE_RULESET = String(CONFIG.compliance.posture.ruleset || path.join(__dirname, 'ignite-posture-rules.yaml'));
@@ -630,7 +652,7 @@ const BINARY_EXTENSIONS = Object.freeze(new Set([
 const GITHUB_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // org login rules
 const REPO_NAME_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
 const SAFE_UPLOAD_SEGMENT_REGEX = /^[^\0/\\]+$/;
-const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral']));
+const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral', 'guarddog']));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -727,6 +749,7 @@ function runTool(tool, args, cwd, { env: envOverride = {}, allowedExitCodes = [0
       case 'cosign': return execute(COSIGN_BINARY);
       case 'semgrep': return execute(SEMGREP_BINARY);
       case 'bearer': return execute(BEARER_BINARY);
+      case 'guarddog': return execute(GUARDDOG_BINARY);
       case 'jscpd': return execute(JSCPD_BINARY);
       case 'gocloc': return execute(GOCLOC_BINARY);
       case 'spectral': return execute(SPECTRAL_BINARY);
@@ -1650,7 +1673,7 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
 
     if ((issue.includes('command injection') || issue.includes('user-supplied command') || issue.includes('child_process'))
       && relFile === 'server.js') {
-      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral'\]\)\);/.test(fileText);
+      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral', 'guarddog'\]\)\);/.test(fileText);
       const hasStrictSanitizers = /sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(/.test(fileText);
       const isRunnerZone = line >= 200 && line <= 360;
       if (hasCommandAllowlist && hasStrictSanitizers && isRunnerZone) {
@@ -2519,6 +2542,78 @@ async function checkImageProvenance(root, log) {
   return { findings, engine: 'cosign' };
 }
 
+async function guarddogTooling() {
+  try {
+    await runTool('guarddog', ['--version'], os.tmpdir());
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: '`guarddog` is not installed (pip install guarddog) — malicious-dependency heuristic scanning is skipped.' };
+  }
+}
+
+// GuardDog (https://github.com/DataDog/guarddog) verifies every dependency
+// in a manifest against Semgrep-based heuristics for supply-chain-attack
+// patterns (exfiltration in install scripts, obfuscated/encoded payloads,
+// silent network calls, typosquatting) — behavioral signals a known-CVE
+// database (deps.dev, scanDependencyVulnerabilities above) can't catch,
+// since a freshly-published malicious package has no advisory yet. Only
+// npm (package.json) and PyPI (requirements.txt) are supported — GuardDog
+// doesn't cover the other manifest ecosystems Ignite otherwise scans.
+const GUARDDOG_MANIFESTS = [
+  { file: 'package.json', ecosystem: 'npm' },
+  { file: 'requirements.txt', ecosystem: 'pypi' },
+];
+
+async function checkMaliciousDependencies(root, log) {
+  const tooling = GUARDDOG_ENABLED ? await guarddogTooling() : { ok: false, reason: 'guarddog is disabled (security.guarddog.enabled=false).' };
+  if (!tooling.ok) {
+    log?.(`⚠ GuardDog malicious-dependency scan skipped: ${tooling.reason}`);
+    return { findings: [], engine: 'disabled' };
+  }
+
+  const findings = [];
+  for await (const file of walkFiles(root)) {
+    const spec = GUARDDOG_MANIFESTS.find((m) => m.file === path.basename(file));
+    if (!spec) continue;
+    const rel = path.relative(root, file);
+    let report;
+    try {
+      const { stdout } = await runTool(
+        'guarddog',
+        [spec.ecosystem, 'verify', file, '--output-format', 'json'],
+        root,
+        { allowedExitCodes: [0, 1] } // GuardDog exits 1 (not 0) whenever it finds >=1 issue
+      );
+      report = JSON.parse(stdout);
+    } catch (e) {
+      log?.(`⚠ GuardDog scan of ${rel} failed: ${e.message}`);
+      continue;
+    }
+    // `guarddog <ecosystem> verify` reports one entry per manifest
+    // dependency, keyed by "name==version"/"name@version". Tolerant of
+    // exactly which shape a given GuardDog version emits: any entry
+    // carrying a positive `issues` count, or any truthy value in
+    // `results`, counts as a hit.
+    for (const [pkgKey, entry] of Object.entries(report || {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      const hitRules = Object.entries(entry.results || {})
+        .filter(([, v]) => v && v !== false)
+        .map(([ruleId]) => ruleId);
+      const issueCount = typeof entry.issues === 'number' ? entry.issues : hitRules.length;
+      if (issueCount <= 0 && hitRules.length === 0) continue;
+      findings.push({
+        file: rel,
+        line: null,
+        kind: 'malicious-dependency',
+        tool: 'guarddog',
+        severity: 'error',
+        message: `Dependency "${pkgKey}" flagged by GuardDog (${spec.ecosystem}): ${hitRules.length > 0 ? hitRules.join(', ') : `${issueCount} issue(s)`}.`,
+      });
+    }
+  }
+  return { findings, engine: 'guarddog' };
+}
+
 async function semgrepTooling() {
   try {
     const { stdout } = await runTool('semgrep', ['--version'], os.tmpdir());
@@ -3286,6 +3381,22 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
       },
     },
     {
+      name: 'maliciousDependencies',
+      run: async (blog) => {
+        blog('Check 12 — malicious-dependency heuristic scan (guarddog, npm/PyPI)...');
+        const maliciousDependencies = await checkMaliciousDependencies(projectRoot, blog);
+        if (maliciousDependencies.findings.length > 0) {
+          blog(`✗ ${maliciousDependencies.findings.length} suspicious dependency/dependencies flagged:`);
+          maliciousDependencies.findings.forEach((f) => blog(`    ✗ ${f.file} — ${f.message}`));
+        } else if (maliciousDependencies.engine === 'guarddog') {
+          blog('✓ Check 12 passed — no suspicious dependencies found.');
+        } else {
+          blog('✓ Check 12 skipped — guarddog disabled or not installed.');
+        }
+        return maliciousDependencies;
+      },
+    },
+    {
       name: 'posture',
       run: async (blog) => {
         blog('Check 11 — Compliance & Feature Posture Scan...');
@@ -3321,6 +3432,7 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     piiDataFlow: byName.piiDataFlow,
     duplication: byName.duplication,
     apiSchema: byName.apiSchema,
+    maliciousDependencies: byName.maliciousDependencies,
   });
   return { issues };
 }
@@ -4343,8 +4455,8 @@ app.get('/api/config', async (req, res) => {
 // is purely informational (drives the "connected/disconnected" pills in the
 // UI's top-right Tools panel), never gates anything itself.
 app.get('/api/tools/status', async (req, res) => {
-  const [ort, licensee, gitleaks, trivy, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral] = await Promise.all([
-    ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(),
+  const [ort, licensee, gitleaks, trivy, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog] = await Promise.all([
+    ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(),
   ]);
   res.json({
     ort: { ...ort, enabled: true },
@@ -4360,6 +4472,7 @@ app.get('/api/tools/status', async (req, res) => {
     jscpd: { ...jscpd, enabled: JSCPD_ENABLED },
     gocloc: { ...gocloc, enabled: GOCLOC_ENABLED },
     spectral: { ...spectral, enabled: SPECTRAL_ENABLED },
+    guarddog: { ...guarddog, enabled: GUARDDOG_ENABLED },
   });
 });
 
@@ -6838,5 +6951,6 @@ module.exports = {
   generateLocMetrics,
   checkApiSchemas,
   checkFeaturePosture,
+  checkMaliciousDependencies,
   normalizeWorkflowText,
 };

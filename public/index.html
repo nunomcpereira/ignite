@@ -1620,6 +1620,10 @@
         label: 'Spectral',
         info: 'Lints every discovered OpenAPI/AsyncAPI file against org REST/AsyncAPI conventions, not just schema validity. On by default when installed; no built-in fallback. Toggle via api.spectral.enabled; ruleset via api.spectral.ruleset.',
       },
+      guarddog: {
+        label: 'GuardDog',
+        info: 'Malicious-dependency heuristic scan (Datadog) — flags supply-chain-attack patterns (install-script exfiltration, obfuscated payloads, silent network calls) in npm/PyPI dependencies, independent of whether a CVE has been published yet. On by default (downloads and inspects every dependency’s real package contents — slower/heavier than the rest of Phase 4); no built-in fallback. Toggle via security.guarddog.enabled.',
+      },
     };
 
     function renderToolsBar(status) {
