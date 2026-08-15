@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { execFile } = require('node:child_process');
 
 const { withServerEnv, makeTempProject, makeFakeJscpd, makeFakeGocloc } = require('./helpers');
+const { collectPhase4Issues } = require('../override-engine');
 
 const noopLog = () => {};
 
@@ -105,6 +106,64 @@ test('checkCodeDuplication: parses fake jscpd JSON report into a warning finding
     assert.equal(findings[0].file, 'a.js');
     assert.equal(findings[0].severity, 'warning');
     assert.match(findings[0].message, /b\.js:1/);
+  })();
+});
+
+test('checkCodeDuplication: message and duplicateRef reference the full range of the other occurrence, not just its start line', async () => {
+  const jscpdBinary = await makeFakeJscpd({
+    duplicates: [{
+      format: 'typescript',
+      lines: 16,
+      firstFile: { name: 'a.js', startLoc: { line: 1 }, endLoc: { line: 9 } },
+      secondFile: { name: 'sub/b.js', startLoc: { line: 79 }, endLoc: { line: 94 } },
+    }],
+  });
+  await withServerEnv({ JSCPD_ENABLED: 'true', JSCPD_BINARY: jscpdBinary }, async (mod) => {
+    const dir = await makeTempProject({ 'a.js': DUP_BLOCK, 'sub/b.js': DUP_BLOCK.repeat(10) });
+    const { findings } = await mod.checkCodeDuplication(dir, noopLog);
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].message, /also found in sub\/b\.js:79-94\./);
+    assert.deepEqual(findings[0].duplicateRef, { file: 'sub/b.js', line: 79, endLine: 94 });
+  })();
+});
+
+test('collectPhase4Issues: threads a duplication finding\'s duplicateRef through to the issue Studio consumes', async () => {
+  const jscpdBinary = await makeFakeJscpd({
+    duplicates: [{
+      format: 'typescript',
+      lines: 16,
+      firstFile: { name: 'a.js', startLoc: { line: 1 }, endLoc: { line: 9 } },
+      secondFile: { name: 'sub/b.js', startLoc: { line: 79 }, endLoc: { line: 94 } },
+    }],
+  });
+  await withServerEnv({ JSCPD_ENABLED: 'true', JSCPD_BINARY: jscpdBinary }, async (mod) => {
+    const dir = await makeTempProject({ 'a.js': DUP_BLOCK, 'sub/b.js': DUP_BLOCK.repeat(10) });
+    const duplication = await mod.checkCodeDuplication(dir, noopLog);
+    const empty = { findings: [] };
+    const issues = collectPhase4Issues({ secrets: empty, governance: empty, llm: empty, duplication });
+    assert.equal(issues.length, 1);
+    assert.deepEqual(issues[0].duplicateRef, { file: 'sub/b.js', line: 79, endLine: 94 });
+  })();
+});
+
+test('checkCodeDuplication: snippet highlights the whole duplicated span, not just its first line', async () => {
+  const jscpdBinary = await makeFakeJscpd({
+    duplicates: [{
+      format: 'javascript',
+      lines: 9,
+      firstFile: { name: 'a.js', startLoc: { line: 1 }, endLoc: { line: 9 } },
+      secondFile: { name: 'b.js', startLoc: { line: 1 } },
+    }],
+  });
+  await withServerEnv({ JSCPD_ENABLED: 'true', JSCPD_BINARY: jscpdBinary }, async (mod) => {
+    const dir = await makeTempProject({ 'a.js': DUP_BLOCK, 'b.js': DUP_BLOCK });
+    const { findings } = await mod.checkCodeDuplication(dir, noopLog);
+    assert.equal(findings.length, 1);
+    const { code } = findings[0];
+    assert.equal(code.highlightLine, 1);
+    assert.equal(code.highlightEndLine, 9);
+    const lineNumbers = code.lines.map((l) => l.number);
+    for (let n = 1; n <= 9; n++) assert.ok(lineNumbers.includes(n), `expected line ${n} in snippet, got ${lineNumbers}`);
   })();
 });
 

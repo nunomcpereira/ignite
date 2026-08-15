@@ -46,6 +46,36 @@ test('scanDependencyVulnerabilities: unresolvable version range is reported, nev
   })();
 });
 
+async function hasNetwork() {
+  try {
+    const res = await fetch('https://api.deps.dev/v3/systems/npm/packages/react', { signal: AbortSignal.timeout(5000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+test('runDependencyVulnerabilityCheck: tags returned issues with phase 3 — this is what makes a known CVE gate a pipeline run (validate-all/onboard/interactive) the same way a hardcoded secret does', async (t) => {
+  if (!(await hasNetwork())) {
+    t.skip('no network access to api.deps.dev — skipping live resolution test');
+    return;
+  }
+  // vitest@2.1.8 carries real, stable GHSA-5xrq-8626-4rwp/GHSA-9crc-q9x8-hgqq
+  // advisories on deps.dev — a genuine, non-flaky vulnerability fixture.
+  await withServerEnv({}, async (mod) => {
+    const dir = await makeTempProject({
+      'package.json': JSON.stringify({ devDependencies: { vitest: '2.1.8' } }),
+    });
+    const issues = await mod.runDependencyVulnerabilityCheck(dir, () => {});
+    assert.ok(issues.length > 0, 'expected at least one dependency-vulnerability issue for vitest@2.1.8');
+    for (const issue of issues) {
+      assert.equal(issue.category, 'dependency-vulnerability');
+      assert.equal(issue.phase, 3);
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  })();
+});
+
 test('collectDependencyVulnerabilityIssues: turns manifest findings into addressable issues with the right severity', () => {
   const manifests = [
     {

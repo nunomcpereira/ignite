@@ -189,6 +189,7 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, s
         file: f.file,
         line: f.line,
         snippet: f.code || null,
+        duplicateRef: f.duplicateRef || null,
       });
     }
   }

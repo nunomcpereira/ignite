@@ -698,11 +698,12 @@
         category: issue.category, severity: issue.severity, file: issue.file,
         line: issue.line, summary: issue.summary, snippet,
       }));
+      const highlightEnd = Number.isInteger(snippet.highlightEndLine) ? snippet.highlightEndLine : snippet.highlightLine;
       const rows = snippet.lines.map((l) => {
         const raw = l.text || '';
-        const isHl = l.number === snippet.highlightLine;
+        const isHl = l.number >= snippet.highlightLine && l.number <= highlightEnd;
         let text;
-        if (isHl && Number.isInteger(snippet.highlightStart) && Number.isInteger(snippet.highlightEnd)) {
+        if (isHl && l.number === snippet.highlightLine && Number.isInteger(snippet.highlightStart) && Number.isInteger(snippet.highlightEnd)) {
           const before = escapeHtml(raw.slice(0, snippet.highlightStart));
           const mid = escapeHtml(raw.slice(snippet.highlightStart, snippet.highlightEnd)) || ' ';
           const after = escapeHtml(raw.slice(snippet.highlightEnd));
@@ -933,8 +934,14 @@
       const studioBtn = interactive && issue.file
         ? `<button type="button" class="open-studio-btn text-[11px] font-semibold text-violet-600 hover:underline" data-idx="${idx}" data-issue="${escapeAttr(JSON.stringify({
             id: issue.id, category: issue.category, severity: issue.severity, file: issue.file,
-            line: issue.line, summary: issue.summary, snippet: issue.snippet,
+            line: issue.line, summary: issue.summary, snippet: issue.snippet, duplicateRef: issue.duplicateRef,
           }))}">Open in Studio ⧉</button>`
+        : '';
+      // A code-duplication finding's summary references the *other*
+      // occurrence ("also found in X:79-95") — Studio only exists mid-review
+      // (interactive), so this is where a reader can actually follow it.
+      const dupRefBtn = interactive && issue.duplicateRef
+        ? `<button type="button" class="open-studio-dup-btn text-[11px] font-semibold text-violet-600 hover:underline" data-dup="${escapeAttr(JSON.stringify(issue.duplicateRef))}">Jump to duplicate ⧉</button>`
         : '';
       const snippetHtml = hasSnippet
         ? `<div class="code-preview hidden" data-idx="${idx}">${renderSnippet(issue.snippet, issue)}</div>`
@@ -961,6 +968,7 @@
               <span class="text-[11px] font-mono text-slate-400">${loc}</span>
               ${viewCodeBtn}
               ${studioBtn}
+              ${dupRefBtn}
             </div>
             <p class="text-xs text-slate-700 mt-1">${escapeHtml(issue.summary)}</p>
             ${snippetHtml}
@@ -1055,6 +1063,14 @@
           } catch { openStudio(state.reviewJobId, null, { fromReview: true }); }
         });
       });
+      list.querySelectorAll('.open-studio-dup-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          if (!state.reviewJobId) return;
+          try {
+            openStudioAtDuplicateRef(state.reviewJobId, JSON.parse(btn.dataset.dup));
+          } catch { /* malformed ref — nothing to navigate to */ }
+        });
+      });
     }
 
     // Anytime, read-only issues viewer — usable while a run is still in
@@ -1113,8 +1129,9 @@
         if (issue.snippet && Array.isArray(issue.snippet.lines) && issue.snippet.lines.length) {
           lines.push('');
           lines.push('```');
+          const hlEnd = Number.isInteger(issue.snippet.highlightEndLine) ? issue.snippet.highlightEndLine : issue.snippet.highlightLine;
           issue.snippet.lines.forEach((l) => {
-            const marker = l.number === issue.snippet.highlightLine ? '>' : ' ';
+            const marker = l.number >= issue.snippet.highlightLine && l.number <= hlEnd ? '>' : ' ';
             const text = issue.category === 'secret' ? redactSecrets(l.text) : l.text;
             lines.push(`${marker} ${l.number}: ${text}`);
           });
@@ -1626,7 +1643,7 @@
     /* while the review gate is paused for this job (see server.js's    */
     /* reviewActive gate — every request below 409s once it's not).     */
     /* ------------------------------------------------------------ */
-    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null };
+    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null };
 
     function studioIssuesForFile(relPath) {
       return studioState.issues.filter((i) => i.file === relPath);
@@ -2156,6 +2173,7 @@
       studioState.editing = false;
       studioState.dirty = false;
       studioState.suggestion = null;
+      studioState.jumpHighlightRange = null;
       studioMarkActiveFile(relPath);
       $('studioFilePath').textContent = relPath;
       $('studioDirtyBadge').classList.add('hidden');
@@ -2187,27 +2205,40 @@
     // them (studioIssuesForFile's order), so a badge on line N in the code
     // pane and the badge on a card in the panel always mean the same issue.
     function studioLineIssueMap(relPath) {
-      const map = new Map(); // line -> [{ num, issue }]
+      const map = new Map(); // line -> [{ num, issue, noBadge }]
       studioIssuesForFile(relPath).forEach((issue, i) => {
         if (!issue.line) return;
-        if (!map.has(issue.line)) map.set(issue.line, []);
-        map.get(issue.line).push({ num: i + 1, issue });
+        // Multi-line findings (e.g. a jscpd duplicate block) carry the span's
+        // end in issue.snippet.highlightEndLine — background-highlight every
+        // row in that span, not just where it starts, but keep the numbered
+        // badge on the first line only so it still maps 1:1 to the issue panel.
+        const endLine = Number.isInteger(issue.snippet?.highlightEndLine) ? issue.snippet.highlightEndLine : issue.line;
+        for (let line = issue.line; line <= endLine; line++) {
+          if (!map.has(line)) map.set(line, []);
+          map.get(line).push({ num: i + 1, issue, noBadge: line !== issue.line });
+        }
       });
       return map;
     }
 
     function renderStudioCodeView(content) {
       const lineIssues = studioState.currentPath ? studioLineIssueMap(studioState.currentPath) : new Map();
+      const jumpRange = studioState.jumpHighlightRange;
       const lines = content.split(/\r?\n/);
       const rows = lines.map((text, i) => {
         const n = i + 1;
         const hits = lineIssues.get(n) || [];
         const hasError = hits.some((h) => h.issue.severity === 'error');
         const isSelected = !studioState.suggestion && hits.some((h) => h.issue.id === studioState.selectedIssue?.id);
-        const bg = hits.length === 0 ? '' : isSelected
-          ? (hasError ? 'bg-rose-100' : 'bg-amber-100')
-          : (hasError ? 'bg-rose-50' : 'bg-amber-50');
-        const badges = hits.map((h) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}" title="${escapeAttr(h.issue.summary)}">${h.num}</span>`).join('');
+        // A duplicate-code finding's "also found in X:79-95" reference has
+        // no issue of its own at that spot (jscpd only anchors one finding
+        // per clone pair) — jumpHighlightRange is the ad-hoc equivalent so
+        // navigating there still shows the reader the whole matched block.
+        const inJumpRange = !!jumpRange && n >= jumpRange.line && n <= jumpRange.endLine;
+        const bg = hits.length > 0
+          ? (isSelected ? (hasError ? 'bg-rose-100' : 'bg-amber-100') : (hasError ? 'bg-rose-50' : 'bg-amber-50'))
+          : (inJumpRange ? 'bg-indigo-50' : '');
+        const badges = hits.filter((h) => !h.noBadge).map((h) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}" title="${escapeAttr(h.issue.summary)}">${h.num}</span>`).join('');
         return `<div class="flex ${bg}" data-line="${n}">` +
           `<span class="w-10 shrink-0 text-right pr-2 text-slate-400 select-none border-r border-slate-100">${n}</span>` +
           `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span></div>`;
@@ -2224,6 +2255,33 @@
       if (!line) return;
       const row = document.querySelector(`#studioCodeWrap [data-line="${line}"]`);
       if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+
+    // Jumps Studio to a code-duplication finding's *other* occurrence (the
+    // "also found in X:79-95" reference) and highlights that whole span —
+    // there's no issue anchored there to select, so this is a separate path
+    // from selectStudioIssue, using jumpHighlightRange as the ad-hoc
+    // equivalent of an issue's line highlight.
+    async function studioNavigateToDuplicateRef(ref) {
+      if (!ref || !ref.file) return;
+      await openStudioFile(ref.file);
+      studioState.jumpHighlightRange = { line: ref.line, endLine: ref.endLine || ref.line };
+      renderStudioCodeView(studioState.originalContent);
+      renderStudioIssueListForFile(ref.file);
+      const rangeLabel = ref.endLine > ref.line ? `${ref.line}-${ref.endLine}` : String(ref.line);
+      $('studioIssuePanel').insertAdjacentHTML('afterbegin',
+        `<div class="border border-indigo-200 bg-indigo-50 text-indigo-800 text-[11px] rounded-lg p-2 mb-2">Viewing the matching duplicate block at line ${escapeHtml(rangeLabel)}.</div>`);
+      scrollStudioToLine(ref.line);
+    }
+
+    // Opens Studio (if not already open for this job) and jumps straight to
+    // a duplicate-code reference — used by the "Jump to duplicate" link on
+    // review-gate/history issue cards, which start outside Studio entirely.
+    async function openStudioAtDuplicateRef(jobId, ref) {
+      if (studioState.jobId !== jobId || $('studioView').classList.contains('hidden')) {
+        await openStudio(jobId, null, { fromReview: true });
+      }
+      await studioNavigateToDuplicateRef(ref);
     }
 
     function studioEnterEditMode() {
@@ -2368,6 +2426,7 @@
 
     async function selectStudioIssue(issue) {
       studioState.selectedIssue = issue;
+      studioState.jumpHighlightRange = null;
       if (!studioState.editing) {
         renderStudioCodeView(studioState.originalContent);
         scrollStudioToLine(issue.line);
@@ -2376,6 +2435,9 @@
       const fixId = `studio-fix-${issue.id}`;
       const list = studioIssuesForFile(studioState.currentPath);
       const idx = list.findIndex((it) => it.id === issue.id);
+      const dupRefLabel = issue.duplicateRef
+        ? `${issue.duplicateRef.file}:${issue.duplicateRef.endLine > issue.duplicateRef.line ? `${issue.duplicateRef.line}-${issue.duplicateRef.endLine}` : issue.duplicateRef.line}`
+        : '';
       $('studioIssuePanel').innerHTML = `
         <div class="border border-slate-200 rounded-lg p-2 mb-3">
           <div class="flex items-center justify-between mb-1">
@@ -2389,12 +2451,16 @@
           <span class="text-[10px] font-semibold text-slate-400 uppercase ml-1">${escapeHtml(issue.category)}</span>
           <span class="text-[10px] font-mono text-slate-400 ml-1">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</span>
           <p class="text-xs text-slate-700 mt-1.5">${escapeHtml(issue.summary)}</p>
+          ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
         <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2">Explain this issue</button>
         <div id="${explainId}-body" class="text-[11px] text-slate-600 mb-3"></div>
         <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 mb-2">Suggest AI fix</button>
         <div id="${fixId}-body" class="text-[11px] text-slate-600"></div>
         <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-3">← Back to file's issues</button>`;
+      if (issue.duplicateRef) {
+        document.getElementById('studio-jump-duplicate')?.addEventListener('click', () => studioNavigateToDuplicateRef(issue.duplicateRef));
+      }
 
       $('studio-issue-prev').addEventListener('click', () => studioNavigateIssue(-1));
       $('studio-issue-next').addEventListener('click', () => studioNavigateIssue(1));

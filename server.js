@@ -631,18 +631,25 @@ function looksBinary(buffer) {
  * a code preview with the offending span highlighted, instead of a bare
  * file:line reference.
  */
-function buildSnippet(content, lineNumber, { colStart, colEnd, radius = 3 } = {}) {
+function buildSnippet(content, lineNumber, { colStart, colEnd, radius = 3, endLine } = {}) {
   if (typeof content !== 'string' || !Number.isInteger(lineNumber) || lineNumber < 1) return null;
   const lines = content.split(/\r?\n/);
   const idx = lineNumber - 1;
   if (idx >= lines.length) return null;
 
+  // A multi-line finding (e.g. a jscpd duplicate block) passes endLine so
+  // every affected row gets marked, not just the first — the whole span is
+  // the finding, not just where it starts.
+  const highlightEndLine = Number.isInteger(endLine) && endLine > lineNumber ? endLine : lineNumber;
+  const endIdx = Math.min(lines.length - 1, highlightEndLine - 1);
+
   const start = Math.max(0, idx - radius);
-  const end = Math.min(lines.length - 1, idx + radius);
+  const end = Math.min(lines.length - 1, endIdx + radius);
   const code = [];
   for (let i = start; i <= end; i++) code.push({ number: i + 1, text: lines[i] });
 
   const snippet = { startLine: start + 1, lines: code, highlightLine: lineNumber };
+  if (highlightEndLine > lineNumber) snippet.highlightEndLine = highlightEndLine;
   if (Number.isInteger(colStart) && Number.isInteger(colEnd) && colEnd > colStart) {
     snippet.highlightStart = colStart;
     snippet.highlightEnd = colEnd;
@@ -2662,8 +2669,10 @@ async function checkCodeDuplication(root, log) {
       const relFile = path.relative(root, path.resolve(root, dup.firstFile?.name || ''));
       const line = Number(dup.firstFile?.startLoc?.line) || 1;
       const endLine = Number(dup.firstFile?.endLoc?.line) || line;
-      const otherFile = dup.secondFile?.name || '?';
+      const otherFile = dup.secondFile?.name ? path.relative(root, path.resolve(root, dup.secondFile.name)) : '?';
       const otherLine = Number(dup.secondFile?.startLoc?.line) || 1;
+      const otherEndLine = Number(dup.secondFile?.endLoc?.line) || otherLine;
+      const otherRange = otherEndLine > otherLine ? `${otherLine}-${otherEndLine}` : String(otherLine);
       let content = null;
       try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
       // Skip blocks whose duplicated span is nothing but punctuation/
@@ -2680,8 +2689,13 @@ async function checkCodeDuplication(root, log) {
         kind: 'duplicate-code',
         tool: 'jscpd',
         severity: 'warning',
-        message: `${dup.lines || 0}-line duplicate block, also found in ${otherFile}:${otherLine}.`,
-        code: content ? buildSnippet(content, line) : null,
+        message: `${dup.lines || 0}-line duplicate block, also found in ${otherFile}:${otherRange}.`,
+        code: content ? buildSnippet(content, line, { endLine }) : null,
+        // Structured pointer to the other occurrence (message above is the
+        // human-readable form of the same data) so Studio can render it as
+        // a link that jumps straight to — and highlights — that exact span,
+        // instead of making the reader go find it themselves.
+        duplicateRef: { file: otherFile, line: otherLine, endLine: otherEndLine },
       });
     }
     return { findings, engine: 'jscpd' };
@@ -6670,6 +6684,8 @@ module.exports = {
   runLicenseeDetect,
   scanProjectLicenseFiles,
   resolveGovernanceCiLocation,
+  runLicenseComplianceCheck,
+  runDependencyVulnerabilityCheck,
   scanDependencyVulnerabilities,
   classifyVulnerabilitySeverity,
   checkIacSecurity,

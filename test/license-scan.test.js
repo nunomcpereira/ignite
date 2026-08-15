@@ -125,6 +125,26 @@ test('scanDependencyLicenses: soft-skips to the built-in fallback when both tool
   }
 });
 
+test('runLicenseComplianceCheck: tags returned issues with phase 3 — this is what makes license findings gate a pipeline run (validate-all/onboard/interactive) instead of only showing in the on-demand Dependencies view', async () => {
+  // No fake tools on PATH → falls through to the built-in deps.dev
+  // fallback; a git-ref version range is unresolvable, so this stays
+  // network-free (same trick as the "soft-skips to fallback" test above)
+  // while still guaranteeing a real license-compliance issue to check the
+  // phase tag on.
+  await withServerEnv({}, async (mod) => {
+    const dir = await makeTempProject({
+      'package.json': JSON.stringify({ dependencies: { 'some-lib': 'git+ssh://git@example.com/x.git' } }),
+    });
+    const issues = await mod.runLicenseComplianceCheck(dir, () => {});
+    assert.ok(issues.length > 0, 'expected at least one license-compliance issue');
+    for (const issue of issues) {
+      assert.equal(issue.category, 'license-compliance');
+      assert.equal(issue.phase, 3);
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  })();
+});
+
 test('runOrtAnalyze: returns null (fallback) when ort emits unparseable output', async () => {
   const binDir = await makeFakeLicenseTools({ ortPackages: [] });
   // Overwrite the result with garbage — analyzer-result.json exists but has
