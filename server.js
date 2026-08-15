@@ -327,6 +327,12 @@ const CONFIG = loadConfig();
 const store = createDbStore(process.env.IGNITE_DB_PATH || path.join(__dirname, 'ignite.db'));
 store.abortStaleRunningProjects();
 
+// Expired-session cleanup used to run inline on every request (attachUser ->
+// getSession); moved to a periodic sweep since a stale row is harmless until
+// swept (both getSession call sites already check expires_at in JS).
+store.sweepExpiredSessions();
+setInterval(() => store.sweepExpiredSessions(), 10 * 60_000).unref();
+
 const PORT = process.env.PORT || CONFIG.port;
 const MAX_ZIP_BYTES = 250 * 1024 * 1024; // 250 MB upload cap
 const MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024; // zip-bomb guard
@@ -1828,8 +1834,13 @@ async function checkLlmDeepScan(root, log, cacheKey) {
   const npmVersionCache = new Map();
   for (let i = 0; i < chunks.length; i++) {
     log(`Chunk ${i + 1}/${chunks.length} — files: ${chunkFiles[i].join(', ')}\n  security: injection (SQL/command/template), path traversal, SSRF, insecure deserialization, XSS, broken auth/authz, weak crypto, unsafe eval/exec, prototype pollution, insecure temp files, missing input validation\n  dependency: risky/malicious/deprecated-vulnerable packages in manifests/lockfiles\n  encapsulation: leaky abstractions, exposed mutable internals, missing boundaries, excess coupling\n  quality: complexity hotspots, duplicated logic, poor separation of concerns, fragile API shapes`);
-    try {
-      const chunkFindings = await llmChat(chunks[i], LLM_SECURITY_DEP_PROMPT, log, `chunk ${i + 1}/${chunks.length} security/dependency`);
+    const [securityDepResult, qualityResult] = await Promise.allSettled([
+      llmChat(chunks[i], LLM_SECURITY_DEP_PROMPT, log, `chunk ${i + 1}/${chunks.length} security/dependency`),
+      llmChat(chunks[i], LLM_QUALITY_PROMPT, log, `chunk ${i + 1}/${chunks.length} quality/encapsulation`),
+    ]);
+
+    if (securityDepResult.status === 'fulfilled') {
+      const chunkFindings = securityDepResult.value;
       for (const f of chunkFindings) {
         if (f && typeof f.file === 'string' && f.issue) {
           const category = ['security', 'dependency', 'encapsulation', 'quality'].includes(f.category)
@@ -1858,12 +1869,12 @@ async function checkLlmDeepScan(root, log, cacheKey) {
           if (validated) findings.push(validated);
         }
       }
-    } catch (e) {
-      log(`⚠ Chunk ${i + 1} security/dependency pass skipped: ${e.message}`);
+    } else {
+      log(`⚠ Chunk ${i + 1} security/dependency pass skipped: ${securityDepResult.reason?.message}`);
     }
 
-    try {
-      const chunkFindings = await llmChat(chunks[i], LLM_QUALITY_PROMPT, log, `chunk ${i + 1}/${chunks.length} quality/encapsulation`);
+    if (qualityResult.status === 'fulfilled') {
+      const chunkFindings = qualityResult.value;
       for (const f of chunkFindings) {
         if (f && typeof f.file === 'string' && f.issue) {
           const category = ['encapsulation', 'quality'].includes(f.category)
@@ -1881,8 +1892,8 @@ async function checkLlmDeepScan(root, log, cacheKey) {
           });
         }
       }
-    } catch (e) {
-      log(`⚠ Chunk ${i + 1} quality/encapsulation pass skipped: ${e.message}`);
+    } else {
+      log(`⚠ Chunk ${i + 1} quality/encapsulation pass skipped: ${qualityResult.reason?.message}`);
     }
   }
 
@@ -1928,28 +1939,59 @@ const ACT_TIMEOUT_MIN = parseInt(process.env.ACT_TIMEOUT_MIN || String(CONFIG.go
 const GOVERNANCE_REPO = process.env.GOVERNANCE_REPO || CONFIG.governance.repo;
 const GOVERNANCE_WORKFLOW = process.env.GOVERNANCE_WORKFLOW || CONFIG.governance.workflow;
 
-async function fetchGovernanceWorkflow(wfDir, log) {
-  log(`Fetching ${GOVERNANCE_WORKFLOW} from ${GOVERNANCE_REPO}@main...`);
+/* Checks the workflow file's latest commit sha (a small `commits?path=...`
+   lookup — no file content transferred) against the sha we fetched it under
+   last time. A match means the file hasn't changed upstream, so the caller
+   can reuse the cached raw content instead of re-fetching it. Any failure
+   (rate limit, path never committed standalone, etc.) just means "fetch
+   fresh" — this is a fast-path optimization, never a correctness gate. */
+async function latestCommitSha(repo, filePath) {
+  try {
+    const { stdout } = await runTool('gh', [
+      'api', `repos/${repo}/commits?path=${filePath}&per_page=1`,
+    ], os.tmpdir());
+    const commits = JSON.parse(stdout);
+    return commits[0]?.sha || null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWorkflowFileCached(repo, filePath, filename) {
+  const sha = await latestCommitSha(repo, filePath);
+  if (sha) {
+    const cached = store.getWorkflowCache(repo, filename);
+    if (cached && cached.commitSha === sha) {
+      return { content: cached.content, cacheHit: true };
+    }
+  }
   const { stdout } = await runTool('gh', [
-    'api',
-    `repos/${GOVERNANCE_REPO}/contents/.github/workflows/${GOVERNANCE_WORKFLOW}`,
+    'api', `repos/${repo}/contents/${filePath}`,
     '-H', 'Accept: application/vnd.github.raw',
   ], os.tmpdir());
+  if (sha) store.saveWorkflowCache(repo, filename, sha, stdout);
+  return { content: stdout, cacheHit: false };
+}
+
+async function fetchGovernanceWorkflow(wfDir, log) {
+  log(`Fetching ${GOVERNANCE_WORKFLOW} from ${GOVERNANCE_REPO}@main...`);
+  const { content: rawText, cacheHit } = await fetchWorkflowFileCached(
+    GOVERNANCE_REPO, `.github/workflows/${GOVERNANCE_WORKFLOW}`, GOVERNANCE_WORKFLOW
+  );
+  if (cacheHit) log(`✓ ${GOVERNANCE_WORKFLOW} unchanged upstream — reused cached copy.`);
   await fsp.mkdir(wfDir, { recursive: true });
   const wfFile = path.join(wfDir, GOVERNANCE_WORKFLOW);
-  const reusableMatches = [...stdout.matchAll(new RegExp(`uses:\\s*${GOVERNANCE_REPO}/\\.github/workflows/([A-Za-z0-9._-]+)@[^\\s]+`, 'g'))];
+  const reusableMatches = [...rawText.matchAll(new RegExp(`uses:\\s*${GOVERNANCE_REPO}/\\.github/workflows/([A-Za-z0-9._-]+)@[^\\s]+`, 'g'))];
 
-  let workflowText = normalizeWorkflowText(stdout);
+  let workflowText = normalizeWorkflowText(rawText);
 
   for (const match of reusableMatches) {
     const filename = match[1];
     if (!filename) continue;
     try {
-      const { stdout: reusableText } = await runTool('gh', [
-        'api',
-        `repos/${GOVERNANCE_REPO}/contents/.github/workflows/${filename}`,
-        '-H', 'Accept: application/vnd.github.raw',
-      ], os.tmpdir());
+      const { content: reusableText, cacheHit: reusableCacheHit } = await fetchWorkflowFileCached(
+        GOVERNANCE_REPO, `.github/workflows/${filename}`, filename
+      );
 
       const localReusablePath = path.join(wfDir, filename);
       await fsp.writeFile(localReusablePath, normalizeWorkflowText(reusableText));
@@ -1957,7 +1999,7 @@ async function fetchGovernanceWorkflow(wfDir, log) {
         new RegExp(`uses:\\s*${GOVERNANCE_REPO}/\\.github/workflows/${filename}@[^\\s]+`, 'g'),
         `uses: ./.github/workflows/${filename}`
       );
-      log(`✓ Localized reusable workflow: ${filename}`);
+      log(`✓ Localized reusable workflow: ${filename}${reusableCacheHit ? ' (cached, unchanged)' : ''}`);
     } catch (e) {
       log(`⚠ Could not localize reusable workflow ${filename}: ${e.message}`);
     }
@@ -2413,7 +2455,7 @@ async function checkImageProvenance(root, log) {
   log?.('Engine: Cosign CLI (External) — verifying Sigstore signatures on referenced base images...');
   const uniqueImages = [...new Set(occurrences.map((o) => o.image))];
   const verdictByImage = new Map();
-  for (const image of uniqueImages) {
+  await Promise.all(uniqueImages.map(async (image) => {
     try {
       await runTool('cosign', [
         'verify',
@@ -2427,14 +2469,19 @@ async function checkImageProvenance(root, log) {
       verdictByImage.set(image, { verified: false, reason: e.message });
       log?.(`⚠ ${image} — no verifiable Sigstore signature: ${e.message}`);
     }
-  }
+  }));
 
   const findings = [];
+  const contentByFile = new Map();
   for (const occ of occurrences) {
     const verdict = verdictByImage.get(occ.image);
     if (verdict.verified) continue;
-    let content = null;
-    try { content = await fsp.readFile(path.join(root, occ.file), 'utf8'); } catch { /* best-effort */ }
+    let content = contentByFile.get(occ.file);
+    if (content === undefined) {
+      content = null;
+      try { content = await fsp.readFile(path.join(root, occ.file), 'utf8'); } catch { /* best-effort */ }
+      contentByFile.set(occ.file, content);
+    }
     findings.push({
       file: occ.file,
       line: occ.line,

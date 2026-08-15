@@ -108,6 +108,14 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (org, repo, check_name, rel_path)
     );
+    CREATE TABLE IF NOT EXISTS workflow_cache (
+      repo         TEXT NOT NULL,
+      filename     TEXT NOT NULL,
+      commit_sha   TEXT NOT NULL,
+      content      TEXT NOT NULL,
+      updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (repo, filename)
+    );
     CREATE TABLE IF NOT EXISTS github_connections (
       user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       github_login TEXT NOT NULL,
@@ -217,9 +225,6 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       `SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, status, created_at
        FROM issues WHERE project_id = ? ORDER BY id`
     ),
-    countOpenIssues: db.prepare(
-      `SELECT project_id, COUNT(*) AS n FROM issues WHERE status = 'open' GROUP BY project_id`
-    ),
 
     getIssueExplanation: db.prepare('SELECT explanation FROM issue_explanations WHERE hash = ?'),
     saveIssueExplanation: db.prepare(
@@ -260,6 +265,16 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     ),
     getGithubConnection: db.prepare('SELECT * FROM github_connections WHERE user_id = ?'),
     deleteGithubConnection: db.prepare('DELETE FROM github_connections WHERE user_id = ?'),
+
+    getWorkflowCache: db.prepare(
+      'SELECT commit_sha, content FROM workflow_cache WHERE repo = ? AND filename = ?'
+    ),
+    upsertWorkflowCache: db.prepare(
+      `INSERT INTO workflow_cache (repo, filename, commit_sha, content, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(repo, filename)
+       DO UPDATE SET commit_sha = excluded.commit_sha, content = excluded.content, updated_at = excluded.updated_at`
+    ),
   };
 
   return {
@@ -358,8 +373,14 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     },
 
     getSession(sessionId) {
-      stmt.deleteExpiredSessions.run();
       return stmt.getSession.get(sessionId);
+    },
+
+    // Expired sessions are otherwise harmless (getSession/attachUser both
+    // check expires_at before trusting a row), so this doesn't need to run
+    // inline on every request — see sweepExpiredSessions's caller.
+    sweepExpiredSessions() {
+      stmt.deleteExpiredSessions.run();
     },
 
     deleteSession(sessionId) {
@@ -398,6 +419,23 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
         db.exec('ROLLBACK');
         throw e;
       }
+    },
+
+    /* ---------------- governance workflow cache (skip re-fetching unchanged workflows) ---------------- */
+
+    /**
+     * Keyed by (repo, filename). Callers check this against the workflow
+     * file's latest commit sha (a cheap `gh api .../commits?path=...`
+     * lookup) before re-fetching the full workflow content — a match means
+     * nothing changed upstream since the last fetch.
+     */
+    getWorkflowCache(repo, filename) {
+      const row = stmt.getWorkflowCache.get(repo, filename);
+      return row ? { commitSha: row.commit_sha, content: row.content } : null;
+    },
+
+    saveWorkflowCache(repo, filename, commitSha, content) {
+      stmt.upsertWorkflowCache.run(repo, filename, commitSha, content);
     },
 
     /* ---------------- GitHub OAuth connection (per ignite user) ---------------- */
