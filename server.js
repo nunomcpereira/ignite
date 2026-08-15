@@ -3006,6 +3006,240 @@ async function checkFeaturePosture(root, log) {
   return { engine: 'semgrep', posture };
 }
 
+// Runs Phase 4's 11 external-tool checks (secrets, AI-governance, LLM deep-
+// scan, IaC, SBOM, image provenance, semantic SAST, PII/data-flow, code
+// duplication, LOC metrics, API-schema lint, feature posture) concurrently
+// instead of one after another. Every check only ever reads projectRoot and
+// produces its own independent findings — nothing downstream depends on
+// another check's result until they're all merged by collectPhase4Issues
+// below — so this turns Phase 4's wall time from the sum of all 11
+// runtimes into roughly the slowest single one (LLM deep-scan/semgrep/
+// bearer are typically the long poles). Each check's log lines are
+// buffered while it runs and flushed here in the original, stable
+// Check-2..Check-11 order once every check has settled, so the streamed
+// log still reads top-to-bottom the same way it did when checks ran
+// sequentially — only the actual scanning happens in parallel.
+//
+// checkPiiDataFlow's one side effect on projectRoot (bootstrapping a
+// throwaway git context for Bearer, see ensureGitContextForBearer) only
+// ever adds files under .git/, which every other tool here already ignores
+// by default, so running it alongside the rest is safe.
+//
+// Shared by all three pipeline entry points (validate-all, onboard, the
+// interactive SSE pipeline) — they were each running an identical,
+// independently-maintained copy of this block.
+async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }) {
+  const tasks = [
+    {
+      name: 'secrets',
+      run: async (blog) => {
+        blog('Check 2 — scanning text files for hardcoded credentials...');
+        const secrets = await checkSecrets(projectRoot, blog, { org, repo });
+        blog(`Scanned ${secrets.scanned} text files.`);
+        if (secrets.findings.length > 0) {
+          blog(`✗ ${secrets.findings.length} potential credential leak(s):`);
+          secrets.findings.forEach((f) => blog(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
+        } else {
+          blog('✓ Check 2 passed — no credential leakage detected.');
+        }
+        return secrets;
+      },
+    },
+    {
+      name: 'governance',
+      run: async (blog) => {
+        blog('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
+        const governance = await checkAiGovernance(projectRoot, { org, repo });
+        blog(`Audited ${governance.scanned} source files.`);
+        if (governance.findings.length > 0) {
+          blog(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
+          governance.findings.forEach((f) => blog(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
+        } else {
+          blog('✓ Check 4 passed — all AI invocations are governed.');
+        }
+        return governance;
+      },
+    },
+    {
+      name: 'llm',
+      run: async (blog) => {
+        blog(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
+        const llm = await checkLlmDeepScan(projectRoot, blog, { org, repo });
+        if (!llm.available) {
+          blog(`⚠ Deep-scan skipped: ${llm.reason}`);
+        } else if (llm.findings.length === 0) {
+          blog(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
+        } else {
+          blog(`LLM reported ${llm.findings.length} finding(s):`);
+          llm.findings.forEach((f) =>
+            blog(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
+          );
+        }
+        return llm;
+      },
+    },
+    {
+      name: 'iac',
+      run: async (blog) => {
+        blog('Check 5 — IaC/container misconfiguration scan (Dockerfiles/Terraform/Kubernetes/Helm)...');
+        const iac = await checkIacSecurity(projectRoot, blog);
+        if (iac.findings.length > 0) {
+          blog(`✗ ${iac.findings.length} IaC misconfiguration(s) [engine: ${iac.engine}]:`);
+          iac.findings.forEach((f) => blog(`    ✗ [${f.severity}] ${f.file}:${f.line} — ${f.message || f.kind}`));
+        } else {
+          blog(`✓ Check 5 passed — no IaC misconfigurations detected [engine: ${iac.engine}].`);
+        }
+        return iac;
+      },
+    },
+    {
+      name: 'sbom',
+      run: async (blog) => {
+        blog('Generating SBOM...');
+        const { engine: sbomEngine, sbom } = await generateSbom(projectRoot, blog);
+        blog(`✓ SBOM generated [engine: ${sbomEngine}] — ${(sbom.components || []).length} component(s).`);
+        if (projectId !== null) {
+          const sbomBuffer = Buffer.from(JSON.stringify(sbom, null, 2));
+          store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
+        }
+        return { sbomEngine, sbom };
+      },
+    },
+    {
+      name: 'imageProvenance',
+      run: async (blog) => {
+        blog('Check 6 — base-image signature/provenance verification (cosign)...');
+        const imageProvenance = await checkImageProvenance(projectRoot, blog);
+        if (imageProvenance.findings.length > 0) {
+          blog(`⚠ ${imageProvenance.findings.length} base image(s) without a verifiable Sigstore signature:`);
+          imageProvenance.findings.forEach((f) => blog(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+        } else if (imageProvenance.engine === 'cosign') {
+          blog('✓ Check 6 passed — every referenced base image has a verifiable Sigstore signature (or none was referenced).');
+        } else {
+          blog('✓ Check 6 skipped — cosign disabled or not installed.');
+        }
+        return imageProvenance;
+      },
+    },
+    {
+      name: 'semanticSast',
+      run: async (blog) => {
+        blog(`Check 7 — semantic SAST (semgrep, config: ${SEMGREP_CONFIG})...`);
+        const semanticSast = await checkSemanticSast(projectRoot, blog);
+        if (semanticSast.findings.length > 0) {
+          blog(`✗ ${semanticSast.findings.length} semantic SAST finding(s):`);
+          semanticSast.findings.forEach((f) => blog(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+        } else if (semanticSast.engine === 'semgrep') {
+          blog('✓ Check 7 passed — no semantic SAST findings.');
+        } else {
+          blog('✓ Check 7 skipped — semgrep disabled or not installed.');
+        }
+        return semanticSast;
+      },
+    },
+    {
+      name: 'piiDataFlow',
+      run: async (blog) => {
+        blog('Check 8 — PII/GDPR data-flow scan (bearer)...');
+        const piiDataFlow = await checkPiiDataFlow(projectRoot, blog);
+        if (piiDataFlow.findings.length > 0) {
+          blog(`✗ ${piiDataFlow.findings.length} PII/data-flow finding(s):`);
+          piiDataFlow.findings.forEach((f) => blog(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+        } else if (piiDataFlow.engine === 'bearer') {
+          blog('✓ Check 8 passed — no PII/data-flow findings.');
+        } else {
+          blog('✓ Check 8 skipped — bearer disabled or not installed.');
+        }
+        return piiDataFlow;
+      },
+    },
+    {
+      name: 'duplication',
+      run: async (blog) => {
+        blog('Check 9 — code duplication scan (jscpd)...');
+        const duplication = await checkCodeDuplication(projectRoot, blog);
+        if (duplication.findings.length > 0) {
+          blog(`⚠ ${duplication.findings.length} duplicate block(s) found:`);
+          duplication.findings.forEach((f) => blog(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+        } else if (duplication.engine === 'jscpd') {
+          blog('✓ Check 9 passed — no duplicate blocks above jscpd\'s default threshold.');
+        } else {
+          blog('✓ Check 9 skipped — jscpd disabled or not installed.');
+        }
+        return duplication;
+      },
+    },
+    {
+      name: 'loc',
+      run: async (blog) => {
+        blog('Computing LOC metrics...');
+        const { engine: locEngine, metrics: locMetrics } = await generateLocMetrics(projectRoot, blog);
+        if (locMetrics) {
+          blog(`✓ LOC metrics computed [engine: ${locEngine}] — ${locMetrics.total?.code ?? 0} lines of code across ${locMetrics.languages?.length ?? 0} language(s).`);
+          if (projectId !== null) {
+            const locBuffer = Buffer.from(JSON.stringify(locMetrics, null, 2));
+            store.addUploadDocument(projectId, 'loc-metrics.json', 'application/json', locBuffer.length, locBuffer);
+          }
+        }
+        return { locEngine, locMetrics };
+      },
+    },
+    {
+      name: 'apiSchema',
+      run: async (blog) => {
+        blog('Check 10 — API schema lint (spectral, OpenAPI/AsyncAPI)...');
+        const apiSchema = await checkApiSchemas(projectRoot, blog);
+        if (apiSchema.findings.length > 0) {
+          blog(`✗ ${apiSchema.findings.length} API schema lint finding(s):`);
+          apiSchema.findings.forEach((f) => blog(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
+        } else if (apiSchema.engine === 'spectral') {
+          blog('✓ Check 10 passed — no API schema lint findings (or no OpenAPI/AsyncAPI files found).');
+        } else {
+          blog('✓ Check 10 skipped — spectral disabled or not installed.');
+        }
+        return apiSchema;
+      },
+    },
+    {
+      name: 'posture',
+      run: async (blog) => {
+        blog('Check 11 — Compliance & Feature Posture Scan...');
+        const { engine: postureEngine, posture } = await checkFeaturePosture(projectRoot, blog);
+        for (const category of POSTURE_CATEGORIES) {
+          const { status, matches } = posture[category];
+          blog(`    ${status === 'DETECTED' ? '✓' : status === 'PARTIAL' ? '⚠' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} signal(s))` : ''}`);
+        }
+        if (projectId !== null) {
+          const postureBuffer = Buffer.from(JSON.stringify({ engine: postureEngine, posture }, null, 2));
+          store.addUploadDocument(projectId, 'posture-report.json', 'application/json', postureBuffer.length, postureBuffer);
+        }
+        return { postureEngine, posture };
+      },
+    },
+  ];
+
+  const settled = await Promise.all(tasks.map(async (t) => {
+    const lines = [];
+    const value = await t.run((line) => lines.push(line));
+    return { name: t.name, lines, value };
+  }));
+  for (const r of settled) r.lines.forEach((line) => log?.(line));
+  const byName = Object.fromEntries(settled.map((r) => [r.name, r.value]));
+
+  const issues = collectPhase4Issues({
+    secrets: byName.secrets,
+    governance: byName.governance,
+    llm: byName.llm,
+    iac: byName.iac,
+    imageProvenance: byName.imageProvenance,
+    semanticSast: byName.semanticSast,
+    piiDataFlow: byName.piiDataFlow,
+    duplication: byName.duplication,
+    apiSchema: byName.apiSchema,
+  });
+  return { issues };
+}
+
 async function actTooling() {
   try {
     await runTool('act', ['--version'], os.tmpdir());
@@ -5300,133 +5534,8 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
     if (!PHASE_ENABLED[4]) {
       log3('Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).');
     } else {
-      log3('Check 2 — scanning text files for hardcoded credentials...');
-      const secrets = await checkSecrets(projectRoot, log3, { org, repo });
-      log3(`Scanned ${secrets.scanned} text files.`);
-      if (secrets.findings.length > 0) {
-        log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
-        secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
-      } else {
-        log3('✓ Check 2 passed — no credential leakage detected.');
-      }
-
-      log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-      const governance = await checkAiGovernance(projectRoot, { org, repo });
-      log3(`Audited ${governance.scanned} source files.`);
-      if (governance.findings.length > 0) {
-        log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
-        governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
-      } else {
-        log3('✓ Check 4 passed — all AI invocations are governed.');
-      }
-
-      log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-      const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
-      if (!llm.available) {
-        log3(`⚠ Deep-scan skipped: ${llm.reason}`);
-      } else if (llm.findings.length === 0) {
-        log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
-      } else {
-        log3(`LLM reported ${llm.findings.length} finding(s):`);
-        llm.findings.forEach((f) =>
-          log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
-        );
-      }
-
-      log3('Check 5 — IaC/container misconfiguration scan (Dockerfiles/Terraform/Kubernetes/Helm)...');
-      const iac = await checkIacSecurity(projectRoot, log3);
-      if (iac.findings.length > 0) {
-        log3(`✗ ${iac.findings.length} IaC misconfiguration(s) [engine: ${iac.engine}]:`);
-        iac.findings.forEach((f) => log3(`    ✗ [${f.severity}] ${f.file}:${f.line} — ${f.message || f.kind}`));
-      } else {
-        log3(`✓ Check 5 passed — no IaC misconfigurations detected [engine: ${iac.engine}].`);
-      }
-
-      log3('Generating SBOM...');
-      const { engine: sbomEngine, sbom } = await generateSbom(projectRoot, log3);
-      log3(`✓ SBOM generated [engine: ${sbomEngine}] — ${(sbom.components || []).length} component(s).`);
-      if (projectId !== null) {
-        const sbomBuffer = Buffer.from(JSON.stringify(sbom, null, 2));
-        store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
-      }
-
-      log3('Check 6 — base-image signature/provenance verification (cosign)...');
-      const imageProvenance = await checkImageProvenance(projectRoot, log3);
-      if (imageProvenance.findings.length > 0) {
-        log3(`⚠ ${imageProvenance.findings.length} base image(s) without a verifiable Sigstore signature:`);
-        imageProvenance.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
-      } else if (imageProvenance.engine === 'cosign') {
-        log3('✓ Check 6 passed — every referenced base image has a verifiable Sigstore signature (or none was referenced).');
-      } else {
-        log3('✓ Check 6 skipped — cosign disabled or not installed.');
-      }
-
-      log3(`Check 7 — semantic SAST (semgrep, config: ${SEMGREP_CONFIG})...`);
-      const semanticSast = await checkSemanticSast(projectRoot, log3);
-      if (semanticSast.findings.length > 0) {
-        log3(`✗ ${semanticSast.findings.length} semantic SAST finding(s):`);
-        semanticSast.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-      } else if (semanticSast.engine === 'semgrep') {
-        log3('✓ Check 7 passed — no semantic SAST findings.');
-      } else {
-        log3('✓ Check 7 skipped — semgrep disabled or not installed.');
-      }
-
-      log3('Check 8 — PII/GDPR data-flow scan (bearer)...');
-      const piiDataFlow = await checkPiiDataFlow(projectRoot, log3);
-      if (piiDataFlow.findings.length > 0) {
-        log3(`✗ ${piiDataFlow.findings.length} PII/data-flow finding(s):`);
-        piiDataFlow.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-      } else if (piiDataFlow.engine === 'bearer') {
-        log3('✓ Check 8 passed — no PII/data-flow findings.');
-      } else {
-        log3('✓ Check 8 skipped — bearer disabled or not installed.');
-      }
-
-      log3('Check 9 — code duplication scan (jscpd)...');
-      const duplication = await checkCodeDuplication(projectRoot, log3);
-      if (duplication.findings.length > 0) {
-        log3(`⚠ ${duplication.findings.length} duplicate block(s) found:`);
-        duplication.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
-      } else if (duplication.engine === 'jscpd') {
-        log3('✓ Check 9 passed — no duplicate blocks above jscpd\'s default threshold.');
-      } else {
-        log3('✓ Check 9 skipped — jscpd disabled or not installed.');
-      }
-
-      log3('Computing LOC metrics...');
-      const { engine: locEngine, metrics: locMetrics } = await generateLocMetrics(projectRoot, log3);
-      if (locMetrics) {
-        log3(`✓ LOC metrics computed [engine: ${locEngine}] — ${locMetrics.total?.code ?? 0} lines of code across ${locMetrics.languages?.length ?? 0} language(s).`);
-        if (projectId !== null) {
-          const locBuffer = Buffer.from(JSON.stringify(locMetrics, null, 2));
-          store.addUploadDocument(projectId, 'loc-metrics.json', 'application/json', locBuffer.length, locBuffer);
-        }
-      }
-
-      log3('Check 10 — API schema lint (spectral, OpenAPI/AsyncAPI)...');
-      const apiSchema = await checkApiSchemas(projectRoot, log3);
-      if (apiSchema.findings.length > 0) {
-        log3(`✗ ${apiSchema.findings.length} API schema lint finding(s):`);
-        apiSchema.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-      } else if (apiSchema.engine === 'spectral') {
-        log3('✓ Check 10 passed — no API schema lint findings (or no OpenAPI/AsyncAPI files found).');
-      } else {
-        log3('✓ Check 10 skipped — spectral disabled or not installed.');
-      }
-
-      log3('Check 11 — Compliance & Feature Posture Scan...');
-      const { engine: postureEngine, posture } = await checkFeaturePosture(projectRoot, log3);
-      for (const category of POSTURE_CATEGORIES) {
-        const { status, matches } = posture[category];
-        log3(`    ${status === 'DETECTED' ? '✓' : status === 'PARTIAL' ? '⚠' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} signal(s))` : ''}`);
-      }
-      if (projectId !== null) {
-        const postureBuffer = Buffer.from(JSON.stringify({ engine: postureEngine, posture }, null, 2));
-        store.addUploadDocument(projectId, 'posture-report.json', 'application/json', postureBuffer.length, postureBuffer);
-      }
-
-      issues = [...collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema }), ...licenseIssues];
+      const phase4 = await runPhase4Checks(projectRoot, log3, { org, repo, projectId, store });
+      issues = [...phase4.issues, ...licenseIssues];
     }
     const errorIssues = issues.filter((i) => i.severity === 'error');
     const warningIssues = issues.filter((i) => i.severity === 'warning');
@@ -5687,133 +5796,8 @@ app.post('/api/pipeline/onboard', async (req, res) => {
     if (!PHASE_ENABLED[4]) {
       log3('Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).');
     } else {
-      log3('Check 2 — scanning text files for hardcoded credentials...');
-      const secrets = await checkSecrets(projectRoot, log3, { org, repo });
-      log3(`Scanned ${secrets.scanned} text files.`);
-      if (secrets.findings.length > 0) {
-        log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
-        secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
-      } else {
-        log3('✓ Check 2 passed — no credential leakage detected.');
-      }
-
-      log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-      const governance = await checkAiGovernance(projectRoot, { org, repo });
-      log3(`Audited ${governance.scanned} source files.`);
-      if (governance.findings.length > 0) {
-        log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
-        governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
-      } else {
-        log3('✓ Check 4 passed — all AI invocations are governed.');
-      }
-
-      log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-      const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
-      if (!llm.available) {
-        log3(`⚠ Deep-scan skipped: ${llm.reason}`);
-      } else if (llm.findings.length === 0) {
-        log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
-      } else {
-        log3(`LLM reported ${llm.findings.length} finding(s):`);
-        llm.findings.forEach((f) =>
-          log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
-        );
-      }
-
-      log3('Check 5 — IaC/container misconfiguration scan (Dockerfiles/Terraform/Kubernetes/Helm)...');
-      const iac = await checkIacSecurity(projectRoot, log3);
-      if (iac.findings.length > 0) {
-        log3(`✗ ${iac.findings.length} IaC misconfiguration(s) [engine: ${iac.engine}]:`);
-        iac.findings.forEach((f) => log3(`    ✗ [${f.severity}] ${f.file}:${f.line} — ${f.message || f.kind}`));
-      } else {
-        log3(`✓ Check 5 passed — no IaC misconfigurations detected [engine: ${iac.engine}].`);
-      }
-
-      log3('Generating SBOM...');
-      const { engine: sbomEngine, sbom } = await generateSbom(projectRoot, log3);
-      log3(`✓ SBOM generated [engine: ${sbomEngine}] — ${(sbom.components || []).length} component(s).`);
-      if (projectId !== null) {
-        const sbomBuffer = Buffer.from(JSON.stringify(sbom, null, 2));
-        store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
-      }
-
-      log3('Check 6 — base-image signature/provenance verification (cosign)...');
-      const imageProvenance = await checkImageProvenance(projectRoot, log3);
-      if (imageProvenance.findings.length > 0) {
-        log3(`⚠ ${imageProvenance.findings.length} base image(s) without a verifiable Sigstore signature:`);
-        imageProvenance.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
-      } else if (imageProvenance.engine === 'cosign') {
-        log3('✓ Check 6 passed — every referenced base image has a verifiable Sigstore signature (or none was referenced).');
-      } else {
-        log3('✓ Check 6 skipped — cosign disabled or not installed.');
-      }
-
-      log3(`Check 7 — semantic SAST (semgrep, config: ${SEMGREP_CONFIG})...`);
-      const semanticSast = await checkSemanticSast(projectRoot, log3);
-      if (semanticSast.findings.length > 0) {
-        log3(`✗ ${semanticSast.findings.length} semantic SAST finding(s):`);
-        semanticSast.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-      } else if (semanticSast.engine === 'semgrep') {
-        log3('✓ Check 7 passed — no semantic SAST findings.');
-      } else {
-        log3('✓ Check 7 skipped — semgrep disabled or not installed.');
-      }
-
-      log3('Check 8 — PII/GDPR data-flow scan (bearer)...');
-      const piiDataFlow = await checkPiiDataFlow(projectRoot, log3);
-      if (piiDataFlow.findings.length > 0) {
-        log3(`✗ ${piiDataFlow.findings.length} PII/data-flow finding(s):`);
-        piiDataFlow.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-      } else if (piiDataFlow.engine === 'bearer') {
-        log3('✓ Check 8 passed — no PII/data-flow findings.');
-      } else {
-        log3('✓ Check 8 skipped — bearer disabled or not installed.');
-      }
-
-      log3('Check 9 — code duplication scan (jscpd)...');
-      const duplication = await checkCodeDuplication(projectRoot, log3);
-      if (duplication.findings.length > 0) {
-        log3(`⚠ ${duplication.findings.length} duplicate block(s) found:`);
-        duplication.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
-      } else if (duplication.engine === 'jscpd') {
-        log3('✓ Check 9 passed — no duplicate blocks above jscpd\'s default threshold.');
-      } else {
-        log3('✓ Check 9 skipped — jscpd disabled or not installed.');
-      }
-
-      log3('Computing LOC metrics...');
-      const { engine: locEngine, metrics: locMetrics } = await generateLocMetrics(projectRoot, log3);
-      if (locMetrics) {
-        log3(`✓ LOC metrics computed [engine: ${locEngine}] — ${locMetrics.total?.code ?? 0} lines of code across ${locMetrics.languages?.length ?? 0} language(s).`);
-        if (projectId !== null) {
-          const locBuffer = Buffer.from(JSON.stringify(locMetrics, null, 2));
-          store.addUploadDocument(projectId, 'loc-metrics.json', 'application/json', locBuffer.length, locBuffer);
-        }
-      }
-
-      log3('Check 10 — API schema lint (spectral, OpenAPI/AsyncAPI)...');
-      const apiSchema = await checkApiSchemas(projectRoot, log3);
-      if (apiSchema.findings.length > 0) {
-        log3(`✗ ${apiSchema.findings.length} API schema lint finding(s):`);
-        apiSchema.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-      } else if (apiSchema.engine === 'spectral') {
-        log3('✓ Check 10 passed — no API schema lint findings (or no OpenAPI/AsyncAPI files found).');
-      } else {
-        log3('✓ Check 10 skipped — spectral disabled or not installed.');
-      }
-
-      log3('Check 11 — Compliance & Feature Posture Scan...');
-      const { engine: postureEngine, posture } = await checkFeaturePosture(projectRoot, log3);
-      for (const category of POSTURE_CATEGORIES) {
-        const { status, matches } = posture[category];
-        log3(`    ${status === 'DETECTED' ? '✓' : status === 'PARTIAL' ? '⚠' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} signal(s))` : ''}`);
-      }
-      if (projectId !== null) {
-        const postureBuffer = Buffer.from(JSON.stringify({ engine: postureEngine, posture }, null, 2));
-        store.addUploadDocument(projectId, 'posture-report.json', 'application/json', postureBuffer.length, postureBuffer);
-      }
-
-      issues = [...collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema }), ...licenseIssues];
+      const phase4 = await runPhase4Checks(projectRoot, log3, { org, repo, projectId, store });
+      issues = [...phase4.issues, ...licenseIssues];
     }
     // Persisted as soon as they're known — including the per-file/line
     // detail (file, line, summary, snippet) collectPhase4Issues carries —
@@ -6272,133 +6256,7 @@ app.post(
       status(4, 'running');
       const log3 = phaseLog(4);
       try {
-        log3('Check 2 — scanning text files for hardcoded credentials...');
-        const secrets = await checkSecrets(projectRoot, log3, { org, repo });
-        log3(`Scanned ${secrets.scanned} text files.`);
-        if (secrets.findings.length > 0) {
-          log3(`✗ ${secrets.findings.length} potential credential leak(s):`);
-          secrets.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — hardcoded ${f.kind}`));
-        } else {
-          log3('✓ Check 2 passed — no credential leakage detected.');
-        }
-
-        log3('Check 4 — AI governance audit (.py/.js/.ts LangChain/LangGraph calls)...');
-        const governance = await checkAiGovernance(projectRoot, { org, repo });
-        log3(`Audited ${governance.scanned} source files.`);
-        if (governance.findings.length > 0) {
-          log3(`✗ ${governance.findings.length} ungoverned AI invocation(s) — missing recursion_limit:`);
-          governance.findings.forEach((f) => log3(`    ✗ ${f.file}:${f.line} — ${f.snippet}`));
-        } else {
-          log3('✓ Check 4 passed — all AI invocations are governed.');
-        }
-
-        log3(`Check 3 — local LLM code review (security, dependency, quality, encapsulation; mode: ${LLM_SCAN_MODE})...`);
-        const llm = await checkLlmDeepScan(projectRoot, log3, { org, repo });
-        if (!llm.available) {
-          log3(`⚠ Deep-scan skipped: ${llm.reason}`);
-        } else if (llm.findings.length === 0) {
-          log3(`✓ Check 3 passed — LLM found no security/dependency errors or quality/encapsulation warnings in ${llm.scanned} files.`);
-        } else {
-          log3(`LLM reported ${llm.findings.length} finding(s):`);
-          llm.findings.forEach((f) =>
-            log3(`    ${f.level === 'error' ? '✗' : '⚠'} [${f.level}] [${f.category}] ${f.file}:${f.line} — ${f.issue}${f.recommendation ? ` | fix: ${f.recommendation}` : ''}`)
-          );
-        }
-
-        log3('Check 5 — IaC/container misconfiguration scan (Dockerfiles/Terraform/Kubernetes/Helm)...');
-        const iac = await checkIacSecurity(projectRoot, log3);
-        if (iac.findings.length > 0) {
-          log3(`✗ ${iac.findings.length} IaC misconfiguration(s) [engine: ${iac.engine}]:`);
-          iac.findings.forEach((f) => log3(`    ✗ [${f.severity}] ${f.file}:${f.line} — ${f.message || f.kind}`));
-        } else {
-          log3(`✓ Check 5 passed — no IaC misconfigurations detected [engine: ${iac.engine}].`);
-        }
-
-        log3('Generating SBOM...');
-        const { engine: sbomEngine, sbom } = await generateSbom(projectRoot, log3);
-        log3(`✓ SBOM generated [engine: ${sbomEngine}] — ${(sbom.components || []).length} component(s).`);
-        if (projectId !== null) {
-          const sbomBuffer = Buffer.from(JSON.stringify(sbom, null, 2));
-          store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
-        }
-
-        log3('Check 6 — base-image signature/provenance verification (cosign)...');
-        const imageProvenance = await checkImageProvenance(projectRoot, log3);
-        if (imageProvenance.findings.length > 0) {
-          log3(`⚠ ${imageProvenance.findings.length} base image(s) without a verifiable Sigstore signature:`);
-          imageProvenance.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
-        } else if (imageProvenance.engine === 'cosign') {
-          log3('✓ Check 6 passed — every referenced base image has a verifiable Sigstore signature (or none was referenced).');
-        } else {
-          log3('✓ Check 6 skipped — cosign disabled or not installed.');
-        }
-
-        log3(`Check 7 — semantic SAST (semgrep, config: ${SEMGREP_CONFIG})...`);
-        const semanticSast = await checkSemanticSast(projectRoot, log3);
-        if (semanticSast.findings.length > 0) {
-          log3(`✗ ${semanticSast.findings.length} semantic SAST finding(s):`);
-          semanticSast.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-        } else if (semanticSast.engine === 'semgrep') {
-          log3('✓ Check 7 passed — no semantic SAST findings.');
-        } else {
-          log3('✓ Check 7 skipped — semgrep disabled or not installed.');
-        }
-
-        log3('Check 8 — PII/GDPR data-flow scan (bearer)...');
-        const piiDataFlow = await checkPiiDataFlow(projectRoot, log3);
-        if (piiDataFlow.findings.length > 0) {
-          log3(`✗ ${piiDataFlow.findings.length} PII/data-flow finding(s):`);
-          piiDataFlow.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-        } else if (piiDataFlow.engine === 'bearer') {
-          log3('✓ Check 8 passed — no PII/data-flow findings.');
-        } else {
-          log3('✓ Check 8 skipped — bearer disabled or not installed.');
-        }
-
-        log3('Check 9 — code duplication scan (jscpd)...');
-        const duplication = await checkCodeDuplication(projectRoot, log3);
-        if (duplication.findings.length > 0) {
-          log3(`⚠ ${duplication.findings.length} duplicate block(s) found:`);
-          duplication.findings.forEach((f) => log3(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
-        } else if (duplication.engine === 'jscpd') {
-          log3('✓ Check 9 passed — no duplicate blocks above jscpd\'s default threshold.');
-        } else {
-          log3('✓ Check 9 skipped — jscpd disabled or not installed.');
-        }
-
-        log3('Computing LOC metrics...');
-        const { engine: locEngine, metrics: locMetrics } = await generateLocMetrics(projectRoot, log3);
-        if (locMetrics) {
-          log3(`✓ LOC metrics computed [engine: ${locEngine}] — ${locMetrics.total?.code ?? 0} lines of code across ${locMetrics.languages?.length ?? 0} language(s).`);
-          if (projectId !== null) {
-            const locBuffer = Buffer.from(JSON.stringify(locMetrics, null, 2));
-            store.addUploadDocument(projectId, 'loc-metrics.json', 'application/json', locBuffer.length, locBuffer);
-          }
-        }
-
-        log3('Check 10 — API schema lint (spectral, OpenAPI/AsyncAPI)...');
-        const apiSchema = await checkApiSchemas(projectRoot, log3);
-        if (apiSchema.findings.length > 0) {
-          log3(`✗ ${apiSchema.findings.length} API schema lint finding(s):`);
-          apiSchema.findings.forEach((f) => log3(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
-        } else if (apiSchema.engine === 'spectral') {
-          log3('✓ Check 10 passed — no API schema lint findings (or no OpenAPI/AsyncAPI files found).');
-        } else {
-          log3('✓ Check 10 skipped — spectral disabled or not installed.');
-        }
-
-        log3('Check 11 — Compliance & Feature Posture Scan...');
-        const { engine: postureEngine, posture } = await checkFeaturePosture(projectRoot, log3);
-        for (const category of POSTURE_CATEGORIES) {
-          const { status, matches } = posture[category];
-          log3(`    ${status === 'DETECTED' ? '✓' : status === 'PARTIAL' ? '⚠' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} signal(s))` : ''}`);
-        }
-        if (projectId !== null) {
-          const postureBuffer = Buffer.from(JSON.stringify({ engine: postureEngine, posture }, null, 2));
-          store.addUploadDocument(projectId, 'posture-report.json', 'application/json', postureBuffer.length, postureBuffer);
-        }
-
-        const issues = collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema });
+        const { issues } = await runPhase4Checks(projectRoot, log3, { org, repo, projectId, store });
         for (const issue of issues) allIssues.push({ ...issue, phase: 4 });
         const blockingCount = issues.filter((i) => i.severity === 'error').length;
         if (issues.length > 0) {
