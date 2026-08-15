@@ -41,14 +41,21 @@ test('checkCodeDuplication: jscpd is disabled by default', withServerEnv({}, asy
   assert.equal(cfg.metrics.jscpd.binary, 'jscpd');
 }));
 
-// Regression: real duplication-scan runs consistently surfaced two classes
-// of noise instead of maintenance risk — generated/design-export mockups
-// (docs/**, e.g. Stitch-exported static HTML) and test-fixture duplication
-// across suites (standard practice, not logic that could drift). Both are
-// excluded from jscpd's scan by default now.
-test('checkCodeDuplication: default ignorePatterns exclude docs/** and test files', withServerEnv({}, async (mod) => {
+// Regression: real duplication-scan runs consistently surfaced three
+// classes of noise instead of maintenance risk — generated/design-export
+// mockups (docs/**, e.g. Stitch-exported static HTML), test-fixture
+// duplication across suites (standard practice, not logic that could
+// drift), and package-manager lockfiles (machine-written, never hand-
+// edited — their "duplication" is just mirrored dependency metadata). All
+// three are excluded from jscpd's scan by default now.
+test('checkCodeDuplication: default ignorePatterns exclude docs/**, test files, and lockfiles', withServerEnv({}, async (mod) => {
   const cfg = mod.loadConfig();
-  assert.deepEqual(cfg.metrics.jscpd.ignorePatterns, ['docs/**', '**/*.test.*', '**/*.spec.*', '**/__tests__/**']);
+  assert.deepEqual(cfg.metrics.jscpd.ignorePatterns, [
+    'docs/**', '**/*.test.*', '**/*.spec.*', '**/__tests__/**',
+    '**/package-lock.json', '**/yarn.lock', '**/pnpm-lock.yaml',
+    '**/Gemfile.lock', '**/poetry.lock', '**/Cargo.lock', '**/go.sum',
+    '**/composer.lock',
+  ]);
 }));
 
 test('checkCodeDuplication: JSCPD_IGNORE overrides the default ignore patterns', withServerEnv(
@@ -167,7 +174,7 @@ test('checkCodeDuplication: snippet highlights the whole duplicated span, not ju
   })();
 });
 
-test('checkCodeDuplication: invokes jscpd with --ignore set to the default docs/test-file exclusions', async () => {
+test('checkCodeDuplication: invokes jscpd with --ignore set to the default docs/test-file/lockfile exclusions', async () => {
   const jscpdBinary = await makeFakeJscpd({ duplicates: [] });
   const argsFile = require('node:path').join(require('node:path').dirname(jscpdBinary), 'jscpd-invocation-args.json');
   await withServerEnv({ JSCPD_ENABLED: 'true', JSCPD_BINARY: jscpdBinary }, async (mod) => {
@@ -176,7 +183,7 @@ test('checkCodeDuplication: invokes jscpd with --ignore set to the default docs/
     const args = JSON.parse(await require('node:fs/promises').readFile(argsFile, 'utf8'));
     const idx = args.indexOf('--ignore');
     assert.notEqual(idx, -1, `expected --ignore in jscpd invocation, got: ${args.join(' ')}`);
-    assert.equal(args[idx + 1], 'docs/**,**/*.test.*,**/*.spec.*,**/__tests__/**');
+    assert.equal(args[idx + 1], 'docs/**,**/*.test.*,**/*.spec.*,**/__tests__/**,**/package-lock.json,**/yarn.lock,**/pnpm-lock.yaml,**/Gemfile.lock,**/poetry.lock,**/Cargo.lock,**/go.sum,**/composer.lock');
   })();
 });
 

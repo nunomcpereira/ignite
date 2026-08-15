@@ -97,7 +97,12 @@
       "binary": "jscpd",
       "minLines": 5,
       "minTokens": 50,
-      "ignorePatterns": ["docs/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**"]
+      "ignorePatterns": [
+        "docs/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**",
+        "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+        "**/Gemfile.lock", "**/poetry.lock", "**/Cargo.lock", "**/go.sum",
+        "**/composer.lock"
+      ]
     },
     "gocloc": {
       "enabled": true,

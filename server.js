@@ -157,19 +157,29 @@ function loadConfig() {
       // undercount a dense, bracket-heavy line that clears minTokens while
       // spanning ~1 real line, surfacing single-line/bracket-only
       // "duplicates" that aren't a meaningful block.
-      // ignorePatterns (jscpd's own --ignore glob syntax) excludes two
+      // ignorePatterns (jscpd's own --ignore glob syntax) excludes three
       // categories that duplication-scan real runs consistently surface as
       // noise, not maintenance risk: (1) generated/design-export content —
       // e.g. Stitch/Figma-to-code static mockups under docs/** — which are
       // independently exported snapshots never meant to share a component
       // tree, so "dedupe this" has no actionable target; (2) test files,
       // where fixture/setup duplication across suites is standard practice
-      // (keeps suites independent) rather than logic that could drift.
-      // Override per-project via JSCPD_IGNORE (comma-separated globs) if a
-      // repo's docs/tests genuinely do contain shippable, dedupe-worthy code.
+      // (keeps suites independent) rather than logic that could drift;
+      // (3) package-manager lockfiles, which are machine-written and never
+      // hand-edited — their "duplication" is just the same resolved
+      // dependency/platform-binary metadata mirrored across entries, an
+      // artifact of how lockfiles work, not a code smell with an
+      // actionable fix. Override per-project via JSCPD_IGNORE
+      // (comma-separated globs) if a repo's docs/tests genuinely do
+      // contain shippable, dedupe-worthy code.
       jscpd: {
         enabled: false, binary: 'jscpd', minLines: 5, minTokens: 50,
-        ignorePatterns: ['docs/**', '**/*.test.*', '**/*.spec.*', '**/__tests__/**'],
+        ignorePatterns: [
+          'docs/**', '**/*.test.*', '**/*.spec.*', '**/__tests__/**',
+          '**/package-lock.json', '**/yarn.lock', '**/pnpm-lock.yaml',
+          '**/Gemfile.lock', '**/poetry.lock', '**/Cargo.lock', '**/go.sum',
+          '**/composer.lock',
+        ],
       },
       // Optional: precise per-language LOC counts via gocloc
       // (https://github.com/hhatto/gocloc) — purely descriptive, attached
