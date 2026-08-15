@@ -1970,14 +1970,28 @@ async function fetchGovernanceWorkflow(wfDir, log) {
 
 function normalizeWorkflowText(text) {
   // Some governance workflows generate an ESM eslint.config.js in CommonJS repos.
-  // Normalize to CommonJS for local `act` compatibility.
+  // Normalize to CommonJS for local `act` compatibility. Written to
+  // eslint.config.cjs (not .js): Node picks CommonJS vs. ESM for a plain
+  // .js file from the nearest package.json's "type" field, so a CommonJS
+  // rewrite left in eslint.config.js still gets parsed as ESM — and fails
+  // with "require is not defined in ES module scope" — on any target repo
+  // that declares "type": "module" (observed for real onboarding
+  // SolventAI). .cjs is unconditionally CommonJS regardless of "type",
+  // and ESLint's flat-config loader looks for eslint.config.cjs
+  // explicitly, so this works on both CommonJS and ESM repos.
+  // The echo-destined-to-eslint.config.js patterns must run BEFORE the
+  // generic content-only one below: they need to see the original ESM
+  // `import ... export default` text intact so they can rewrite the
+  // destination filename in the same match. Reversing the order lets the
+  // generic replace consume the ESM text first, leaving nothing for these
+  // to match — silently keeping the broken .js destination.
   return String(text)
+    .replace(/echo\s+'import\s+security\s+from\s+"eslint-plugin-security";\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];'\s*>\s*eslint\.config\.js/g,
+      'echo \'const security = require("eslint-plugin-security"); module.exports = [security.configs.recommended];\' > eslint.config.cjs')
+    .replace(/echo\s+"import\s+security\s+from\s+'eslint-plugin-security';\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];"\s*>\s*eslint\.config\.js/g,
+      'echo "const security = require(\"eslint-plugin-security\"); module.exports = [security.configs.recommended];" > eslint.config.cjs')
     .replace(/import\s+security\s+from\s+["']eslint-plugin-security["'];?\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];?/g,
       'const security = require("eslint-plugin-security"); module.exports = [security.configs.recommended];')
-    .replace(/echo\s+'import\s+security\s+from\s+"eslint-plugin-security";\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];'\s*>\s*eslint\.config\.js/g,
-      'echo \'const security = require("eslint-plugin-security"); module.exports = [security.configs.recommended];\' > eslint.config.js')
-    .replace(/echo\s+"import\s+security\s+from\s+'eslint-plugin-security';\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];"\s*>\s*eslint\.config\.js/g,
-      'echo "const security = require(\"eslint-plugin-security\"); module.exports = [security.configs.recommended];" > eslint.config.js')
     .replace(/npx\s+eslint\s+\.\s+--max-warnings(?:\s+|=)0\b/g, 'npx eslint . --max-warnings 1000');
 }
 
@@ -6567,4 +6581,5 @@ module.exports = {
   generateLocMetrics,
   checkApiSchemas,
   checkFeaturePosture,
+  normalizeWorkflowText,
 };
