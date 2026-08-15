@@ -191,11 +191,11 @@
 
     </main>
 
-    <!-- Onboarded projects history panel -->
-    <aside class="lg:sticky lg:top-6">
+    <!-- Recent checks history panel -->
+    <aside class="lg:sticky lg:top-6 space-y-6">
       <section class="bg-white border border-slate-200 rounded-2xl shadow-card overflow-hidden">
         <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Onboarded Projects</h2>
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
           <button id="historyRefreshBtn" title="Refresh"
             class="text-slate-400 hover:text-brand-600 transition-colors">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -204,6 +204,22 @@
           </button>
         </div>
         <div id="historyList" class="divide-y divide-slate-100 max-h-[75vh] overflow-y-auto">
+          <p class="p-5 text-xs text-slate-400">Loading…</p>
+        </div>
+      </section>
+
+      <section class="bg-white border border-slate-200 rounded-2xl shadow-card overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Effectivated Repos</h2>
+          <button id="effectivatedRefreshBtn" title="Refresh"
+            class="text-slate-400 hover:text-brand-600 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+            </svg>
+          </button>
+        </div>
+        <p class="px-5 pt-3 text-[11px] text-slate-400">Repos Ignite has actually pushed to. Enable a schedule to re-run checks against the default branch — failures notify the repo's CODEOWNERS contact, or file a GitHub issue if none is found.</p>
+        <div id="effectivatedList" class="divide-y divide-slate-100 max-h-[50vh] overflow-y-auto">
           <p class="p-5 text-xs text-slate-400">Loading…</p>
         </div>
       </section>
@@ -2033,6 +2049,22 @@
       'encryption-at-rest': 'Encryption at Rest', 'rate-limiting': 'Rate Limiting & Throttling',
       'mfa-2fa': 'MFA / 2FA', 'secrets-management': 'Secrets Management',
     };
+    // What each category's scanner is actually looking for, and the
+    // concrete change that would flip it to DETECTED — a representative
+    // "strong" call site from ignite-posture-rules.yaml, not an exhaustive
+    // list (any equivalent library's real usage counts too).
+    const STUDIO_POSTURE_HINTS = {
+      'sso-saml-oidc': "Looks for a real SSO/SAML/OIDC provider being instantiated (e.g. new SamlStrategy(), OktaAuth(), Keycloak({...}), CognitoUserPool) — not just the library imported. To go green: wire up login through an actual IdP client/strategy instantiation instead of (or as well as) home-grown auth.",
+      'rbac-abac': "Looks for an actual authorization guard/policy check at a call site (e.g. @PreAuthorize(...), requireRole(...), casbin.NewEnforcer(...), can?(...)) — not just an RBAC library imported. To go green: enforce role/permission checks on protected routes or methods via one of these, instead of ad-hoc if-checks.",
+      'audit-logging': 'Looks for an explicit audit-log emit call (e.g. auditLogger.log(...), AuditLog.create(...), @Audited) — not just an audit-logging class/import referenced. To go green: emit a structured audit event on sensitive actions (auth, permission changes, data exports) via an audit logger, not a plain console/app log.',
+      'siem-log-forwarding': 'Looks for a log/security-event transport actually instantiated toward a SIEM/collector (e.g. winston.transports.Syslog(), new FluentLogger(), SyslogAppender(...), an OpenTelemetry tracer) — not just the client library present. To go green: configure a forwarding transport/exporter that ships logs off-host to a collector.',
+      'https-tls': 'Looks for HTTPS/HSTS actually enforced (e.g. helmet.hsts(...), app.UseHsts(), SECURE_SSL_REDIRECT = True, https.createServer(...)) — not just a security-middleware package present. To go green: turn on HSTS/forced-SSL redirect in the app or its edge/proxy config.',
+      'backups-dr': 'Looks for an actual backup job, cron schedule, or IaC retention policy (e.g. a cron entry running pg_dump/mongodump, backup_retention_period, CreateDBSnapshot(...)) — not just a backup CLI tool present. To go green: schedule a real backup job or set a retention/snapshot policy in your infra config.',
+      'encryption-at-rest': 'Looks for an actual encrypt/decrypt call through a KMS or crypto library (e.g. kms.encrypt(...), vault.write(...), createCipheriv(...), Cipher.getInstance("AES...")) — not just a KMS SDK imported. To go green: encrypt sensitive fields/payloads before persisting them, via a KMS client or a vetted crypto library.',
+      'rate-limiting': 'Looks for rate-limiting middleware actually instantiated (e.g. rateLimit({...}), new RateLimiterRedis(...), Rack::Attack.throttle(...), @ratelimit(...)) — not just the package installed. To go green: attach a rate-limiter to public/authenticated endpoints, especially auth and write routes.',
+      'mfa-2fa': 'Looks for a TOTP/MFA code actually being verified at login/challenge (e.g. speakeasy.totp.verify(...), pyotp.TOTP(...), authenticator.verify(...)) — not just a TOTP library imported. To go green: require a second factor at login and verify it server-side via one of these.',
+      'secrets-management': 'Looks for a secret actually fetched at runtime from a managed vault/secrets manager (e.g. vault.read(...), secretsManagerClient.getSecretValue(...), secretmanager.accessSecretVersion(...)) — not just a vault client imported, and not env vars/.env files. To go green: read sensitive credentials from a secrets manager/vault client instead of plain environment variables.',
+    };
 
     function renderStudioPosture(data) {
       const posture = data.posture || {};
@@ -2040,12 +2072,14 @@
       const cardsHtml = Object.entries(posture).map(([category, { status, matches }]) => {
         const meta = STUDIO_POSTURE_STATUS_META[status] || STUDIO_POSTURE_STATUS_META.MISSING;
         const matchesHtml = matches.slice(0, 5).map((m) => `<button type="button" class="studio-posture-match block w-full text-left px-2 py-1 rounded hover:bg-slate-50 font-mono text-[10px] text-slate-500" data-path="${escapeAttr(m.file)}" data-line="${m.line}">${escapeHtml(m.file)}:${m.line} <span class="text-slate-400">(${escapeHtml(m.tier)})</span></button>`).join('');
+        const hint = STUDIO_POSTURE_HINTS[category];
         return `<div class="rounded-lg border ${meta.chip} p-3">
           <div class="flex items-center justify-between">
             <span class="text-xs font-semibold text-slate-700">${escapeHtml(STUDIO_POSTURE_LABELS[category] || category)}</span>
             <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip}">${meta.icon} ${meta.label}</span>
           </div>
           ${matches.length > 0 ? `<div class="mt-2">${matchesHtml}</div>` : ''}
+          ${status === 'MISSING' && hint ? `<p class="mt-2 text-[11px] text-slate-500 leading-snug">${escapeHtml(hint)}</p>` : ''}
         </div>`;
       }).join('');
       $('studioCodeWrap').innerHTML = `<div class="p-4">
@@ -3283,6 +3317,73 @@
       });
     }
 
+    const effectivatedList = $('effectivatedList');
+    const SCHEDULE_STATUS = {
+      ok: 'text-emerald-600',
+      failed: 'text-rose-600',
+    };
+
+    async function loadEffectivated() {
+      let projects = [];
+      try {
+        const res = await fetch('/api/projects/effectivated');
+        ({ projects } = await res.json());
+      } catch {
+        effectivatedList.innerHTML = '<p class="p-5 text-xs text-rose-500">Could not load effectivated repos.</p>';
+        return;
+      }
+      if (!projects || projects.length === 0) {
+        effectivatedList.innerHTML = '<p class="p-5 text-xs text-slate-400">No repos have been effectivated (pushed) yet.</p>';
+        return;
+      }
+      effectivatedList.innerHTML = projects.map((p) => {
+        const lastRun = p.last_scheduled_run_at
+          ? `<span class="${SCHEDULE_STATUS[p.last_scheduled_status] || 'text-slate-400'}">${p.last_scheduled_status === 'ok' ? '✓' : '✗'} last run ${escapeHtml(p.last_scheduled_run_at.replace('T', ' '))} UTC</span>`
+          : '<span class="text-slate-400">never run</span>';
+        return `
+        <div class="px-5 py-3.5" data-id="${p.id}">
+          <div class="flex items-start gap-2">
+            <div class="flex-1 min-w-0">
+              <a href="${escapeAttr(p.repo_url)}" target="_blank" rel="noopener" class="text-sm font-semibold text-slate-800 hover:text-brand-600 hover:underline truncate">${escapeHtml(p.org)}/${escapeHtml(p.repo)}</a>
+              <p class="text-[11px] mt-0.5">${lastRun}</p>
+              ${p.last_scheduled_status === 'failed' && p.last_scheduled_error ? `<p class="text-[11px] text-rose-500 mt-0.5 truncate" title="${escapeAttr(p.last_scheduled_error)}">${escapeHtml(p.last_scheduled_error)}</p>` : ''}
+            </div>
+          </div>
+          <div class="flex items-center gap-2 mt-2">
+            <label class="inline-flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer">
+              <input type="checkbox" class="sched-enabled w-3.5 h-3.5 rounded border-slate-300" ${p.schedule_enabled ? 'checked' : ''} />
+              Scheduled re-check
+            </label>
+            <select class="sched-interval text-[11px] border border-slate-200 rounded px-1.5 py-1 disabled:opacity-50" ${p.schedule_enabled ? '' : 'disabled'}>
+              <option value="daily" ${p.schedule_interval === 'daily' ? 'selected' : ''}>Daily</option>
+              <option value="weekly" ${p.schedule_interval === 'weekly' ? 'selected' : ''}>Weekly</option>
+              <option value="monthly" ${p.schedule_interval === 'monthly' ? 'selected' : ''}>Monthly</option>
+            </select>
+          </div>
+        </div>`;
+      }).join('');
+
+      effectivatedList.querySelectorAll('[data-id]').forEach((row) => {
+        const id = Number(row.dataset.id);
+        const enabledBox = row.querySelector('.sched-enabled');
+        const intervalSelect = row.querySelector('.sched-interval');
+        const save = async () => {
+          intervalSelect.disabled = !enabledBox.checked;
+          try {
+            await fetch(`/api/projects/${id}/schedule`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: enabledBox.checked, interval: intervalSelect.value }),
+            });
+          } catch { /* best-effort — next load reflects actual server state */ }
+        };
+        enabledBox.addEventListener('change', save);
+        intervalSelect.addEventListener('change', save);
+      });
+    }
+
+    $('effectivatedRefreshBtn').addEventListener('click', loadEffectivated);
+
     async function deleteProject(id) {
       const confirmed = window.confirm('Delete this onboarded project entry and its stored documents?');
       if (!confirmed) return;
@@ -3386,6 +3487,7 @@
     loadAuthState();
     loadToolsStatus();
     loadProjects();
+    loadEffectivated();
   </script>
 </body>
 </html>

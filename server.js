@@ -1173,6 +1173,30 @@ async function checkEnvFiles(root) {
   return { blocking, ignored };
 }
 
+// GitHub recognizes CODEOWNERS in exactly these three locations (root,
+// .github/, docs/) and uses the first one found, in that order.
+const CODEOWNERS_LOCATIONS = ['CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS'];
+const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
+
+// Advisory-only presence/contact check (never blocks onboarding): locates a
+// CODEOWNERS file and extracts any email-address owners from it (@username
+// entries aren't actionable for automated notification, so they're not
+// collected here). Used both as a Phase 3 log line and, later, by the
+// scheduled re-check to resolve who to notify on a failure.
+async function checkCodeowners(root) {
+  for (const rel of CODEOWNERS_LOCATIONS) {
+    let content;
+    try {
+      content = await fsp.readFile(path.join(root, rel), 'utf8');
+    } catch {
+      continue;
+    }
+    const emails = [...new Set((content.match(EMAIL_RE) || []).map((e) => e.toLowerCase()))];
+    return { found: true, path: rel, emails };
+  }
+  return { found: false, path: null, emails: [] };
+}
+
 async function checkSecrets(root, log, cacheKey) {
   const findings = [];
   let scanned = 0;
@@ -4112,6 +4136,149 @@ async function sendOverrideNotification(details) {
   return { sent: true, to };
 }
 
+/* ------------------------------------------------------------------ */
+/* Scheduled re-checks: effectivated repos can opt into a recurring     */
+/* re-run of Phases 1/3/4/5 against their default branch. A failure     */
+/* notifies the repo's CODEOWNERS contact(s) by email, or — if none can */
+/* be resolved — files a GitHub issue on the repo instead.              */
+/* ------------------------------------------------------------------ */
+
+const SCHEDULE_INTERVALS = new Set(['daily', 'weekly', 'monthly']);
+
+function computeNextRunAt(interval, from = new Date()) {
+  const next = new Date(from);
+  if (interval === 'weekly') next.setDate(next.getDate() + 7);
+  else if (interval === 'monthly') next.setMonth(next.getMonth() + 1);
+  else next.setDate(next.getDate() + 1); // 'daily', and the fallback for any unrecognized value
+  return next.toISOString();
+}
+
+function buildScheduledCheckFailureEmail({ org, repo, error }) {
+  const subject = `[Ignite] ❌ Scheduled re-check failed — ${org}/${repo}`;
+  const html = `
+  <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:0 auto;color:#334155;">
+    <h2 style="color:#e11d48;">Ignite scheduled re-check failed</h2>
+    <p><strong>Repository:</strong> ${escapeHtmlMail(org)}/${escapeHtmlMail(repo)} (default branch)<br/>
+       <strong>Error:</strong> ${escapeHtmlMail(error)}</p>
+    <p style="color:#94a3b8;font-size:12px;margin-top:24px;">Sent by Ignite to this repository's CODEOWNERS contact(s) — update CODEOWNERS to change who receives this.</p>
+  </div>`;
+  return { subject, html };
+}
+
+// Unlike sendFailureNotification/sendOverrideNotification, the recipient is
+// per-repo (CODEOWNERS emails), not the fixed CONFIG.notifications.to — the
+// global `enabled` kill switch still applies.
+async function sendScheduledCheckFailureEmail({ org, repo, error, to }) {
+  const { enabled, from } = CONFIG.notifications;
+  if (!enabled) return { sent: false, reason: 'notifications disabled' };
+  const transport = buildMailTransport();
+  const { subject, html } = buildScheduledCheckFailureEmail({ org, repo, error });
+  await transport.sendMail({ from, to, subject, html });
+  return { sent: true, to };
+}
+
+async function notifyScheduledFailure({ org, repo, error, codeownersCheck }, log) {
+  if (codeownersCheck.emails.length > 0) {
+    try {
+      const result = await sendScheduledCheckFailureEmail({ org, repo, error, to: codeownersCheck.emails.join(', ') });
+      log(result.sent ? `✓ Notified CODEOWNERS contact(s): ${result.to}` : `⚠ Email not sent: ${result.reason}`);
+    } catch (e) {
+      log(`⚠ Failed to email CODEOWNERS contact(s): ${e.message}`);
+    }
+    return;
+  }
+  log('⚠ No CODEOWNERS contact email resolved — filing a GitHub issue instead.');
+  try {
+    await runTool('gh', [
+      'issue', 'create',
+      '--repo', `${org}/${repo}`,
+      '--title', 'Ignite scheduled check failed',
+      '--body',
+      `Ignite's scheduled re-check of the default branch failed:\n\n${error}\n\n`
+      + 'No CODEOWNERS contact could be resolved (no CODEOWNERS file, or no email-address owner listed in it), '
+      + 'so this issue was filed automatically instead of emailing a contact. Add a CODEOWNERS file with at least '
+      + 'one email-address owner to route future failures by email instead.',
+    ], os.tmpdir());
+    log('✓ Filed a GitHub issue on the repo.');
+  } catch (e) {
+    log(`⚠ Failed to file a GitHub issue: ${e.message}`);
+  }
+}
+
+async function runScheduledRecheck(project) {
+  const { id: projectId, org, repo, schedule_interval: interval } = project;
+  const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `scheduled-${projectId}-${Date.now()}`);
+  const workflowDir = `${stagingDir}-workflows`;
+  const log = (message) => console.log(`[scheduled ${org}/${repo}] ${message}`);
+  let codeownersCheck = { found: false, path: null, emails: [] };
+
+  try {
+    log('Cloning default branch (main)...');
+    await runTool('gh', ['repo', 'clone', `${org}/${repo}`, stagingDir, '--', '--depth', '1', '--branch', 'main'], os.tmpdir());
+
+    const licenseIssues = [
+      ...await runLicenseComplianceCheck(stagingDir, log),
+      ...await runDependencyVulnerabilityCheck(stagingDir, log),
+    ];
+
+    const envCheck = await checkEnvFiles(stagingDir);
+    if (envCheck.blocking.length > 0) {
+      throw new Error(`Raw environment file(s) present on default branch: ${envCheck.blocking.join(', ')}`);
+    }
+    codeownersCheck = await checkCodeowners(stagingDir);
+    log(codeownersCheck.found
+      ? `✓ CODEOWNERS found at ${codeownersCheck.path} (${codeownersCheck.emails.length} contact email(s)).`
+      : 'ℹ No CODEOWNERS file found.');
+
+    await runProjectUnitTests(stagingDir, log);
+
+    let issues = [...licenseIssues];
+    if (PHASE_ENABLED[4]) {
+      const phase4 = await runPhase4Checks(stagingDir, log, { org, repo, projectId, store });
+      issues = [...phase4.issues, ...licenseIssues];
+    }
+    const errorIssues = issues.filter((i) => i.severity === 'error');
+    if (errorIssues.length > 0) {
+      throw new Error(`${errorIssues.length} blocking finding(s) on default branch: ${errorIssues.slice(0, 5).map((i) => `${i.category} — ${i.summary}`).join('; ')}`);
+    }
+
+    if (PHASE_ENABLED[5]) {
+      const tooling = await actTooling();
+      if (tooling.ok) {
+        const wfFile = await fetchGovernanceWorkflow(workflowDir, log);
+        await runActionsLocally(stagingDir, wfFile, log);
+      } else {
+        log(`⚠ Local CI skipped: ${tooling.reason}`);
+      }
+    }
+
+    store.recordScheduledRunResult(projectId, 'ok', null, computeNextRunAt(interval));
+    log('✓ Scheduled re-check passed.');
+  } catch (e) {
+    store.recordScheduledRunResult(projectId, 'failed', e.message, computeNextRunAt(interval));
+    log(`✗ Scheduled re-check failed: ${e.message}`);
+    await notifyScheduledFailure({ org, repo, error: e.message, codeownersCheck }, log);
+  } finally {
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(workflowDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+const scheduledRechecksInFlight = new Set();
+
+// Runs due repos concurrently (fire-and-forget) rather than one at a time —
+// each clones into its own staging dir, so there's no shared state to race
+// on — but never starts the same project twice while its previous run is
+// still in flight (a slow act/Docker run outlasting the sweep interval).
+function sweepScheduledRechecks() {
+  const due = store.getDueScheduledProjects(new Date().toISOString());
+  for (const project of due) {
+    if (scheduledRechecksInFlight.has(project.id)) continue;
+    scheduledRechecksInFlight.add(project.id);
+    runScheduledRecheck(project).finally(() => scheduledRechecksInFlight.delete(project.id));
+  }
+}
+
 /**
  * Persist each applied override to the audit log and send exactly one
  * notification email covering the whole batch. Best-effort on email: a
@@ -5586,6 +5753,11 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
       );
     }
     log2('✓ Check 1 passed — no raw environment files present.');
+    log2('Check 2 — checking for a CODEOWNERS file...');
+    const codeownersCheck = await checkCodeowners(projectRoot);
+    log2(codeownersCheck.found
+      ? `✓ CODEOWNERS found at ${codeownersCheck.path} (${codeownersCheck.emails.length} contact email(s)).`
+      : 'ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).');
     await runProjectUnitTests(projectRoot, log2);
     status(3, 'success');
 
@@ -5848,6 +6020,11 @@ app.post('/api/pipeline/onboard', async (req, res) => {
       );
     }
     log2('✓ Check 1 passed — no raw environment files present.');
+    log2('Check 2 — checking for a CODEOWNERS file...');
+    const codeownersCheck = await checkCodeowners(projectRoot);
+    log2(codeownersCheck.found
+      ? `✓ CODEOWNERS found at ${codeownersCheck.path} (${codeownersCheck.emails.length} contact email(s)).`
+      : 'ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).');
     await runProjectUnitTests(projectRoot, log2);
     status(3, 'success');
 
@@ -6011,6 +6188,29 @@ app.delete('/api/projects/:id', (req, res) => {
 app.delete('/api/projects', (req, res) => {
   store.deleteAllProjects();
   res.json({ ok: true });
+});
+
+// "Effectivated" repos: projects that actually shipped (a real repo_url from
+// a successful run — see the /effectivate endpoint above, which is the other
+// place a project earns this same status). Each can opt into a recurring
+// re-check of its default branch — see the scheduler below.
+app.get('/api/projects/effectivated', (req, res) => {
+  res.json({ projects: store.listEffectivatedProjects() });
+});
+
+app.post('/api/projects/:id/schedule', auth.requireAuth, (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isInteger(projectId)) return res.status(400).json({ error: 'Invalid project id.' });
+  if (!store.projectExists(projectId)) return res.status(404).json({ error: 'Project not found.' });
+
+  const enabled = Boolean(req.body?.enabled);
+  const interval = String(req.body?.interval || '').toLowerCase();
+  if (enabled && !SCHEDULE_INTERVALS.has(interval)) {
+    return res.status(400).json({ error: `interval must be one of: ${[...SCHEDULE_INTERVALS].join(', ')}` });
+  }
+  const nextRunAt = enabled ? computeNextRunAt(interval) : null;
+  store.setProjectSchedule(projectId, enabled, enabled ? interval : null, nextRunAt);
+  res.json({ ok: true, enabled, interval: enabled ? interval : null, nextRunAt });
 });
 
 app.get('/api/documents/:id', (req, res) => {
@@ -6288,6 +6488,11 @@ app.post(
         throw new Error(`Raw environment files detected (${envCheck.blocking.length}). Remove them and re-upload.`);
       }
       log2('✓ Check 1 passed — no raw environment files present.');
+      log2('Check 2 — checking for a CODEOWNERS file...');
+      const codeownersCheck = await checkCodeowners(projectRoot);
+      log2(codeownersCheck.found
+        ? `✓ CODEOWNERS found at ${codeownersCheck.path} (${codeownersCheck.emails.length} contact email(s)).`
+        : 'ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).');
       await runProjectUnitTests(projectRoot, log2);
       status(3, 'success');
       phase3Ok = true;
@@ -6564,6 +6769,11 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Ignite (onboarding gatekeeper) running at http://localhost:${PORT}`);
   });
+
+  // Scheduled re-checks on effectivated repos (see sweepScheduledRechecks) —
+  // never runs under `require()` (tests, MCP tooling) so it can't fire real
+  // `gh`/`git`/email/issue side effects outside the standalone server.
+  setInterval(sweepScheduledRechecks, 15 * 60_000).unref();
 
   // Auto-starts the MCP server (Streamable HTTP transport) as a child
   // process, so `node server.js` / `npm start` is the one command needed —

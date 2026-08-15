@@ -143,6 +143,24 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 
+  // Migration for DBs created before scheduled re-checks existed. Disabled
+  // by default — an existing effectivated repo doesn't opt into recurring
+  // checks just because the column now exists.
+  for (const ddl of [
+    `ALTER TABLE projects ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE projects ADD COLUMN schedule_interval TEXT`,
+    `ALTER TABLE projects ADD COLUMN next_scheduled_run_at TEXT`,
+    `ALTER TABLE projects ADD COLUMN last_scheduled_run_at TEXT`,
+    `ALTER TABLE projects ADD COLUMN last_scheduled_status TEXT`,
+    `ALTER TABLE projects ADD COLUMN last_scheduled_error TEXT`,
+  ]) {
+    try {
+      db.exec(ddl);
+    } catch (e) {
+      if (!/duplicate column/i.test(e.message)) throw e;
+    }
+  }
+
   const stmt = {
     insertProject: db.prepare('INSERT INTO projects (job_id, org, repo, gxp, source) VALUES (?, ?, ?, ?, ?)'),
     finishProject: db.prepare(
@@ -265,6 +283,31 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     ),
     getGithubConnection: db.prepare('SELECT * FROM github_connections WHERE user_id = ?'),
     deleteGithubConnection: db.prepare('DELETE FROM github_connections WHERE user_id = ?'),
+
+    // "Effectivated" = actually shipped: a successful run that pushed to a
+    // real repo_url, as opposed to a dry run or a validate-all/onboard call
+    // that only ever ran checks.
+    listEffectivatedProjects: db.prepare(`
+      SELECT id, org, repo, repo_url, created_at,
+             schedule_enabled, schedule_interval, next_scheduled_run_at,
+             last_scheduled_run_at, last_scheduled_status, last_scheduled_error
+      FROM projects
+      WHERE status = 'success' AND repo_url IS NOT NULL
+      ORDER BY id DESC
+    `),
+    setProjectSchedule: db.prepare(
+      `UPDATE projects SET schedule_enabled = ?, schedule_interval = ?, next_scheduled_run_at = ? WHERE id = ?`
+    ),
+    getDueScheduledProjects: db.prepare(`
+      SELECT id, org, repo, repo_url, schedule_interval FROM projects
+      WHERE schedule_enabled = 1 AND repo_url IS NOT NULL AND next_scheduled_run_at <= ?
+    `),
+    recordScheduledRunResult: db.prepare(
+      `UPDATE projects
+       SET last_scheduled_run_at = datetime('now'), last_scheduled_status = ?, last_scheduled_error = ?,
+           next_scheduled_run_at = ?
+       WHERE id = ?`
+    ),
 
     getWorkflowCache: db.prepare(
       'SELECT commit_sha, content FROM workflow_cache WHERE repo = ? AND filename = ?'
@@ -436,6 +479,24 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     saveWorkflowCache(repo, filename, commitSha, content) {
       stmt.upsertWorkflowCache.run(repo, filename, commitSha, content);
+    },
+
+    /* ---------------- scheduled re-checks on effectivated repos ---------------- */
+
+    listEffectivatedProjects() {
+      return stmt.listEffectivatedProjects.all();
+    },
+
+    setProjectSchedule(projectId, enabled, interval, nextRunAtIso) {
+      stmt.setProjectSchedule.run(enabled ? 1 : 0, interval || null, enabled ? nextRunAtIso : null, projectId);
+    },
+
+    getDueScheduledProjects(nowIso) {
+      return stmt.getDueScheduledProjects.all(nowIso);
+    },
+
+    recordScheduledRunResult(projectId, status, error, nextRunAtIso) {
+      stmt.recordScheduledRunResult.run(status, error || null, nextRunAtIso, projectId);
     },
 
     /* ---------------- GitHub OAuth connection (per ignite user) ---------------- */
