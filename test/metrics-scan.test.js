@@ -40,6 +40,24 @@ test('checkCodeDuplication: jscpd is disabled by default', withServerEnv({}, asy
   assert.equal(cfg.metrics.jscpd.binary, 'jscpd');
 }));
 
+// Regression: real duplication-scan runs consistently surfaced two classes
+// of noise instead of maintenance risk — generated/design-export mockups
+// (docs/**, e.g. Stitch-exported static HTML) and test-fixture duplication
+// across suites (standard practice, not logic that could drift). Both are
+// excluded from jscpd's scan by default now.
+test('checkCodeDuplication: default ignorePatterns exclude docs/** and test files', withServerEnv({}, async (mod) => {
+  const cfg = mod.loadConfig();
+  assert.deepEqual(cfg.metrics.jscpd.ignorePatterns, ['docs/**', '**/*.test.*', '**/*.spec.*', '**/__tests__/**']);
+}));
+
+test('checkCodeDuplication: JSCPD_IGNORE overrides the default ignore patterns', withServerEnv(
+  { JSCPD_IGNORE: 'vendor/**, generated/**' },
+  async (mod) => {
+    const cfg = mod.loadConfig();
+    assert.deepEqual(cfg.metrics.jscpd.ignorePatterns, ['vendor/**', 'generated/**']);
+  }
+));
+
 test('checkCodeDuplication: JSCPD_* env vars are wired into CONFIG.metrics.jscpd', withServerEnv(
   { JSCPD_ENABLED: 'false', JSCPD_BINARY: '/opt/bin/jscpd' },
   async (mod) => {
@@ -87,6 +105,19 @@ test('checkCodeDuplication: parses fake jscpd JSON report into a warning finding
     assert.equal(findings[0].file, 'a.js');
     assert.equal(findings[0].severity, 'warning');
     assert.match(findings[0].message, /b\.js:1/);
+  })();
+});
+
+test('checkCodeDuplication: invokes jscpd with --ignore set to the default docs/test-file exclusions', async () => {
+  const jscpdBinary = await makeFakeJscpd({ duplicates: [] });
+  const argsFile = require('node:path').join(require('node:path').dirname(jscpdBinary), 'jscpd-invocation-args.json');
+  await withServerEnv({ JSCPD_ENABLED: 'true', JSCPD_BINARY: jscpdBinary }, async (mod) => {
+    const dir = await makeTempProject({ 'a.js': 'console.log(1);\n' });
+    await mod.checkCodeDuplication(dir, noopLog);
+    const args = JSON.parse(await require('node:fs/promises').readFile(argsFile, 'utf8'));
+    const idx = args.indexOf('--ignore');
+    assert.notEqual(idx, -1, `expected --ignore in jscpd invocation, got: ${args.join(' ')}`);
+    assert.equal(args[idx + 1], 'docs/**,**/*.test.*,**/*.spec.*,**/__tests__/**');
   })();
 });
 

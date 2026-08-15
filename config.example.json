@@ -96,7 +96,8 @@
       "enabled": false,
       "binary": "jscpd",
       "minLines": 5,
-      "minTokens": 50
+      "minTokens": 50,
+      "ignorePatterns": ["docs/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**"]
     },
     "gocloc": {
       "enabled": true,

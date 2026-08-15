@@ -95,3 +95,24 @@ test('scanDependencyLicenses: OFL-1.1 (SIL Open Font License, e.g. @fontsource/*
     assert.deepEqual(dep.licenses, ['OFL-1.1']);
   })();
 });
+
+test('scanDependencyLicenses: deps.dev "non-standard" placeholder falls back to the npm registry\'s declared license instead of red-flagging', async (t) => {
+  // Regression for a real false positive: deps.dev reports
+  // @typescript-eslint/parser@8.18.0 as licenses: ["non-standard"] even
+  // though its package.json/LICENSE both say plain MIT (confirmed via
+  // `npm view @typescript-eslint/parser@8.18.0 license`).
+  if (!(await hasNetwork())) {
+    t.skip('no network access to api.deps.dev — skipping live resolution test');
+    return;
+  }
+  await withServerEnv({}, async (mod) => {
+    const dir = await makeTempProject({
+      'package.json': JSON.stringify({ devDependencies: { '@typescript-eslint/parser': '^8.18.0' } }),
+    });
+    const { manifests } = await mod.scanDependencyLicenses(dir, () => {});
+    const dep = manifests[0].dependencies[0];
+    assert.equal(dep.tier, 'green', `expected MIT (via npm registry fallback) to classify green, got: ${JSON.stringify(dep)}`);
+    assert.deepEqual(dep.licenses, ['MITClause']); // raw npm registry value; classifyLicenseTier normalizes it to MIT internally
+    assert.match(dep.reason, /^MIT$/);
+  })();
+});

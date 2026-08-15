@@ -157,7 +157,20 @@ function loadConfig() {
       // undercount a dense, bracket-heavy line that clears minTokens while
       // spanning ~1 real line, surfacing single-line/bracket-only
       // "duplicates" that aren't a meaningful block.
-      jscpd: { enabled: false, binary: 'jscpd', minLines: 5, minTokens: 50 },
+      // ignorePatterns (jscpd's own --ignore glob syntax) excludes two
+      // categories that duplication-scan real runs consistently surface as
+      // noise, not maintenance risk: (1) generated/design-export content —
+      // e.g. Stitch/Figma-to-code static mockups under docs/** — which are
+      // independently exported snapshots never meant to share a component
+      // tree, so "dedupe this" has no actionable target; (2) test files,
+      // where fixture/setup duplication across suites is standard practice
+      // (keeps suites independent) rather than logic that could drift.
+      // Override per-project via JSCPD_IGNORE (comma-separated globs) if a
+      // repo's docs/tests genuinely do contain shippable, dedupe-worthy code.
+      jscpd: {
+        enabled: false, binary: 'jscpd', minLines: 5, minTokens: 50,
+        ignorePatterns: ['docs/**', '**/*.test.*', '**/*.spec.*', '**/__tests__/**'],
+      },
       // Optional: precise per-language LOC counts via gocloc
       // (https://github.com/hhatto/gocloc) — purely descriptive, attached
       // as a downloadable project document (same as the SBOM), never
@@ -278,6 +291,9 @@ function loadConfig() {
   if (process.env.JSCPD_BINARY) merged.metrics.jscpd.binary = process.env.JSCPD_BINARY;
   if (process.env.JSCPD_MIN_LINES) merged.metrics.jscpd.minLines = Number(process.env.JSCPD_MIN_LINES);
   if (process.env.JSCPD_MIN_TOKENS) merged.metrics.jscpd.minTokens = Number(process.env.JSCPD_MIN_TOKENS);
+  if (process.env.JSCPD_IGNORE !== undefined) {
+    merged.metrics.jscpd.ignorePatterns = process.env.JSCPD_IGNORE.split(',').map((p) => p.trim()).filter(Boolean);
+  }
   if (process.env.GOCLOC_ENABLED !== undefined) {
     merged.metrics.gocloc.enabled = String(process.env.GOCLOC_ENABLED) === 'true';
   }
@@ -547,6 +563,7 @@ const JSCPD_ENABLED = Boolean(CONFIG.metrics.jscpd.enabled);
 const JSCPD_BINARY = String(CONFIG.metrics.jscpd.binary || 'jscpd');
 const JSCPD_MIN_LINES = Number(CONFIG.metrics.jscpd.minLines) || 5;
 const JSCPD_MIN_TOKENS = Number(CONFIG.metrics.jscpd.minTokens) || 50;
+const JSCPD_IGNORE_PATTERNS = Array.isArray(CONFIG.metrics.jscpd.ignorePatterns) ? CONFIG.metrics.jscpd.ignorePatterns : [];
 
 /* Optional gocloc-powered LOC metrics (see CONFIG.metrics.gocloc) */
 const GOCLOC_ENABLED = Boolean(CONFIG.metrics.gocloc.enabled);
@@ -2628,6 +2645,7 @@ async function checkCodeDuplication(root, log) {
     await runTool('jscpd', [
       root, '--reporters', 'json', '--output', outDir, '--silent',
       '--min-lines', String(JSCPD_MIN_LINES), '--min-tokens', String(JSCPD_MIN_TOKENS),
+      ...(JSCPD_IGNORE_PATTERNS.length > 0 ? ['--ignore', JSCPD_IGNORE_PATTERNS.join(',')] : []),
     ], root, { allowedExitCodes: [0, 1] });
     const raw = await fsp.readFile(path.join(outDir, 'jscpd-report.json'), 'utf8').catch(() => null);
     if (raw === null) return { findings: [], engine: 'jscpd' };
@@ -4154,9 +4172,31 @@ const LICENSE_TIERS = {
   ]),
 };
 
+// Some ecosystems' declared license strings are non-standard spellings of a
+// real SPDX id rather than actually ambiguous — e.g. npm package.json
+// `license` fields with typos/variants like "MITClause" or "MIT License".
+// Real observed case: @typescript-eslint/parser@8.18.0's own package.json
+// literally declares license "MITClause" (a publishing typo), even though
+// its LICENSE file is plain MIT — deps.dev can't classify it either and
+// reports the generic "non-standard" placeholder (see
+// DEPS_DEV_LICENSE_PLACEHOLDERS). Normalizing well-known variants here
+// means the fix applies everywhere classifyLicenseTier is called (ORT,
+// licensee, deps.dev, and the npm-registry placeholder fallback).
+const LICENSE_ALIASES = new Map([
+  ['mitclause', 'MIT'], ['mitlicense', 'MIT'], ['themitlicense', 'MIT'],
+  ['apache2', 'Apache-2.0'], ['apache20', 'Apache-2.0'], ['apachelicense2.0', 'Apache-2.0'], ['apachelicense', 'Apache-2.0'],
+  ['bsd2clause', 'BSD-2-Clause'], ['bsd3clause', 'BSD-3-Clause'],
+]);
+
+function normalizeLicenseId(raw) {
+  const trimmed = String(raw || '').trim();
+  const key = trimmed.toLowerCase().replace(/[\s.\-_]/g, '');
+  return LICENSE_ALIASES.get(key) || trimmed;
+}
+
 function classifyLicenseTier(licenses) {
   const list = (Array.isArray(licenses) ? licenses : licenses ? [licenses] : [])
-    .filter(Boolean).map((l) => String(l).trim());
+    .filter(Boolean).map((l) => normalizeLicenseId(l));
   if (list.length === 0) return { tier: 'red', reason: 'No license identified.' };
   if (list.some((l) => LICENSE_TIERS.red.has(l) || /commercial|proprietary/i.test(l))) {
     return { tier: 'red', reason: `Commercial/restrictive license: ${list.join(', ')}` };
@@ -4285,6 +4325,42 @@ async function fetchDepsDevPackageInfo(system, name, version) {
 async function fetchDepsDevLicenses(system, name, version) {
   const info = await fetchDepsDevPackageInfo(system, name, version);
   return info ? info.licenses : null;
+}
+
+// deps.dev's own license classifier sometimes can't map a package's
+// declared license to an SPDX id and reports one of these placeholder
+// strings instead of actually failing the lookup (observed for real:
+// @typescript-eslint/parser@8.18.0 comes back as ["non-standard"] even
+// though its package.json `license` field and LICENSE file both say plain
+// "MIT" — `npm view <pkg>@<version> license` confirms it). Treating a
+// placeholder the same as a real-but-unrecognized SPDX id would red-flag
+// every package deps.dev punts on, so npm-ecosystem lookups fall back to
+// asking the registry directly before giving up.
+const DEPS_DEV_LICENSE_PLACEHOLDERS = new Set(['non-standard', 'unknown', 'other', 'none', '']);
+
+function isPlaceholderLicenseList(licenses) {
+  const list = (Array.isArray(licenses) ? licenses : licenses ? [licenses] : []).filter(Boolean);
+  return list.length > 0 && list.every((l) => DEPS_DEV_LICENSE_PLACEHOLDERS.has(String(l).trim().toLowerCase()));
+}
+
+// Fallback for when deps.dev only offers a placeholder: ask the npm
+// registry itself for that exact version's declared `license` field
+// (registry.npmjs.org mirrors package.json verbatim, so this is the same
+// data `npm view <pkg>@<version> license` would show).
+async function fetchNpmRegistryLicense(name, version) {
+  try {
+    const url = `https://registry.npmjs.org/${encodeURIComponent(name).replace('%40', '@')}/${encodeURIComponent(version)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (typeof data.license === 'string' && data.license.trim()) return [data.license.trim()];
+    if (Array.isArray(data.licenses) && data.licenses.length > 0) {
+      return data.licenses.map((l) => (typeof l === 'string' ? l : l?.type)).filter(Boolean);
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // bestEffortVersion (below) extracts the numeric floor of a manifest's
@@ -4429,6 +4505,10 @@ async function scanDependencyLicensesFallback(root, { skipEcosystems = new Set()
       }
       if (licenses === null) {
         return { name: dep.name, versionRange: dep.versionRange, version, line, licenses: [], tier: 'red', reason: 'License lookup failed (package/version not found upstream).' };
+      }
+      if (spec.system === 'NPM' && isPlaceholderLicenseList(licenses)) {
+        const npmLicense = await fetchNpmRegistryLicense(dep.name, resolvedVersion);
+        if (npmLicense) licenses = npmLicense;
       }
       const { tier, reason } = classifyLicenseTier(licenses);
       return { name: dep.name, versionRange: dep.versionRange, version: resolvedVersion, line, licenses, tier, reason };

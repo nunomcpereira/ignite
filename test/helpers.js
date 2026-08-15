@@ -359,6 +359,10 @@ if (idx !== -1) {
   const outDir = args[idx + 1];
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'jscpd-report.json'), ${JSON.stringify(JSON.stringify(report))});
+  // Written next to this script (not outDir, which checkCodeDuplication
+  // deletes in its finally block) so tests can inspect exactly what CLI
+  // args it was invoked with after the call returns.
+  fs.writeFileSync(path.join(__dirname, 'jscpd-invocation-args.json'), JSON.stringify(args));
   process.exit(0);
 }
 process.exit(1);
