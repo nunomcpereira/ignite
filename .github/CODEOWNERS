@@ -1,0 +1,5 @@
+# Default owner for everything in this repo — used by GitHub for review
+# assignment, and by Ignite's own scheduled-recheck notifications (see
+# checkCodeowners / notifyScheduledFailure in server.js) to route a failed
+# re-check on this repo's default branch.
+* nunocpereira@gmail.com

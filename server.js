@@ -41,7 +41,12 @@ const {
 function loadConfig() {
   const defaults = {
     port: 3000,
-    llm: { url: 'http://localhost:8050', model: 'default', mode: 'warn', maxFiles: 40, chunkChars: 10_000 },
+    // deepScanEnabled gates only Phase 4's automated LLM deep-scan (Check
+    // 3, checkLlmDeepScan) — the on-demand "Explain issue"/"Suggest AI fix"
+    // calls in Ignite Studio (explainIssueForHuman/suggestFixForIssue) share
+    // the same LLM connection but aren't gated by this flag, so they keep
+    // working even with automated deep-scanning turned off.
+    llm: { url: 'http://localhost:8050', model: 'default', mode: 'warn', maxFiles: 40, chunkChars: 10_000, deepScanEnabled: true },
     github: {
       orgs: '',
       bootstrapBranch: 'ignite',
@@ -472,6 +477,9 @@ const LLM_SCAN_URL = resolveTrustedLlmScanUrl(
 );
 const LLM_SCAN_MODEL = process.env.LLM_SCAN_MODEL || CONFIG.llm.model;
 const LLM_SCAN_MODE = process.env.LLM_SCAN_MODE || CONFIG.llm.mode; // 'warn' | 'block'
+const LLM_DEEP_SCAN_ENABLED = process.env.LLM_DEEP_SCAN_ENABLED !== undefined
+  ? String(process.env.LLM_DEEP_SCAN_ENABLED) === 'true'
+  : CONFIG.llm.deepScanEnabled !== false;
 const LLM_ADVISORY_LEVEL = ['warning', 'info'].includes(String(process.env.LLM_ADVISORY_LEVEL || '').toLowerCase())
   ? String(process.env.LLM_ADVISORY_LEVEL).toLowerCase()
   : 'info';
@@ -1766,6 +1774,9 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
 }
 
 async function checkLlmDeepScan(root, log, cacheKey) {
+  if (!LLM_DEEP_SCAN_ENABLED) {
+    return { available: false, reason: 'LLM deep-scan is disabled (llm.deepScanEnabled=false / LLM_DEEP_SCAN_ENABLED=false).' };
+  }
   if (LLM_PROVIDER === 'openai') {
     // OpenAI has no cheap health probe worth spending a request on — just
     // confirm the API key is configured before burning chunks against it.

@@ -2,6 +2,12 @@
 
 A single-page web app that acts as a compliance gate for onboarding code into a GitHub organization. Users upload a project as a ZIP; the server scans it locally for security and AI-framework violations, and only if **every** check passes does it provision a private GitHub repository and push the code.
 
+📖 **[See it in action — screenshots & walkthrough](https://nunomcpereira.github.io/ignite/)**
+
+<p align="center">
+  <img src="docs/assets/images/02-findings-overview.png" alt="Ignite's final review gate — flagged issues with code expanded" width="720">
+</p>
+
 ## System Architecture
 
 ```
@@ -307,7 +313,7 @@ When any phase fails, Ignite emails a detailed report to `notifications.to`: tar
    ```
    The authenticated account needs permission to create repositories in the target organization.
 
-## Local LLM deep-scan (always on)
+## Local LLM deep-scan (on by default)
 
 On top of the deterministic checks, the pipeline submits source files to a **local** LLM served by llama.cpp (OpenAI-compatible `/v1/chat/completions` endpoint) that hunts for real vulnerabilities — injection, path traversal, SSRF, unsafe eval, weak crypto, etc. Code never leaves the machine. If the endpoint is unreachable, the scan is skipped with a warning rather than failing the run.
 
@@ -318,6 +324,7 @@ Configure via environment variables (all optional):
 | `LLM_SCAN_URL` | `http://localhost:8050` | llama.cpp / OpenAI-compatible base URL |
 | `LLM_SCAN_MODEL` | `default` | Model name (llama.cpp serves its loaded model regardless) |
 | `LLM_SCAN_MODE` | `warn` | `warn` = findings are advisory; `block` = critical/high findings halt the pipeline |
+| `LLM_DEEP_SCAN_ENABLED` | `true` | Gates only Phase 4's automated deep-scan (Check 3). The on-demand **Explain this issue** / **Suggest AI fix** buttons in Ignite Studio call the same LLM connection independently of this flag, so turning deep-scan off (e.g. for a faster/deterministic-only run) doesn't disable per-issue AI analysis. |
 | `LLM_MAX_FILES` | `40` | Cap on source files sent to the model |
 
 Files are batched into ~24 KB chunks with numbered lines, and the model must answer in strict JSON (`{"findings":[{file,line,severity,issue}]}`); malformed responses skip that chunk only.

@@ -1,0 +1,4 @@
+theme: jekyll-theme-cayman
+title: Ignite
+description: Onboarding gatekeeper — a compliance gate for shipping code into a GitHub org. Security, license, and AI-governance checks run locally before anything is provisioned or pushed.
+show_downloads: false
