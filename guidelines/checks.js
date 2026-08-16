@@ -32,6 +32,38 @@ const INSECURE_DESERIALIZATION_REGEXES = [
 
 const PLAINTEXT_HTTP_REGEX = /['"]http:\/\/(?!localhost|127\.0\.0\.1|0\.0\.0\.0)[^'"]+['"]/;
 
+// A SQL keyword built into a string via interpolation/concatenation rather
+// than passed as a bound parameter — the classic injection shape. Matches
+// f-strings/template literals with a `{`/`${` interpolation, and `+`-built
+// strings, that contain a SQL verb; parameterized queries (`?`, `%s`, `$1`)
+// never take this shape, so they're not flagged.
+const SQL_INJECTION_REGEXES = [
+  /f['"][^'"]*\b(select|insert|update|delete)\b[^'"]*\{/i,
+  /`[^`]*\b(select|insert|update|delete)\b[^`]*\$\{/i,
+  /['"][^'"]*\b(select|insert|update|delete)\b[^'"]*['"]\s*\+\s*\S/i,
+  /\+\s*['"][^'"]*\b(select|insert|update|delete)\b/i,
+];
+
+const XSS_SINK_REGEXES = [
+  /dangerouslySetInnerHTML/,
+  /\.innerHTML\s*=/,
+  /document\.write\(/,
+  /\{\{.*\|\s*safe\s*\}\}/, // Jinja2 |safe filter disables autoescaping
+  /\bMarkup\(/, // Flask/Jinja2 Markup() wrapping — same effect as |safe
+];
+
+// Cryptographically broken/deprecated primitives — flagged regardless of
+// use case, since there's no correct security use of MD5/SHA-1 for hashing
+// or DES/ECB for encryption today (unlike Math.random(), which is fine for
+// non-security randomness and would be too noisy to flag unconditionally).
+const WEAK_CRYPTO_REGEXES = [
+  /crypto\.createHash\(\s*['"](md5|sha1)['"]\s*\)/i,
+  /hashlib\.(md5|sha1)\(/i,
+  /MessageDigest\.getInstance\(\s*['"](MD5|SHA-?1)['"]\s*\)/i,
+  /createCipheriv\(\s*['"]des/i,
+  /Cipher\.getInstance\(\s*['"](DES|[^'"]*\/ECB\/)/i,
+];
+
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
   '.pdf', '.zip', '.gz', '.tar', '.bz2', '.7z', '.rar',
@@ -91,6 +123,24 @@ const CHECKS = {
 
   noPlaintextHttpEgress(content) {
     return scanLines(content, PLAINTEXT_HTTP_REGEX);
+  },
+
+  noSqlInjection(content) {
+    const hits = [];
+    for (const re of SQL_INJECTION_REGEXES) hits.push(...scanLines(content, re));
+    return hits;
+  },
+
+  noXssSinks(content) {
+    const hits = [];
+    for (const re of XSS_SINK_REGEXES) hits.push(...scanLines(content, re));
+    return hits;
+  },
+
+  noWeakCrypto(content) {
+    const hits = [];
+    for (const re of WEAK_CRYPTO_REGEXES) hits.push(...scanLines(content, re));
+    return hits;
   },
 
   // Filename-based; content-agnostic.

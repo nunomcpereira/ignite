@@ -96,6 +96,48 @@ const GUIDELINES = Object.freeze([
     appliesTo: ['.py', '.js', '.ts'],
   },
   {
+    id: 'no-sql-injection',
+    category: 'security',
+    severity: 'error',
+    title: 'No string-built SQL queries',
+    description:
+      'Do not build a SQL query by interpolating or concatenating untrusted input directly into the query string.',
+    rationale:
+      'String-built queries are the classic shape of SQL injection — OWASP Top 10 A03 (Injection) — and remain one of the most common causes of full data-breach incidents.',
+    remediation:
+      'Use parameterized queries/prepared statements (?, %s, $1, or your ORM\'s bound-parameter API) instead of interpolating values into the query string.',
+    checkId: 'noSqlInjection',
+    appliesTo: ['.py', '.js', '.ts'],
+  },
+  {
+    id: 'no-xss-sinks',
+    category: 'security',
+    severity: 'error',
+    title: 'No unguarded XSS sinks',
+    description:
+      'Do not render untrusted input as raw HTML (innerHTML, dangerouslySetInnerHTML, document.write, Jinja2 |safe/Markup) without sanitizing it first.',
+    rationale:
+      'Rendering untrusted input as HTML without sanitization is the root cause of stored/reflected XSS — OWASP Top 10 A03 (Injection).',
+    remediation:
+      'Let the framework escape by default (textContent, JSX text children, Jinja2 autoescaping); if raw HTML is genuinely required, sanitize with a library like DOMPurify/bleach first.',
+    checkId: 'noXssSinks',
+    appliesTo: ['.py', '.js', '.ts'],
+  },
+  {
+    id: 'no-weak-crypto',
+    category: 'security',
+    severity: 'error',
+    title: 'No broken/deprecated cryptographic primitives',
+    description:
+      'Do not use MD5 or SHA-1 for hashing, or DES/ECB-mode for encryption — all have known, practical breaks.',
+    rationale:
+      'MD5 and SHA-1 are collision-broken and DES/ECB are trivially attackable; using any of them signals either passwords hashed unsafely or data encrypted with a cipher that offers no real confidentiality — OWASP Top 10 A02 (Cryptographic Failures).',
+    remediation:
+      'Hash passwords with bcrypt/scrypt/argon2 (never a bare fast hash); use SHA-256+ for non-password hashing; encrypt with AES-GCM (or another authenticated mode) instead of DES/ECB.',
+    checkId: 'noWeakCrypto',
+    appliesTo: ['.py', '.js', '.ts'],
+  },
+  {
     id: 'ai-governance-workflow-required',
     category: 'process',
     severity: 'error',
