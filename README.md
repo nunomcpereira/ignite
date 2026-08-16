@@ -2,7 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A single-page web app that acts as a compliance gate for onboarding code into a GitHub organization. Users upload a project as a ZIP; the server scans it locally for security and AI-framework violations, and only if **every** check passes does it provision a private GitHub repository and push the code.
+A single-page web app that acts as a compliance gate for onboarding code into a GitHub organization. Users upload a project as a ZIP; the server scans it locally for security and AI-framework violations, and only if **every** check passes does it provision a private GitHub repository and push the code. There's also a [pre-push git hook](#pre-push-hook) (`hooks/pre-push`) for repos that would rather gate on `git push` than a separate upload step.
+
+**Most of the detection below is deterministic static analysis by dedicated tools — Semgrep (SAST), deps.dev/OSV (CVE), Trivy/Checkov/hadolint (IaC), GuardDog (supply-chain), gitleaks (secrets), cosign, Bearer, Spectral — not an LLM guessing.** The local LLM deep-scan is one additional, independently-toggleable layer (`LLM_DEEP_SCAN_ENABLED`) for logic-level review that fixed rule sets can't reach; every static engine below runs identically whether it's on or off. See the [attack & risk coverage table](#attack--risk-coverage--what-each-check-actually-prevents) for the full tool-by-tool mapping.
 
 📖 **[See it in action — screenshots & walkthrough](https://nunomcpereira.github.io/ignite/)**
 
@@ -315,6 +317,12 @@ When any phase fails, Ignite emails a detailed report to `notifications.to`: tar
    ```
    The authenticated account needs permission to create repositories in the target organization.
 
+### Pushing via SSH instead of gh's credential helper
+
+By default, Phase 6 pushes over `https://github.com/...`, authenticated through `gh auth git-credential` using the connected account's token. Set `GITHUB_REMOTE_PROTOCOL=ssh` (or `"github": { "remoteProtocol": "ssh" }` in `config.json`) to push over `git@github.com:...` instead, authenticated by whatever SSH key/agent is already configured for `github.com` on this machine — no git credential helper involved for the push itself.
+
+This only replaces the **git push transport** — repo creation, enabling auto-merge, and creating the `main` ref still go through the GitHub REST API (`gh api`, using the connected account's `GH_TOKEN`) in both modes, since SSH keys authenticate git operations, not GitHub API calls. A connected GitHub account is required either way; `ssh` mode just means your own SSH key does the pushing instead of `gh`'s stored credential.
+
 ## Local LLM deep-scan (on by default)
 
 On top of the deterministic checks, the pipeline submits source files to a **local** LLM served by llama.cpp (OpenAI-compatible `/v1/chat/completions` endpoint) that hunts for real vulnerabilities — injection, path traversal, SSRF, unsafe eval, weak crypto, etc. Code never leaves the machine. If the endpoint is unreachable, the scan is skipped with a warning rather than failing the run.
@@ -406,6 +414,35 @@ Response shape:
 - `failedPhase`: phase number when `ok=false`
 - `phases`: array of `{ phase, title, state, logs[] }`
 - `events`: full event list (`status` + `log`) for machine-driven loops
+
+## Pre-push hook
+
+`hooks/pre-push` wraps `validate-all` in a git hook, for repos that would
+rather gate on `git push` than a separate ZIP-upload step. It posts the
+repo's own absolute path (`git rev-parse --show-toplevel`), fails closed
+with a clear message if the Ignite server isn't reachable, and prints the
+failing phase's logs so you don't have to open the UI to see what broke.
+
+```bash
+# Install into one repo:
+cp hooks/pre-push /path/to/other-repo/.git/hooks/pre-push
+chmod +x /path/to/other-repo/.git/hooks/pre-push
+
+# Or every repo on this machine, via a shared hooks dir (.git/hooks/ isn't
+# itself tracked by git, so this is the way to cover every repo at once):
+mkdir -p ~/.git-hooks && cp hooks/pre-push ~/.git-hooks/
+git config --global core.hooksPath ~/.git-hooks
+```
+
+Requires a running Ignite server reachable at `IGNITE_BASE_URL` (default
+`http://localhost:3000`) and `node` on `PATH`. Off by default: `runLocalCi`
+(Phase 5's `act`/Docker governance CI — slow, belongs in real CI) and
+blocking on warnings (only `error`-severity findings gate the push). Both
+configurable via env vars documented at the top of the script
+(`IGNITE_RUN_LOCAL_CI`, `IGNITE_WARNING_MODE`), plus a logged
+`IGNITE_PREPUSH_SKIP=true` escape hatch for one push, preferable to a silent
+`git push --no-verify`. Full walkthrough with sample output: [the docs
+site](https://nunomcpereira.github.io/ignite/#pre-push-hook).
 
 ## AI validation guidelines — MCP server & API
 

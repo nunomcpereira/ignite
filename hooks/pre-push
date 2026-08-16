@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Ignite pre-push hook — runs Ignite's checks against this repo before a
+# push leaves the machine, instead of onboarding-time-only via the web UI.
+#
+# Install (either works):
+#   1. One repo:      cp hooks/pre-push /path/to/other-repo/.git/hooks/pre-push
+#                      chmod +x /path/to/other-repo/.git/hooks/pre-push
+#   2. Every repo on this machine: point git at a shared hooks dir instead of
+#      copy-pasting into each .git/hooks/ (which isn't itself tracked by git):
+#        mkdir -p ~/.git-hooks && cp hooks/pre-push ~/.git-hooks/
+#        git config --global core.hooksPath ~/.git-hooks
+#
+# Requires: a running Ignite server (`npm start` in the ignite repo) reachable
+# at IGNITE_BASE_URL (default http://localhost:3000), and `node` on PATH.
+#
+# Env overrides:
+#   IGNITE_BASE_URL       Ignite server URL (default http://localhost:3000)
+#   IGNITE_RUN_LOCAL_CI   "true" to also run Phase 5 (act/Docker governance
+#                         CI) — slower, off by default for a fast pre-push
+#   IGNITE_WARNING_MODE   "fail" to also block on unoverridden warnings,
+#                         default "continue" (only blocking errors gate)
+#   IGNITE_PREPUSH_SKIP   "true" to skip this hook entirely for one push
+#                         (prefer this over --no-verify so it's logged)
+set -euo pipefail
+
+if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
+  echo "⚠ Ignite pre-push check skipped (IGNITE_PREPUSH_SKIP=true)."
+  exit 0
+fi
+
+IGNITE_URL="${IGNITE_BASE_URL:-http://localhost:3000}"
+REPO_PATH="$(git rev-parse --show-toplevel)"
+ORIGIN_URL="$(git config --get remote.origin.url || echo '')"
+ORG="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\1#')"
+REPO="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\2#')"
+RUN_LOCAL_CI="${IGNITE_RUN_LOCAL_CI:-false}"
+WARNING_DECISION="${IGNITE_WARNING_MODE:-continue}"
+
+if ! curl -sf -m 3 "$IGNITE_URL/api/config" > /dev/null 2>&1; then
+  echo "✗ Ignite isn't reachable at $IGNITE_URL." >&2
+  echo "  Start it with 'npm start' in the ignite repo, set IGNITE_BASE_URL to" >&2
+  echo "  point elsewhere, or set IGNITE_PREPUSH_SKIP=true to skip this push." >&2
+  exit 1
+fi
+
+echo "→ Running Ignite checks against $REPO_PATH ..."
+
+RESPONSE="$(curl -sS -X POST "$IGNITE_URL/api/pipeline/validate-all" \
+  -H 'Content-Type: application/json' \
+  -d "$(cat <<JSON
+{
+  "projectPath": "$REPO_PATH",
+  "org": "$ORG",
+  "repo": "$REPO",
+  "gxp": false,
+  "runLocalCi": $RUN_LOCAL_CI,
+  "warningDecision": "$WARNING_DECISION"
+}
+JSON
+)")"
+
+node -e '
+  let d = "";
+  process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    let r;
+    try { r = JSON.parse(d); } catch {
+      console.error("✗ Ignite returned a non-JSON response:", d.slice(0, 500));
+      process.exit(1);
+    }
+    if (r.ok) {
+      console.log("✓ Ignite checks passed.");
+      process.exit(0);
+    }
+    console.error("✗ Ignite checks failed — push blocked.");
+    for (const p of r.phases || []) {
+      if (p.state === "failed") {
+        console.error(`  Phase ${p.phase} — ${p.title}`);
+        (p.logs || []).slice(-10).forEach((l) => console.error("    " + l));
+      }
+    }
+    console.error("");
+    console.error("Fix the issue(s) above, or run the full pipeline in the Ignite web UI to review/override findings, then push again.");
+    process.exit(1);
+  });
+' <<< "$RESPONSE"

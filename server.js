@@ -50,6 +50,16 @@ function loadConfig() {
     github: {
       orgs: '',
       bootstrapBranch: 'ignite',
+      // 'https' (default) pushes over an https://github.com/... remote,
+      // authenticated via `gh auth git-credential` using the connected
+      // user's GH_TOKEN. 'ssh' pushes over git@github.com:... instead,
+      // authenticated by whatever SSH key/agent is already configured for
+      // github.com on this machine — no git credential helper involved.
+      // Either way, repo creation/auto-merge/ref-creation still go through
+      // the GitHub REST API (`gh api`) with GH_TOKEN — SSH keys authenticate
+      // git's transport, not the GitHub API, so a connected account is
+      // still required in both modes.
+      remoteProtocol: 'https', // 'https' | 'ssh' — env: GITHUB_REMOTE_PROTOCOL
       oauth: { clientId: '', clientSecret: '', redirectUri: '', scope: 'repo' },
     },
     governance: {
@@ -3770,13 +3780,17 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
   // code lands here first, then PRs into the repo's default branch.
   const ONBOARD_BRANCH =
     process.env.BOOTSTRAP_BRANCH || CONFIG.github.bootstrapBranch || 'ignite';
-  const remoteUrl = `https://github.com/${fullName}.git`;
-  // gh as credential helper for this job only; no interactive prompts.
-  const gitCred = [
-    '-c', 'credential.helper=',
-    '-c', 'credential.helper=!gh auth git-credential',
-    '-c', 'core.askPass=',
-  ];
+  const remoteProtocol =
+    String(process.env.GITHUB_REMOTE_PROTOCOL || CONFIG.github.remoteProtocol || 'https').toLowerCase();
+  const remoteUrl = remoteProtocol === 'ssh'
+    ? `git@github.com:${fullName}.git`
+    : `https://github.com/${fullName}.git`;
+  // https: gh as credential helper for this job only, no interactive
+  // prompts. ssh: no credential helper needed/applicable — auth is whatever
+  // SSH key/agent is already configured for github.com on this machine.
+  const gitCred = remoteProtocol === 'ssh'
+    ? []
+    : ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential', '-c', 'core.askPass='];
   const gitId = ['-c', 'user.name=Onboarding Gatekeeper', '-c', 'user.email=gatekeeper@localhost'];
 
   log(`$ gh api POST orgs/${safeOrg}/repos (private, auto_init)`);

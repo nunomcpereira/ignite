@@ -5,14 +5,31 @@ title: Ignite — Onboarding Gatekeeper
 
 # Ignite
 
-**A compliance gate for onboarding code into a GitHub org.** Upload a project — a
-ZIP or a whole folder — and Ignite runs it through secret scanning, license
-compliance, AI-governance checks, a local LLM security deep-scan, IaC/
-supply-chain/SAST scanning, and your org's own governance CI, entirely on
-your machine. Only if every check passes (or every blocking issue is
-justified and overridden) does it provision a private repo and push.
+**A compliance gate for shipping code into a GitHub org.** Ignite runs a
+project through a battery of deterministic, purpose-built static analysis
+tools — a real SAST engine (Semgrep), CVE/GHSA lookups (deps.dev), IaC/
+container scanners (Trivy, Checkov, hadolint), a supply-chain malicious-
+dependency scanner (GuardDog), secret scanning (regex + gitleaks), image
+signature verification (cosign), PII data-flow tracing (Bearer), API schema
+linting (Spectral), and your org's own governance CI (`act`) — entirely on
+your machine. A local LLM adds one *additional*, optional layer for
+logic-level review; it is not what does the SAST or CVE detection below.
+Only if every check passes (or every blocking issue is justified and
+overridden) does anything get provisioned or pushed.
+
+**Two ways to run it:** upload through the web app (below), or drop the
+[pre-push git hook](#pre-push-hook) into any repo so pushes are gated
+locally without a separate upload step.
 
 [View the full technical README on GitHub »](https://github.com/nunomcpereira/ignite#readme)
+
+> **Not "just an LLM wrapper."** Most of what's below is static analysis by
+> dedicated tools with no model in the loop at all — the same category of
+> tool a dedicated SAST/SCA platform runs, wired into one pipeline with a
+> single review gate. The LLM deep-scan (off-able independently via
+> `LLM_DEEP_SCAN_ENABLED`) is a supplementary pass for the kind of
+> logic-level reasoning pattern-matching can't do, not a replacement for the
+> static engines.
 
 ## How it works
 
@@ -77,19 +94,27 @@ turn it green.
 
 ## What gets checked
 
-Six phases, twelve+ optional external-tool integrations (all soft
-dependencies — Ignite works without any of them installed), and a local LLM
-deep-scan, covering:
+Six phases and twelve+ optional external-tool integrations (all soft
+dependencies — Ignite works without any of them installed, falling back to
+a built-in check where one exists). Most of this list is **static analysis
+by a dedicated tool, no LLM involved**:
 
-- Hardcoded secrets & credential leakage
-- Ungoverned AI/LangChain invocations
-- Injection, path traversal, SSRF, insecure deserialization, XSS, weak crypto
-- Known-CVE **and** newly-published, not-yet-disclosed malicious dependencies
-- Dependency license risk (commercial/copyleft)
-- IaC/container misconfiguration & supply-chain image provenance
-- PII/GDPR data-flow exposure
-- Missing security/compliance posture (SSO, RBAC, audit logging, rate limiting, ...)
-- Your org's own governance CI, run locally via `act` before it ever reaches a real PR
+- Hardcoded secrets & credential leakage — regex scan + gitleaks (static)
+- Known-CVE dependencies — deps.dev/OSV lookups against resolved versions (static, deterministic — not a guess)
+- Newly-published, not-yet-disclosed malicious dependencies — GuardDog's supply-chain heuristics (static)
+- Dependency license risk (commercial/copyleft) — ORT/licensee + deps.dev (static)
+- Semantic vulnerabilities — Semgrep's `p/security-audit` SAST ruleset (static, real SAST — not the LLM)
+- IaC/container misconfiguration & supply-chain image provenance — Trivy, Checkov, hadolint, cosign (static)
+- PII/GDPR data-flow exposure — Bearer's source-to-sink tracing (static)
+- Missing security/compliance posture (SSO, RBAC, audit logging, rate limiting, ...) — Semgrep-backed pattern matching (static)
+- Your org's own governance CI, run locally via `act` before it ever reaches a real PR (static, runs your actual workflows)
+- Ungoverned AI/LangChain invocations — regex/AST check (static)
+
+The **one** LLM-driven check is the local deep-scan pass: injection, path
+traversal, SSRF, insecure deserialization, XSS, weak crypto, and similar
+logic-level flaws that a fixed rule set can miss. It's independently
+toggleable (`LLM_DEEP_SCAN_ENABLED`) — everything above it in this list
+keeps running exactly the same with it off.
 
 Every check exists to stop a specific class of real-world incident, not just
 to produce a finding for its own sake. The table below maps each threat to
@@ -174,6 +199,57 @@ one check is skipped with a warning rather than failing the run.
 > **Security note:** this server executes `git`/`gh` with the host
 > machine's credentials. Run it locally or behind authentication — never
 > expose it unauthenticated to a network.
+
+## Pre-push hook — check before you push, not after
+{: #pre-push-hook }
+
+Uploading a ZIP to a web app is an extra step most people would rather
+skip. Ignite's `validate-all` endpoint takes a local `projectPath` and runs
+phases 1–5 synchronously — no upload, no UI — which is exactly what a git
+`pre-push` hook needs. A ready-to-use one ships in the repo:
+
+**[⬇ Download `hooks/pre-push`](https://raw.githubusercontent.com/nunomcpereira/ignite/main/hooks/pre-push)**
+
+Install it into any repo:
+
+```bash
+# One repo:
+curl -o .git/hooks/pre-push https://raw.githubusercontent.com/nunomcpereira/ignite/main/hooks/pre-push
+chmod +x .git/hooks/pre-push
+
+# Every repo on this machine, instead of copy-pasting into each one
+# (.git/hooks/ isn't itself tracked by git, so a shared dir is the way to
+# cover every repo at once):
+mkdir -p ~/.git-hooks
+curl -o ~/.git-hooks/pre-push https://raw.githubusercontent.com/nunomcpereira/ignite/main/hooks/pre-push
+chmod +x ~/.git-hooks/pre-push
+git config --global core.hooksPath ~/.git-hooks
+```
+
+It needs a running Ignite server reachable at `IGNITE_BASE_URL` (default
+`http://localhost:3000`) and `node` on `PATH`. On `git push`, it posts the
+repo's absolute path to `/api/pipeline/validate-all`, blocks the push if any
+check fails, and prints the failing phase's logs so you don't have to open
+the UI just to see what broke:
+
+```bash
+$ git push
+→ Running Ignite checks against /Users/you/projects/some-repo ...
+✗ Ignite checks failed — push blocked.
+  Phase 4 — Security & AI Compliance Scan
+    ✗ python/config.py:3 — Hardcoded password
+
+Fix the issue(s) above, or run the full pipeline in the Ignite web UI to
+review/override findings, then push again.
+```
+
+Fast by default — `runLocalCi` is off (skips Phase 5's `act`/Docker
+governance CI, which is slow and typically belongs in real CI, not on
+every push) and only blocking errors gate the push, not warnings. Both are
+configurable via env vars documented at the top of the script
+(`IGNITE_RUN_LOCAL_CI`, `IGNITE_WARNING_MODE`), along with a one-push
+`IGNITE_PREPUSH_SKIP=true` escape hatch that's logged rather than silent
+like `git push --no-verify`.
 
 Full setup, every environment variable, tool-by-tool install instructions,
 and the REST/MCP API reference: [github.com/nunomcpereira/ignite](https://github.com/nunomcpereira/ignite).

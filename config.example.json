@@ -16,6 +16,7 @@
   "github": {
     "orgs": "ai-governance-poc-2026",
     "bootstrapBranch": "ignite",
+    "remoteProtocol": "https",
     "oauth": {
       "clientId": "",
       "clientSecret": "",
