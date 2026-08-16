@@ -7,4 +7,3 @@ ignite.db-*
 **/*.log
 test-results/
 playwright-report/
-.ignite-review.md

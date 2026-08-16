@@ -15,17 +15,17 @@
 # Requires: a running Ignite server (`npm start` in the ignite repo) reachable
 # at IGNITE_BASE_URL (default http://localhost:51337), and `node` on PATH.
 #
-# CLI acknowledgment: on a blocking finding, this hook writes a local
+# CLI acknowledgment: on a blocking finding, this hook writes/appends to a
 # .ignite-review.md file (repo root) listing each one with a blank
 # "Acknowledge:" line - the same justify-and-override step the web UI's
 # review gate does, but as a file you edit in your own editor. Fill in a
 # justification, `git push` again: the hook resubmits every filled-in entry
-# as a real, attributed override (git config user.name/user.email), and
-# only still-blocking issues remain in the file afterward. The file is a
-# durable local ledger, not a one-time prompt - an id (<category>::<file>::
-# <line>) that you've already justified stays overridden on every future
-# push until the code around it changes (a new line -> a new id) or you
-# delete the entry yourself.
+# as a real, attributed override (git config user.name/user.email). Meant
+# to be committed - it's an append-only audit trail, not scratch state: an
+# id (<category>::<file>::<line>) that's already justified stays in the
+# file (and keeps getting resubmitted as an override) on every future push,
+# whether or not that run reported it, until you delete the entry yourself
+# or the code around it changes enough to produce a different id.
 #
 # Env overrides:
 #   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
@@ -135,35 +135,47 @@ node -e '
       console.error("This failure isn'\''t something a justification can override - fix it in the source and push again.");
       process.exit(1);
     }
-    // Preserve any justification text already written for an id that is
-    // still unresolved (e.g. the override was rejected for a reason other
-    // than the justification itself); regenerate the rest fresh.
+    // Append-only: this file is meant to be committed, so each entry block
+    // (comment lines + whatever Acknowledge text was written) is preserved
+    // exactly as last written, forever - including ones already resolved
+    // this run (their override just got resubmitted successfully; dropping
+    // them here would silently un-acknowledge them on the next push, since
+    // only what remains physically in the file gets resubmitted). Only ids
+    // not already present get a fresh blank entry appended.
     let existing = "";
     try { existing = fs.readFileSync(reviewFile, "utf8"); } catch { /* first run */ }
-    const existingAck = new Map();
+    const existingIds = new Set();
+    const existingBlocks = [];
     for (const block of existing.split(/\n(?=ID: )/)) {
       const idMatch = block.match(/^ID:\s*(.+)$/m);
-      const ackMatch = block.match(/^Acknowledge:\s*(.*)$/m);
-      if (idMatch && ackMatch && ackMatch[1].trim()) existingAck.set(idMatch[1].trim(), ackMatch[1].trim());
+      if (!idMatch) continue;
+      existingIds.add(idMatch[1].trim());
+      existingBlocks.push(block.replace(/\n+$/, ""));
     }
-    const lines = [
-      "# Ignite pre-push acknowledgments",
+    const newBlocks = [];
+    for (const issue of issues) {
+      if (existingIds.has(issue.id)) continue;
+      const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
+      newBlocks.push([
+        `ID: ${issue.id}`,
+        `# [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`,
+        `#   ${loc}`,
+        "Acknowledge: ",
+      ].join("\n"));
+    }
+    const header = [
+      "# Ignite pre-push acknowledgments - meant to be committed: a filled-in",
+      "# justification is a real audit record, reviewable like code.",
       "#",
       "# Fill in a justification after \"Acknowledge:\" for any issue below you want",
       "# to override, save, then `git push` again. Blank = stays blocking.",
-      "# Regenerated on every run; filled-in justifications are preserved as long",
-      "# as the issue is still unresolved.",
+      "# Append-only: once written, an entry (and its justification) stays here",
+      "# permanently, resubmitted as an override on every future push, even",
+      "# after the id it names stops being reported - delete an entry yourself",
+      "# if you want to stop carrying it forward.",
       "",
-    ];
-    for (const issue of issues) {
-      const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
-      lines.push(`ID: ${issue.id}`);
-      lines.push(`# [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`);
-      lines.push(`#   ${loc}`);
-      lines.push(`Acknowledge: ${existingAck.get(issue.id) || ""}`);
-      lines.push("");
-    }
-    fs.writeFileSync(reviewFile, lines.join("\n"));
+    ].join("\n");
+    fs.writeFileSync(reviewFile, header + [...existingBlocks, ...newBlocks].join("\n\n") + "\n");
     console.error("");
     console.error(`✗ ${issues.length} blocking finding(s) need a justification or a source fix.`);
     console.error(`  Edit ${reviewFile}, fill in "Acknowledge:" for whichever you want to`);
