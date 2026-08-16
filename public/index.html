@@ -636,6 +636,12 @@
             }
           : STATE_META[ph.state];
         const hasLogs = ph.logs.length > 0;
+        // Phase 4's checks run concurrently and only flush their log lines
+        // once every one of them finishes (see runPhase4Checks), so a
+        // running phase can sit with zero logs client-side for well over a
+        // minute — the maximize button shouldn't disappear for that whole
+        // window just because nothing has streamed in yet.
+        const canMaximize = hasLogs || ph.state === 'running';
         const isLast = idx === PHASES.length - 1;
         const durationMs = ph.startedAt ? (ph.endedAt || Date.now()) - ph.startedAt : null;
         const durationHtml = durationMs != null
@@ -655,7 +661,7 @@
               </div>
               ${durationHtml}
               <span class="text-[11px] font-semibold px-2.5 py-1 rounded-full border ${meta.chip}">${meta.label}</span>
-              ${hasLogs ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
+              ${canMaximize ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
               </button>` : ''}
               ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : '<span class="w-4"></span>'}
@@ -685,7 +691,9 @@
       const p = PHASES.find((x) => x.id === phaseId);
       const ph = state.phases[phaseId] || { logs: [] };
       $('phaseMaxTitle').textContent = `Phase ${displayPhaseNumber(phaseId)} · ${p ? p.title : ''}`;
-      $('phaseMaxBody').innerHTML = ph.logs.map(formatLogLine).join('');
+      $('phaseMaxBody').innerHTML = ph.logs.length > 0
+        ? ph.logs.map(formatLogLine).join('')
+        : '<p class="text-slate-400 text-sm">This phase runs several checks concurrently — logs appear all at once when they finish, not incrementally. Still running…</p>';
       $('phaseMaxModal').classList.remove('hidden');
     }
 
