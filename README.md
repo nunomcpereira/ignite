@@ -182,6 +182,16 @@ Every pipeline run (interactive, `validate-all`, and `onboard`) scans dependency
 - On demand, the same scan is also available standalone: `POST /api/dependencies/check` with `{ "projectPath": "..." }` (agent/CI use), or via the "Dependencies" button in Ignite Studio (useful for a byte-for-byte look at every manifest's raw compliance table, independent of the issue list).
 - **Range-floor resolution:** the fallback scanner's naive version pick from a manifest range (`^5.6.0` → look up `5.6.0`) 404s on deps.dev whenever that exact patch was never actually published - common, since plenty of packages skip an exact `.0` release or only ever pre-released it (real example: `typescript@^5.6.0` - npm's history goes `5.6.0-beta` → `5.6.0-dev.*` → `5.6.1-rc` → `5.6.2`, no plain `5.6.0`). Rather than reporting that as a blocking "license unknown" finding, it re-resolves against the package's real published version list and retries with the highest version the range actually matches - a package that's really missing from the registry is still correctly flagged.
 
+## CWE/OWASP tagging - audit-trail identifiers per finding
+
+Every Phase 3/4 issue (`collectPhase4Issues`/`collectDependencyVulnerabilityIssues` in `override-engine.js`) carries a `cwe` and `owasp` field alongside its own category label, for SOC2/ISO27001-style compliance reporting that expects a standard identifier rather than an Ignite-specific name. Three-tier precedence (`deriveCweOwasp`):
+
+1. **Explicit per-finding data a tool already reports** - Semgrep's own rule metadata (`p/security-audit`/`p/owasp-top-ten` rules ship a `cwe`/`owasp` field per rule) and Bearer's `cwe_ids` are passed straight through - the most precise source, since it's tied to the exact rule that matched.
+2. **Keyword match on the finding's own summary text** - covers the LLM deep-scan's free-text findings, which carry no structured CWE of their own (e.g. an LLM finding whose text mentions "SQL injection" tags as CWE-89/A03:2021).
+3. **A fixed category-level fallback** - coarser (one CWE for a whole check, e.g. every IaC misconfiguration reads as CWE-16/A05:2021) but still gives every finding in a mapped category *some* identifier. Categories with no meaningful security mapping (code duplication, license compliance, API schema lint, process/governance checks, ...) are left `null`/`null` rather than forced onto a CWE that doesn't fit.
+
+Surfaced in the downloaded Markdown issues report (a `Ref: CWE-XX — AXX:2021 - ...` line per finding) and as a small badge on each issue card in the review dialog.
+
 ## Attack & risk coverage - what each check actually prevents
 
 Every check above exists to stop a specific class of real-world incident, not

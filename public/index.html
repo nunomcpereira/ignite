@@ -1074,6 +1074,7 @@
               ${issue.phase ? `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">PHASE ${displayPhaseNumber(issue.phase)}</span>` : ''}
               <span class="text-[10px] font-semibold text-slate-400 uppercase">${escapeHtml(issue.category)}</span>
               <span class="text-[11px] font-mono text-slate-400">${loc}</span>
+              ${issue.cwe ? `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-slate-50 text-slate-500 border-slate-200" title="${escapeAttr(issue.owasp || '')}">${escapeHtml(issue.cwe)}</span>` : ''}
               ${viewCodeBtn}
               ${studioBtn}
               ${dupRefBtn}
@@ -1227,6 +1228,9 @@
         const scoreTag = typeof issue.score === 'number' ? ` (${issue.score}/10)` : '';
         lines.push(`## ${i + 1}. [${(issue.severity || 'warning').toUpperCase()}]${scoreTag} ${issue.category || 'issue'} — ${loc}`);
         lines.push(`ID: ${issue.id || ''}`);
+        if (issue.cwe || issue.owasp) {
+          lines.push(`Ref: ${[issue.cwe, issue.owasp].filter(Boolean).join(' — ')}`);
+        }
         if (issue.status === 'overridden') lines.push('(already acknowledged/overridden in a previous review)');
         lines.push('');
         lines.push(issue.summary || '(no summary)');

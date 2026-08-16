@@ -64,6 +64,79 @@ function scoreForIssue({ category, severity }) {
   return severity === 'warning' ? Math.max(1, Math.round(base / 2)) : base;
 }
 
+// CWE/OWASP tagging (compliance/audit-trail mapping — SOC2/ISO27001-style
+// reporting needs a standard identifier per finding, not just Ignite's own
+// category label). Three-tier precedence, applied per issue by
+// deriveCweOwasp below:
+//   1. Explicit per-finding data a tool already reports (Semgrep's rule
+//      metadata.cwe/metadata.owasp, Bearer's cwe_ids) — most precise,
+//      passed straight through from server.js's finding-shaping code.
+//   2. A keyword match against the finding's own summary text — covers the
+//      LLM deep-scan's free-text findings, which carry no structured CWE of
+//      their own.
+//   3. A fixed category-level fallback below — coarser (one CWE for a whole
+//      check, e.g. every IaC misconfiguration reads as CWE-16) but better
+//      than no identifier at all for categories with no per-finding signal.
+// Categories with no meaningful security mapping (quality, license-
+// compliance, code-duplication, process/governance checks, ...) are
+// deliberately left unmapped rather than forced onto a CWE that doesn't fit.
+const CATEGORY_CWE_OWASP = {
+  secret: { cwe: 'CWE-798', owasp: 'A07:2021 - Identification and Authentication Failures' },
+  'ai-governance': { cwe: 'CWE-400', owasp: 'A04:2021 - Insecure Design' },
+  'iac-security': { cwe: 'CWE-16', owasp: 'A05:2021 - Security Misconfiguration' },
+  'container-image-cve': { cwe: 'CWE-1104', owasp: 'A06:2021 - Vulnerable and Outdated Components' },
+  'image-provenance': { cwe: 'CWE-345', owasp: 'A08:2021 - Software and Data Integrity Failures' },
+  'pii-dataflow': { cwe: 'CWE-359', owasp: null },
+  'malicious-dependency': { cwe: 'CWE-506', owasp: 'A08:2021 - Software and Data Integrity Failures' },
+  'dependency-vulnerability': { cwe: 'CWE-1104', owasp: 'A06:2021 - Vulnerable and Outdated Components' },
+  'structure-audit': { cwe: 'CWE-540', owasp: 'A05:2021 - Security Misconfiguration' },
+};
+
+// Applied to free-text summaries (LLM deep-scan findings, which carry no
+// structured CWE of their own) — first pattern to match wins, ordered
+// roughly by specificity so e.g. "SQL injection via eval" hits sql-injection
+// first rather than the generic eval/injection catch-all.
+const TEXT_CWE_OWASP_PATTERNS = [
+  { re: /sql\s*injection/i, cwe: 'CWE-89', owasp: 'A03:2021 - Injection' },
+  { re: /\bxss\b|cross[- ]site\s*script/i, cwe: 'CWE-79', owasp: 'A03:2021 - Injection' },
+  { re: /\bssrf\b|server[- ]side\s*request\s*forgery/i, cwe: 'CWE-918', owasp: 'A10:2021 - Server-Side Request Forgery' },
+  { re: /path\s*traversal|directory\s*traversal/i, cwe: 'CWE-22', owasp: 'A01:2021 - Broken Access Control' },
+  { re: /command\s*injection|\bos\s*command\b/i, cwe: 'CWE-78', owasp: 'A03:2021 - Injection' },
+  { re: /template\s*injection/i, cwe: 'CWE-1336', owasp: 'A03:2021 - Injection' },
+  { re: /insecure\s*deserializ/i, cwe: 'CWE-502', owasp: 'A08:2021 - Software and Data Integrity Failures' },
+  { re: /prototype\s*pollution/i, cwe: 'CWE-1321', owasp: 'A03:2021 - Injection' },
+  { re: /weak\s*crypto|broken\s*crypto|insecure\s*random|hardcoded\s*(iv|key)|\becb\s*mode\b/i, cwe: 'CWE-327', owasp: 'A02:2021 - Cryptographic Failures' },
+  { re: /hardcoded\s*(password|credential|secret|api[ _-]?key|token)/i, cwe: 'CWE-798', owasp: 'A07:2021 - Identification and Authentication Failures' },
+  { re: /\beval\(|unsafe\s*eval|dangerous\s*function/i, cwe: 'CWE-95', owasp: 'A03:2021 - Injection' },
+  { re: /broken\s*auth|missing\s*auth|authoriz|access\s*control|\bidor\b/i, cwe: 'CWE-284', owasp: 'A01:2021 - Broken Access Control' },
+  { re: /insecure\s*temp(orary)?\s*file/i, cwe: 'CWE-377', owasp: 'A01:2021 - Broken Access Control' },
+  { re: /missing\s*input\s*validation|unvalidated\s*input/i, cwe: 'CWE-20', owasp: 'A03:2021 - Injection' },
+];
+
+function inferCweOwaspFromText(text) {
+  const s = String(text || '');
+  for (const { re, cwe, owasp } of TEXT_CWE_OWASP_PATTERNS) {
+    if (re.test(s)) return { cwe, owasp };
+  }
+  return null;
+}
+
+/**
+ * @param {string} category
+ * @param {string} summary - the issue's own summary text, for keyword inference
+ * @param {{cwe?: string, owasp?: string}} [explicit] - per-finding data a tool already reported
+ * @returns {{cwe: string|null, owasp: string|null}}
+ */
+function deriveCweOwasp(category, summary, explicit) {
+  if (explicit?.cwe || explicit?.owasp) {
+    return { cwe: explicit.cwe || null, owasp: explicit.owasp || null };
+  }
+  const inferred = inferCweOwaspFromText(summary);
+  if (inferred) return inferred;
+  const fallback = CATEGORY_CWE_OWASP[category];
+  return fallback ? { ...fallback } : { cwe: null, owasp: null };
+}
+
 /**
  * @param {{ findings: Array<{file,line,kind}> }} secrets
  * @param {{ findings: Array<{file,line,snippet}> }} governance
@@ -175,6 +248,11 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
         file: f.file,
         line: f.line,
         snippet: f.code || null,
+        // Carried through to the CWE/OWASP tagging pass below, then
+        // stripped — Semgrep's own rule metadata (when present) is more
+        // precise than the category-level/keyword fallback.
+        cweHint: f.cwe || null,
+        owaspHint: f.owasp || null,
       });
     }
   }
@@ -192,6 +270,8 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
         file: f.file,
         line: f.line,
         snippet: f.code || null,
+        cweHint: f.cwe || null,
+        owaspHint: null,
       });
     }
   }
@@ -273,6 +353,19 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
     }
   }
 
+  // CWE/OWASP tagging pass — see deriveCweOwasp's precedence order above.
+  // Runs once over every issue rather than at each push site so it applies
+  // uniformly regardless of which check the issue came from, including
+  // categories with no per-finding hint (secret/iac/etc — category
+  // fallback) and the LLM's free-text findings (keyword inference).
+  for (const issue of issues) {
+    const { cwe, owasp } = deriveCweOwasp(issue.category, issue.summary, { cwe: issue.cweHint, owasp: issue.owaspHint });
+    issue.cwe = cwe;
+    issue.owasp = owasp;
+    delete issue.cweHint;
+    delete issue.owaspHint;
+  }
+
   return issues;
 }
 
@@ -343,6 +436,10 @@ function collectDependencyVulnerabilityIssues({ manifests }) {
         const severity = vuln.severity === 'error' ? 'error' : 'warning';
         const file = manifest.file;
         const advisoryId = vuln.id || vuln.aliases?.[0] || 'unknown-advisory';
+        // OSV/GHSA advisories sometimes carry the underlying CWE as one of
+        // their aliases (e.g. "CWE-1321") alongside the CVE/GHSA id itself.
+        const cweAlias = (vuln.aliases || []).find((a) => /^CWE-\d+$/i.test(String(a)));
+        const { cwe, owasp } = deriveCweOwasp(category, vuln.title, { cwe: cweAlias || null });
         // Dep name + advisory id keeps the id stable and unique across
         // edits and across the (common) case of one dependency carrying
         // several distinct advisories at the same manifest line.
@@ -356,6 +453,8 @@ function collectDependencyVulnerabilityIssues({ manifests }) {
             + (typeof vuln.cvss3Score === 'number' ? ` (CVSS ${vuln.cvss3Score})` : ''),
           file,
           line: dep.line ?? null,
+          cwe,
+          owasp,
         });
       }
     }
@@ -396,5 +495,5 @@ function validateOverrides(issues, overrides) {
 
 module.exports = {
   buildIssueId, collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues,
-  validateOverrides, scoreForIssue,
+  validateOverrides, scoreForIssue, deriveCweOwasp,
 };

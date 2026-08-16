@@ -3052,6 +3052,16 @@ async function checkSemanticSast(root, log) {
       const semgrepSeverity = String(r.extra?.severity || 'WARNING').toUpperCase();
       const message = r.extra?.message || 'Semgrep finding';
       const forcedWarning = SEMGREP_FORCE_WARNING_TITLES.some((re) => re.test(message));
+      // Semgrep's registry rules (p/security-audit, p/owasp-top-ten, ...)
+      // carry their own CWE/OWASP metadata per-rule — far more precise than
+      // Ignite's own category-level/keyword CWE fallback (override-engine's
+      // deriveCweOwasp), so pass it straight through when present. Each is
+      // an array (a rule can map to more than one CWE/OWASP category);
+      // only the first is kept, same "most specific wins" reasoning as
+      // picking one severity per finding.
+      const cweList = Array.isArray(r.extra?.metadata?.cwe) ? r.extra.metadata.cwe : [];
+      const owaspList = Array.isArray(r.extra?.metadata?.owasp) ? r.extra.metadata.owasp : [];
+      const cweMatch = String(cweList[0] || '').match(/^CWE-\d+/);
       findings.push({
         file: relFile,
         line,
@@ -3060,6 +3070,8 @@ async function checkSemanticSast(root, log) {
         severity: forcedWarning ? 'warning' : (SEMGREP_SEVERITY_TO_ISSUE[semgrepSeverity] || 'warning'),
         message,
         code: content ? buildSnippet(content, line) : null,
+        cwe: cweMatch ? cweMatch[0] : null,
+        owasp: owaspList[0] || null,
       });
     }
     return { findings, engine: 'semgrep' };
@@ -3166,6 +3178,10 @@ async function checkPiiDataFlow(root, log) {
         try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
         const title = e.title || 'Sensitive data-flow finding';
         const forcedWarning = BEARER_FORCE_WARNING_TITLES.some((re) => re.test(title));
+        // Bearer's own rules tag findings with cwe_ids (numeric CWE ids,
+        // e.g. [359] for CWE-359 exposure of private info) — pass the
+        // first through the same way Semgrep's rule metadata is above.
+        const cweId = Array.isArray(e.cwe_ids) ? e.cwe_ids[0] : null;
         findings.push({
           file: relFile,
           line,
@@ -3174,6 +3190,7 @@ async function checkPiiDataFlow(root, log) {
           severity: forcedWarning ? 'warning' : (BEARER_SEVERITY_TO_ISSUE[severity] || 'warning'),
           message: title,
           code: content ? buildSnippet(content, line) : null,
+          cwe: cweId ? `CWE-${cweId}` : null,
         });
       }
     }
