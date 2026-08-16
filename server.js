@@ -18,6 +18,8 @@
 require('dotenv').config({ path: process.env.DOTENV_PATH || require('path').join(__dirname, '.env') });
 
 const express = require('express');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 const StreamZip = require('node-stream-zip');
@@ -377,6 +379,43 @@ const MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024; // zip-bomb guard
 const MAX_SCAN_FILE_BYTES = 5 * 1024 * 1024; // skip huge files in text scans
 
 const app = express();
+
+// Security headers (OWASP A05 - Security Misconfiguration). CSP allows
+// 'unsafe-inline' script/style because public/index.html is a single-file
+// app with inline <script>/<style> blocks and no build step to add nonces -
+// tightening this needs a frontend refactor, tracked as follow-up work, not
+// silently skipped. crossOriginEmbedderPolicy is disabled because it would
+// block the classic (non-CORS) <script src="https://cdn.tailwindcss.com">
+// tag the UI depends on.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.tailwindcss.com'],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// Coarse global rate limit on the API surface (OWASP A05/A04 - unbounded
+// request volume). Deliberately loose - narrower per-route limits already
+// exist where it matters more (auth.js's login/register limiters); this is
+// a backstop against a client hammering any /api endpoint, not a
+// replacement for those.
+app.use('/api', rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+
 app.use(express.json({ limit: '1mb' }));
 
 // Onboarded-projects history annotates *how* each run was kicked off — the
