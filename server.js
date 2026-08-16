@@ -357,6 +357,11 @@ function loadConfig() {
 
 const CONFIG = loadConfig();
 
+// package.json is the single source of truth for the version — surfaced in
+// the UI (top-left, next to the logo) and via GET /api/config so it never
+// drifts out of sync with what's actually installed/running.
+const IGNITE_VERSION = require('./package.json').version;
+
 const store = createDbStore(process.env.IGNITE_DB_PATH || path.join(__dirname, 'ignite.db'));
 store.abortStaleRunningProjects();
 
@@ -4641,7 +4646,7 @@ app.get('/api/config', async (req, res) => {
     if (p.id !== 4 || aiAvailable || p.title !== defaultPhase4Title) return p;
     return { ...p, title: 'Security & Compliance Scan' };
   });
-  res.json({ orgs, phases });
+  res.json({ orgs, phases, version: IGNITE_VERSION });
 });
 
 // Status of the optional external tools Ignite integrates with but doesn't

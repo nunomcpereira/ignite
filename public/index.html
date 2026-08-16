@@ -96,6 +96,7 @@
           </svg>
         </div>
         <h1 class="text-2xl font-bold tracking-tight text-slate-900">Ignite</h1>
+        <span id="appVersion" class="text-[11px] font-mono font-semibold text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 self-start mt-1"></span>
       </div>
       <p class="text-sm text-slate-500">Onboarding gatekeeper — upload a project · pass compliance gates · ship to GitHub</p>
     </header>
@@ -3331,6 +3332,8 @@
       try {
         const res = await fetch('/api/config');
         const cfg = await res.json();
+
+        if (cfg.version) $('appVersion').textContent = `v${cfg.version}`;
 
         // Phase list — server.js's PHASE_META is the source of truth for
         // both titles/descriptions and which phases are enabled at all.
