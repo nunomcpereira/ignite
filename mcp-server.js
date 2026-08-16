@@ -18,7 +18,7 @@ const { checkContent, checkProject } = require('./guidelines/checks');
 
 // Base URL of a running Ignite server (`npm start`), used by onboard_project
 // to reach POST /api/pipeline/onboard.
-const IGNITE_BASE_URL = (process.env.IGNITE_BASE_URL || 'http://localhost:3000').replace(/\/+$/, '');
+const IGNITE_BASE_URL = (process.env.IGNITE_BASE_URL || 'http://localhost:51337').replace(/\/+$/, '');
 
 // Factory so each HTTP session can get its own McpServer instance: a single
 // McpServer can only be bound to one transport at a time, but stateful
@@ -195,7 +195,7 @@ server.registerTool(
     title: 'Run the full onboarding pipeline (checks + push)',
     description:
       'Run all Ignite onboarding checks (secrets, AI governance, LLM deep-scan, org governance CI) against a local project directory, and — if every check passes — provision a private GitHub repo and push the code. ' +
-      'Requires a running Ignite server (`npm start`) reachable at IGNITE_BASE_URL (default http://localhost:3000) with `gh` authenticated on that host. ' +
+      'Requires a running Ignite server (`npm start`) reachable at IGNITE_BASE_URL (default http://localhost:51337) with `gh` authenticated on that host. ' +
       'Set dryRun=true to run every check without pushing — use that first to see what would fail before committing to a real push.',
     inputSchema: {
       projectPath: z.string().describe('Absolute path to the project root to onboard.'),
@@ -249,7 +249,7 @@ async function main() {
   if (mode === 'http') {
     const express = require('express');
     const { randomUUID } = require('crypto');
-    const port = Number(process.env.MCP_HTTP_PORT || 3001);
+    const port = Number(process.env.MCP_HTTP_PORT || 51338);
     const app = express();
     app.use(express.json());
 

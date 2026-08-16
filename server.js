@@ -40,7 +40,7 @@ const {
 
 function loadConfig() {
   const defaults = {
-    port: 3000,
+    port: 51337,
     // deepScanEnabled gates only Phase 4's automated LLM deep-scan (Check
     // 3, checkLlmDeepScan) — the on-demand "Explain issue"/"Suggest AI fix"
     // calls in Ignite Studio (explainIssueForHuman/suggestFixForIssue) share
@@ -247,7 +247,7 @@ function loadConfig() {
       // step. Purely additive — stdio-mode MCP (the editor spawning
       // mcp-server.js itself) works exactly as before regardless of this.
       autoStart: true,
-      httpPort: 3001,
+      httpPort: 51338,
     },
   };
   // Same override convention as IGNITE_DB_PATH — lets the test suite (see

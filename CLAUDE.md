@@ -12,7 +12,7 @@ Almost all backend logic lives in one file: **`server.js`** (~6000 lines). Read 
 
 ```bash
 npm install
-npm start                    # → http://localhost:3000
+npm start                    # → http://localhost:51337
 npm test                     # node --test test/*.test.js
 node --test test/secrets-scan.test.js              # single test file
 node --test test/secrets-scan.test.js -t "gitleaks" # single test by name pattern

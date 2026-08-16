@@ -179,7 +179,7 @@ server (`mcp-server.js`) exposing the same guideline/security checks as
 tools an AI coding agent can call *during development* - not just at
 onboarding time. Point Claude Code, Claude Desktop, or any other MCP client
 at it (stdio, or Streamable HTTP - auto-started alongside `npm start` on
-`:3001/mcp`) to get:
+`:51338/mcp`) to get:
 
 - `check_guidelines` / `check_project` - run the same regex/AST guideline checks against a snippet or a whole project directory, live, as you write code.
 - `check_dependency_licenses` / `check_dependency_vulnerabilities` - the same license-compliance and CVE/GHSA scans Phase 3 runs automatically, on demand.
@@ -221,10 +221,10 @@ git clone https://github.com/nunomcpereira/ignite.git
 cd ignite
 npm install
 npm start
-# → http://localhost:3000
+# → http://localhost:51337
 ```
 
-That's it - open `http://localhost:3000`, drop a ZIP or folder onto the drop
+That's it - open `http://localhost:51337`, drop a ZIP or folder onto the drop
 zone, and run the pipeline. Every external tool (Trivy, Semgrep, gitleaks,
 GuardDog, ...) is an optional soft dependency - Ignite works out of the box
 with none of them installed, falling back to a built-in check where one
@@ -302,7 +302,7 @@ git config --global core.hooksPath ~/.git-hooks
 ```
 
 It needs a running Ignite server reachable at `IGNITE_BASE_URL` (default
-`http://localhost:3000`) and `node` on `PATH`. On `git push`, it posts the
+`http://localhost:51337`) and `node` on `PATH`. On `git push`, it posts the
 repo's absolute path to `/api/pipeline/validate-all`, blocks the push if any
 check fails, and prints the failing phase's logs so you don't have to open
 the UI just to see what broke:

@@ -13,7 +13,7 @@
 #        git config --global core.hooksPath ~/.git-hooks
 #
 # Requires: a running Ignite server (`npm start` in the ignite repo) reachable
-# at IGNITE_BASE_URL (default http://localhost:3000), and `node` on PATH.
+# at IGNITE_BASE_URL (default http://localhost:51337), and `node` on PATH.
 #
 # CLI acknowledgment: on a blocking finding, this hook writes a local
 # .ignite-review.md file (repo root) listing each one with a blank
@@ -28,7 +28,7 @@
 # delete the entry yourself.
 #
 # Env overrides:
-#   IGNITE_BASE_URL       Ignite server URL (default http://localhost:3000)
+#   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
 #   IGNITE_RUN_LOCAL_CI   "true" to also run Phase 5 (act/Docker governance
 #                         CI) - slower, off by default for a fast pre-push
 #   IGNITE_WARNING_MODE   "fail" to also block on unoverridden warnings,
@@ -44,7 +44,7 @@ if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
   exit 0
 fi
 
-IGNITE_URL="${IGNITE_BASE_URL:-http://localhost:3000}"
+IGNITE_URL="${IGNITE_BASE_URL:-http://localhost:51337}"
 REPO_PATH="$(git rev-parse --show-toplevel)"
 REVIEW_FILE="${IGNITE_REVIEW_FILE:-$REPO_PATH/.ignite-review.md}"
 ORIGIN_URL="$(git config --get remote.origin.url || echo '')"

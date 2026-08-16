@@ -251,7 +251,7 @@ All settings live in `config.json` next to `server.js` (environment variables ov
 
 ```jsonc
 {
-  "port": 3000,
+  "port": 51337,
   "llm": {                       // local llama.cpp deep-scan connection
     "url": "http://localhost:8050",
     "model": "default",
@@ -316,7 +316,7 @@ All settings live in `config.json` next to `server.js` (environment variables ov
   ],
   "mcp": {                        // see "MCP server" below
     "autoStart": true,
-    "httpPort": 3001
+    "httpPort": 51338
   }
 }
 ```
@@ -378,7 +378,7 @@ Files are batched into ~24 KB chunks with numbered lines, and the model must ans
 ```bash
 npm install
 npm start
-# → http://localhost:3000
+# → http://localhost:51337
 ```
 
 Then in the browser:
@@ -420,7 +420,7 @@ Use this endpoint to run all validation phases via API (without the UI stream):
 Example:
 
 ```bash
-curl -sS -X POST http://localhost:3000/api/pipeline/validate-all \
+curl -sS -X POST http://localhost:51337/api/pipeline/validate-all \
   -H 'Content-Type: application/json' \
   -d '{
     "projectPath": "/Users/nuno/tests/ignite",
@@ -481,7 +481,7 @@ git config --global core.hooksPath ~/.git-hooks
 ```
 
 Requires a running Ignite server reachable at `IGNITE_BASE_URL` (default
-`http://localhost:3000`) and `node` on `PATH`. Off by default: `runLocalCi`
+`http://localhost:51337`) and `node` on `PATH`. Off by default: `runLocalCi`
 (Phase 5's `act`/Docker governance CI - slow, belongs in real CI) and
 blocking on warnings (only `error`-severity findings gate the push). Both
 configurable via env vars documented at the top of the script
@@ -516,11 +516,11 @@ Two ways to run it:
      }
    }
    ```
-2. **Streamable HTTP, auto-started with the main server** - `node server.js` / `npm start` automatically spawns `mcp-server.js` as a child process in HTTP mode alongside the main app, listening on `http://localhost:3001/mcp` by default. No separate step needed; a client can just point at that URL. Controlled by `config.json`'s `mcp` section:
+2. **Streamable HTTP, auto-started with the main server** - `node server.js` / `npm start` automatically spawns `mcp-server.js` as a child process in HTTP mode alongside the main app, listening on `http://localhost:51338/mcp` by default. No separate step needed; a client can just point at that URL. Controlled by `config.json`'s `mcp` section:
    ```jsonc
    "mcp": {
      "autoStart": true,   // env: MCP_AUTOSTART=false to disable
-     "httpPort": 3001     // env: MCP_HTTP_PORT
+     "httpPort": 51338     // env: MCP_HTTP_PORT
    }
    ```
    The child inherits the main process's stdout/stderr (its own logs are prefixed `[mcp]`) and is killed when the main server exits; if the port is already taken or the child otherwise fails to start, that's logged but never fatal to the main server. To run it standalone instead: `MCP_TRANSPORT=http npm run guidelines:mcp:http`.
@@ -541,7 +541,7 @@ Tools exposed:
   every check without pushing - the way to "see what would fail" from an
   agent loop before committing to a real push. Requires the Ignite server
   running (`npm start`) and reachable at `IGNITE_BASE_URL` (env, default
-  `http://localhost:3000`), with `gh` authenticated on that host.
+  `http://localhost:51337`), with `gh` authenticated on that host.
 
 **Acknowledging findings via MCP:** a failed `onboard_project` call's
 response carries the exact unresolved `issues` (id, category, severity,

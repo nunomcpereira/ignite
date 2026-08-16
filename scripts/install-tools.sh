@@ -144,4 +144,4 @@ if [ "${#FAILED[@]}" -gt 0 ]; then
 fi
 echo ""
 echo "Verify what Ignite itself sees: start the server (npm start) and check the"
-echo "tools panel in the UI, or curl http://localhost:3000/api/tools/status"
+echo "tools panel in the UI, or curl http://localhost:51337/api/tools/status"
