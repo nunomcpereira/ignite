@@ -1,0 +1,31 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+// Cayman's default .main-content is a fixed ~64rem column with no overflow
+// handling — a wide table (like the attack-coverage table) just gets
+// clipped at the container edge instead of wrapping or scrolling. Widen the
+// column and make any table that's still too wide scroll horizontally
+// inside itself, so content is always reachable regardless of viewport.
+.main-content {
+  max-width: 80rem;
+}
+
+.main-content table {
+  display: block;
+  overflow-x: auto;
+  width: 100%;
+  border-collapse: collapse;
+  -webkit-overflow-scrolling: touch;
+}
+
+.main-content table th,
+.main-content table td {
+  white-space: normal;
+}
+
+.main-content img {
+  max-width: 100%;
+  height: auto;
+}
