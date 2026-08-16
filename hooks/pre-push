@@ -29,8 +29,9 @@
 #
 # Env overrides:
 #   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
-#   IGNITE_RUN_LOCAL_CI   "true" to also run Phase 5 (act/Docker governance
-#                         CI) - slower, off by default for a fast pre-push
+#   IGNITE_RUN_LOCAL_CI   "false" to skip Phase 5 (act/Docker governance CI)
+#                         for a faster pre-push - on by default so a push
+#                         gets the same gate a real PR would
 #   IGNITE_WARNING_MODE   "fail" to also block on unoverridden warnings,
 #                         default "continue" (only blocking errors gate)
 #   IGNITE_REVIEW_FILE    path to the acknowledgment file (default
@@ -50,7 +51,7 @@ REVIEW_FILE="${IGNITE_REVIEW_FILE:-$REPO_PATH/.ignite-review.md}"
 ORIGIN_URL="$(git config --get remote.origin.url || echo '')"
 ORG="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\1#')"
 REPO="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\2#')"
-RUN_LOCAL_CI="${IGNITE_RUN_LOCAL_CI:-false}"
+RUN_LOCAL_CI="${IGNITE_RUN_LOCAL_CI:-true}"
 WARNING_DECISION="${IGNITE_WARNING_MODE:-continue}"
 ACTOR_EMAIL="$(git config --get user.email || echo '')"
 ACTOR_NAME="$(git config --get user.name || echo '')"
