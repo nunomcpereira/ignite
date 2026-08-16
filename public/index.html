@@ -1386,6 +1386,7 @@
       'secret':             { label: 'Hardcoded secrets (regex + gitleaks)', area: 'Security', always: true },
       'ai-governance':      { label: 'AI governance (LangChain/LangGraph recursion_limit)', area: 'Security', always: true },
       'iac-security':       { label: 'IaC/container misconfiguration (Trivy/Checkov/hadolint)', area: 'Security', always: true },
+      'container-image-cve': { label: 'Container image CVEs (Trivy image scan)', area: 'Security', always: false },
       'image-provenance':   { label: 'Base-image signature/provenance (Cosign)', area: 'Security', always: true },
       'semantic-sast':      { label: 'Semantic SAST (Semgrep)', area: 'Security', always: true },
       'pii-dataflow':       { label: 'PII/GDPR data-flow (Bearer)', area: 'Security', always: true },
@@ -1670,6 +1671,10 @@
       trivy: {
         label: 'Trivy',
         info: 'IaC/container misconfiguration scanner — flags issues in Dockerfiles, Terraform, Kubernetes manifests, and Helm charts. On by default when installed; falls back to a small built-in Dockerfile heuristic check (unpinned base image, missing USER) when missing. Toggle via security.trivy.enabled.',
+      },
+      trivyImage: {
+        label: 'Trivy (image)',
+        info: 'Builds every discovered Dockerfile and scans the resulting image with `trivy image` for known CVEs in installed OS/language packages — a gap `trivy config` alone can’t see, since that only lints the Dockerfile source. Off by default (needs a real image build via Docker, the heaviest Phase 4 check); enable via security.trivyImage.enabled.',
       },
       checkov: {
         label: 'Checkov',

@@ -149,6 +149,21 @@ function loadConfig() {
       // fallback: this heuristic can't be meaningfully approximated without
       // the real tool.
       guarddog: { enabled: true, binary: 'guarddog' },
+      // Optional: OWASP A05/A06 gap — `trivy config` (above) only lints the
+      // *Dockerfile source* for misconfiguration; it never looks at what's
+      // actually inside the image a Dockerfile builds, so a base image with
+      // known-vulnerable OS packages baked in (e.g. an unpatched apt/apk
+      // package with a real CVE) sails through untouched. This builds every
+      // discovered Dockerfile with `docker build` and runs `trivy image`
+      // against the result to catch that gap. Off by default — unlike the
+      // rest of Phase 4, this needs a real image build (network pulls,
+      // build time), the heaviest single check in the pipeline — enable
+      // with TRIVY_IMAGE_ENABLED=true once you've accepted that cost. No
+      // built-in fallback: image-content vulnerability scanning needs the
+      // real tool. Reuses security.trivy's binary (same trivy CLI, `image`
+      // subcommand instead of `config`) — no separate binary setting.
+      // severityThreshold filters trivy's own CVE severities.
+      trivyImage: { enabled: false, severityThreshold: 'HIGH,CRITICAL', buildTimeoutMs: 8 * 60_000 },
     },
     compliance: {
       // Optional: Compliance & Feature Posture Engine — scans for the
@@ -326,6 +341,10 @@ function loadConfig() {
     merged.security.guarddog.enabled = String(process.env.GUARDDOG_ENABLED) === 'true';
   }
   if (process.env.GUARDDOG_BINARY) merged.security.guarddog.binary = process.env.GUARDDOG_BINARY;
+  if (process.env.TRIVY_IMAGE_ENABLED !== undefined) {
+    merged.security.trivyImage.enabled = String(process.env.TRIVY_IMAGE_ENABLED) === 'true';
+  }
+  if (process.env.TRIVY_IMAGE_SEVERITY) merged.security.trivyImage.severityThreshold = process.env.TRIVY_IMAGE_SEVERITY;
   if (process.env.POSTURE_ENABLED !== undefined) {
     merged.compliance.posture.enabled = String(process.env.POSTURE_ENABLED) === 'true';
   }
@@ -624,6 +643,11 @@ const GITLEAKS_CONFIG_PATH = String(CONFIG.security.gitleaks.configPath || '');
 /* Optional trivy-powered IaC/container misconfig scan (see CONFIG.security.trivy) */
 const TRIVY_ENABLED = Boolean(CONFIG.security.trivy.enabled);
 const TRIVY_BINARY = String(CONFIG.security.trivy.binary || 'trivy');
+
+/* Optional trivy-powered built-image CVE scan (see CONFIG.security.trivyImage) — reuses TRIVY_BINARY above */
+const TRIVY_IMAGE_ENABLED = Boolean(CONFIG.security.trivyImage.enabled);
+const TRIVY_IMAGE_SEVERITY = String(CONFIG.security.trivyImage.severityThreshold || 'HIGH,CRITICAL');
+const TRIVY_IMAGE_BUILD_TIMEOUT_MS = Number(CONFIG.security.trivyImage.buildTimeoutMs) || 8 * 60_000;
 
 /* Optional checkov-powered supplemental IaC misconfig scan (see CONFIG.security.checkov) */
 const CHECKOV_ENABLED = Boolean(CONFIG.security.checkov.enabled);
@@ -2629,6 +2653,92 @@ async function checkIacSecurityFallback(root) {
   return findings;
 }
 
+async function trivyImageTooling() {
+  try {
+    await runTool('trivy', ['--version'], os.tmpdir());
+  } catch {
+    return { ok: false, reason: '`trivy` is not installed (brew install trivy).' };
+  }
+  try {
+    await runTool('docker', ['info', '--format', '{{.ServerVersion}}'], os.tmpdir());
+  } catch {
+    return { ok: false, reason: 'Docker daemon is not running (start Docker Desktop) — needed to build the image before scanning it.' };
+  }
+  return { ok: true };
+}
+
+// Builds every discovered Dockerfile and runs `trivy image` against the
+// result, catching OWASP A06 (known-vulnerable packages) baked into a base
+// image's OS/package layer — a gap `trivy config`/checkIacSecurity can't
+// see, since that only lints the Dockerfile *source*, never what actually
+// ends up installed inside the image. Off by default (see
+// CONFIG.security.trivyImage) since it's the one Phase 4 check that needs a
+// real image build, not just a static read. Never throws: any build/scan
+// failure for one Dockerfile is logged and skipped, so one bad Dockerfile
+// doesn't block findings from the rest, and the whole check soft-skips
+// (returns no findings) rather than failing the run if trivy/Docker aren't
+// available.
+async function checkContainerImageVulnerabilities(root, log) {
+  const tool = TRIVY_IMAGE_ENABLED ? await trivyImageTooling() : { ok: false, reason: 'trivyImage is disabled (security.trivyImage.enabled=false).' };
+  if (!tool.ok) {
+    log?.(`⚠ Container image CVE scan skipped: ${tool.reason}`);
+    return { findings: [], engine: 'disabled' };
+  }
+
+  const dockerfiles = [];
+  for await (const file of walkFiles(root)) {
+    if (DOCKERFILE_NAME_RE.test(path.basename(file))) dockerfiles.push(file);
+  }
+  if (dockerfiles.length === 0) return { findings: [], engine: 'trivy-image' };
+
+  log?.(`Engine: Trivy CLI (External) — building ${dockerfiles.length} Dockerfile(s) and scanning the resulting image(s) for known CVEs...`);
+  const findings = [];
+  for (const dockerfile of dockerfiles) {
+    const relDockerfile = path.relative(root, dockerfile);
+    const buildContext = path.dirname(dockerfile);
+    const tag = `ignite-trivyscan-${crypto.randomBytes(6).toString('hex')}:latest`;
+    const reportPath = path.join(os.tmpdir(), `ignite-trivy-image-${crypto.randomBytes(8).toString('hex')}.json`);
+    let built = false;
+    try {
+      await runToolStreaming(
+        'docker',
+        ['build', '-f', dockerfile, '-t', tag, buildContext],
+        root,
+        (line) => log?.(line.slice(0, 400)),
+        { timeoutMs: TRIVY_IMAGE_BUILD_TIMEOUT_MS }
+      );
+      built = true;
+      await runTool('trivy', [
+        'image', '--format', 'json', '--output', reportPath,
+        '--severity', TRIVY_IMAGE_SEVERITY, '--exit-code', '0', '--quiet', tag,
+      ], root);
+      const raw = await fsp.readFile(reportPath, 'utf8').catch(() => '');
+      const data = raw.trim() ? JSON.parse(raw) : {};
+      const results = Array.isArray(data.Results) ? data.Results : [];
+      for (const result of results) {
+        const vulns = Array.isArray(result.Vulnerabilities) ? result.Vulnerabilities : [];
+        for (const v of vulns) {
+          findings.push({
+            file: relDockerfile,
+            line: 1,
+            kind: String(v.VulnerabilityID || 'cve').toLowerCase(),
+            tool: 'trivy-image',
+            severity: String(v.Severity || 'MEDIUM').toLowerCase(),
+            message: `${v.PkgName || 'package'}@${v.InstalledVersion || '?'}: ${v.Title || v.VulnerabilityID || 'known vulnerability'}${v.FixedVersion ? ` (fixed in ${v.FixedVersion})` : ''}`,
+            code: null,
+          });
+        }
+      }
+    } catch (e) {
+      log?.(`⚠ Container image CVE scan failed for ${relDockerfile}: ${e.message}`);
+    } finally {
+      await fsp.unlink(reportPath).catch(() => {});
+      if (built) await runTool('docker', ['rmi', '-f', tag], root).catch(() => {});
+    }
+  }
+  return { findings, engine: 'trivy-image' };
+}
+
 async function syftTooling() {
   try {
     await runTool('syft', ['version'], os.tmpdir());
@@ -3512,6 +3622,22 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
       },
     },
     {
+      name: 'imageVulnerabilities',
+      run: async (blog) => {
+        blog('Check 13 — container image CVE scan (trivy image; off by default)...');
+        const imageVulnerabilities = await checkContainerImageVulnerabilities(projectRoot, blog);
+        if (imageVulnerabilities.findings.length > 0) {
+          blog(`✗ ${imageVulnerabilities.findings.length} known CVE(s) in built image(s):`);
+          imageVulnerabilities.findings.forEach((f) => blog(`    ${f.severity === 'critical' || f.severity === 'high' ? '✗' : '⚠'} [${f.severity}] ${f.file} — ${f.message}`));
+        } else if (imageVulnerabilities.engine === 'trivy-image') {
+          blog('✓ Check 13 passed — no known CVEs found in built image(s) (or no Dockerfile present).');
+        } else {
+          blog('✓ Check 13 skipped — trivyImage disabled or trivy/Docker not available.');
+        }
+        return imageVulnerabilities;
+      },
+    },
+    {
       name: 'sbom',
       run: async (blog) => {
         blog('Generating SBOM...');
@@ -3666,6 +3792,7 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     governance: byName.governance,
     llm: byName.llm,
     iac: byName.iac,
+    imageVulnerabilities: byName.imageVulnerabilities,
     imageProvenance: byName.imageProvenance,
     semanticSast: byName.semanticSast,
     piiDataFlow: byName.piiDataFlow,
@@ -4702,14 +4829,15 @@ app.get('/api/config', async (req, res) => {
 // is purely informational (drives the "connected/disconnected" pills in the
 // UI's top-right Tools panel), never gates anything itself.
 app.get('/api/tools/status', async (req, res) => {
-  const [ort, licensee, gitleaks, trivy, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog] = await Promise.all([
-    ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(),
+  const [ort, licensee, gitleaks, trivy, trivyImage, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog] = await Promise.all([
+    ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), trivyImageTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(),
   ]);
   res.json({
     ort: { ...ort, enabled: true },
     licensee: { ...licensee, enabled: true },
     gitleaks: { ...gitleaks, enabled: GITLEAKS_ENABLED },
     trivy: { ...trivy, enabled: TRIVY_ENABLED },
+    trivyImage: { ...trivyImage, enabled: TRIVY_IMAGE_ENABLED },
     checkov: { ...checkov, enabled: CHECKOV_ENABLED },
     hadolint: { ...hadolint, enabled: HADOLINT_ENABLED },
     syft: { ...syft, enabled: SYFT_ENABLED },
@@ -7211,6 +7339,7 @@ module.exports = {
   checkIacSecurity,
   runCheckovIacScan,
   runHadolintIacScan,
+  checkContainerImageVulnerabilities,
   generateSbom,
   checkImageProvenance,
   checkSemanticSast,

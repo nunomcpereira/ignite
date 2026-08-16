@@ -443,6 +443,49 @@ process.exit(1);
   return scriptPath;
 }
 
+/**
+ * Writes fake `docker` and `trivy` CLIs into a fresh directory, for
+ * prepending to PATH — checkContainerImageVulnerabilities shells out to the
+ * literal `docker` command name (not a configurable binary setting, unlike
+ * trivy/checkov/etc), so faking it needs a PATH-based stand-in the same way
+ * makeFakeLicenseTools fakes `ort`/`licensee`. The fake `docker` understands
+ * `info` (tooling probe), `build` (always succeeds, ignores -f/-t/context),
+ * and `rmi` (cleanup); the fake `trivy` understands `--version` and
+ * `image --output <path>`, writing `vulnerabilities` as that image's
+ * Vulnerabilities list regardless of which tag was scanned.
+ *
+ * @param {Array} vulnerabilities - trivy `image` JSON Vulnerabilities entries
+ * @returns {Promise<string>} the bin directory to prepend to PATH
+ */
+async function makeFakeDockerAndTrivyImage(vulnerabilities) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-docker-trivy-'));
+
+  const dockerScript = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'info') { process.stdout.write('fake-docker 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'build') { process.exit(0); }
+if (args[0] === 'rmi') { process.exit(0); }
+process.exit(1);
+`;
+  await fs.writeFile(path.join(dir, 'docker'), dockerScript, { mode: 0o755 });
+
+  const trivyScript = `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('Version: fake-trivy 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'image') {
+  const idx = args.indexOf('--output');
+  const outputPath = args[idx + 1];
+  fs.writeFileSync(outputPath, ${JSON.stringify(JSON.stringify({ Results: [{ Vulnerabilities: vulnerabilities }] }))});
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(path.join(dir, 'trivy'), trivyScript, { mode: 0o755 });
+
+  return dir;
+}
+
 module.exports = {
-  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral, makeFakeGuardDog,
+  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral, makeFakeGuardDog, makeFakeDockerAndTrivyImage,
 };

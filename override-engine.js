@@ -43,6 +43,7 @@ const CATEGORY_SCORES = {
   'security-scan': 6,
   'license-compliance': 6,
   'iac-security': 6,
+  'container-image-cve': 8,
   'image-provenance': 4,
   'semantic-sast': 7,
   'pii-dataflow': 7,
@@ -76,7 +77,7 @@ function scoreForIssue({ category, severity }) {
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [maliciousDependencies]
  * @returns {Array<{id, category, severity, score, summary, file, line}>}
  */
-function collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema, maliciousDependencies }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema, maliciousDependencies }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -120,6 +121,23 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageProvenance, s
         severity,
         score: scoreForIssue({ category, severity }),
         summary: `${f.message || f.kind}${f.tool === 'ignite-fallback' ? ' (built-in fallback check — trivy not installed)' : ''}`,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  if (imageVulnerabilities) {
+    for (const f of imageVulnerabilities.findings) {
+      const category = 'container-image-cve';
+      const severity = (f.severity === 'critical' || f.severity === 'high') ? 'error' : 'warning';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
         file: f.file,
         line: f.line,
         snippet: f.code || null,
