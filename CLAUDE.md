@@ -22,7 +22,7 @@ npm run guidelines:mcp:http  # same, MCP_TRANSPORT=http
 npm run guidelines:api       # REST API on 127.0.0.1:8090 (guidelines-api.js)
 ```
 
-Prerequisites for full pipeline runs: Node ≥18, `git` on PATH, `gh` CLI authenticated (`gh auth login` / `gh auth status`) with repo-create permission in the target org. Optional: `act` + Docker for Phase 5 org governance CI and for multi-language unit tests (Docker images per language); `gitleaks` binary for supplemental secret scanning.
+Prerequisites for full pipeline runs: Node ≥22, `git` on PATH, `gh` CLI authenticated (`gh auth login` / `gh auth status`) with repo-create permission in the target org. Optional: `act` + Docker for Phase 5 org governance CI and for multi-language unit tests (Docker images per language); `gitleaks` binary for supplemental secret scanning.
 
 Also optional, all soft-dependencies feeding Phase 4 (see `checkIacSecurity`/`generateSbom`/`checkImageProvenance`/`checkSemanticSast`/`checkPiiDataFlow`/`checkCodeDuplication`/`generateLocMetrics`/`checkApiSchemas`/`checkFeaturePosture`/`checkMaliciousDependencies` in server.js): `trivy`, `checkov`, `hadolint` (IaC/container), `syft`, `cosign` (SBOM/supply-chain), `semgrep`, `bearer` (semantic/PII SAST), `jscpd`, `gocloc` (duplication/LOC metrics), `spectral` (API schema lint), `guarddog` (malicious-dependency heuristic scan, npm/PyPI). The Compliance & Feature Posture Engine (`checkFeaturePosture`) doesn't add a thirteenth binary - it reuses `semgrep`, just with its own `ignite-posture-rules.yaml` ruleset and `compliance.posture.enabled` toggle. None of these are required to run the suite or the server - every check soft-skips to a built-in fallback (or simply contributes nothing) when its tool is absent.
 

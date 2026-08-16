@@ -331,7 +331,7 @@ When any phase fails, Ignite emails a detailed report to `notifications.to`: tar
 
 ## Prerequisites
 
-1. **Node.js ≥ 18**
+1. **Node.js ≥ 22**
 2. **git** available on `PATH`
 3. **A way to authenticate to GitHub** - either works:
    - **GitHub CLI (`gh`)**, installed and authenticated:

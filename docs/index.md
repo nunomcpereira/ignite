@@ -206,7 +206,7 @@ See [MCP server](https://github.com/nunomcpereira/ignite#mcp-server) in the READ
 
 **Prerequisites:**
 
-- **Node.js ≥ 18**
+- **Node.js ≥ 22**
 - **git** on `PATH`
 - **A way to authenticate to GitHub** - `gh` CLI is the easy path:
   ```bash
