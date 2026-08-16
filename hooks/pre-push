@@ -27,6 +27,16 @@
 # whether or not that run reported it, until you delete the entry yourself
 # or the code around it changes enough to produce a different id.
 #
+# Delta check: a full run records the pushed commit in the local (untracked)
+# .git/ignite-last-validated-ok. The next push skips the check entirely if
+# the working tree at HEAD is byte-identical to that commit's tree (ignoring
+# .ignite-review.md) - i.e. re-pushing code that already fully passed, with
+# at most an override justification edited. Any real source change makes the
+# diff non-empty, so it always falls through to a full, whole-project run -
+# this never trades away coverage, it only skips redundant re-scans of code
+# Ignite has already scanned and passed. A fresh clone has no state file, so
+# a new repo's first push always gets the full run.
+#
 # Env overrides:
 #   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
 #   IGNITE_RUN_LOCAL_CI   "false" to skip Phase 5 (act/Docker governance CI)
@@ -36,6 +46,8 @@
 #                         default "continue" (only blocking errors gate)
 #   IGNITE_REVIEW_FILE    path to the acknowledgment file (default
 #                         <repo-root>/.ignite-review.md)
+#   IGNITE_FORCE_FULL_CHECK  "true" to always run the full pipeline, ignoring
+#                         the delta check above
 #   IGNITE_PREPUSH_SKIP   "true" to skip this hook entirely for one push
 #                         (prefer this over --no-verify so it's logged)
 set -euo pipefail
@@ -61,6 +73,21 @@ if ! curl -sf -m 3 "$IGNITE_URL/api/config" > /dev/null 2>&1; then
   echo "  Start it with 'npm start' in the ignite repo, set IGNITE_BASE_URL to" >&2
   echo "  point elsewhere, or set IGNITE_PREPUSH_SKIP=true to skip this push." >&2
   exit 1
+fi
+
+STATE_FILE="$REPO_PATH/.git/ignite-last-validated-ok"
+CURRENT_SHA="$(git rev-parse HEAD)"
+if [ "${IGNITE_FORCE_FULL_CHECK:-}" != "true" ] && [ -f "$STATE_FILE" ]; then
+  LAST_OK_SHA="$(cat "$STATE_FILE")"
+  if git cat-file -e "${LAST_OK_SHA}^{commit}" 2>/dev/null \
+    && git merge-base --is-ancestor "$LAST_OK_SHA" "$CURRENT_SHA" 2>/dev/null; then
+    CHANGED="$(git diff --name-only "$LAST_OK_SHA" "$CURRENT_SHA" -- . ':(exclude)'"$(basename "$REVIEW_FILE")")"
+    if [ -z "$CHANGED" ]; then
+      echo "✓ No source changes since the last fully-validated push ($LAST_OK_SHA) - skipping Ignite checks."
+      echo "  (set IGNITE_FORCE_FULL_CHECK=true to always run the full pipeline)"
+      exit 0
+    fi
+  fi
 fi
 
 # Turn any already-justified entries in the local review file into the
@@ -184,3 +211,5 @@ node -e '
     process.exit(1);
   });
 ' "$REVIEW_FILE" <<< "$RESPONSE"
+
+echo -n "$CURRENT_SHA" > "$STATE_FILE"
