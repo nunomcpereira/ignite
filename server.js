@@ -120,12 +120,31 @@ function loadConfig() {
       // Optional: semantic pattern-matching SAST via Semgrep OSS
       // (https://semgrep.dev) — logical flaws and injection-style sinks
       // beyond what the LLM deep-scan (Phase 4's other security check)
-      // covers on its own. `config` is any semgrep --config value (a
-      // registry pack like "p/security-audit", "auto", or a local rule
-      // file/dir path). On by default; soft-skips (no native fallback —
-      // there isn't a meaningful built-in substitute for a semantic rule
-      // engine) when disabled or not installed.
-      semgrep: { enabled: true, binary: 'semgrep', config: 'p/security-audit' },
+      // covers on its own. `config` is a comma-separated list of semgrep
+      // --config values (registry packs like "p/security-audit"/
+      // "p/owasp-top-ten", "auto", or a local rule file/dir path) — each
+      // gets passed as its own --config flag, so combining packs widens
+      // rule coverage rather than replacing one pack with another.
+      // p/owasp-top-ten is included alongside p/security-audit by default
+      // for explicit OWASP Top 10 category coverage on top of
+      // security-audit's broader (and overlapping) rule set. On by
+      // default; soft-skips (no native fallback — there isn't a
+      // meaningful built-in substitute for a semantic rule engine) when
+      // disabled or not installed.
+      //
+      // IMPORTANT LIMITATION: Semgrep OSS's pattern/taint engine is
+      // intraprocedural (single-file) — it cannot trace taint across
+      // function/file boundaries the way Semgrep Pro or CodeQL can. A
+      // vulnerability where untrusted input crosses multiple files before
+      // reaching a sink (e.g. a stored-XSS or IDOR chain spanning a
+      // controller, a service layer, and a template) will not reliably be
+      // caught by this check — that gap is covered only by the LLM
+      // deep-scan's best-effort read of the actual data flow, which is
+      // probabilistic and capped at `llm.maxFiles` files per run, not a
+      // deterministic guarantee. Real cross-file taint analysis needs a
+      // paid Semgrep Pro subscription or a CodeQL setup (GitHub Advanced
+      // Security / GitHub Actions) — neither is wired into Ignite.
+      semgrep: { enabled: true, binary: 'semgrep', config: 'p/security-audit,p/owasp-top-ten' },
       // Optional: sensitive data-flow (PII/GDPR) tracking via Bearer CLI
       // (https://github.com/Bearer/bearer) — traces personal data from
       // source (request params, user objects) to sinks (logs, DB writes,
@@ -3016,10 +3035,11 @@ async function checkSemanticSast(root, log) {
     return { findings: [], engine: 'disabled' };
   }
 
-  log?.(`Engine: Semgrep CLI (External) — running semantic SAST rules (config: ${SEMGREP_CONFIG})...`);
+  const semgrepConfigPacks = SEMGREP_CONFIG.split(',').map((c) => c.trim()).filter(Boolean);
+  log?.(`Engine: Semgrep CLI (External) — running semantic SAST rules (config: ${semgrepConfigPacks.join(', ')})...`);
   try {
     const { stdout } = await runTool('semgrep', [
-      'scan', '--config', SEMGREP_CONFIG, '--json', '--quiet', '--metrics', 'off', root,
+      'scan', ...semgrepConfigPacks.flatMap((c) => ['--config', c]), '--json', '--quiet', '--metrics', 'off', root,
     ], root);
     const data = stdout.trim() ? JSON.parse(stdout) : { results: [] };
     const results = Array.isArray(data.results) ? data.results : [];
