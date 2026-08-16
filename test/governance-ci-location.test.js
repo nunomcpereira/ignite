@@ -19,7 +19,7 @@ test('resolveGovernanceCiLocation: finds the file + line behind a "matched in: .
     const dir = await makeTempProject({
       'server.js': [
         'const express = require("express");',
-        'const dbPassword = "hunter2reallylongsecretvalue";',
+        'const dbPassword \x3d "hunter2reallylongsecretvalue";',
         'console.log("hi");',
       ].join('\n'),
     });

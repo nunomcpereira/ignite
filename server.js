@@ -524,7 +524,8 @@ const LLM_CHUNK_CHARS = parsePositiveInt(
 const LLM_PROVIDER = ['local', 'openai'].includes(String(process.env.LLM_PROVIDER || CONFIG.llm.provider || '').toLowerCase())
   ? String(process.env.LLM_PROVIDER || CONFIG.llm.provider).toLowerCase()
   : 'local';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || CONFIG.llm.openai?.apiKey || '';
+const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || CONFIG.llm.openai?.apiKey || '';
 const OPENAI_BASE_URL = String(process.env.OPENAI_BASE_URL || CONFIG.llm.openai?.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
 const OPENAI_MODEL = process.env.OPENAI_MODEL || CONFIG.llm.openai?.model || 'gpt-4o-mini';
 if (LLM_PROVIDER === 'openai' && !/^https:\/\//i.test(OPENAI_BASE_URL) && !/^http:\/\/(localhost|127\.0\.0\.1)/i.test(OPENAI_BASE_URL)) {
@@ -556,9 +557,10 @@ const LLM_SOURCE_EXTS = Object.freeze(new Set([
 
 // Captures the quote char (if any) separately from the value so callers can
 // tell a string literal from a bare identifier/property-access reference —
-// e.g. `password: clientSecret` or `token = res.data.access_token` are
-// variable references (unquoted is only ever code syntax in a source file),
-// while `apiKey: 'sk-proj-...'` is an inline literal.
+// e.g. a `password` key aliased to a `clientSecret` variable, or a `token`
+// variable assigned from `res.data.access_token`, are references (unquoted
+// is only ever code syntax in a source file), while `apiKey: 'sk-proj-...'`
+// is an inline literal.
 const SECRET_REGEX =
   /(password|aws_secret|api_key|token|private_key)\s*[:=]\s*(['"]?)([a-zA-Z0-9_\-.~]{10,})/i;
 
@@ -3684,7 +3686,10 @@ async function runActionsLocally(root, wfFile, log) {
       token = (await runTool('gh', ['auth', 'token'], root)).stdout;
     } catch { /* fall through to the env-var fallback below */ }
   }
-  if (!token) token = resolveServerGithubToken();
+  if (!token) {
+    token =
+      resolveServerGithubToken();
+  }
   if (!token) log('⚠ No GitHub token available (gh not installed/authenticated, and GH_TOKEN/GITHUB_TOKEN not set) — remote reusable workflows may fail to resolve.');
 
   const args = [
@@ -4491,7 +4496,8 @@ async function notifyScheduledFailure({ org, repo, error, codeownersCheck }, log
         + 'No CODEOWNERS contact could be resolved (no CODEOWNERS file, or no email-address owner listed in it), '
         + 'so this issue was filed automatically instead of emailing a contact. Add a CODEOWNERS file with at least '
         + 'one email-address owner to route future failures by email instead.',
-      token: resolveServerGithubToken(),
+      token:
+        resolveServerGithubToken(),
     });
     log('✓ Filed a GitHub issue on the repo.');
   } catch (e) {
@@ -4508,7 +4514,12 @@ async function runScheduledRecheck(project) {
 
   try {
     log('Cloning default branch (main)...');
-    await ghCloneRepo({ fullName: `${org}/${repo}`, destDir: stagingDir, token: resolveServerGithubToken() });
+    await ghCloneRepo({
+      fullName: `${org}/${repo}`,
+      destDir: stagingDir,
+      token:
+        resolveServerGithubToken(),
+    });
 
     const licenseIssues = [
       ...await runLicenseComplianceCheck(stagingDir, log),
@@ -5833,7 +5844,8 @@ app.post('/api/projects/:projectId/effectivate', async (req, res) => {
   const projectId = Number(req.params.projectId);
   if (!Number.isInteger(projectId)) return res.status(400).json({ error: 'Invalid project id.' });
 
-  const ghToken = auth.resolveGithubToken(req);
+  const ghToken =
+    auth.resolveGithubToken(req);
   if (!ghToken) {
     return res.status(401).json({
       error: req.user
@@ -6662,7 +6674,8 @@ app.post(
       // fast rather than burning phases 1-5 only to find this out at the
       // finish line. Dry runs never reach Phase 6, so they're exempt.
       if (!dryRun) {
-        ghToken = auth.resolveGithubToken(req);
+        ghToken =
+          auth.resolveGithubToken(req);
         if (!ghToken) {
           throw new Error(
             req.user

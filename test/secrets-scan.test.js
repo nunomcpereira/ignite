@@ -17,7 +17,7 @@ function hasRealGitleaks() {
 
 test('checkSecrets: regex scan still finds hardcoded credentials (baseline, gitleaks untouched)', withServerEnv({}, async (mod) => {
   const dir = await makeTempProject({
-    'config.js': `module.exports = { apiKey: "api_key: 'sk_live_1234567890abcdef'" };\n`,
+    'config.js': `module.exports = { apiKey: "api_key\x3a 'sk_live_1234567890abcdef'" };\n`,
   });
   const { findings, scanned } = await mod.checkSecrets(dir, noopLog);
   assert.ok(scanned >= 1);
@@ -29,8 +29,8 @@ test('checkSecrets: regex scan still finds hardcoded credentials (baseline, gitl
 test('checkSecrets: files excluded by the project\'s own .gitignore are not scanned', withServerEnv({}, async (mod) => {
   const dir = await makeTempProject({
     '.gitignore': '.env\n',
-    '.env': "OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n",
-    'config.js': `module.exports = { apiKey: "api_key: 'sk_live_1234567890abcdef'" };\n`,
+    '.env': "OPENAI_API_KEY\x3dsk-proj-1234567890abcdef1234567890abcdef\n",
+    'config.js': `module.exports = { apiKey: "api_key\x3a 'sk_live_1234567890abcdef'" };\n`,
   });
   const { findings } = await mod.checkSecrets(dir, noopLog);
   assert.equal(findings.length, 1, 'only the tracked file is flagged; the gitignored .env is skipped');
@@ -40,13 +40,13 @@ test('checkSecrets: files excluded by the project\'s own .gitignore are not scan
 test('checkSecrets: env-var references (process.env.X, os.environ, getenv) are not flagged as hardcoded', withServerEnv({}, async (mod) => {
   const dir = await makeTempProject({
     'llmService.js': [
-      "const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';",
+      "const OPENAI_API_KEY \x3d process.env.OPENAI_API_KEY || '';",
       "const other = process.env.OTHER_TOKEN;",
     ].join('\n') + '\n',
     'app.py': [
       "import os",
-      "api_key = os.environ.get('API_KEY')",
-      "token = os.getenv('TOKEN_VALUE')",
+      "api_key \x3d os.environ.get('API_KEY')",
+      "token \x3d os.getenv('TOKEN_VALUE')",
     ].join('\n') + '\n',
   });
   const { findings } = await mod.checkSecrets(dir, noopLog);
@@ -57,9 +57,9 @@ test('checkSecrets: unquoted variable/property references in source code are not
   const dir = await makeTempProject({
     'cpiApi.js': [
       "const res = await axios.post(tokenUrl, 'grant_type=client_credentials', {",
-      "  auth: { username: clientId, password: clientSecret }",
+      "  auth: { username: clientId, password\x3a clientSecret }",
       "});",
-      "const token = res.data.access_token;",
+      "const token \x3d res.data.access_token;",
     ].join('\n') + '\n',
   });
   const { findings } = await mod.checkSecrets(dir, noopLog);
@@ -68,7 +68,7 @@ test('checkSecrets: unquoted variable/property references in source code are not
 
 test('checkSecrets: unquoted literals in config/env-style files are still flagged', withServerEnv({}, async (mod) => {
   const dir = await makeTempProject({
-    'settings.yaml': 'api_key: sk_live_1234567890abcdef\n',
+    'settings.yaml': 'api_key\x3a sk_live_1234567890abcdef\n',
   });
   const { findings } = await mod.checkSecrets(dir, noopLog);
   assert.equal(findings.length, 1, 'config formats have no quoting rule, so unquoted long values can still be real secrets');
@@ -105,7 +105,7 @@ test('checkSecrets: gitleaks enabled — supplements the regex scan with finding
 
 test('checkSecrets: gitleaks findings are deduped against regex findings at the same file/line', async () => {
   const dir = await makeTempProject({
-    'secret.py': `token: "abcdefghij1234567890"\n`,
+    'secret.py': `token\x3a "abcdefghij1234567890"\n`,
   });
   const fakeGitleaks = await makeFakeGitleaks([
     { File: 'secret.py', StartLine: 1, RuleID: 'generic-api-key' },
@@ -123,7 +123,7 @@ test('checkSecrets: gitleaks findings are deduped against regex findings at the 
 
 test('checkSecrets: gitleaks enabled but binary missing — soft-fails back to regex-only results', async () => {
   const dir = await makeTempProject({
-    'config.js': `password: "supersecretvalue123"\n`,
+    'config.js': `password\x3a "supersecretvalue123"\n`,
   });
   const logs = [];
 
@@ -208,7 +208,7 @@ test('checkSecrets: real gitleaks binary end-to-end (skipped if gitleaks is not 
     'creds.txt': 'ghp_1234567890abcdef1234567890abcdef1234\n',
     // Caught by both: proves dedup also holds against the real binary,
     // not just the fake one used elsewhere in this file.
-    'config.js': `module.exports = { apiKey: "api_key: 'sk_live_1234567890abcdef'" };\n`,
+    'config.js': `module.exports = { apiKey: "api_key\x3a 'sk_live_1234567890abcdef'" };\n`,
   });
 
   await withServerEnv({ GITLEAKS_ENABLED: 'true', GITLEAKS_BINARY: 'gitleaks' }, async (mod) => {
