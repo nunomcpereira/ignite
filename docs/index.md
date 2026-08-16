@@ -200,6 +200,16 @@ one check is skipped with a warning rather than failing the run.
 > machine's credentials. Run it locally or behind authentication — never
 > expose it unauthenticated to a network.
 
+**Pushing over HTTPS (gh) or SSH:** by default Phase 6 pushes over
+`https://github.com/...`, authenticated through `gh auth git-credential`
+using the connected account's token. Set `GITHUB_REMOTE_PROTOCOL=ssh` to
+push over `git@github.com:...` instead, authenticated by whatever SSH
+key/agent is already configured for `github.com` on this machine — no git
+credential helper involved. Either way, repo creation/auto-merge/ref
+creation still go through the GitHub API with `gh` — SSH replaces the
+**push transport**, not API auth, so a connected GitHub account is required
+in both modes.
+
 ## Pre-push hook — check before you push, not after
 {: #pre-push-hook }
 
