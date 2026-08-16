@@ -985,8 +985,12 @@ async function extractZip(zipPath, destDir, log) {
         continue;
       }
 
-      totalBytes += Number(entry.size || 0);
-      if (totalBytes > MAX_EXTRACTED_BYTES) {
+      // The pre-check below on entry.size (the archive's own declared,
+      // forgeable metadata) is a fast-path only - the enforced cap is the
+      // running total of bytes actually streamed out, checked per chunk,
+      // so a crafted archive that understates its own entry sizes can't
+      // bypass the guard by lying about them.
+      if (totalBytes + Number(entry.size || 0) > MAX_EXTRACTED_BYTES) {
         throw new Error('Archive exceeds maximum extracted size (possible zip bomb). Aborting.');
       }
 
@@ -994,9 +998,20 @@ async function extractZip(zipPath, destDir, log) {
       const source = await zip.stream(entry.name);
       await new Promise((resolve, reject) => {
         const sink = fs.createWriteStream(target, { mode: 0o600 });
-        source.on('error', reject);
-        sink.on('error', reject);
-        sink.on('finish', resolve);
+        let bailed = false;
+        source.on('data', (chunk) => {
+          if (bailed) return;
+          totalBytes += chunk.length;
+          if (totalBytes > MAX_EXTRACTED_BYTES) {
+            bailed = true;
+            source.destroy();
+            sink.destroy();
+            reject(new Error('Archive exceeds maximum extracted size (possible zip bomb). Aborting.'));
+          }
+        });
+        source.on('error', (err) => { if (!bailed) reject(err); });
+        sink.on('error', (err) => { if (!bailed) reject(err); });
+        sink.on('finish', () => { if (!bailed) resolve(); });
         source.pipe(sink);
       });
       fileCount++;
@@ -7137,6 +7152,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  extractZip,
+  MAX_EXTRACTED_BYTES,
   checkEnvFiles,
   checkSecrets,
   checkAiGovernance,
