@@ -1135,10 +1135,7 @@ function gitignorePatternToRegex(rawPattern) {
   if (pattern.endsWith('/')) pattern = pattern.slice(0, -1);
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, ' ')
-    .replace(/\*/g, '[^/]*')
-    .replace(/ /g, '.*')
-    .replace(/\?/g, '[^/]');
+    .replace(/\*\*|\*|\?/g, (m) => (m === '**' ? '.*' : m === '*' ? '[^/]*' : '[^/]'));
   const regex = anchored
     ? new RegExp(`^${escaped}(/.*)?$`)
     : new RegExp(`(^|/)${escaped}(/.*)?$`);
