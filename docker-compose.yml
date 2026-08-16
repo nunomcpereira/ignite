@@ -1,0 +1,37 @@
+# Ignite with every optional external tool already installed inside the
+# image (see Dockerfile) - no `scripts/install-tools.sh` needed.
+#
+#   docker compose up --build
+#
+# The host's Docker socket is mounted in (not Docker-in-Docker) so Phase 5's
+# `act` runs and the multi-language unit-test runner can drive real
+# containers on the host daemon, the same as a native install would.
+services:
+  ignite:
+    build:
+      context: .
+      args:
+        # Match your host's `stat -c '%g' /var/run/docker.sock` here if
+        # Phase 5/unit tests get a Docker permission error at runtime
+        # (defaults to 999, the common Linux default). Docker Desktop
+        # (macOS/Windows) users can usually leave this alone.
+        DOCKER_GID: ${DOCKER_GID:-999}
+    ports:
+      - "${PORT:-51337}:51337"
+      - "${MCP_HTTP_PORT:-51338}:51338"
+    environment:
+      - PORT=51337
+      - MCP_HTTP_PORT=51338
+      - IGNITE_DB_PATH=/app/data/ignite.db
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ignite-data:/app/data
+      - ./config.json:/app/config.json:ro
+    group_add:
+      - "${DOCKER_GID:-999}"
+    restart: unless-stopped
+
+volumes:
+  ignite-data:
