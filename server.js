@@ -1589,20 +1589,6 @@ async function llmChat(sourceBlock, systemPrompt, log, label = 'chat') {
 // rule as a code-level backstop.
 const DEPENDENCY_VULN_EVIDENCE_RE = /\bcve-\d{4}-\d+|\bcwe-\d+|vulnerab\w*|exploit\w*|malicious|\brce\b|remote code execution|arbitrary code|backdoor|compromis\w*|security advisory|known flaw/i;
 
-function parseSemver(v) {
-  const m = String(v || '').trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-function compareSemver(a, b) {
-  for (let i = 0; i < 3; i++) {
-    if (a[i] > b[i]) return 1;
-    if (a[i] < b[i]) return -1;
-  }
-  return 0;
-}
-
 function getDependencyLineContext(filesByRel, relFile, line) {
   const content = filesByRel.get(relFile);
   if (!content) return null;
