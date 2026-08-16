@@ -53,6 +53,25 @@
     html[data-theme="dark"] body { background: #fff; filter: invert(1) hue-rotate(180deg); }
     html[data-theme="dark"] .terminal { filter: invert(1) hue-rotate(180deg); }
     #themeToggleBtn svg { transition: transform .2s ease; }
+
+    /* Ignite Studio has its own deliberate light/dark contrast already (a
+       dark navy header with colorful action buttons, over white content
+       panels) — the blanket body invert above flips the *already-dark*
+       header into a washed-out pastel mess, since inverting something
+       that's already dark makes it light. Studio's outer box gets a
+       second invert (cancels the body's = back to its original, authored
+       colors — header stays dark navy, buttons stay saturated), then the
+       specific light panels (banners, summary bar, and the tree/code/
+       issue-detail row) get a *third* invert each, which nets out to a
+       single inversion for exactly those — real dark tones, same contrast
+       shape as light mode, without touching the header. */
+    html[data-theme="dark"] #studioView > div { filter: invert(1) hue-rotate(180deg); }
+    html[data-theme="dark"] #studioError,
+    html[data-theme="dark"] #studioHistoricalBanner,
+    html[data-theme="dark"] #studioSummaryBar,
+    html[data-theme="dark"] #studioBody {
+      filter: invert(1) hue-rotate(180deg);
+    }
   </style>
   <script>
     // Applied before first paint (synchronous, in <head>) so the page never
@@ -83,15 +102,24 @@
 
     <!-- Auth bar + external tools status, stacked in the top-right corner -->
     <div class="fixed top-4 right-4 z-40 flex flex-col items-end gap-2">
-      <button id="themeToggleBtn" type="button" title="Toggle dark mode"
-              class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
-        <svg id="themeToggleIconSun" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
-        </svg>
-        <svg id="themeToggleIconMoon" class="hidden w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
-        </svg>
-      </button>
+      <div class="flex items-center gap-2">
+        <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" title="Help &amp; documentation"
+           class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 17.25h.007v.008H12v-.008z"/>
+          </svg>
+        </a>
+        <button id="themeToggleBtn" type="button" title="Toggle dark mode"
+                class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
+          <svg id="themeToggleIconSun" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
+          </svg>
+          <svg id="themeToggleIconMoon" class="hidden w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
+          </svg>
+        </button>
+      </div>
       <div id="authBar" class="text-sm"></div>
       <div id="toolsBar" class="text-sm"></div>
     </div>
@@ -350,7 +378,7 @@
         marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
       </p>
       <div id="studioSummaryBar" class="hidden text-[11px] text-slate-600 bg-white border-b border-slate-100 px-5 py-2"></div>
-      <div class="flex-1 min-h-0 flex overflow-hidden">
+      <div id="studioBody" class="flex-1 min-h-0 flex overflow-hidden">
         <!-- File tree -->
         <div class="w-64 shrink-0 border-r border-slate-200 bg-white overflow-y-auto flex flex-col">
           <div class="sticky top-0 bg-white border-b border-slate-100">
@@ -1359,11 +1387,6 @@
       'governance-ci':      { label: 'Org governance CI (act)', area: 'Process & Governance', always: false },
       'input-validation':   { label: 'Input & metadata validation', area: 'Process & Governance', always: false },
     };
-    // The two phase-3 categories (license-compliance, dependency-vulnerability)
-    // that are still file-addressable like phase-4 findings, so they belong on
-    // Studio's tree badges/file views too — everything else in phase 3
-    // (structure-audit, gxp-documents) is process-level, not per-file.
-    const STUDIO_PHASE3_CATEGORIES = new Set(['license-compliance', 'dependency-vulnerability']);
     const CHECK_AREA_ORDER = ['Security', 'Quality', 'Dependencies', 'API & Schema', 'Process & Governance', 'Other'];
 
     function buildChecksReportByArea(issues) {
@@ -1770,9 +1793,15 @@
 
       try {
         const issuesRes = await (await fetch(`/api/pipeline/${jobId}/issues`)).json();
-        // Phase-4 findings plus the file-addressable phase-3 categories —
-        // both belong on the tree badges and file views.
-        studioState.issues = (issuesRes.issues || []).filter((i) => i.phase === 4 || STUDIO_PHASE3_CATEGORIES.has(i.category));
+        // File-addressable findings only — Studio's tree/badges/code view are
+        // entirely file-driven, so "has a file" is what actually matters
+        // here, not which phase produced it. (Filtering on `phase` instead
+        // used to silently drop everything once persisted: collectPhase4Issues/
+        // collectLicenseIssues/collectDependencyVulnerabilityIssues never set
+        // a `phase` field themselves — only a couple of call sites patched
+        // it in afterward, so any issue set that skipped that patch round-
+        // tripped through the DB with phase=NULL and vanished from Studio.)
+        studioState.issues = (issuesRes.issues || []).filter((i) => Boolean(i.file));
       } catch { studioState.issues = []; }
       renderStudioSummaryBar();
 
@@ -1822,7 +1851,7 @@
       try {
         const res = await fetch(`/api/projects/${projectId}/issues`);
         const data = await res.json();
-        studioState.issues = (data.issues || []).filter((i) => i.phase === 4 || STUDIO_PHASE3_CATEGORIES.has(i.category));
+        studioState.issues = (data.issues || []).filter((i) => Boolean(i.file));
       } catch { studioState.issues = []; }
       renderStudioSummaryBar();
 
@@ -2542,7 +2571,7 @@
         const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/rescan`, { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Rescan failed.');
-        studioState.issues = (data.issues || []).filter((i) => i.phase === 4 || STUDIO_PHASE3_CATEGORIES.has(i.category));
+        studioState.issues = (data.issues || []).filter((i) => Boolean(i.file));
         renderStudioTree(await studioCurrentFiles());
         if (studioState.currentPath) studioMarkActiveFile(studioState.currentPath);
         const resolvedNote = data.resolvedIds?.length ? `${data.resolvedIds.length} issue(s) resolved.` : 'No issues resolved by this change.';

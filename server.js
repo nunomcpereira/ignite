@@ -6349,7 +6349,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
       log3('Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).');
     } else {
       const phase4 = await runPhase4Checks(projectRoot, log3, { org, repo, projectId, store });
-      issues = [...phase4.issues, ...licenseIssues];
+      // Studio's rescan-diffing (replacePhase4) keys off issue.phase === 4 to
+      // know which persisted rows to replace — collectPhase4Issues doesn't
+      // set it itself, so it has to be stamped here before persisting.
+      issues = [...phase4.issues.map((i) => ({ ...i, phase: 4 })), ...licenseIssues];
     }
     // Persisted as soon as they're known — including the per-file/line
     // detail (file, line, summary, snippet) collectPhase4Issues carries —
