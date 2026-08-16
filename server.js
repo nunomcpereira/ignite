@@ -1995,6 +1995,186 @@ async function checkLlmDeepScan(root, log, cacheKey) {
 }
 
 /* ------------------------------------------------------------------ */
+/* GitHub API access without requiring the `gh` CLI binary             */
+/* ------------------------------------------------------------------ */
+// `gh` is still the default for the git push transport's credential helper
+// (see GITHUB_REMOTE_PROTOCOL) and for `act`'s workflow-token resolution,
+// but every plain GitHub *API* call below (repo creation, refs, PRs, issue
+// filing, cloning, ...) is now a soft dependency the same way trivy/semgrep
+// are soft dependencies for their checks: probed once, and transparently
+// replaced with a direct HTTPS call carrying the same token when the
+// binary isn't installed at all.
+let ghCliAvailable = null;
+async function isGhCliAvailable() {
+  if (ghCliAvailable !== null) return ghCliAvailable;
+  try {
+    await runTool('gh', ['--version'], os.tmpdir());
+    ghCliAvailable = true;
+  } catch {
+    ghCliAvailable = false;
+  }
+  return ghCliAvailable;
+}
+
+// Server-level operations (governance workflow fetch, scheduled re-checks)
+// have no per-request connected-user token to fall back on — GH_TOKEN /
+// GITHUB_TOKEN (the same env vars `gh` and GitHub Actions itself recognize)
+// fill that role when gh isn't installed.
+function resolveServerGithubToken() {
+  return process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
+}
+
+async function githubApiRequest(token, method, apiPath, { body, accept } = {}) {
+  const res = await fetch(`https://api.github.com${apiPath}`, {
+    method,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      Accept: accept || 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`GitHub API ${method} ${apiPath} failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
+  if (!text) return null;
+  return accept === 'application/vnd.github.raw' ? text : JSON.parse(text);
+}
+
+async function githubGraphqlRequest(token, query, variables) {
+  const data = await githubApiRequest(token, 'POST', '/graphql', { body: { query, variables } });
+  if (data.errors) throw new Error(`GitHub GraphQL error: ${JSON.stringify(data.errors)}`);
+  return data.data;
+}
+
+// `gh api -X POST/PATCH path -f k=v -F k=v` <-> REST request with a JSON
+// body — covers every plain `gh api` call site (repo create/patch, ref
+// create, default-branch set, existence checks).
+async function ghApiWrite(method, apiPath, fields, token) {
+  if (await isGhCliAvailable()) {
+    const args = ['api', '-X', method, apiPath];
+    for (const [k, v] of Object.entries(fields || {})) {
+      args.push(typeof v === 'boolean' || typeof v === 'number' ? '-F' : '-f', `${k}=${v}`);
+    }
+    const { stdout } = await runTool('gh', args, os.tmpdir(), { env: { GH_TOKEN: token } });
+    return stdout ? JSON.parse(stdout) : null;
+  }
+  return githubApiRequest(token, method, `/${apiPath}`, { body: fields });
+}
+
+async function ghApiGet(apiPath, token) {
+  if (await isGhCliAvailable()) {
+    const { stdout } = await runTool('gh', ['api', apiPath], os.tmpdir(), { env: { GH_TOKEN: token } });
+    return stdout ? JSON.parse(stdout) : null;
+  }
+  return githubApiRequest(token, 'GET', `/${apiPath}`);
+}
+
+async function ghFetchFileRaw(repoFullName, filePath, token) {
+  if (await isGhCliAvailable()) {
+    const { stdout } = await runTool('gh', [
+      'api', `repos/${repoFullName}/contents/${filePath}`,
+      '-H', 'Accept: application/vnd.github.raw',
+    ], os.tmpdir());
+    return stdout;
+  }
+  return githubApiRequest(token, 'GET', `/repos/${repoFullName}/contents/${filePath}`, { accept: 'application/vnd.github.raw' });
+}
+
+async function ghListCommits(repoFullName, filePath, token) {
+  if (await isGhCliAvailable()) {
+    const { stdout } = await runTool('gh', ['api', `repos/${repoFullName}/commits?path=${filePath}&per_page=1`], os.tmpdir());
+    return JSON.parse(stdout);
+  }
+  return githubApiRequest(token, 'GET', `/repos/${repoFullName}/commits?path=${filePath}&per_page=1`);
+}
+
+async function ghCreatePr({ fullName, base, head, title, body, token }) {
+  if (await isGhCliAvailable()) {
+    const { stdout } = await runTool('gh', [
+      'pr', 'create', '--repo', fullName, '--base', base, '--head', head, '--title', title, '--body', body,
+    ], os.tmpdir(), { env: { GH_TOKEN: token } });
+    const url = (stdout.match(/https:\/\/github\.com\/\S+\/pull\/\d+/) || [stdout])[0];
+    return { url, number: Number((url.match(/\/pull\/(\d+)/) || [])[1]) || null };
+  }
+  const pr = await githubApiRequest(token, 'POST', `/repos/${fullName}/pulls`, { body: { title, body, base, head } });
+  return { url: pr.html_url, number: pr.number, nodeId: pr.node_id };
+}
+
+async function ghArmAutoMerge({ fullName, prUrl, prNumber, prNodeId, token }) {
+  if (await isGhCliAvailable()) {
+    await runTool('gh', ['pr', 'merge', prUrl, '--auto', '--squash'], os.tmpdir(), { env: { GH_TOKEN: token } });
+    return;
+  }
+  let nodeId = prNodeId;
+  if (!nodeId) {
+    const pr = await githubApiRequest(token, 'GET', `/repos/${fullName}/pulls/${prNumber}`);
+    nodeId = pr.node_id;
+  }
+  await githubGraphqlRequest(
+    token,
+    'mutation($id: ID!) { enablePullRequestAutoMerge(input: { pullRequestId: $id, mergeMethod: SQUASH }) { clientMutationId } }',
+    { id: nodeId }
+  );
+}
+
+// gh's `pr checks --watch` polls GitHub for us; the REST fallback does the
+// same polling loop by hand against the head commit's check-runs.
+async function ghWatchPrChecks({ fullName, prUrl, prNumber, token, log, timeoutMs }) {
+  if (await isGhCliAvailable()) {
+    await runToolStreaming('gh', ['pr', 'checks', prUrl, '--watch', '--interval', '15'],
+      os.tmpdir(), (line) => log(line.slice(0, 300)), { timeoutMs, env: { GH_TOKEN: token } });
+    return;
+  }
+  const pr = await githubApiRequest(token, 'GET', `/repos/${fullName}/pulls/${prNumber}`);
+  const sha = pr.head.sha;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { check_runs: runs = [] } = await githubApiRequest(token, 'GET', `/repos/${fullName}/commits/${sha}/check-runs`);
+    if (runs.length > 0) {
+      const pending = runs.filter((r) => r.status !== 'completed');
+      if (pending.length === 0) {
+        const failed = runs.filter((r) => !['success', 'neutral', 'skipped'].includes(r.conclusion));
+        if (failed.length > 0) throw new Error(`${failed.length} check(s) failed: ${failed.map((r) => r.name).join(', ')}`);
+        log('✓ All checks completed successfully.');
+        return;
+      }
+      log(`Waiting on ${pending.length} check(s): ${pending.map((r) => r.name).join(', ')}...`);
+    } else {
+      log('No check-runs reported yet...');
+    }
+    await new Promise((r) => setTimeout(r, 15_000));
+  }
+  throw new Error('Timed out waiting for required checks.');
+}
+
+async function ghCreateIssue({ fullName, title, body, token }) {
+  if (await isGhCliAvailable()) {
+    await runTool('gh', ['issue', 'create', '--repo', fullName, '--title', title, '--body', body], os.tmpdir());
+    return;
+  }
+  await githubApiRequest(token, 'POST', `/repos/${fullName}/issues`, { body: { title, body } });
+}
+
+async function ghCloneRepo({ fullName, destDir, token }) {
+  if (await isGhCliAvailable()) {
+    await runTool('gh', ['repo', 'clone', fullName, destDir, '--', '--depth', '1', '--branch', 'main'], os.tmpdir());
+    return;
+  }
+  if (!token) throw new Error('No GitHub token available (gh not installed, and GH_TOKEN/GITHUB_TOKEN not set) — cannot clone.');
+  // http.extraheader is a one-off override for this invocation only — unlike
+  // embedding the token in the remote URL, it's never written to the
+  // cloned repo's own .git/config, so nothing persists on disk afterward.
+  await runTool('git', [
+    '-c', `http.extraheader=AUTHORIZATION: bearer ${token}`,
+    'clone', '--depth', '1', '--branch', 'main', `https://github.com/${fullName}.git`, destDir,
+  ], os.tmpdir());
+}
+
+/* ------------------------------------------------------------------ */
 /* Phase 4: run the repo's own GitHub Actions locally via `act`        */
 /* ------------------------------------------------------------------ */
 
@@ -2015,10 +2195,7 @@ const GOVERNANCE_WORKFLOW = process.env.GOVERNANCE_WORKFLOW || CONFIG.governance
    fresh" — this is a fast-path optimization, never a correctness gate. */
 async function latestCommitSha(repo, filePath) {
   try {
-    const { stdout } = await runTool('gh', [
-      'api', `repos/${repo}/commits?path=${filePath}&per_page=1`,
-    ], os.tmpdir());
-    const commits = JSON.parse(stdout);
+    const commits = await ghListCommits(repo, filePath, resolveServerGithubToken());
     return commits[0]?.sha || null;
   } catch {
     return null;
@@ -2033,10 +2210,7 @@ async function fetchWorkflowFileCached(repo, filePath, filename) {
       return { content: cached.content, cacheHit: true };
     }
   }
-  const { stdout } = await runTool('gh', [
-    'api', `repos/${repo}/contents/${filePath}`,
-    '-H', 'Accept: application/vnd.github.raw',
-  ], os.tmpdir());
+  const stdout = await ghFetchFileRaw(repo, filePath, resolveServerGithubToken());
   if (sha) store.saveWorkflowCache(repo, filename, sha, stdout);
   return { content: stdout, cacheHit: false };
 }
@@ -3517,11 +3691,13 @@ async function runActionsLocally(root, wfFile, log) {
   );
 
   let token = '';
-  try {
-    token = (await runTool('gh', ['auth', 'token'], root)).stdout;
-  } catch {
-    log('⚠ Could not read gh auth token — remote reusable workflows may fail to resolve.');
+  if (await isGhCliAvailable()) {
+    try {
+      token = (await runTool('gh', ['auth', 'token'], root)).stdout;
+    } catch { /* fall through to the env-var fallback below */ }
   }
+  if (!token) token = resolveServerGithubToken();
+  if (!token) log('⚠ No GitHub token available (gh not installed/authenticated, and GH_TOKEN/GITHUB_TOKEN not set) — remote reusable workflows may fail to resolve.');
 
   const args = [
     ACT_EVENT,
@@ -3734,7 +3910,6 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
   }
   const ghEnv = { GH_TOKEN: ghToken };
   const git = (args, cwd = root) => runTool('git', args, cwd, { env: ghEnv });
-  const gh = (args, cwd = root) => runTool('gh', args, cwd, { env: ghEnv });
 
   const safeOrg = sanitizeCliArg(org, 'Organization name');
   const safeRepo = sanitizeCliArg(repo, 'Repository name');
@@ -3742,7 +3917,7 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
   const isCreateValidation422 = (msg) => /HTTP 422/i.test(String(msg || ''));
   const repoExistsOnGitHub = async (owner, name) => {
     try {
-      await gh(['api', `repos/${owner}/${name}`], root);
+      await ghApiGet(`repos/${owner}/${name}`, ghToken);
       return true;
     } catch {
       return false;
@@ -3795,15 +3970,13 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
 
   log(`$ gh api POST orgs/${safeOrg}/repos (private, auto_init)`);
   try {
-    await gh(['api', '-X', 'POST', `orgs/${safeOrg}/repos`,
-      '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
+    await ghApiWrite('POST', `orgs/${safeOrg}/repos`, { name: safeRepo, private: true, auto_init: true }, ghToken);
   } catch (e) {
     if (/404/.test(e.message)) {
       // Personal account, not an organization.
       log(`"${safeOrg}" is not an org — creating under the authenticated user.`);
       try {
-        await gh(['api', '-X', 'POST', 'user/repos',
-          '-f', `name=${safeRepo}`, '-F', 'private=true', '-F', 'auto_init=true'], root);
+        await ghApiWrite('POST', 'user/repos', { name: safeRepo, private: true, auto_init: true }, ghToken);
       } catch (fallbackErr) {
         if (isCreateValidation422(fallbackErr.message)) {
           const exists = await repoExistsOnGitHub(safeOrg, safeRepo);
@@ -3829,7 +4002,7 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
   }
 
   try {
-    await gh(['api', '-X', 'PATCH', `repos/${fullName}`, '-F', 'allow_auto_merge=true'], root);
+    await ghApiWrite('PATCH', `repos/${fullName}`, { allow_auto_merge: true }, ghToken);
     log('Enabled auto-merge on the repository.');
   } catch {
     log('⚠ Could not enable auto-merge — the PR will need a manual merge once checks pass.');
@@ -3869,10 +4042,9 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
     // orgs/accounts without a required-workflow ruleset on main).
     log('$ gh api POST git/refs (create main from onboarding commit)');
     try {
-      await gh(['api', '-X', 'POST', `repos/${fullName}/git/refs`,
-        '-f', 'ref=refs/heads/main', '-f', `sha=${sha}`], root);
+      await ghApiWrite('POST', `repos/${fullName}/git/refs`, { ref: 'refs/heads/main', sha }, ghToken);
       log('✓ main created directly — no ruleset restriction on this repo.');
-      await gh(['api', '-X', 'PATCH', `repos/${fullName}`, '-f', 'default_branch=main'], root)
+      await ghApiWrite('PATCH', `repos/${fullName}`, { default_branch: 'main' }, ghToken)
         .then(() => log('✓ Default branch set to main.'))
         .catch(() => log('⚠ Could not set main as the default branch — adjust in repo settings.'));
       log(`✓ Code is live on main.`);
@@ -3881,8 +4053,7 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
       // Deadlock: the ruleset blocks ALL creation of main (even GitHub's
       // auto-init), but the required workflow can only run on a PR whose
       // base is main. No client-side flow can satisfy it.
-      await gh(['api', '-X', 'PATCH', `repos/${fullName}`,
-        '-f', `default_branch=${ONBOARD_BRANCH}`], root).catch(() => {});
+      await ghApiWrite('PATCH', `repos/${fullName}`, { default_branch: ONBOARD_BRANCH }, ghToken).catch(() => {});
       log(`⚠ The org ruleset blocks creating "main" in new repos (bootstrap deadlock: the required workflow can only run on a PR, and a PR needs main to exist).`);
       log(`✓ Code shipped to "${ONBOARD_BRANCH}", now the repository's default branch.`);
       log(`⚠ Once an org admin adds a ruleset bypass so main can be bootstrapped, open a PR from "${ONBOARD_BRANCH}" into main.`);
@@ -3891,19 +4062,18 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
   }
 
   log('$ gh pr create --base main');
-  const { stdout: prOut } = await gh([
-    'pr', 'create',
-    '--repo', fullName,
-    '--base', 'main',
-    '--head', ONBOARD_BRANCH,
-    '--title', 'chore: initial compliant code drop via onboarding gatekeeper',
-    '--body', 'Automated onboarding by Ignite. All local gates passed: structure audit, secret scan, AI governance, LLM deep-scan, and the org governance workflows executed locally via act.',
-  ], root);
-  const prUrl = (prOut.match(/https:\/\/github\.com\/\S+\/pull\/\d+/) || [prOut])[0];
+  const { url: prUrl, number: prNumber, nodeId: prNodeId } = await ghCreatePr({
+    fullName,
+    base: 'main',
+    head: ONBOARD_BRANCH,
+    title: 'chore: initial compliant code drop via onboarding gatekeeper',
+    body: 'Automated onboarding by Ignite. All local gates passed: structure audit, secret scan, AI governance, LLM deep-scan, and the org governance workflows executed locally via act.',
+    token: ghToken,
+  });
   log(`✓ Pull request opened: ${prUrl}`);
 
   try {
-    await gh(['pr', 'merge', prUrl, '--auto', '--squash'], root);
+    await ghArmAutoMerge({ fullName, prUrl, prNumber, prNodeId, token: ghToken });
     log('✓ Auto-merge armed — the PR merges itself when the required workflow passes.');
   } catch (e) {
     log(`⚠ Auto-merge could not be armed (${e.message}). Merge manually once checks pass.`);
@@ -3911,8 +4081,7 @@ async function shipToGitHub(root, org, repo, log, ghToken) {
 
   log('Waiting for the required org workflow to run on GitHub...');
   try {
-    await runToolStreaming('gh', ['pr', 'checks', prUrl, '--watch', '--interval', '15'],
-      root, (line) => log(line.slice(0, 300)), { timeoutMs: 20 * 60_000, env: ghEnv });
+    await ghWatchPrChecks({ fullName, prUrl, prNumber, token: ghToken, log: (l) => log(l), timeoutMs: 20 * 60_000 });
     log('✓ All remote required checks passed — auto-merge will land the PR on main.');
   } catch (e) {
     throw new Error(`Remote governance checks did not pass (${e.message}). PR left open for review: ${prUrl}`);
@@ -4326,16 +4495,16 @@ async function notifyScheduledFailure({ org, repo, error, codeownersCheck }, log
   }
   log('⚠ No CODEOWNERS contact email resolved — filing a GitHub issue instead.');
   try {
-    await runTool('gh', [
-      'issue', 'create',
-      '--repo', `${org}/${repo}`,
-      '--title', 'Ignite scheduled check failed',
-      '--body',
-      `Ignite's scheduled re-check of the default branch failed:\n\n${error}\n\n`
-      + 'No CODEOWNERS contact could be resolved (no CODEOWNERS file, or no email-address owner listed in it), '
-      + 'so this issue was filed automatically instead of emailing a contact. Add a CODEOWNERS file with at least '
-      + 'one email-address owner to route future failures by email instead.',
-    ], os.tmpdir());
+    await ghCreateIssue({
+      fullName: `${org}/${repo}`,
+      title: 'Ignite scheduled check failed',
+      body:
+        `Ignite's scheduled re-check of the default branch failed:\n\n${error}\n\n`
+        + 'No CODEOWNERS contact could be resolved (no CODEOWNERS file, or no email-address owner listed in it), '
+        + 'so this issue was filed automatically instead of emailing a contact. Add a CODEOWNERS file with at least '
+        + 'one email-address owner to route future failures by email instead.',
+      token: resolveServerGithubToken(),
+    });
     log('✓ Filed a GitHub issue on the repo.');
   } catch (e) {
     log(`⚠ Failed to file a GitHub issue: ${e.message}`);
@@ -4351,7 +4520,7 @@ async function runScheduledRecheck(project) {
 
   try {
     log('Cloning default branch (main)...');
-    await runTool('gh', ['repo', 'clone', `${org}/${repo}`, stagingDir, '--', '--depth', '1', '--branch', 'main'], os.tmpdir());
+    await ghCloneRepo({ fullName: `${org}/${repo}`, destDir: stagingDir, token: resolveServerGithubToken() });
 
     const licenseIssues = [
       ...await runLicenseComplianceCheck(stagingDir, log),

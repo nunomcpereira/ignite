@@ -326,18 +326,30 @@ When any phase fails, Ignite emails a detailed report to `notifications.to`: tar
 
 1. **Node.js ≥ 18**
 2. **git** available on `PATH`
-3. **GitHub CLI (`gh`)** installed and authenticated *before* starting the server:
-   ```bash
-   gh auth login
-   gh auth status   # verify - must show a logged-in account with repo scope
-   ```
-   The authenticated account needs permission to create repositories in the target organization.
+3. **A way to authenticate to GitHub** - either works:
+   - **GitHub CLI (`gh`)**, installed and authenticated:
+     ```bash
+     gh auth login
+     gh auth status   # verify - must show a logged-in account with repo scope
+     ```
+   - **No `gh` at all** - see [Running without the gh CLI](#running-without-the-gh-cli) below.
+
+   Whichever you use, the account needs permission to create repositories in the target organization. Per-onboarding-request auth (the "Connect GitHub" button / OAuth) is separate from either of these and always required for the interactive/API onboarding flows regardless - see [Authentication](#authentication--standalone-accounts-or-company-idp).
 
 ### Pushing via SSH instead of gh's credential helper
 
 By default, Phase 6 pushes over `https://github.com/...`, authenticated through `gh auth git-credential` using the connected account's token. Set `GITHUB_REMOTE_PROTOCOL=ssh` (or `"github": { "remoteProtocol": "ssh" }` in `config.json`) to push over `git@github.com:...` instead, authenticated by whatever SSH key/agent is already configured for `github.com` on this machine - no git credential helper involved for the push itself.
 
-This only replaces the **git push transport** - repo creation, enabling auto-merge, and creating the `main` ref still go through the GitHub REST API (`gh api`, using the connected account's `GH_TOKEN`) in both modes, since SSH keys authenticate git operations, not GitHub API calls. A connected GitHub account is required either way; `ssh` mode just means your own SSH key does the pushing instead of `gh`'s stored credential.
+This only replaces the **git push transport** - repo creation, enabling auto-merge, and creating the `main` ref still go through the GitHub REST API in both modes, since SSH keys authenticate git operations, not GitHub API calls. See the next section for running those API calls without `gh` installed at all.
+
+### Running without the gh CLI
+
+`gh` is a soft dependency for every plain GitHub API call (repo creation, PR open/auto-merge/checks, issue filing, cloning) - the same soft-dependency pattern as the external scanning tools. If it isn't installed, Ignite transparently falls back to calling the GitHub REST/GraphQL API directly over HTTPS with a token, no functionality lost:
+
+- **Per-onboarding-request calls** (repo creation, PR, auto-merge, checks) already use the connected account's own token (`GET /api/auth/github/connect` / the "Connect GitHub" button) - nothing extra to configure, this fallback just kicks in automatically once `gh` isn't found.
+- **Server-level calls with no per-request user** (fetching the org's governance workflow for Phase 5, cloning + filing issues for a [scheduled re-check](#pre-push-hook)) have no connected-user token to fall back on - set `GH_TOKEN` or `GITHUB_TOKEN` (the same env vars `gh`/GitHub Actions itself recognizes) to a personal access token with `repo` scope for those to keep working.
+
+Combine with `GITHUB_REMOTE_PROTOCOL=ssh` for a host with no `gh` binary at all: git push goes over SSH, and every remaining GitHub interaction goes over plain HTTPS with a token.
 
 ## Local LLM deep-scan (on by default)
 

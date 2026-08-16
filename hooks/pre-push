@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Ignite pre-push hook — runs Ignite's checks against this repo before a
+# Ignite pre-push hook - runs Ignite's checks against this repo before a
 # push leaves the machine, instead of onboarding-time-only via the web UI.
 # Blocking findings can be acknowledged (justified + overridden) entirely
-# from the terminal — see "CLI acknowledgment" below — no browser required.
+# from the terminal - see "CLI acknowledgment" below - no browser required.
 #
 # Install (either works):
 #   1. One repo:      cp hooks/pre-push /path/to/other-repo/.git/hooks/pre-push
@@ -17,12 +17,12 @@
 #
 # CLI acknowledgment: on a blocking finding, this hook writes a local
 # .ignite-review.md file (repo root) listing each one with a blank
-# "Acknowledge:" line — the same justify-and-override step the web UI's
+# "Acknowledge:" line - the same justify-and-override step the web UI's
 # review gate does, but as a file you edit in your own editor. Fill in a
 # justification, `git push` again: the hook resubmits every filled-in entry
 # as a real, attributed override (git config user.name/user.email), and
 # only still-blocking issues remain in the file afterward. The file is a
-# durable local ledger, not a one-time prompt — an id (<category>::<file>::
+# durable local ledger, not a one-time prompt - an id (<category>::<file>::
 # <line>) that you've already justified stays overridden on every future
 # push until the code around it changes (a new line -> a new id) or you
 # delete the entry yourself.
@@ -30,7 +30,7 @@
 # Env overrides:
 #   IGNITE_BASE_URL       Ignite server URL (default http://localhost:3000)
 #   IGNITE_RUN_LOCAL_CI   "true" to also run Phase 5 (act/Docker governance
-#                         CI) — slower, off by default for a fast pre-push
+#                         CI) - slower, off by default for a fast pre-push
 #   IGNITE_WARNING_MODE   "fail" to also block on unoverridden warnings,
 #                         default "continue" (only blocking errors gate)
 #   IGNITE_REVIEW_FILE    path to the acknowledgment file (default
@@ -120,19 +120,19 @@ node -e '
       console.log("✓ Ignite checks passed.");
       process.exit(0);
     }
-    console.error("✗ Ignite checks failed — push blocked.");
+    console.error("✗ Ignite checks failed - push blocked.");
     for (const p of r.phases || []) {
       if (p.state === "failed") {
-        console.error(`  Phase ${p.phase} — ${p.title}`);
+        console.error(`  Phase ${p.phase} - ${p.title}`);
         (p.logs || []).slice(-10).forEach((l) => console.error("    " + l));
       }
     }
     const issues = Array.isArray(r.issues) ? r.issues : [];
     if (issues.length === 0) {
       // Not the overridable Phase 4 issue-list case (e.g. raw .env files,
-      // a failing unit test) — nothing to acknowledge from the CLI.
+      // a failing unit test) - nothing to acknowledge from the CLI.
       console.error("");
-      console.error("This failure isn'\''t something a justification can override — fix it in the source and push again.");
+      console.error("This failure isn'\''t something a justification can override - fix it in the source and push again.");
       process.exit(1);
     }
     // Preserve any justification text already written for an id that is
@@ -158,7 +158,7 @@ node -e '
     for (const issue of issues) {
       const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
       lines.push(`ID: ${issue.id}`);
-      lines.push(`# [${String(issue.severity || "").toUpperCase()}] ${issue.category} — ${issue.summary}`);
+      lines.push(`# [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`);
       lines.push(`#   ${loc}`);
       lines.push(`Acknowledge: ${existingAck.get(issue.id) || ""}`);
       lines.push("");
@@ -167,7 +167,7 @@ node -e '
     console.error("");
     console.error(`✗ ${issues.length} blocking finding(s) need a justification or a source fix.`);
     console.error(`  Edit ${reviewFile}, fill in "Acknowledge:" for whichever you want to`);
-    console.error("  override, then push again — or fix them in the source instead.");
+    console.error("  override, then push again - or fix them in the source instead.");
     process.exit(1);
   });
 ' "$REVIEW_FILE" <<< "$RESPONSE"

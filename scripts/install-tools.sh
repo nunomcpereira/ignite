@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ignite — install all optional external tools in one shot.
+# Ignite - install all optional external tools in one shot.
 #
 # Every one of these is a soft dependency: Ignite works with none of them
 # installed, falling back to a built-in check where one exists (see the
@@ -40,21 +40,21 @@ install() {
   local flag="$1" check="$2" label="$3" fn="$4"
   local enabled="${!flag:-true}"
   if [ "$enabled" != "true" ]; then
-    log_skip "$label — skipped ($flag=false)"; SKIPPED+=("$label"); return
+    log_skip "$label - skipped ($flag=false)"; SKIPPED+=("$label"); return
   fi
   if eval "$check" >/dev/null 2>&1; then
-    log_skip "$label — already installed"; SKIPPED+=("$label"); return
+    log_skip "$label - already installed"; SKIPPED+=("$label"); return
   fi
   echo -e "${BOLD}Installing $label...${RESET}"
   if "$fn"; then
     log_ok "$label"; INSTALLED+=("$label")
   else
-    log_fail "$label — install failed, see output above"; FAILED+=("$label")
+    log_fail "$label - install failed, see output above"; FAILED+=("$label")
   fi
 }
 
 brew_install() {
-  if ! $HAS_BREW; then log_warn "Homebrew not found — install from https://brew.sh, or install $1 manually."; return 1; fi
+  if ! $HAS_BREW; then log_warn "Homebrew not found - install from https://brew.sh, or install $1 manually."; return 1; fi
   brew install "$@"
 }
 
@@ -123,17 +123,17 @@ ort_install() {
 }
 install INSTALL_ORT "command -v ort" "ORT (OSS Review Toolkit)" ort_install
 
-# --- act + Docker (Phase 5 governance CI) — checked, not force-installed:
+# --- act + Docker (Phase 5 governance CI) - checked, not force-installed:
 # Docker Desktop needs a GUI install this script won't attempt for you.
 if command -v act >/dev/null 2>&1; then
-  log_skip "act — already installed"; SKIPPED+=("act")
+  log_skip "act - already installed"; SKIPPED+=("act")
 else
   install INSTALL_ACT "command -v act" "act" 'brew_install() { brew install act; }; brew_install'
 fi
 if command -v docker >/dev/null 2>&1; then
-  log_skip "Docker — already installed"
+  log_skip "Docker - already installed"
 else
-  log_warn "Docker not found — Phase 5 (org governance CI) and the multi-language unit-test runner both need it. Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+  log_warn "Docker not found - Phase 5 (org governance CI) and the multi-language unit-test runner both need it. Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
 fi
 
 echo ""

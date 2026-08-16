@@ -207,11 +207,12 @@ See [MCP server](https://github.com/nunomcpereira/ignite#mcp-server) in the READ
 
 - **Node.js ≥ 18**
 - **git** on `PATH`
-- **GitHub CLI (`gh`)**, authenticated *before* starting the server:
+- **A way to authenticate to GitHub** - `gh` CLI is the easy path:
   ```bash
   gh auth login
   gh auth status   # must show a logged-in account with repo-create permission
   ```
+  but it's a soft dependency, not a hard one - see below.
 
 **Run it:**
 
@@ -259,9 +260,20 @@ using the connected account's token. Set `GITHUB_REMOTE_PROTOCOL=ssh` to
 push over `git@github.com:...` instead, authenticated by whatever SSH
 key/agent is already configured for `github.com` on this machine - no git
 credential helper involved. Either way, repo creation/auto-merge/ref
-creation still go through the GitHub API with `gh` - SSH replaces the
-**push transport**, not API auth, so a connected GitHub account is required
-in both modes.
+creation still go through the GitHub API - SSH replaces the **push
+transport**, not API auth, so a GitHub token is required in both modes.
+
+**Don't want `gh` installed at all?** Every plain GitHub API call (repo
+creation, PR open/auto-merge/checks, issue filing, cloning) is a soft
+dependency, same pattern as the scanning tools: Ignite probes for `gh`
+once and transparently falls back to calling the GitHub REST/GraphQL API
+directly over HTTPS with a token when it's missing. Per-onboarding-request
+calls already have a token via the connected account, no extra config
+needed. Server-level calls with no per-request user - fetching the
+governance workflow, cloning/filing issues for a scheduled re-check - need
+`GH_TOKEN` or `GITHUB_TOKEN` set to a personal access token instead.
+Combine with `GITHUB_REMOTE_PROTOCOL=ssh` for a host with no `gh` binary at
+all.
 
 ## Pre-push hook - check before you push, not after
 {: #pre-push-hook }
