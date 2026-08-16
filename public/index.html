@@ -101,8 +101,11 @@
       <p class="text-sm text-slate-500">Onboarding gatekeeper — upload a project · pass compliance gates · ship to GitHub</p>
     </header>
 
-    <!-- Auth bar + external tools status, stacked in the top-right corner -->
-    <div class="fixed top-4 right-4 z-40 flex flex-col items-end gap-2">
+    <!-- Auth bar + external tools status: fixed top-right on wider screens;
+         below sm it drops into normal document flow instead of floating
+         over the header/card content, since a viewport that narrow has no
+         room to spare for an overlay. -->
+    <div class="static sm:fixed sm:top-4 sm:right-4 z-40 flex flex-col items-stretch sm:items-end gap-2 mb-6 sm:mb-0">
       <div class="flex items-center gap-2">
         <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" title="Help &amp; documentation"
            class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
@@ -369,10 +372,10 @@
        on disk). Not a real route — a full-viewport overlay over the app. -->
   <div id="studioView" class="hidden fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-3 sm:p-6">
     <div class="bg-slate-100 rounded-2xl shadow-2xl w-full h-full max-w-[1600px] flex flex-col overflow-hidden">
-      <div class="flex items-center gap-3 px-5 py-3 bg-slate-900 text-white shrink-0 rounded-t-2xl">
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3 px-3 sm:px-5 py-3 bg-slate-900 text-white shrink-0 rounded-t-2xl">
         <span class="text-sm font-semibold">🧪 Ignite Studio</span>
         <span id="studioSubtitle" class="text-xs text-slate-400"></span>
-        <span class="flex-1"></span>
+        <span class="hidden sm:block sm:flex-1"></span>
         <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700">📦 Dependencies</button>
         <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700">📄 SBOM</button>
         <button id="studioLocBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-700">📊 LOC Metrics</button>
@@ -387,9 +390,13 @@
         marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
       </p>
       <div id="studioSummaryBar" class="hidden text-[11px] text-slate-600 bg-white border-b border-slate-100 px-5 py-2"></div>
-      <div id="studioBody" class="flex-1 min-h-0 flex overflow-hidden">
+      <!-- Below sm, the three panes stack vertically (each independently
+           scrollable with a capped height) instead of sitting side by side
+           at their desktop fixed widths (256px + 384px alone exceed a
+           phone viewport, leaving nothing for the code pane). -->
+      <div id="studioBody" class="flex-1 min-h-0 flex flex-col sm:flex-row overflow-y-auto sm:overflow-hidden">
         <!-- File tree -->
-        <div class="w-64 shrink-0 border-r border-slate-200 bg-white overflow-y-auto flex flex-col">
+        <div class="w-full sm:w-64 shrink-0 max-h-48 sm:max-h-none border-b sm:border-b-0 sm:border-r border-slate-200 bg-white overflow-y-auto flex flex-col">
           <div class="sticky top-0 bg-white border-b border-slate-100">
             <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Files</p>
             <input id="studioTreeFilter" type="text" placeholder="Filter files…" class="w-[calc(100%-1.5rem)] mx-3 my-2 text-[11px] px-2 py-1 rounded border border-slate-200" />
@@ -397,7 +404,7 @@
           <div id="studioTree" class="text-xs flex-1 overflow-y-auto"></div>
         </div>
         <!-- Code pane -->
-        <div class="flex-1 min-w-0 flex flex-col border-r border-slate-200 bg-white">
+        <div class="flex-1 min-w-0 min-h-[50vh] sm:min-h-0 flex flex-col border-b sm:border-b-0 sm:border-r border-slate-200 bg-white">
           <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
             <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate">Select a file from the tree ←</span>
             <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100">📦 View license compliance for this manifest</button>
@@ -409,7 +416,7 @@
           <div id="studioCodeWrap" class="flex-1 min-h-0 overflow-auto font-mono text-[12px] leading-relaxed"></div>
         </div>
         <!-- Issue detail -->
-        <div class="w-96 shrink-0 bg-white overflow-y-auto">
+        <div class="w-full sm:w-96 shrink-0 max-h-64 sm:max-h-none bg-white overflow-y-auto">
           <p class="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest sticky top-0 bg-white border-b border-slate-100">Issue detail</p>
           <div id="studioIssuePanel" class="p-3 text-xs text-slate-500"></div>
         </div>
@@ -1709,9 +1716,11 @@
     function renderToolsBar(status) {
       const bar = $('toolsBar');
       if (!status) { bar.innerHTML = ''; return; }
+      let connectedCount = 0;
       const rows = Object.entries(TOOLS_META).map(([key, meta]) => {
         const s = status[key] || { ok: false };
         const connected = !!s.ok && s.enabled !== false;
+        if (connected) connectedCount++;
         const dotClass = connected ? 'bg-emerald-500' : 'bg-slate-300';
         const textClass = connected ? 'text-emerald-700' : 'text-slate-400';
         let statusLabel = connected ? 'Connected' : 'Disconnected';
@@ -1723,10 +1732,32 @@
           ${authTooltip(s.ok ? meta.info : `${meta.info} (${s.reason || 'not detected'})`)}
         </div>`;
       }).join('');
-      bar.innerHTML = `<div class="flex flex-col gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-card">
-        <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">External tools</span>
-        ${rows}
+      const total = Object.keys(TOOLS_META).length;
+      // Below sm, the full 14-row list is collapsed behind a tap-to-expand
+      // summary instead of always rendered - on the fixed corner cluster's
+      // desktop layout there's room to just show everything, but stacked
+      // into normal mobile document flow it'd push the upload form far
+      // down the page. `hidden sm:flex` means the row list is closed by
+      // default on mobile and always visible at sm+ regardless of that
+      // state (the toggle below only ever matters below sm).
+      bar.innerHTML = `<div class="bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-card">
+        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2 sm:pointer-events-none">
+          <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">External tools</span>
+          <span class="text-[10px] font-semibold text-slate-500 sm:hidden">${connectedCount}/${total} connected <span id="toolsBarChevron">▾</span></span>
+        </button>
+        <div id="toolsBarList" class="hidden sm:flex flex-col gap-1.5 mt-1.5">
+          ${rows}
+        </div>
       </div>`;
+      $('toolsBarToggle').addEventListener('click', () => {
+        const list = $('toolsBarList');
+        const chevron = $('toolsBarChevron');
+        const isOpen = list.classList.contains('flex');
+        list.classList.toggle('hidden', isOpen);
+        list.classList.toggle('flex', !isOpen);
+        list.classList.toggle('flex-col', !isOpen);
+        if (chevron) chevron.textContent = isOpen ? '▾' : '▴';
+      });
     }
 
     async function loadToolsStatus() {
