@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Ignite — onboarding gatekeeper that scans uploaded projects for security/framework violations and runs org governance CI locally before pushing to GitHub",
   "main": "server.js",
+  "license": "MIT",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",

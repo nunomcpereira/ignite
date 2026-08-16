@@ -1,5 +1,7 @@
 # Ignite — Onboarding Gatekeeper
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A single-page web app that acts as a compliance gate for onboarding code into a GitHub organization. Users upload a project as a ZIP; the server scans it locally for security and AI-framework violations, and only if **every** check passes does it provision a private GitHub repository and push the code.
 
 📖 **[See it in action — screenshots & walkthrough](https://nunomcpereira.github.io/ignite/)**
@@ -605,3 +607,7 @@ browser UI, and drives it through Ignite Studio:
   licensee CLIs on PATH and asserts the Dependencies view reports
   `Engine: ORT (OSS Review Toolkit)` and the licensee-detected project
   license, proving the real tool-invocation path (not just the fallback).
+
+## License
+
+[MIT](LICENSE)
