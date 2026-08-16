@@ -344,6 +344,11 @@
         <button id="studioCloseBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-600 hover:bg-slate-800">Close ✕</button>
       </div>
       <p id="studioError" class="hidden text-xs text-rose-600 bg-rose-50 border-b border-rose-200 px-5 py-2"></p>
+      <p id="studioHistoricalBanner" class="hidden text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-5 py-2">
+        ⚠ Historical view — you're not seeing the full project. Staging files are wiped after every run, so only the
+        code captured around each flagged finding is available here, not the whole file. Gaps between findings are
+        marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
+      </p>
       <div id="studioSummaryBar" class="hidden text-[11px] text-slate-600 bg-white border-b border-slate-100 px-5 py-2"></div>
       <div class="flex-1 min-h-0 flex overflow-hidden">
         <!-- File tree -->
@@ -772,7 +777,7 @@
         } else {
           text = escapeHtml(raw);
         }
-        return `<div class="flex ${isHl ? 'bg-rose-50' : ''}">` +
+        return `<div class="flex ${isHl ? 'bg-rose-50' : ''}" data-line="${l.number}">` +
           `<span class="w-9 shrink-0 text-right pr-2 text-slate-400 select-none">${l.number}</span>` +
           `<span class="flex-1 whitespace-pre-wrap break-all">${text}</span></div>`;
       }).join('');
@@ -1706,7 +1711,22 @@
     /* while the review gate is paused for this job (see server.js's    */
     /* reviewActive gate — every request below 409s once it's not).     */
     /* ------------------------------------------------------------ */
-    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null };
+    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null, historical: false };
+
+    // Historical Studio (a past project, no staging dir left on disk) can
+    // only browse files that have a persisted finding, each showing only
+    // the small snippet captured at scan time — not the whole file, and
+    // not the whole project. Toggles off everything that needs a live
+    // staged project: full-file browsing/editing, and the Dependencies/
+    // SBOM/LOC/Posture/Rescan buttons, which all recompute against the
+    // (long since deleted) staging directory.
+    function setStudioHistoricalUi(isHistorical) {
+      studioState.historical = isHistorical;
+      $('studioHistoricalBanner').classList.toggle('hidden', !isHistorical);
+      ['studioDepsBtn', 'studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioRescanBtn'].forEach((id) => {
+        $(id).classList.toggle('hidden', isHistorical);
+      });
+    }
 
     function studioIssuesForFile(relPath) {
       return studioState.issues.filter((i) => i.file === relPath);
@@ -1721,6 +1741,7 @@
 
     async function openStudio(jobId, issue, { fromReview = false } = {}) {
       if (!jobId) return;
+      setStudioHistoricalUi(false);
       studioState.jobId = jobId;
       studioState.fromReview = fromReview;
       studioState.currentPath = null;
@@ -1771,6 +1792,45 @@
         await openStudioFile(issue.file);
         selectStudioIssue(issue);
       }
+    }
+
+    // Ignite Studio for a past project whose staging directory is long
+    // since deleted (see the "no user code lingers on disk" hardening
+    // invariant) — reconstructs a read-only view from whatever's still
+    // persisted: each finding's category/severity/summary/file/line and a
+    // small snippet of the surrounding code. No live file tree, no editing,
+    // no Dependencies/SBOM/LOC/Posture (those need to recompute against a
+    // real staged project). See setStudioHistoricalUi / renderStudioHistoricalFileView.
+    async function openHistoricalStudio(projectId, org, repo) {
+      if (!projectId) return;
+      setStudioHistoricalUi(true);
+      studioState.jobId = null;
+      studioState.historicalProjectId = projectId;
+      studioState.fromReview = false;
+      studioState.currentPath = null;
+      studioState.suggestion = null;
+      studioState.categoryFilter = null;
+      studioState.languageFilter = null;
+      studioState.locFilesByLanguage = null;
+      $('studioSubtitle').textContent = `${org}/${repo} — historical, read-only`;
+      $('studioView').classList.remove('hidden');
+      studioShowError(null);
+      $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading…</p>';
+      $('studioTree').innerHTML = '';
+      $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+
+      try {
+        const res = await fetch(`/api/projects/${projectId}/issues`);
+        const data = await res.json();
+        studioState.issues = (data.issues || []).filter((i) => i.phase === 4 || STUDIO_PHASE3_CATEGORIES.has(i.category));
+      } catch { studioState.issues = []; }
+      renderStudioSummaryBar();
+
+      const files = [...new Set(studioState.issues.map((i) => i.file).filter(Boolean))].sort().map((path) => ({ path, size: 0 }));
+      renderStudioTree(files);
+      $('studioCodeWrap').innerHTML = files.length > 0
+        ? '<p class="p-4 text-slate-400">Select a file from the tree.</p>'
+        : '<p class="p-4 text-slate-400">No file-addressable findings for this run.</p>';
     }
 
     function closeStudio() {
@@ -2258,6 +2318,17 @@
       studioMarkActiveFile(relPath);
       $('studioFilePath').textContent = relPath;
       $('studioDirtyBadge').classList.add('hidden');
+
+      if (studioState.historical) {
+        renderStudioHistoricalFileView(relPath);
+        $('studioEditBtn').classList.add('hidden');
+        $('studioSaveBtn').classList.add('hidden');
+        $('studioDownloadBtn').classList.add('hidden');
+        renderStudioIssueListForFile(relPath);
+        $('studioManifestBtn').classList.add('hidden');
+        return;
+      }
+
       $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading…</p>';
       try {
         const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/file?path=${encodeURIComponent(relPath)}`);
@@ -2278,6 +2349,40 @@
 
       const isManifest = STUDIO_MANIFEST_FILES.has(relPath.split('/').pop());
       $('studioManifestBtn').classList.toggle('hidden', !isManifest);
+    }
+
+    // Stitches together just the snippets already persisted for this file's
+    // findings, in line order, with a "⋯ N lines not shown ⋯" divider
+    // wherever there's a gap between one finding's captured lines and the
+    // next — the file's full content was never kept, only the few lines of
+    // context around each flagged line, so this is the most that can
+    // honestly be reconstructed for a past run.
+    function renderStudioHistoricalFileView(relPath) {
+      const issues = studioIssuesForFile(relPath).filter((i) => i.snippet && Array.isArray(i.snippet.lines) && i.snippet.lines.length > 0);
+      if (issues.length === 0) {
+        $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">No code snippet was captured for this finding.</p>';
+        return;
+      }
+      const blocks = issues
+        .map((issue) => ({
+          issue,
+          start: issue.snippet.lines[0].number,
+          end: issue.snippet.lines[issue.snippet.lines.length - 1].number,
+        }))
+        .sort((a, b) => a.start - b.start);
+
+      let html = '<div class="p-2">';
+      let prevEnd = null;
+      for (const { issue, start, end } of blocks) {
+        if (prevEnd !== null && start > prevEnd + 1) {
+          const skipped = start - prevEnd - 1;
+          html += `<div class="my-1 px-3 py-1.5 text-[11px] text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded select-none">⋯ ${skipped} line${skipped === 1 ? '' : 's'} not shown (not captured in this run) ⋯</div>`;
+        }
+        html += renderSnippet(issue.snippet, issue);
+        prevEnd = prevEnd === null ? end : Math.max(prevEnd, end);
+      }
+      html += '</div>';
+      $('studioCodeWrap').innerHTML = html;
     }
     const STUDIO_MANIFEST_FILES = new Set(['package.json', 'Cargo.toml', 'requirements.txt', 'go.mod', 'pom.xml']);
     $('studioManifestBtn').addEventListener('click', openStudioDependencies);
@@ -2480,8 +2585,9 @@
         </button>`).join('');
       // Refresh the code pane's numbered badges to match — but never while
       // the user has the textarea open, or this would blow away an
-      // in-progress edit.
-      if (!studioState.editing) renderStudioCodeView(studioState.originalContent);
+      // in-progress edit. Historical mode has no numbered-badge code view
+      // to refresh (renderStudioHistoricalFileView already rendered it).
+      if (!studioState.editing && !studioState.historical) renderStudioCodeView(studioState.originalContent);
       $('studioIssuePanel').querySelectorAll('.studio-issue-pick').forEach((btn) => {
         btn.addEventListener('click', () => selectStudioIssue(issues[Number(btn.dataset.i)]));
       });
@@ -2508,7 +2614,9 @@
     async function selectStudioIssue(issue) {
       studioState.selectedIssue = issue;
       studioState.jumpHighlightRange = null;
-      if (!studioState.editing) {
+      if (studioState.historical) {
+        scrollStudioToLine(issue.line);
+      } else if (!studioState.editing) {
         renderStudioCodeView(studioState.originalContent);
         scrollStudioToLine(issue.line);
       }
@@ -3308,11 +3416,20 @@
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
             </button>
             <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
+            ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)">🧪 Studio</button>` : ''}
             ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
             <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold mt-0.5" data-id="${p.id}" title="Delete this project">✕</button>
           </div>
           <div class="hist-detail hidden px-5 pb-4"></div>
         </div>`).join('');
+
+      historyList.querySelectorAll('.hist-open-studio').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openHistoricalStudio(Number(btn.dataset.id), btn.dataset.org, btn.dataset.repo);
+        });
+      });
 
       historyList.querySelectorAll('.hist-view-issues').forEach((btn) => {
         btn.addEventListener('click', async (ev) => {

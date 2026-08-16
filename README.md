@@ -232,6 +232,12 @@ Findings from the other seven tools (IaC/Checkov/hadolint, cosign, Semgrep, Bear
 
 The right-hand "External tools" panel lists live connected/disconnected state for all fifteen tools (fourteen binaries + the posture engine, which shares Semgrep's) - same data as the top-right pill panel outside Studio, via `GET /api/tools/status`.
 
+### Historical Studio - browsing a past project
+
+A 🧪 **Studio** button appears next to any project in Recent Checks history that has flagged issues, opening a read-only Studio reconstructed entirely from what's persisted in the `issues` table (category/severity/summary/file/line and a small snippet per finding) - the staging directory for that run is long gone by then (staging dirs are force-removed in a `finally` block after every run, pass or fail). An amber banner makes the limitation explicit, and Dependencies/SBOM/LOC/Posture/Rescan are hidden since they'd need to recompute against a real staged project.
+
+Per file, the persisted snippets are stitched together in line order; wherever there's a gap between one finding's captured lines and the next, a `⋯ N lines not shown ⋯` divider marks the code that was never retained - so it's always clear how much of the file you're *not* looking at, not just what you are. Explain-this-issue/Suggest-AI-fix still work exactly as before, since both already only ever operated on the snippet, never the full file.
+
 ## Hardening notes
 
 - **Zip-slip:** every archive entry's resolved path must stay inside the staging root, or extraction aborts.
