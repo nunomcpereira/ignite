@@ -65,3 +65,60 @@ test('noWeakCrypto: flags MD5/SHA-1/DES, not modern algorithms', () => {
     'util.js'
   ).includes('no-weak-crypto'), 'Math.random() is legitimate outside security contexts and must not be flagged');
 });
+
+test('noSsrfSinks: flags request-derived outbound URLs, not literal ones', () => {
+  assert.ok(idsFor(
+    'const res = await fetch(req.query.url);\n',
+    'proxy.js'
+  ).includes('no-ssrf-sinks'));
+  assert.ok(idsFor(
+    "resp = requests.get(request.args.get('url'))\n",
+    'proxy.py'
+  ).includes('no-ssrf-sinks'));
+  assert.ok(!idsFor(
+    "const res = await fetch('https://api.example.com/status');\n",
+    'proxy.js'
+  ).includes('no-ssrf-sinks'), 'a literal URL must not be flagged');
+});
+
+test('noCsrfDisabled: flags explicit CSRF opt-outs', () => {
+  assert.ok(idsFor(
+    '@csrf_exempt\ndef webhook(request):\n    pass\n',
+    'views.py'
+  ).includes('no-csrf-disabled'));
+  assert.ok(idsFor(
+    'skip_before_action :verify_authenticity_token\n',
+    'controller.rb'
+  ).includes('no-csrf-disabled'));
+  assert.ok(idsFor(
+    'app.use(csrf({ csrf: false }));\n',
+    'app.js'
+  ).includes('no-csrf-disabled'));
+  assert.ok(!idsFor(
+    'app.use(csurf());\n',
+    'app.js'
+  ).includes('no-csrf-disabled'), 'enabling CSRF protection must not be flagged');
+});
+
+test('noUnpinnedGhaAction: flags mutable-ref actions in workflow files only', () => {
+  assert.ok(idsFor(
+    'steps:\n  - uses: some-org/some-action@main\n',
+    '.github/workflows/ci.yml'
+  ).includes('no-unpinned-gha-action'));
+  assert.ok(idsFor(
+    'steps:\n  - uses: some-org/some-action@v4\n',
+    '.github/workflows/ci.yml'
+  ).includes('no-unpinned-gha-action'));
+  assert.ok(!idsFor(
+    'steps:\n  - uses: some-org/some-action@a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n',
+    '.github/workflows/ci.yml'
+  ).includes('no-unpinned-gha-action'), 'a SHA-pinned action must not be flagged');
+  assert.ok(!idsFor(
+    'steps:\n  - uses: actions/checkout@v4\n',
+    '.github/workflows/ci.yml'
+  ).includes('no-unpinned-gha-action'), 'first-party actions/* is excluded by design');
+  assert.ok(!idsFor(
+    'steps:\n  - uses: some-org/some-action@main\n',
+    'k8s/deployment.yaml'
+  ).includes('no-unpinned-gha-action'), 'only .github/workflows/*.yml is scanned');
+});

@@ -64,6 +64,30 @@ const WEAK_CRYPTO_REGEXES = [
   /Cipher\.getInstance\(\s*['"](DES|[^'"]*\/ECB\/)/i,
 ];
 
+// A request-derived value (req./request.) passed straight in as the URL/
+// host argument of an outbound HTTP call - the classic SSRF shape. Scoped
+// to the call's first argument only (up to the next comma/paren) to avoid
+// flagging a literal URL that merely appends a request value as a query
+// param later in the same call.
+const SSRF_SINK_REGEXES = [
+  /\b(fetch|axios(?:\.\w+)?)\(\s*(req|request)\.[^,)]*\)/i,
+  /\brequests\.\w+\(\s*(req|request)\.[^,)]*\)/i,
+];
+
+// Explicitly disabling a framework's default-on CSRF protection.
+const CSRF_DISABLED_REGEXES = [
+  /@csrf_exempt/,
+  /skip_before_action\s*:verify_authenticity_token/,
+  /csrf\s*:\s*false/i,
+];
+
+// A third-party GitHub Actions step pinned to a mutable ref (branch/tag/
+// "latest") instead of a full commit SHA. Deliberately not flagged for
+// same-repo actions (`uses: ./...`) or actions/* published by GitHub
+// itself, which are lower supply-chain risk and commonly left on @vN by
+// convention even in security-conscious workflows.
+const UNPINNED_GHA_ACTION_REGEX = /uses:\s*(?!\.\/|actions\/)[^@\s]+@(main|master|latest|v?\d+(?:\.\d+)*)\s*$/i;
+
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
   '.pdf', '.zip', '.gz', '.tar', '.bz2', '.7z', '.rar',
@@ -141,6 +165,26 @@ const CHECKS = {
     const hits = [];
     for (const re of WEAK_CRYPTO_REGEXES) hits.push(...scanLines(content, re));
     return hits;
+  },
+
+  noSsrfSinks(content) {
+    const hits = [];
+    for (const re of SSRF_SINK_REGEXES) hits.push(...scanLines(content, re));
+    return hits;
+  },
+
+  noCsrfDisabled(content) {
+    const hits = [];
+    for (const re of CSRF_DISABLED_REGEXES) hits.push(...scanLines(content, re));
+    return hits;
+  },
+
+  // Filename-scoped like noCommittedEnvFiles: only .github/workflows/*.yml,
+  // never an arbitrary yaml file that happens to contain a "uses:" line.
+  noUnpinnedGhaAction(content, relPath) {
+    const normalized = String(relPath || '').replace(/\\/g, '/');
+    if (!/(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/.test(normalized)) return [];
+    return scanLines(content, UNPINNED_GHA_ACTION_REGEX);
   },
 
   // Filename-based; content-agnostic.

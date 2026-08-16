@@ -138,6 +138,48 @@ const GUIDELINES = Object.freeze([
     appliesTo: ['.py', '.js', '.ts'],
   },
   {
+    id: 'no-ssrf-sinks',
+    category: 'security',
+    severity: 'error',
+    title: 'No unvalidated request-derived URLs in outbound calls',
+    description:
+      'Do not pass a request-derived value (req.*/request.*) directly as the URL/host of an outbound HTTP call.',
+    rationale:
+      'Letting untrusted input control the destination of a server-side request is server-side request forgery (SSRF) — it can be used to reach internal services, cloud metadata endpoints, or otherwise-firewalled hosts. #1 on OWASP Top 10:2025.',
+    remediation:
+      'Validate the target against an allowlist of expected hosts/schemes before making the call, or route through a proxy that enforces one — never pass the raw request value straight into the HTTP client.',
+    checkId: 'noSsrfSinks',
+    appliesTo: ['.py', '.js', '.ts'],
+  },
+  {
+    id: 'no-csrf-disabled',
+    category: 'security',
+    severity: 'error',
+    title: 'CSRF protection must not be explicitly disabled',
+    description:
+      'Do not turn off a framework\'s built-in CSRF protection (Django\'s @csrf_exempt, Rails\' skip_before_action :verify_authenticity_token, or an explicit csrf: false).',
+    rationale:
+      'CSRF lets an attacker-controlled page trigger state-changing requests using a logged-in victim\'s own session — #4 on the 2024 CWE Top 25 (CWE-352). Frameworks default this protection on; explicitly turning it off removes it for that endpoint.',
+    remediation:
+      'Remove the exemption; if a specific endpoint genuinely can\'t use token-based CSRF protection (e.g. a webhook), protect it a different way (signature verification) instead of blanket-disabling the framework default.',
+    checkId: 'noCsrfDisabled',
+    appliesTo: ['.py', '.js', '.ts', '.rb'],
+  },
+  {
+    id: 'no-unpinned-gha-action',
+    category: 'security',
+    severity: 'warning',
+    title: 'GitHub Actions steps should pin to a commit SHA, not a branch/tag',
+    description:
+      'A workflow `uses:` a third-party action pinned to a mutable ref (@main, @master, @latest, or a bare major-version tag like @v4) rather than a commit SHA.',
+    rationale:
+      'A mutable ref can be repointed by the action\'s maintainer (or an attacker who compromises their repo) to different code without your workflow file changing — a supply-chain integrity gap (OWASP Top 10:2025 A08, Software/Data Integrity Failures). Directly relevant here: Ignite\'s own Phase 5 fetches and runs the org\'s governance workflow.',
+    remediation:
+      'Pin third-party actions to a full commit SHA (`uses: owner/action@<40-char-sha>`), with a trailing comment noting the version, e.g. `# v4.1.0`.',
+    checkId: 'noUnpinnedGhaAction',
+    appliesTo: ['.yml', '.yaml'],
+  },
+  {
     id: 'ai-governance-workflow-required',
     category: 'process',
     severity: 'error',
