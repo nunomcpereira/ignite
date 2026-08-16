@@ -37,7 +37,33 @@
     details > summary { list-style: none; }
     details > summary::-webkit-details-marker { display: none; }
     details[open] .chevron { transform: rotate(90deg); }
+
+    /* Dark mode: the app's entire palette is hardcoded Tailwind utility
+       classes (bg-white, text-slate-800, ...) rather than CSS variables, so
+       retrofitting a real per-class dark palette would mean touching
+       thousands of class lists. Instead, invert the whole page's colors
+       (a well-established technique — the same one browser "force dark"
+       extensions use) and counter-invert (double-invert = original) the
+       handful of surfaces that are already deliberately dark and must stay
+       exactly as authored regardless of theme: the terminal log panels,
+       whose ✓/✗/⚠ line colors are semantic and must not flip. There are no
+       <img> elements anywhere in this app, so nothing photographic is at
+       risk of inverting oddly. */
+    html[data-theme="dark"] { background: #0f172a; color-scheme: dark; }
+    html[data-theme="dark"] body { background: #fff; filter: invert(1) hue-rotate(180deg); }
+    html[data-theme="dark"] .terminal { filter: invert(1) hue-rotate(180deg); }
+    #themeToggleBtn svg { transition: transform .2s ease; }
   </style>
+  <script>
+    // Applied before first paint (synchronous, in <head>) so the page never
+    // flashes the wrong theme. Priority: explicit user choice (localStorage)
+    // > OS-level prefers-color-scheme > light.
+    (function () {
+      const saved = localStorage.getItem('ignite-theme');
+      const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
 </head>
 <body class="bg-gradient-to-b from-brand-50 via-white to-white text-slate-700 min-h-screen antialiased font-sans">
   <div class="max-w-7xl mx-auto px-6 py-12">
@@ -57,6 +83,15 @@
 
     <!-- Auth bar + external tools status, stacked in the top-right corner -->
     <div class="fixed top-4 right-4 z-40 flex flex-col items-end gap-2">
+      <button id="themeToggleBtn" type="button" title="Toggle dark mode"
+              class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
+        <svg id="themeToggleIconSun" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
+        </svg>
+        <svg id="themeToggleIconMoon" class="hidden w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
+        </svg>
+      </button>
       <div id="authBar" class="text-sm"></div>
       <div id="toolsBar" class="text-sm"></div>
     </div>
@@ -3492,6 +3527,22 @@
     }
 
     $('historyRefreshBtn').addEventListener('click', loadProjects);
+
+    /* Dark mode toggle — theme itself is already applied pre-paint by the
+       inline <script> in <head>; this just wires the button + keeps the
+       sun/moon icon in sync. */
+    function syncThemeIcon() {
+      const dark = document.documentElement.dataset.theme === 'dark';
+      $('themeToggleIconSun').classList.toggle('hidden', dark);
+      $('themeToggleIconMoon').classList.toggle('hidden', !dark);
+    }
+    $('themeToggleBtn').addEventListener('click', () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem('ignite-theme', next);
+      syncThemeIcon();
+    });
+    syncThemeIcon();
 
     /* Initial render */
     resetPhases();

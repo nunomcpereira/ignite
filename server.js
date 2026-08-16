@@ -5937,7 +5937,10 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
         );
         throw Object.assign(
           new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.`),
-          { phase: 4 }
+          // Carried through to the response below so a non-browser caller
+          // (the CLI/pre-push hook) can list and override these without
+          // ever needing the web UI's review gate.
+          { phase: 4, issues: unresolvedErrors }
         );
       }
     }
@@ -5995,6 +5998,10 @@ app.post('/api/pipeline/validate-all', async (req, res) => {
       projectPath,
       error: err.message,
       failedPhase: phase,
+      // Unresolved Phase 4 issues (see the throw above), when this is that
+      // kind of failure — lets a non-browser caller (the CLI/pre-push hook)
+      // list and override them without the web UI's review gate.
+      issues: Array.isArray(err.issues) ? err.issues : undefined,
       phases: phaseSummary(),
       events,
     });
@@ -6216,7 +6223,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
         );
         throw Object.assign(
           new Error(`Phase 4 has ${unresolvedErrors.length} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.`),
-          { phase: 4 }
+          // Carried through to the response below so a non-browser caller
+          // (the CLI/pre-push hook) can list and override these without
+          // ever needing the web UI's review gate.
+          { phase: 4, issues: unresolvedErrors }
         );
       }
     }
@@ -6304,6 +6314,10 @@ app.post('/api/pipeline/onboard', async (req, res) => {
       projectPath,
       error: err.message,
       failedPhase: phase,
+      // Unresolved Phase 4 issues (see the throw above), when this is that
+      // kind of failure — lets a non-browser caller (the CLI/pre-push hook)
+      // list and override them without the web UI's review gate.
+      issues: Array.isArray(err.issues) ? err.issues : undefined,
       phases: phaseSummary(),
       events,
     });
