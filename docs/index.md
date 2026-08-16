@@ -62,8 +62,55 @@ deep-scan, covering:
 - Missing security/compliance posture (SSO, RBAC, audit logging, rate limiting, ...)
 - Your org's own governance CI, run locally via `act` before it ever reaches a real PR
 
-See the [attack & risk coverage table](https://github.com/nunomcpereira/ignite#attack--risk-coverage--what-each-check-actually-prevents)
-in the README for the full mapping of threat class → tool/check → phase.
+Every check exists to stop a specific class of real-world incident, not just
+to produce a finding for its own sake. The table below maps each threat to
+the tool/check combination that catches it — and, since every external tool
+is a soft dependency, exactly which tool actually intervenes *if it's
+installed* (Ignite still runs, and falls back where it can, if it isn't).
+
+| Threat / attack class | How Ignite catches it | Tool(s) / check | Phase |
+|---|---|---|---|
+| Committed raw `.env`/`.env.*` files leaking live credentials into repo history | Denies any `.env`/`.env.*` file anywhere in the tree (unless already `.gitignore`d) before anything else runs | Built-in structure audit | 3 |
+| Hardcoded secrets in source (API keys, passwords, tokens, private keys) | Regex scan over every text file; gitleaks runs as a supplemental pass over the same tree when enabled, merged and deduped against the regex hits | Built-in regex scan + gitleaks (optional) | 4 |
+| Runaway/uncontrolled AI agent loops — unbounded LangChain/LangGraph `.invoke()`/`.stream()` calls (cost blowup, infinite loops, larger prompt-injection blast radius) | Flags any `.invoke(`/`.stream(`/`.ainvoke(`/`.astream(` call missing `recursion_limit` | Built-in AI-governance regex check | 4 |
+| Injection (SQL/command/template), path traversal, SSRF, insecure deserialization, XSS, broken auth/authz, weak crypto, unsafe `eval`/`exec`, prototype pollution, insecure temp files, missing input validation | Local LLM deep-scan reviews real source for these patterns; Semgrep's `p/security-audit` ruleset catches the same classes via static pattern matching, independently | LLM deep-scan (security pass) + Semgrep | 4 |
+| Dependency with a **known**, already-disclosed CVE/GHSA advisory | Resolves each manifest dependency's real version and cross-references deps.dev's aggregated OSV/GHSA data | Built-in scanner + deps.dev API | 3 |
+| Dependency that is **malicious but has no advisory yet** — install-script exfiltration, obfuscated/encoded payloads, silent network calls, typosquatting | Downloads and statically inspects each npm/PyPI dependency's actual package contents against Semgrep-based supply-chain-attack heuristics | GuardDog (on by default if installed) | 4 |
+| Commercial/proprietary/unrecognized dependency licenses creating unreviewed IP/legal exposure; the project's own license terms | Resolves real per-dependency licenses (ORT, or the built-in manifest parser + deps.dev fallback) and classifies green/amber/red; scans every `LICENSE`/`LICENCE` file for commercial/proprietary language | ORT / licensee / deps.dev | 3 |
+| IaC/container misconfiguration — privileged containers, missing resource limits, insecure Terraform/Kubernetes/Helm settings, unpinned base images, missing `USER` | Trivy's config scanner is primary, supplemented by Checkov's larger policy set and hadolint's Dockerfile-only rules, deduped by file/line/rule-id; falls back to a built-in unpinned-tag/missing-`USER` heuristic when none are installed | Trivy + Checkov + hadolint | 4 |
+| Supply-chain base-image tampering — a Dockerfile `FROM` image with no verifiable provenance | Verifies Sigstore/cosign keyless signatures on every unique base image referenced; unsigned images are flagged (advisory) | cosign | 4 |
+| Logical/semantic vulnerabilities beyond single-line pattern matching | Semgrep's registry rulesets (`p/security-audit` by default) | Semgrep | 4 |
+| PII/GDPR data-flow exposure — personal data (request params, user objects) reaching logs, DB writes, or third-party calls without controls | Traces data flow from source to sink, filtered to Bearer's own PII/Personal-Data-tagged findings only | Bearer | 4 |
+| Copy-pasted vulnerable/stale logic drifting out of sync across a codebase | Flags duplicated code blocks above a configurable threshold (advisory) | jscpd (off by default) | 4 |
+| Insecure API design/contract violations in OpenAPI/AsyncAPI schemas | Lints every discovered schema file (found by content, not filename) against org REST/AsyncAPI conventions | Spectral | 4 |
+| Missing security/compliance controls that widen the attack surface even with no single vulnerable line — no SSO/MFA, no RBAC, no audit logging, no rate limiting, secrets read from plain env vars instead of a vault, etc. | Classifies *presence* (not vulnerabilities) of eight security/compliance categories as DETECTED/PARTIAL/MISSING via a dedicated Semgrep ruleset; built-in regex fallback when Semgrep is unavailable | Compliance & Feature Posture Engine (reuses Semgrep) | 4 |
+| Org-mandated security/compliance CI gates silently not enforced locally, only caught after a real PR | Runs the actual central `ai-guardrails-orchestrator.yml` (and every workflow it `uses:`) locally via `act`, so local pass/fail matches the real remote gate | act + Docker | 5 |
+| Unauthorized/unvetted code reaching the org's GitHub regardless of findings above | Provisioning + push only happens after every enabled phase passes (or every blocking issue is overridden with a justified, attributed, emailed audit record) | The pipeline gate itself | 6 |
+| Zip-slip — a malicious archive entry resolving outside the staging directory | Every archive entry's resolved path is verified to stay inside the staging root before extraction; symlink entries are skipped entirely | Built-in extraction guard | pre-1 |
+| Zip-bomb / disk-exhaustion DoS via a malicious or oversized upload | Extracted size capped at 1 GB, upload capped at 250 MB | Built-in size guards | pre-1 |
+| Command injection via org/repo names or shelled-out tool arguments | Every `git`/`gh`/tool invocation uses `execFile` with argument arrays (no shell); org/repo names validated against GitHub's naming rules; commands restricted to a fixed allowlist | Built-in sanitizers | all |
+| A repo drifting out of compliance *after* onboarding — a new vulnerable/malicious dependency merged later, with no one notified | Effectivated repos can opt into a scheduled (daily/weekly/monthly) re-check of the default branch; on failure, emails the repo's CODEOWNERS contact or files a GitHub issue if none can be resolved | Scheduled re-check + CODEOWNERS check | 3 (ongoing) |
+| A `CODEOWNERS`-less repo silently having no one accountable for findings | Advisory check for a `CODEOWNERS` file and any email-address owner listed in it | Built-in CODEOWNERS check | 3 |
+
+Full details, install instructions, and the on/off default for every tool: see the [README's tool table](https://github.com/nunomcpereira/ignite#external-tools).
+
+## Also an MCP server — bring these checks into your editor
+
+Beyond the web app, Ignite ships an [MCP](https://modelcontextprotocol.io)
+server (`mcp-server.js`) exposing the same guideline/security checks as
+tools an AI coding agent can call *during development* — not just at
+onboarding time. Point Claude Code, Claude Desktop, or any other MCP client
+at it (stdio, or Streamable HTTP — auto-started alongside `npm start` on
+`:3001/mcp`) to get:
+
+- `check_guidelines` / `check_project` — run the same regex/AST guideline checks against a snippet or a whole project directory, live, as you write code.
+- `check_dependency_licenses` / `check_dependency_vulnerabilities` — the same license-compliance and CVE/GHSA scans Phase 3 runs automatically, on demand.
+- `onboard_project` — trigger a full (or `dryRun`) pipeline run against a running Ignite server, so an agent can "see what would fail" before ever pushing.
+
+This means an agent working on your codebase can catch a hardcoded secret,
+an ungoverned AI call, or a risky dependency *before* it's ever committed —
+the same gate that blocks onboarding, available as a tool call mid-session.
+See [MCP server](https://github.com/nunomcpereira/ignite#mcp-server) in the README for setup.
 
 ## Get started
 
