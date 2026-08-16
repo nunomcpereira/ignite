@@ -50,6 +50,47 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ''));
 }
 
+// A fixed, valid-shaped hash to verify against when the account doesn't
+// exist (or isn't a local-password account) - hashPassword() is async and
+// per-call-random-salted, so this is computed once, lazily, on first use.
+// Verifying against it costs the same one scrypt derivation as a real
+// wrong-password attempt does, so a login response's timing doesn't
+// distinguish "no such account" from "wrong password" (CWE-208/CWE-203).
+let dummyHashPromise = null;
+function dummyHash() {
+  if (!dummyHashPromise) dummyHashPromise = hashPassword(crypto.randomBytes(24).toString('hex'));
+  return dummyHashPromise;
+}
+
+// Minimal fixed-window limiter, in-memory (single-process - matches how
+// sessions/pendingStates are already kept here). Swept on a timer, not
+// just pruned lazily on the next request, so a flood of requests against
+// an endpoint that never succeeds can't grow this unboundedly either.
+function createRateLimiter({ windowMs, max }) {
+  const hits = new Map(); // key -> { count, resetAt }
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, v] of hits) if (v.resetAt <= now) hits.delete(key);
+  }, windowMs).unref();
+  return {
+    check(key) {
+      const now = Date.now();
+      let entry = hits.get(key);
+      if (!entry || entry.resetAt <= now) {
+        entry = { count: 0, resetAt: now + windowMs };
+        hits.set(key, entry);
+      }
+      entry.count++;
+      return entry.count <= max;
+    },
+    reset(key) {
+      hits.delete(key);
+    },
+  };
+}
+const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 8 }); // per email
+const registerLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 8 }); // per IP
+
 /**
  * @param {object} store - createDbStore() instance
  * @param {object} authConfig - CONFIG.auth: { mode, allowSelfRegistration, oidc: {...} }
@@ -126,6 +167,9 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
       if (!allowSelfRegistration) {
         return res.status(403).json({ error: 'Self-registration is disabled. Ask an admin to create your account.' });
       }
+      if (!registerLimiter.check(req.socket.remoteAddress || 'unknown')) {
+        return res.status(429).json({ error: 'Too many registration attempts. Try again later.' });
+      }
       const email = String(req.body?.email || '').trim().toLowerCase();
       const name = String(req.body?.name || '').trim();
       const password = String(req.body?.password || '');
@@ -142,10 +186,21 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
     router.post('/api/auth/login', async (req, res) => {
       const email = String(req.body?.email || '').trim().toLowerCase();
       const password = String(req.body?.password || '');
+      if (!loginLimiter.check(email || req.socket.remoteAddress || 'unknown')) {
+        return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+      }
       const user = store.getUserByEmail(email);
-      if (!user || user.provider !== 'local' || !(await verifyPassword(password, user.password_hash))) {
+      // Always run one scrypt derivation either way - verifying against a
+      // fixed dummy hash when there's no real local account to check
+      // against - so a nonexistent/non-local email doesn't respond
+      // measurably faster than a wrong password on a real account.
+      const passwordOk = user && user.provider === 'local'
+        ? await verifyPassword(password, user.password_hash)
+        : await verifyPassword(password, await dummyHash());
+      if (!user || user.provider !== 'local' || !passwordOk) {
         return res.status(401).json({ error: 'Invalid email or password.' });
       }
+      loginLimiter.reset(email);
       issueSession(res, user.id);
       res.json({ user: { id: user.id, email: user.email, name: user.name } });
     });
