@@ -1,0 +1,143 @@
+'use strict';
+
+/**
+ * Sensitive data-flow (PII/GDPR) SAST via Bearer. Phase C of the server.js
+ * module split (see /Users/nuno/.claude/plans/cuddly-roaming-pearl.md).
+ *
+ * @param {object} deps
+ * @param {Function} deps.runTool - from lib/tool-runner.js's createToolRunner()
+ * @param {object} deps.fsUtils - lib/fs-utils.js exports (buildSnippet)
+ * @param {object} deps.config - { enabled }
+ */
+function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
+  const fsp = require('fs/promises');
+  const path = require('path');
+  const os = require('os');
+  const { buildSnippet } = fsUtils;
+
+  const BEARER_ENABLED = Boolean(config.enabled);
+
+  async function bearerTooling() {
+    try {
+      await runTool('bearer', ['version'], os.tmpdir());
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: '`bearer` is not installed (brew install bearer/tap/bearer) — PII/data-flow findings are simply omitted.' };
+    }
+  }
+
+  // Bearer shells out to git for its own bookkeeping (default branch,
+  // origin URL) and fails outright without it — unlike ORT, which only wants
+  // a git root for path resolution and degrades gracefully without one.
+  // Ensures a throwaway repo (git init/add/commit, same as
+  // ensureGitRootForOrt) *and* fills in a fake origin + remote-tracking HEAD
+  // ref, since a fresh ZIP/folder upload has neither. Every step is
+  // best-effort: if bearer still can't get a git context after this, the
+  // scan below fails soft (empty findings), same as any other tool failure.
+  async function ensureGitContextForBearer(root, log) {
+    try {
+      if (!(await fsp.access(path.join(root, '.git')).then(() => true, () => false))) {
+        await runTool('git', ['init', '-q'], root);
+        await runTool('git', ['add', '-A'], root);
+        await runTool('git', [
+          '-c', 'user.email=ignite@local', '-c', 'user.name=Ignite',
+          'commit', '-q', '-m', 'ignite-bearer-scan', '--no-verify', '--allow-empty',
+        ], root);
+      }
+      const { stdout: branch } = await runTool('git', ['symbolic-ref', '--short', 'HEAD'], root);
+      const branchName = branch.trim() || 'main';
+      const hasOrigin = await runTool('git', ['remote', 'get-url', 'origin'], root).then(() => true, () => false);
+      if (!hasOrigin) {
+        await runTool('git', ['remote', 'add', 'origin', 'https://ignite.local/scratch.git'], root);
+      }
+      await runTool('git', ['update-ref', `refs/remotes/origin/${branchName}`, `refs/heads/${branchName}`], root);
+      await runTool('git', ['symbolic-ref', `refs/remotes/origin/HEAD`, `refs/remotes/origin/${branchName}`], root);
+    } catch (e) {
+      log?.(`⚠ Could not fully stage a git context for bearer (non-blocking): ${e.message}`);
+    }
+  }
+
+  const BEARER_SEVERITY_TO_ISSUE = { critical: 'error', high: 'error', medium: 'warning', low: 'warning', warning: 'warning' };
+
+  // Bearer buckets "Unsanitized external input in code generation" and
+  // "Unsanitized dynamic input in file path" under high/critical by default,
+  // which blocks a run outright — in practice these rules fire on
+  // template/config generation and internal file-path assembly helpers
+  // (job/run-id-based archive names, cache paths, etc.) with no attacker-
+  // reachable input, so they read as lower-confidence, review-worthy
+  // findings rather than hard blockers. Forced to warning regardless of
+  // Bearer's own bucket, or of which file/rule instance fired.
+  const BEARER_FORCE_WARNING_TITLES = [
+    /unsanitized external input in code generation/i,
+    /unsanitized dynamic input in file path/i,
+  ];
+
+  // Sensitive data-flow (PII/GDPR) SAST via Bearer, which reports findings
+  // pre-bucketed by severity ({critical:[...], high:[...], ...}) rather than
+  // a flat array like semgrep/trivy. No built-in fallback when disabled or
+  // missing — data-flow tracking has no meaningful heuristic substitute.
+  async function checkPiiDataFlow(root, log) {
+    const tooling = BEARER_ENABLED ? await bearerTooling() : { ok: false, reason: 'bearer is disabled (security.bearer.enabled=false).' };
+    if (!tooling.ok) {
+      log?.(`⚠ Bearer PII/data-flow scan skipped: ${tooling.reason}`);
+      return { findings: [], engine: 'disabled' };
+    }
+
+    await ensureGitContextForBearer(root, log);
+    log?.('Engine: Bearer CLI (External) — tracing sensitive data flows (PII/GDPR)...');
+    try {
+      const { stdout } = await runTool('bearer', [
+        'scan', root, '--format', 'json', '--quiet', '--disable-version-check', '--exit-code', '0',
+      ], root);
+      const data = stdout.trim() ? JSON.parse(stdout) : {};
+      const findings = [];
+      for (const [severity, entries] of Object.entries(data)) {
+        if (!Array.isArray(entries)) continue;
+        for (const e of entries) {
+          // `bearer scan` with no --report flag defaults to Bearer's general
+          // "security" report — a much broader SAST rule set (path
+          // traversal, format-string injection, weak crypto, ...) than just
+          // PII/data-flow. Without this filter every one of those generic
+          // findings got mislabeled as "pii-dataflow" (a "Unsanitized
+          // dynamic input in file path" finding has nothing to do with
+          // personal data), which is what this check exists to trace in the
+          // first place — only keep findings Bearer itself tags as
+          // PII/Personal-Data-relevant via category_groups; the rest is
+          // already Semgrep's job (checkSemanticSast) and would just double
+          // up as a mislabeled, noisier duplicate here.
+          const categoryGroups = Array.isArray(e.category_groups) ? e.category_groups : [];
+          const isPii = categoryGroups.some((g) => /pii|personal data/i.test(String(g)));
+          if (!isPii) continue;
+          const relFile = path.relative(root, path.resolve(root, e.full_filename || e.filename || ''));
+          const line = Number(e.line_number) || 1;
+          let content = null;
+          try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
+          const title = e.title || 'Sensitive data-flow finding';
+          const forcedWarning = BEARER_FORCE_WARNING_TITLES.some((re) => re.test(title));
+          // Bearer's own rules tag findings with cwe_ids (numeric CWE ids,
+          // e.g. [359] for CWE-359 exposure of private info) — pass the
+          // first through the same way Semgrep's rule metadata is above.
+          const cweId = Array.isArray(e.cwe_ids) ? e.cwe_ids[0] : null;
+          findings.push({
+            file: relFile,
+            line,
+            kind: String(e.id || 'pii-dataflow').toLowerCase(),
+            tool: 'bearer',
+            severity: forcedWarning ? 'warning' : (BEARER_SEVERITY_TO_ISSUE[severity] || 'warning'),
+            message: title,
+            code: content ? buildSnippet(content, line) : null,
+            cwe: cweId ? `CWE-${cweId}` : null,
+          });
+        }
+      }
+      return { findings, engine: 'bearer' };
+    } catch (e) {
+      log?.(`⚠ Bearer PII/data-flow scan failed: ${e.message}`);
+      return { findings: [], engine: 'disabled' };
+    }
+  }
+
+  return { checkPiiDataFlow, bearerTooling, ensureGitContextForBearer };
+}
+
+module.exports = { createPiiDataFlowCheck };
