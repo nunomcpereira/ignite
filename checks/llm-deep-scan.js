@@ -31,7 +31,7 @@ function createLlmDeepScanCheck({
 
   const LLM_DEEP_SCAN_ENABLED = Boolean(config.deepScanEnabled);
   const LLM_PROVIDER = config.provider;
-  const OPENAI_API_KEY = config.openaiApiKey || '';
+  const openaiApiKeyValue = config.openaiApiKey || '';
   const OPENAI_MODEL = config.openaiModel || '';
   const OPENAI_BASE_URL = config.openaiBaseUrl || '';
   const LLM_SCAN_URL = config.scanUrl;
@@ -310,7 +310,7 @@ If nothing is found respond {"findings":[]}.`;
     if (LLM_PROVIDER === 'openai') {
       // OpenAI has no cheap health probe worth spending a request on — just
       // confirm the API key is configured before burning chunks against it.
-      if (!OPENAI_API_KEY) {
+      if (!openaiApiKeyValue) {
         return { available: false, reason: 'OPENAI_API_KEY is not set (LLM_PROVIDER=openai).' };
       }
       log(`[llm] provider=openai model=${OPENAI_MODEL} base=${OPENAI_BASE_URL}`);
