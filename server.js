@@ -116,7 +116,17 @@ function loadConfig() {
       // environment. An unsigned/unverifiable image is reported as a
       // warning, never a blocking error — plenty of legitimate base images
       // (e.g. plain `ubuntu`) aren't cosign-signed.
-      cosign: { enabled: true, binary: 'cosign', identityRegexp: '.*', issuerRegexp: '.*' },
+      // cacheTtlSeconds: unlike GuardDog's manifest cache (permanent — an
+      // npm/PyPI package version's published content never changes), a
+      // Docker image *tag* is a mutable reference that can be re-pushed to
+      // point at different content at any time, so a cosign verdict is
+      // only safe to reuse for a bounded window, not forever. Default 1h —
+      // long enough to make repeated runs in one working session (CI
+      // re-triggers, iterative local pushes) fast, short enough to bound
+      // how stale a signature verdict can get. 0 disables caching entirely.
+      cosign: {
+        enabled: true, binary: 'cosign', identityRegexp: '.*', issuerRegexp: '.*', cacheTtlSeconds: 3600,
+      },
       // Optional: semantic pattern-matching SAST via Semgrep OSS
       // (https://semgrep.dev) — logical flaws and injection-style sinks
       // beyond what the LLM deep-scan (Phase 4's other security check)
@@ -353,6 +363,7 @@ function loadConfig() {
   if (process.env.COSIGN_BINARY) merged.security.cosign.binary = process.env.COSIGN_BINARY;
   if (process.env.COSIGN_IDENTITY_REGEXP) merged.security.cosign.identityRegexp = process.env.COSIGN_IDENTITY_REGEXP;
   if (process.env.COSIGN_ISSUER_REGEXP) merged.security.cosign.issuerRegexp = process.env.COSIGN_ISSUER_REGEXP;
+  if (process.env.COSIGN_CACHE_TTL_SECONDS !== undefined) merged.security.cosign.cacheTtlSeconds = Number(process.env.COSIGN_CACHE_TTL_SECONDS);
   if (process.env.SEMGREP_ENABLED !== undefined) {
     merged.security.semgrep.enabled = String(process.env.SEMGREP_ENABLED) === 'true';
   }
@@ -691,6 +702,7 @@ const COSIGN_ENABLED = Boolean(CONFIG.security.cosign.enabled);
 const COSIGN_BINARY = String(CONFIG.security.cosign.binary || 'cosign');
 const COSIGN_IDENTITY_REGEXP = String(CONFIG.security.cosign.identityRegexp || '.*');
 const COSIGN_ISSUER_REGEXP = String(CONFIG.security.cosign.issuerRegexp || '.*');
+const COSIGN_CACHE_TTL_SECONDS = Number.isFinite(Number(CONFIG.security.cosign.cacheTtlSeconds)) ? Number(CONFIG.security.cosign.cacheTtlSeconds) : 3600;
 
 /* Optional semgrep-powered semantic SAST scan (see CONFIG.security.semgrep) */
 const SEMGREP_ENABLED = Boolean(CONFIG.security.semgrep.enabled);
@@ -2997,7 +3009,17 @@ async function checkImageProvenance(root, log) {
   log?.('Engine: Cosign CLI (External) — verifying Sigstore signatures on referenced base images...');
   const uniqueImages = [...new Set(occurrences.map((o) => o.image))];
   const verdictByImage = new Map();
+  let cacheHits = 0;
   await Promise.all(uniqueImages.map(async (image) => {
+    if (COSIGN_CACHE_TTL_SECONDS > 0) {
+      const cached = store.getCosignVerifyCache(image, COSIGN_IDENTITY_REGEXP, COSIGN_ISSUER_REGEXP, COSIGN_CACHE_TTL_SECONDS);
+      if (cached) {
+        cacheHits++;
+        verdictByImage.set(image, cached);
+        log?.(`♻ ${image} — reused a signature verdict checked within the last ${COSIGN_CACHE_TTL_SECONDS}s.`);
+        return;
+      }
+    }
     try {
       await runTool('cosign', [
         'verify',
@@ -3011,7 +3033,12 @@ async function checkImageProvenance(root, log) {
       verdictByImage.set(image, { verified: false, reason: e.message });
       log?.(`⚠ ${image} — no verifiable Sigstore signature: ${e.message}`);
     }
+    if (COSIGN_CACHE_TTL_SECONDS > 0) {
+      const v = verdictByImage.get(image);
+      store.saveCosignVerifyCache(image, COSIGN_IDENTITY_REGEXP, COSIGN_ISSUER_REGEXP, v.verified, v.reason);
+    }
   }));
+  if (cacheHits > 0) log?.(`♻ ${cacheHits} image(s) served from the signature-verdict cache — no network call.`);
 
   const findings = [];
   const contentByFile = new Map();

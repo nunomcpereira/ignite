@@ -117,6 +117,15 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (tool, ecosystem, content_hash, tool_version)
     );
+    CREATE TABLE IF NOT EXISTS cosign_verify_cache (
+      image             TEXT NOT NULL,
+      identity_regexp   TEXT NOT NULL,
+      issuer_regexp     TEXT NOT NULL,
+      verified          INTEGER NOT NULL,
+      reason            TEXT,
+      checked_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+      PRIMARY KEY (image, identity_regexp, issuer_regexp)
+    );
     CREATE TABLE IF NOT EXISTS workflow_cache (
       repo         TEXT NOT NULL,
       filename     TEXT NOT NULL,
@@ -272,6 +281,30 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     insertFileScanCache: db.prepare(
       `INSERT INTO file_scan_cache (org, repo, check_name, rel_path, hash, findings_json)
        VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+
+    // TTL-bound (unlike manifest_scan_cache below): a Docker image *tag* is
+    // a mutable reference — re-pushed at any time to point at different
+    // content — so, unlike an npm/PyPI package version, its signature
+    // verdict isn't safe to cache forever. maxAgeSeconds is applied here in
+    // SQL (a stale row simply isn't returned) rather than read back and
+    // compared in JS. Uses strftime(...'%f') (millisecond precision), not
+    // datetime('now') (whole-second precision only) — plain datetime()
+    // truncation means a row written at, say, 11:04:02 and a boundary
+    // computed as "now - 1s" landing on 11:04:02 would satisfy `>=` even
+    // after a genuine ~1s of real elapsed time, quietly serving a stale
+    // verdict right at the TTL edge on short TTLs. Caught by a real test
+    // (TTL=1s, waited 1.3s past it) before shipping, not assumed correct.
+    getCosignVerifyCache: db.prepare(
+      `SELECT verified, reason FROM cosign_verify_cache
+       WHERE image = ? AND identity_regexp = ? AND issuer_regexp = ?
+         AND checked_at >= strftime('%Y-%m-%d %H:%M:%f', 'now', '-' || ? || ' seconds')`
+    ),
+    upsertCosignVerifyCache: db.prepare(
+      `INSERT INTO cosign_verify_cache (image, identity_regexp, issuer_regexp, verified, reason)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(image, identity_regexp, issuer_regexp)
+       DO UPDATE SET verified = excluded.verified, reason = excluded.reason, checked_at = strftime('%Y-%m-%d %H:%M:%f', 'now')`
     ),
 
     // Global (no org/repo) — a given manifest's exact byte content, scanned
@@ -489,6 +522,17 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
         db.exec('ROLLBACK');
         throw e;
       }
+    },
+
+    /* ---------------- cosign verify cache (TTL-bound — see schema comment) ---------------- */
+
+    getCosignVerifyCache(image, identityRegexp, issuerRegexp, maxAgeSeconds) {
+      const row = stmt.getCosignVerifyCache.get(image, identityRegexp, issuerRegexp, maxAgeSeconds);
+      return row ? { verified: Boolean(row.verified), reason: row.reason } : null;
+    },
+
+    saveCosignVerifyCache(image, identityRegexp, issuerRegexp, verified, reason) {
+      stmt.upsertCosignVerifyCache.run(image, identityRegexp, issuerRegexp, verified ? 1 : 0, reason || null);
     },
 
     /* ---------------- manifest-level tool-result cache (e.g. GuardDog) ---------------- */
