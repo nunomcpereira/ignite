@@ -37,7 +37,7 @@ const {
   collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues, validateOverrides, scoreForIssue,
 } = require('./override-engine');
 const {
-  SKIP_DIRS, SKIP_DIRS_REGEX, BINARY_EXTENSIONS, DOCKERFILE_NAME_RE, SECRET_SCAN_CODE_EXTS, looksBinary, buildSnippet, walkFiles, mapWithConcurrency, hashBuffer,
+  SKIP_DIRS, SKIP_DIRS_REGEX, BINARY_EXTENSIONS, DOCKERFILE_NAME_RE, SECRET_SCAN_CODE_EXTS, looksBinary, buildSnippet, walkFiles, mapWithConcurrency, hashBuffer, relativeToRoot,
 } = require('./lib/fs-utils');
 
 /* ------------------------------------------------------------------ */
@@ -2419,104 +2419,12 @@ async function checkMaliciousDependencies(root, log) {
   return { findings, engine: 'guarddog' };
 }
 
-async function semgrepTooling() {
-  try {
-    const { stdout } = await runTool('semgrep', ['--version'], os.tmpdir());
-    return { ok: true, version: stdout.trim() || null, path: SEMGREP_BINARY };
-  } catch {
-    return { ok: false, reason: '`semgrep` is not installed (brew install semgrep / pip install semgrep) — semantic SAST and posture findings are simply omitted.' };
-  }
-}
-
-const SEMGREP_SEVERITY_TO_ISSUE = { ERROR: 'error', WARNING: 'warning', INFO: 'warning' };
-
-// "Unsanitized dynamic input in file path" fires from several distinct
-// path-traversal rules across p/security-audit's per-language rule packs,
-// each carrying its own hand-set severity metadata — so the same message
-// text lands as ERROR from one rule/file and WARNING from another with no
-// difference in actual confidence. Forced to warning regardless of which
-// rule matched or which file it fired in, same rationale (and pattern) as
-// BEARER_FORCE_WARNING_TITLES below.
-const SEMGREP_FORCE_WARNING_TITLES = [/unsanitized dynamic input in file path/i];
-
-// Semantic pattern-matching SAST via Semgrep OSS, run over the whole staged
-// project in one pass (semgrep does its own multi-language file discovery).
-// No built-in fallback when disabled/missing — there's no meaningful
-// heuristic substitute for a semantic rule engine, so this simply
-// contributes nothing rather than pretending to.
-// Resolves an external tool's reported file path (which may be absolute
-// and either canonical or not, depending on the tool — Spectral
-// canonicalizes symlinks like macOS's /tmp -> /private/tmp in its output,
-// Semgrep and Checkov generally don't) into a path relative to `root`,
-// regardless of which representation `root` itself was given in or which
-// representation the tool echoed back. realpath-ing *both* sides before
-// diffing is what makes this work either way — canonicalizing only one
-// side (an earlier version of this code did, for both the Spectral and
-// Semgrep call sites) produces a technically-valid but useless
-// "../../../../var/folders/.../root/../../../file" path whenever the two
-// sides end up canonicalized inconsistently.
-async function relativeToRoot(root, targetPath) {
-  const raw = String(targetPath || '');
-  const resolved = path.resolve(root, raw);
-  const [realRoot, realTarget] = await Promise.all([
-    fsp.realpath(root).catch(() => root),
-    fsp.realpath(resolved).catch(() => resolved),
-  ]);
-  return path.relative(realRoot, realTarget);
-}
-
-async function checkSemanticSast(root, log) {
-  const tooling = SEMGREP_ENABLED ? await semgrepTooling() : { ok: false, reason: 'semgrep is disabled (security.semgrep.enabled=false).' };
-  if (!tooling.ok) {
-    log?.(`⚠ Semgrep semantic SAST scan skipped: ${tooling.reason}`);
-    return { findings: [], engine: 'disabled' };
-  }
-
-  const semgrepConfigPacks = SEMGREP_CONFIG.split(',').map((c) => c.trim()).filter(Boolean);
-  log?.(`Engine: Semgrep CLI (External) — running semantic SAST rules (config: ${semgrepConfigPacks.join(', ')})...`);
-  try {
-    const { stdout } = await runTool('semgrep', [
-      'scan', ...semgrepConfigPacks.flatMap((c) => ['--config', c]), '--json', '--quiet', '--metrics', 'off', root,
-    ], root);
-    const data = stdout.trim() ? JSON.parse(stdout) : { results: [] };
-    const results = Array.isArray(data.results) ? data.results : [];
-    const findings = [];
-    for (const r of results) {
-      const relFile = await relativeToRoot(root, r.path);
-      const line = Number(r.start?.line) || 1;
-      let content = null;
-      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
-      const semgrepSeverity = String(r.extra?.severity || 'WARNING').toUpperCase();
-      const message = r.extra?.message || 'Semgrep finding';
-      const forcedWarning = SEMGREP_FORCE_WARNING_TITLES.some((re) => re.test(message));
-      // Semgrep's registry rules (p/security-audit, p/owasp-top-ten, ...)
-      // carry their own CWE/OWASP metadata per-rule — far more precise than
-      // Ignite's own category-level/keyword CWE fallback (override-engine's
-      // deriveCweOwasp), so pass it straight through when present. Each is
-      // an array (a rule can map to more than one CWE/OWASP category);
-      // only the first is kept, same "most specific wins" reasoning as
-      // picking one severity per finding.
-      const cweList = Array.isArray(r.extra?.metadata?.cwe) ? r.extra.metadata.cwe : [];
-      const owaspList = Array.isArray(r.extra?.metadata?.owasp) ? r.extra.metadata.owasp : [];
-      const cweMatch = String(cweList[0] || '').match(/^CWE-\d+/);
-      findings.push({
-        file: relFile,
-        line,
-        kind: String(r.check_id || 'semgrep-finding').toLowerCase(),
-        tool: 'semgrep',
-        severity: forcedWarning ? 'warning' : (SEMGREP_SEVERITY_TO_ISSUE[semgrepSeverity] || 'warning'),
-        message,
-        code: content ? buildSnippet(content, line) : null,
-        cwe: cweMatch ? cweMatch[0] : null,
-        owasp: owaspList[0] || null,
-      });
-    }
-    return { findings, engine: 'semgrep' };
-  } catch (e) {
-    log?.(`⚠ Semgrep semantic SAST scan failed: ${e.message}`);
-    return { findings: [], engine: 'disabled' };
-  }
-}
+const { createSemanticSastCheck } = require('./checks/semantic-sast');
+const { checkSemanticSast, semgrepTooling } = createSemanticSastCheck({
+  runTool,
+  fsUtils: { buildSnippet, relativeToRoot },
+  config: { enabled: SEMGREP_ENABLED, binary: SEMGREP_BINARY, semgrepConfig: SEMGREP_CONFIG },
+});
 
 async function bearerTooling() {
   try {
@@ -2704,80 +2612,12 @@ async function generateLocMetrics(root, log) {
   }
 }
 
-async function spectralTooling() {
-  try {
-    await runTool('spectral', ['--version'], os.tmpdir());
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: '`spectral` is not installed (npm install -g @stoplight/spectral-cli) — API schema lint findings are simply omitted.' };
-  }
-}
-
-const API_SCHEMA_TOP_LEVEL_RE = /^\s*("?(openapi|swagger|asyncapi)"?\s*:)/m;
-
-// Spectral (unlike trivy/checkov/jscpd) has no directory-scan mode — it
-// only lints files explicitly passed on the command line — so this does
-// its own discovery: any .yaml/.yml/.json file whose top-level content
-// declares openapi/swagger/asyncapi. Cheap content sniff rather than a
-// filename convention, since these files are named all sorts of things
-// (openapi.yaml, api-spec.json, schema/users.yaml, ...).
-async function discoverApiSchemaFiles(root) {
-  const files = [];
-  for await (const file of walkFiles(root)) {
-    const ext = path.extname(file).toLowerCase();
-    if (!['.yaml', '.yml', '.json'].includes(ext)) continue;
-    const buffer = await fsp.readFile(file).catch(() => null);
-    if (!buffer || looksBinary(buffer)) continue;
-    const content = buffer.toString('utf8');
-    if (API_SCHEMA_TOP_LEVEL_RE.test(content)) files.push(path.relative(root, file));
-  }
-  return files;
-}
-
-const SPECTRAL_SEVERITY_TO_ISSUE = { 0: 'error', 1: 'warning', 2: 'warning', 3: 'warning' };
-
-// Lints every discovered OpenAPI/AsyncAPI file against Spectral's ruleset
-// (org REST/AsyncAPI conventions, not just schema validity). No built-in
-// fallback when disabled/missing — schema linting needs the real rule
-// engine, so this simply contributes nothing rather than pretending to.
-async function checkApiSchemas(root, log) {
-  const tooling = SPECTRAL_ENABLED ? await spectralTooling() : { ok: false, reason: 'spectral is disabled (api.spectral.enabled=false).' };
-  if (!tooling.ok) {
-    log?.(`⚠ Spectral API schema lint skipped: ${tooling.reason}`);
-    return { findings: [], engine: 'disabled' };
-  }
-
-  const relFiles = await discoverApiSchemaFiles(root);
-  if (relFiles.length === 0) return { findings: [], engine: 'spectral' };
-
-  log?.(`Engine: Spectral CLI (External) — linting ${relFiles.length} OpenAPI/AsyncAPI file(s)...`);
-  try {
-    const { stdout } = await runTool('spectral', [
-      'lint', ...relFiles, '--ruleset', SPECTRAL_RULESET, '--format', 'json', '-q',
-    ], root, { allowedExitCodes: [0, 1] });
-    const results = stdout.trim() ? JSON.parse(stdout) : [];
-    const findings = [];
-    for (const r of results) {
-      const relFile = await relativeToRoot(root, r.source);
-      const line = (Number(r.range?.start?.line) || 0) + 1; // spectral lines are 0-indexed
-      let content = null;
-      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
-      findings.push({
-        file: relFile,
-        line,
-        kind: String(r.code || 'api-schema-lint').toLowerCase(),
-        tool: 'spectral',
-        severity: SPECTRAL_SEVERITY_TO_ISSUE[r.severity] || 'warning',
-        message: r.message || 'API schema lint finding',
-        code: content ? buildSnippet(content, line) : null,
-      });
-    }
-    return { findings, engine: 'spectral' };
-  } catch (e) {
-    log?.(`⚠ Spectral API schema lint failed: ${e.message}`);
-    return { findings: [], engine: 'disabled' };
-  }
-}
+const { createApiSchemaCheck } = require('./checks/api-schema');
+const { checkApiSchemas, spectralTooling, discoverApiSchemaFiles } = createApiSchemaCheck({
+  runTool,
+  fsUtils: { walkFiles, looksBinary, buildSnippet, relativeToRoot },
+  config: { enabled: SPECTRAL_ENABLED, ruleset: SPECTRAL_RULESET },
+});
 
 const POSTURE_CATEGORIES = [
   'sso-saml-oidc', 'rbac-abac', 'audit-logging', 'siem-log-forwarding',
