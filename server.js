@@ -267,6 +267,20 @@ function loadConfig() {
       // as a downloadable project document (same as the SBOM), never
       // produces issues. On by default.
       gocloc: { enabled: true, binary: 'gocloc' },
+      // Built-in (no external tool, always available): flags a single
+      // source file exceeding maxLines as a "low encapsulation" advisory
+      // finding — one file doing too much is a maintainability smell
+      // (harder to review, harder to test in isolation) independent of
+      // any one language's own conventions, and — concretely, discovered
+      // while investigating Ignite's own pipeline performance — a real
+      // cost multiplier for per-file-cached SAST tools (Bearer): a
+      // monolithic file invalidates its own cache entry on nearly every
+      // commit, dragging down what would otherwise be an incremental
+      // scan. On by default — cheap (a line count per file), no process
+      // spawned. Always advisory (warning), never blocks a run: file size
+      // alone is a smell to flag and track, not a hard gate a team should
+      // be forced through mid-pipeline.
+      fileSize: { enabled: true, maxLines: 1000 },
     },
     api: {
       // Optional: lints OpenAPI/AsyncAPI schema files against Spectral's
@@ -398,6 +412,10 @@ function loadConfig() {
     merged.metrics.gocloc.enabled = String(process.env.GOCLOC_ENABLED) === 'true';
   }
   if (process.env.GOCLOC_BINARY) merged.metrics.gocloc.binary = process.env.GOCLOC_BINARY;
+  if (process.env.FILE_SIZE_ENABLED !== undefined) {
+    merged.metrics.fileSize.enabled = String(process.env.FILE_SIZE_ENABLED) === 'true';
+  }
+  if (process.env.FILE_SIZE_MAX_LINES) merged.metrics.fileSize.maxLines = Number(process.env.FILE_SIZE_MAX_LINES);
   if (process.env.SPECTRAL_ENABLED !== undefined) {
     merged.api.spectral.enabled = String(process.env.SPECTRAL_ENABLED) === 'true';
   }
@@ -731,6 +749,10 @@ const JSCPD_IGNORE_PATTERNS = Array.isArray(CONFIG.metrics.jscpd.ignorePatterns)
 /* Optional gocloc-powered LOC metrics (see CONFIG.metrics.gocloc) */
 const GOCLOC_ENABLED = Boolean(CONFIG.metrics.gocloc.enabled);
 const GOCLOC_BINARY = String(CONFIG.metrics.gocloc.binary || 'gocloc');
+
+/* Built-in file-size ("low encapsulation") check (see CONFIG.metrics.fileSize) */
+const FILE_SIZE_ENABLED = Boolean(CONFIG.metrics.fileSize.enabled);
+const FILE_SIZE_MAX_LINES = Number(CONFIG.metrics.fileSize.maxLines) || 1000;
 
 /* Optional spectral-powered API schema lint (see CONFIG.api.spectral) */
 const SPECTRAL_ENABLED = Boolean(CONFIG.api.spectral.enabled);
@@ -3475,6 +3497,47 @@ async function checkCodeDuplication(root, log) {
   }
 }
 
+// Built-in "low encapsulation" check — no external tool, no fallback needed
+// (there's nothing to fall back *from*). Flags any single source file over
+// FILE_SIZE_MAX_LINES lines. Deliberately narrow: a raw line count, not an
+// attempt to measure cyclomatic complexity or responsibility count — those
+// need real per-language parsing to do honestly, while "this file is huge"
+// is a cheap, language-agnostic, directionally-correct proxy for the same
+// smell (harder to review, harder to test in isolation, and — concretely —
+// a bigger target for any per-file-cached SAST tool's cache to miss on
+// every unrelated change elsewhere in the file). Always advisory: file size
+// is something to track and gradually address, not a hard gate.
+async function checkFileEncapsulation(root, log) {
+  if (!FILE_SIZE_ENABLED) {
+    log?.('File-size check is disabled (metrics.fileSize.enabled=false).');
+    return { findings: [], engine: 'disabled' };
+  }
+
+  const findings = [];
+  for await (const file of walkFiles(root)) {
+    const ext = path.extname(file).toLowerCase();
+    if (!SECRET_SCAN_CODE_EXTS.has(ext)) continue;
+
+    const buffer = await fsp.readFile(file);
+    if (looksBinary(buffer)) continue;
+    const content = buffer.toString('utf8');
+    const lineCount = content.split(/\r?\n/).length;
+    if (lineCount <= FILE_SIZE_MAX_LINES) continue;
+
+    const rel = path.relative(root, file);
+    findings.push({
+      file: rel,
+      line: 1,
+      kind: 'file-too-large',
+      tool: 'ignite-built-in',
+      severity: 'warning',
+      message: `${rel} is ${lineCount} lines — over the ${FILE_SIZE_MAX_LINES}-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.`,
+      code: buildSnippet(content, 1),
+    });
+  }
+  return { findings, engine: 'built-in' };
+}
+
 async function goclocTooling() {
   try {
     await runTool('gocloc', ['--version'], os.tmpdir());
@@ -3956,6 +4019,22 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
       },
     },
     {
+      name: 'fileEncapsulation',
+      run: async (blog) => {
+        blog(`Check 14 — file-size / encapsulation scan (built-in, >${FILE_SIZE_MAX_LINES} lines)...`);
+        const fileEncapsulation = await checkFileEncapsulation(projectRoot, blog);
+        if (fileEncapsulation.findings.length > 0) {
+          blog(`⚠ ${fileEncapsulation.findings.length} oversized file(s) found:`);
+          fileEncapsulation.findings.forEach((f) => blog(`    ⚠ ${f.file} — ${f.message}`));
+        } else if (fileEncapsulation.engine === 'built-in') {
+          blog(`✓ Check 14 passed — no file over ${FILE_SIZE_MAX_LINES} lines.`);
+        } else {
+          blog('✓ Check 14 skipped — disabled by config.');
+        }
+        return fileEncapsulation;
+      },
+    },
+    {
       name: 'loc',
       run: async (blog) => {
         blog('Computing LOC metrics...');
@@ -4038,6 +4117,7 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     semanticSast: byName.semanticSast,
     piiDataFlow: byName.piiDataFlow,
     duplication: byName.duplication,
+    fileEncapsulation: byName.fileEncapsulation,
     apiSchema: byName.apiSchema,
     maliciousDependencies: byName.maliciousDependencies,
   });
@@ -7627,6 +7707,7 @@ module.exports = {
   checkSemanticSast,
   checkPiiDataFlow,
   checkCodeDuplication,
+  checkFileEncapsulation,
   generateLocMetrics,
   checkApiSchemas,
   checkFeaturePosture,

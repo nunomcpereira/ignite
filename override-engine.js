@@ -48,6 +48,7 @@ const CATEGORY_SCORES = {
   'semantic-sast': 7,
   'pii-dataflow': 7,
   'code-duplication': 2,
+  'code-structure': 2,
   'api-schema-lint': 4,
   'dependency-vulnerability': 8,
   'malicious-dependency': 9,
@@ -150,7 +151,7 @@ function deriveCweOwasp(category, summary, explicit) {
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [maliciousDependencies]
  * @returns {Array<{id, category, severity, score, summary, file, line}>}
  */
-function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, apiSchema, maliciousDependencies }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -290,6 +291,23 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
         line: f.line,
         snippet: f.code || null,
         duplicateRef: f.duplicateRef || null,
+      });
+    }
+  }
+
+  if (fileEncapsulation) {
+    for (const f of fileEncapsulation.findings) {
+      const category = 'code-structure';
+      const severity = 'warning'; // always advisory — file size never blocks a run
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
       });
     }
   }
