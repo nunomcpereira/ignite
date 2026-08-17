@@ -1802,125 +1802,12 @@ const { checkContainerImageVulnerabilities, trivyImageTooling } = createContaine
   config: { enabled: TRIVY_IMAGE_ENABLED, severityThreshold: TRIVY_IMAGE_SEVERITY, buildTimeoutMs: TRIVY_IMAGE_BUILD_TIMEOUT_MS },
 });
 
-async function syftTooling() {
-  try {
-    await runTool('syft', ['version'], os.tmpdir());
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: '`syft` is not installed (brew install syft) — falling back to a minimal manifest-derived component list (no standards-format SBOM).' };
-  }
-}
-
-// Best-effort component list built purely from this app's own manifest
-// parsers (STUDIO_MANIFESTS — the same ones scanDependencyLicensesFallback
-// uses), used only when syft is disabled or not installed. Intentionally
-// minimal: name/version pairs per ecosystem, no dependency graph, no CPEs,
-// no license metadata — real SBOM generation needs the real tool.
-async function generateSbomFallback(root) {
-  const components = [];
-  for await (const file of walkFiles(root)) {
-    const spec = STUDIO_MANIFESTS.find((m) => m.file === path.basename(file));
-    if (!spec) continue;
-    const content = await fsp.readFile(file, 'utf8').catch(() => null);
-    if (content == null) continue;
-    const rawDeps = spec.parse(content).slice(0, STUDIO_MAX_DEPS_PER_MANIFEST);
-    for (const dep of rawDeps) {
-      components.push({ name: dep.name, version: dep.versionRange || null, ecosystem: spec.ecosystem, type: 'library' });
-    }
-  }
-  return { bomFormat: 'ignite-fallback', specVersion: null, components };
-}
-
-// Generates a CycloneDX SBOM for the staged project via Syft, which does
-// its own multi-ecosystem manifest/lockfile discovery in one pass (same
-// relationship trivy has to checkIacSecurityFallback's narrow heuristic).
-// Never throws: returns the built-in fallback component list on any
-// missing-tool/parse failure, so a run is never blocked on it.
-async function generateSbom(root, log) {
-  const tooling = SYFT_ENABLED ? await syftTooling() : { ok: false, reason: 'syft is disabled (sbom.syft.enabled=false).' };
-  if (!tooling.ok) {
-    log?.(`⚠ Syft SBOM generation skipped: ${tooling.reason}`);
-    return { engine: 'fallback', sbom: await generateSbomFallback(root) };
-  }
-
-  log?.('Engine: Syft CLI (External) — generating a CycloneDX SBOM...');
-  const reportPath = path.join(os.tmpdir(), `ignite-syft-${crypto.randomBytes(8).toString('hex')}.json`);
-  try {
-    await runTool('syft', [root, '-o', `cyclonedx-json=${reportPath}`, '--quiet'], root);
-    const raw = await fsp.readFile(reportPath, 'utf8');
-    const sbom = JSON.parse(raw);
-    return { engine: 'syft', sbom };
-  } catch (e) {
-    log?.(`⚠ Syft SBOM generation failed, falling back to a minimal component list: ${e.message}`);
-    return { engine: 'fallback', sbom: await generateSbomFallback(root) };
-  } finally {
-    await fsp.unlink(reportPath).catch(() => {});
-  }
-}
-
-// Content-addressed identity of exactly what was staged/scanned: a sha256
-// over every non-.git file's own sha256, sorted by relative path so the
-// digest is deterministic regardless of directory-walk order. Lets an
-// auditor confirm the tree that passed the pipeline is the same tree that
-// got pushed, without needing the staging directory to still exist (it's
-// force-removed after every run) — the digest alone is enough to compare
-// against a later re-hash of the pushed repo.
-async function digestProjectTree(root) {
-  const entries = [];
-  for await (const file of walkFiles(root)) {
-    const rel = path.relative(root, file).split(path.sep).join('/');
-    const buffer = await fsp.readFile(file).catch(() => null);
-    if (buffer === null) continue;
-    entries.push([rel, crypto.createHash('sha256').update(buffer).digest('hex')]);
-  }
-  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  const combined = crypto.createHash('sha256');
-  for (const [rel, hash] of entries) combined.update(`${rel}:${hash}\n`);
-  return { sha256: combined.digest('hex'), fileCount: entries.length };
-}
-
-// Minimal build/commit provenance document — OWASP A08 (Software and Data
-// Integrity Failures) gap: cosign (above) verifies a Dockerfile's *base
-// image* provenance, but nothing previously recorded provenance for the
-// code Ignite itself is about to push. This is NOT a signed SLSA
-// attestation (no keyless/KMS signing, no transparency-log entry, no SLSA
-// builder-identity verification) — it's a same-shape, unsigned in-toto
-// Statement/SLSA-provenance-v1 predicate recording what was scanned, by
-// what, and when, so an auditor has *something* machine-readable to check
-// a later "is this the code that actually passed the pipeline" question
-// against. Attached as a downloadable project document (provenance.json),
-// same as the SBOM/LOC-metrics/posture-report artifacts — never gates a
-// run. Full SLSA L3 (signed, verifiable builder identity) is out of scope;
-// see the "note" field below, which says so explicitly rather than
-// implying more assurance than this actually provides.
-async function generateProvenance(root, log, { org, repo, jobId } = {}) {
-  const digest = await digestProjectTree(root);
-  let sourceCommit = null;
-  try {
-    const { stdout } = await runTool('git', ['rev-parse', 'HEAD'], root);
-    sourceCommit = stdout.trim() || null;
-  } catch { /* no git context (fresh ZIP/folder upload before Phase 5/6 init) — fine, omitted */ }
-
-  const provenance = {
-    _type: 'https://in-toto.io/Statement/v1',
-    subject: [{ name: org && repo ? `${org}/${repo}` : 'unknown', digest: { sha256: digest.sha256 } }],
-    predicateType: 'https://slsa.dev/provenance/v1',
-    predicate: {
-      buildDefinition: {
-        buildType: 'https://github.com/nunomcpereira/ignite/onboarding-pipeline/v1',
-        externalParameters: { org: org || null, repo: repo || null, jobId: jobId || null },
-        resolvedDependencies: sourceCommit ? [{ uri: `git+commit:${sourceCommit}` }] : [],
-      },
-      runDetails: {
-        builder: { id: 'https://github.com/nunomcpereira/ignite', version: { ignite: IGNITE_VERSION } },
-        metadata: { generatedAt: new Date().toISOString(), fileCount: digest.fileCount },
-      },
-    },
-    note: 'Minimal build/commit provenance for audit purposes — NOT a signed SLSA attestation (no keyless/KMS signing, no transparency-log entry, no verified builder identity). subject.digest is a sha256 over every staged file\'s own sha256, sorted by relative path.',
-  };
-  log?.(`✓ Provenance recorded — ${digest.fileCount} file(s), tree digest sha256:${digest.sha256.slice(0, 12)}…${sourceCommit ? `, source commit ${sourceCommit.slice(0, 12)}` : ''}.`);
-  return provenance;
-}
+const { createProvenanceCheck } = require('./checks/provenance');
+const { digestProjectTree, generateProvenance } = createProvenanceCheck({
+  runTool,
+  fsUtils: { walkFiles },
+  igniteVersion: IGNITE_VERSION,
+});
 
 const { createImageProvenanceCheck } = require('./checks/image-provenance');
 const { cosignTooling, discoverBaseImages, checkImageProvenance } = createImageProvenanceCheck({
@@ -1969,56 +1856,12 @@ const { checkFileEncapsulation } = createFileEncapsulationCheck({
   config: { enabled: FILE_SIZE_ENABLED, maxLines: FILE_SIZE_MAX_LINES },
 });
 
-async function goclocTooling() {
-  try {
-    await runTool('gocloc', ['--version'], os.tmpdir());
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: '`gocloc` is not installed (brew install gocloc) — LOC metrics are simply omitted.' };
-  }
-}
-
-// Precise per-language LOC counts via gocloc, which does its own
-// multi-language file discovery over `root` in one pass. Purely
-// descriptive — never produces issues — so the caller attaches the result
-// as a downloadable project document (same treatment as generateSbom),
-// not something collectPhase4Issues touches.
-async function generateLocMetrics(root, log) {
-  const tooling = GOCLOC_ENABLED ? await goclocTooling() : { ok: false, reason: 'gocloc is disabled (metrics.gocloc.enabled=false).' };
-  if (!tooling.ok) {
-    log?.(`⚠ gocloc LOC metrics skipped: ${tooling.reason}`);
-    return { engine: 'disabled', metrics: null };
-  }
-
-  log?.('Engine: gocloc CLI (External) — computing per-language LOC metrics...');
-  try {
-    // --by-file (rather than gocloc's default per-language-only rollup)
-    // so Studio can offer "click a language, see just its files" — the
-    // per-language `languages` summary below is aggregated from this same
-    // per-file list rather than issuing a second gocloc call.
-    const { stdout } = await runTool('gocloc', ['--by-file', '--output-type', 'json', '--fullpath', '--not-match-d', SKIP_DIRS_REGEX, root], root);
-    const raw = stdout.trim() ? JSON.parse(stdout) : null;
-    if (!raw) return { engine: 'gocloc', metrics: null };
-    const files = await Promise.all((raw.files || []).map(async (f) => ({
-      file: await relativeToRoot(root, f.name),
-      language: f.language,
-      code: f.code,
-      comment: f.comment,
-      blank: f.blank,
-    })));
-    const byLanguage = new Map();
-    for (const f of files) {
-      const agg = byLanguage.get(f.language) || { name: f.language, files: 0, code: 0, comment: 0, blank: 0 };
-      agg.files++; agg.code += f.code; agg.comment += f.comment; agg.blank += f.blank;
-      byLanguage.set(f.language, agg);
-    }
-    const metrics = { languages: [...byLanguage.values()], total: raw.total, files };
-    return { engine: 'gocloc', metrics };
-  } catch (e) {
-    log?.(`⚠ gocloc LOC metrics failed: ${e.message}`);
-    return { engine: 'disabled', metrics: null };
-  }
-}
+const { createLocMetricsCheck } = require('./checks/loc-metrics');
+const { generateLocMetrics, goclocTooling } = createLocMetricsCheck({
+  runTool,
+  fsUtils: { relativeToRoot, SKIP_DIRS_REGEX },
+  config: { enabled: GOCLOC_ENABLED },
+});
 
 const { createApiSchemaCheck } = require('./checks/api-schema');
 const { checkApiSchemas, spectralTooling, discoverApiSchemaFiles } = createApiSchemaCheck({
@@ -3805,6 +3648,15 @@ const STUDIO_MANIFESTS = [
   { file: 'pom.xml', ecosystem: 'maven', system: 'MAVEN', parse: parsePomXmlDeps },
 ];
 const STUDIO_MAX_DEPS_PER_MANIFEST = 60;
+
+const { createSbomCheck } = require('./checks/sbom');
+const { generateSbom, generateSbomFallback, syftTooling } = createSbomCheck({
+  runTool,
+  fsUtils: { walkFiles },
+  config: { enabled: SYFT_ENABLED },
+  studioManifests: STUDIO_MANIFESTS,
+  studioMaxDepsPerManifest: STUDIO_MAX_DEPS_PER_MANIFEST,
+});
 
 // license lookups are immutable per (system, name, version) — cache for the
 // life of the process so re-opening the Dependencies view or re-checking
