@@ -12,7 +12,36 @@ const { GUIDELINES } = require('./catalog');
 const SECRET_REGEX =
   /(password|aws_secret|api_key|token|private_key)\s*[:=]\s*['" \t]*[a-zA-Z0-9_\-.~]{10,}/i;
 
-const AI_INVOKE_REGEX = /\.(invoke|stream|ainvoke|astream)\(/;
+// Captures the receiver so a call can be checked against the generic-client
+// denylist below before it's ever counted as a finding.
+const AI_INVOKE_REGEX = /\b([A-Za-z_$][\w.]*)\.(invoke|stream|ainvoke|astream)\(/;
+
+// `.invoke(`/`.stream(` are common method names far beyond agent frameworks
+// (httpx/requests-style HTTP clients, RxJS, generic RPC dispatchers, ...) —
+// matching the bare method name alone flags things like
+// `await client.stream("POST", url)` in an httpx test as an "ungoverned AI
+// invocation", which it isn't. The catalog's own stated scope is
+// LangChain/LangGraph-style chains/agents specifically (see catalog.js's
+// ai-governance entry: "Pass a recursion_limit (LangGraph/LangChain) or
+// equivalent"), so only flag a file that actually references one of those
+// frameworks — a plain HTTP client never does.
+const AGENT_FRAMEWORK_HINT_REGEX = /\b(langchain|langgraph|autogen|crewai)\b/i;
+
+// Second, independent backstop on top of the file-wide framework hint
+// above: even inside a file that genuinely uses LangChain/LangGraph
+// elsewhere, an httpx/requests-style HTTP client is commonly named
+// `client`/`http`/`session`/etc. and calling `.stream(`/`.invoke(` on
+// *that* object is still not an agent invocation — real case hit in
+// practice: a hand-rolled OpenAI-compatible streaming client doing
+// `async with httpx.AsyncClient(...) as client: ... client.stream(...)`,
+// flagged purely because the receiver was named `client`.
+const GENERIC_CLIENT_RECEIVER_RE = /^(client|http|httpclient|session|conn|connection|resp|response|req|request)$/i;
+
+// Test files exercise mocked/stubbed AI calls — the runaway-execution risk
+// this guideline exists for is a production-runtime concern, not a testing
+// one, so test paths are excluded even if they happen to reference an agent
+// framework in a fixture/mock.
+const TEST_FILE_REGEX = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)(test_[^/]+\.py|[^/]+_test\.py|[^/]+\.(test|spec)\.[jt]sx?)$/i;
 
 const INJECTION_SINK_REGEXES = [
   /\beval\(/,
@@ -120,9 +149,14 @@ function scanLines(content, regex) {
 /* One function per automated guideline (checkId in catalog.js).
  * Signature: (content, relPath) -> Array<{ line, snippet }> */
 const CHECKS = {
-  aiRecursionLimit(content) {
+  aiRecursionLimit(content, relPath) {
+    if (TEST_FILE_REGEX.test(String(relPath || ''))) return [];
+    if (!AGENT_FRAMEWORK_HINT_REGEX.test(content)) return [];
     if (content.includes('recursion_limit')) return []; // governed — compliant
-    return scanLines(content, AI_INVOKE_REGEX);
+    return scanLines(content, AI_INVOKE_REGEX).filter((h) => {
+      const receiver = h.match[1].split('.').pop();
+      return !GENERIC_CLIENT_RECEIVER_RE.test(receiver);
+    });
   },
 
   noHardcodedSecrets(content) {

@@ -47,6 +47,38 @@ test('noXssSinks: flags raw-HTML sinks, not text-content assignment', () => {
   ).includes('no-xss-sinks'), 'textContent is safe and must not be flagged');
 });
 
+test('aiRecursionLimit: flags an ungoverned LangChain agent invocation', () => {
+  assert.ok(idsFor(
+    'from langchain.agents import AgentExecutor\nresult = executor.invoke({"input": query})\n',
+    'agent.py'
+  ).includes('ai-recursion-limit'));
+});
+
+test('aiRecursionLimit: a LangGraph app with recursion_limit set is compliant', () => {
+  assert.ok(!idsFor(
+    'from langgraph.graph import StateGraph\nresult = app.invoke(state, config={"recursion_limit": 25})\n',
+    'graph.py'
+  ).includes('ai-recursion-limit'));
+});
+
+// Regression test for a real false positive: an httpx AsyncClient's
+// .stream() (an HTTP call, nothing to do with LangChain/LangGraph) was
+// flagged as an "ungoverned AI invocation" purely because the bare method
+// name matched — .invoke()/.stream() are common well beyond agent frameworks.
+test('aiRecursionLimit: an httpx client.stream() call is not flagged (not an agent framework)', () => {
+  assert.ok(!idsFor(
+    'async def call_api(client):\n    async with client.stream("POST", "/x") as r:\n        return await r.aread()\n',
+    'app.py'
+  ).includes('ai-recursion-limit'));
+});
+
+test('aiRecursionLimit: a LangChain call inside a test file is not flagged (production-runtime concern, not testing)', () => {
+  assert.ok(!idsFor(
+    'from langchain.chains import LLMChain\nasync def test_chat(monkeypatch, client):\n    async with client.stream("POST", "/x") as r:\n        assert r.status_code == 200\n',
+    'tests/test_assistant.py'
+  ).includes('ai-recursion-limit'));
+});
+
 test('noWeakCrypto: flags MD5/SHA-1/DES, not modern algorithms', () => {
   assert.ok(idsFor(
     "const h = crypto.createHash('md5').update(pw).digest('hex');\n",
