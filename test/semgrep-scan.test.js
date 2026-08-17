@@ -19,7 +19,7 @@ test('checkSemanticSast: semgrep is enabled by default', withServerEnv({}, async
   const cfg = mod.loadConfig();
   assert.equal(cfg.security.semgrep.enabled, true);
   assert.equal(cfg.security.semgrep.binary, 'semgrep');
-  assert.equal(cfg.security.semgrep.config, 'p/security-audit,p/owasp-top-ten');
+  assert.equal(cfg.security.semgrep.config, `p/security-audit,p/owasp-top-ten,${path.join(__dirname, '..', 'ignite-auth-correctness-rules.yaml')}`);
 }));
 
 test('checkSemanticSast: SEMGREP_* env vars are wired into CONFIG.security.semgrep', withServerEnv(
