@@ -108,6 +108,15 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (org, repo, check_name, rel_path)
     );
+    CREATE TABLE IF NOT EXISTS manifest_scan_cache (
+      tool          TEXT NOT NULL,
+      ecosystem     TEXT NOT NULL,
+      content_hash  TEXT NOT NULL,
+      tool_version  TEXT NOT NULL,
+      findings_json TEXT NOT NULL,
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tool, ecosystem, content_hash, tool_version)
+    );
     CREATE TABLE IF NOT EXISTS workflow_cache (
       repo         TEXT NOT NULL,
       filename     TEXT NOT NULL,
@@ -263,6 +272,24 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     insertFileScanCache: db.prepare(
       `INSERT INTO file_scan_cache (org, repo, check_name, rel_path, hash, findings_json)
        VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+
+    // Global (no org/repo) — a given manifest's exact byte content, scanned
+    // by a given tool version, has a deterministic result regardless of
+    // which project/org happened to submit it, so caching at this level
+    // benefits every future onboarding with the same dependency set, not
+    // just repeat runs of the same repo. tool_version is part of the key
+    // so upgrading the scanner (new rules, new detections) invalidates old
+    // results automatically rather than silently trusting a stale verdict.
+    getManifestScanCache: db.prepare(
+      `SELECT findings_json FROM manifest_scan_cache
+       WHERE tool = ? AND ecosystem = ? AND content_hash = ? AND tool_version = ?`
+    ),
+    upsertManifestScanCache: db.prepare(
+      `INSERT INTO manifest_scan_cache (tool, ecosystem, content_hash, tool_version, findings_json)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(tool, ecosystem, content_hash, tool_version)
+       DO UPDATE SET findings_json = excluded.findings_json, updated_at = datetime('now')`
     ),
 
     // Formatted with the "excluded" reference on its own line — not a
@@ -462,6 +489,17 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
         db.exec('ROLLBACK');
         throw e;
       }
+    },
+
+    /* ---------------- manifest-level tool-result cache (e.g. GuardDog) ---------------- */
+
+    getManifestScanCache(tool, ecosystem, contentHash, toolVersion) {
+      const row = stmt.getManifestScanCache.get(tool, ecosystem, contentHash, toolVersion);
+      return row ? JSON.parse(row.findings_json) : null;
+    },
+
+    saveManifestScanCache(tool, ecosystem, contentHash, toolVersion, findings) {
+      stmt.upsertManifestScanCache.run(tool, ecosystem, contentHash, toolVersion, JSON.stringify(findings));
     },
 
     /* ---------------- governance workflow cache (skip re-fetching unchanged workflows) ---------------- */
