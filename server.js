@@ -36,11 +36,13 @@ const { loadConfig } = require('./config');
 const {
   collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues, validateOverrides, scoreForIssue,
 } = require('./override-engine');
+const {
+  SKIP_DIRS, SKIP_DIRS_REGEX, BINARY_EXTENSIONS, looksBinary, buildSnippet, walkFiles, mapWithConcurrency, hashBuffer,
+} = require('./lib/fs-utils');
 
 /* ------------------------------------------------------------------ */
 /* Configuration: config.json < environment variables                  */
 /* ------------------------------------------------------------------ */
-
 
 const CONFIG = loadConfig();
 
@@ -373,41 +375,6 @@ const SPECTRAL_RULESET = String(CONFIG.api.spectral.ruleset || path.join(__dirna
 
 const AI_INVOKE_REGEX = /\.(invoke|stream|ainvoke|astream)\(/;
 
-const SKIP_DIRS = Object.freeze(new Set([
-  'node_modules',
-  '.git',
-  '.next',
-  'dist',
-  'build',
-  '__pycache__',
-  '.venv',
-  'venv',
-  'vendor',
-  '.idea',
-  '.vscode',
-])) ;
-
-// Same directory names as SKIP_DIRS, as a regex for external tools that
-// take their own exclude pattern (gocloc's --not-match-d, used with
-// --fullpath) instead of doing the walk themselves — keeps
-// generateLocMetrics's file set in sync with walkFiles's, so a language
-// filtered in Studio's LOC Metrics view always has matching entries in the
-// Studio file tree built from walkFiles. Must be anchored on '/' on both
-// sides (not '^...$') — gocloc matches --not-match-d against the full
-// path, so an unanchored-at-both-ends alternation like '^(node_modules|...)$'
-// only ever matches a path consisting of nothing but that one directory
-// name, never a real nested path like '.../node_modules/pkg/native.c'.
-const SKIP_DIRS_REGEX = `(^|/)(${[...SKIP_DIRS].map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(/|$)`;
-
-const BINARY_EXTENSIONS = Object.freeze(new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
-  '.pdf', '.zip', '.gz', '.tar', '.bz2', '.7z', '.rar',
-  '.woff', '.woff2', '.ttf', '.otf', '.eot',
-  '.mp3', '.mp4', '.mov', '.avi', '.mkv', '.wav', '.ogg',
-  '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a', '.class',
-  '.pyc', '.wasm', '.jar', '.db', '.sqlite', '.sqlite3',
-])) ;
-
 const GITHUB_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // org login rules
 const REPO_NAME_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
 const SAFE_UPLOAD_SEGMENT_REGEX = /^[^\0/\\]+$/;
@@ -416,78 +383,6 @@ const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'g
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-function looksBinary(buffer) {
-  // NUL byte in the first 8 KB is the classic binary heuristic.
-  const slice = buffer.subarray(0, 8192);
-  return slice.includes(0);
-}
-
-/**
- * Captures a few lines of context around a finding so the review UI can show
- * a code preview with the offending span highlighted, instead of a bare
- * file:line reference.
- */
-function buildSnippet(content, lineNumber, { colStart, colEnd, radius = 3, endLine } = {}) {
-  if (typeof content !== 'string' || !Number.isInteger(lineNumber) || lineNumber < 1) return null;
-  const lines = content.split(/\r?\n/);
-  const idx = lineNumber - 1;
-  if (idx >= lines.length) return null;
-
-  // A multi-line finding (e.g. a jscpd duplicate block) passes endLine so
-  // every affected row gets marked, not just the first — the whole span is
-  // the finding, not just where it starts.
-  const highlightEndLine = Number.isInteger(endLine) && endLine > lineNumber ? endLine : lineNumber;
-  const endIdx = Math.min(lines.length - 1, highlightEndLine - 1);
-
-  const start = Math.max(0, idx - radius);
-  const end = Math.min(lines.length - 1, endIdx + radius);
-  const code = [];
-  for (let i = start; i <= end; i++) code.push({ number: i + 1, text: lines[i] });
-
-  const snippet = { startLine: start + 1, lines: code, highlightLine: lineNumber };
-  if (highlightEndLine > lineNumber) snippet.highlightEndLine = highlightEndLine;
-  if (Number.isInteger(colStart) && Number.isInteger(colEnd) && colEnd > colStart) {
-    snippet.highlightStart = colStart;
-    snippet.highlightEnd = colEnd;
-  }
-  return snippet;
-}
-
-async function* walkFiles(root) {
-  const entries = await fsp.readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) continue; // never follow symlinks out of staging
-    const full = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      yield* walkFiles(full);
-    } else if (entry.isFile()) {
-      yield full;
-    }
-  }
-}
-
-// Runs `mapper` over `items` with at most `limit` in flight at once, but
-// resolves to results in the *original* item order regardless of which
-// finishes first — checkSecrets/checkAiGovernance's per-file I/O (stat +
-// readFile) is otherwise awaited one file at a time even though nothing
-// about reading file N depends on file N-1 finishing first, which is pure
-// wasted wall time on repos with many small files. Bounded (not
-// unbounded Promise.all) so a repo with thousands of files doesn't try to
-// open them all as file descriptors simultaneously.
-async function mapWithConcurrency(items, limit, mapper) {
-  const results = new Array(items.length);
-  let next = 0;
-  async function worker() {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await mapper(items[i], i);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
 
 function runTool(tool, args, cwd, { env: envOverride = {}, allowedExitCodes = [0] } = {}) {
   return new Promise((resolve, reject) => {
@@ -936,10 +831,6 @@ async function loadGitignorePatterns(root) {
   } catch {
     return []; // no .gitignore at the project root — nothing to exempt
   }
-}
-
-function hashBuffer(buffer) {
-  return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
 /**
