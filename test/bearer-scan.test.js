@@ -36,6 +36,12 @@ async function makeDiffableGitRepo() {
   return dir;
 }
 
+function hasRealGit() {
+  return new Promise((resolve) => {
+    execFile('git', ['--version'], (err) => resolve(!err));
+  });
+}
+
 function hasRealBearer() {
   return new Promise((resolve) => {
     execFile('bearer', ['version'], (err) => resolve(!err));
@@ -145,7 +151,11 @@ test('checkPiiDataFlow: real bearer binary end-to-end on a fresh (non-git) proje
   })();
 });
 
-test('resolveBearerDiffBase: a single-commit repo (fresh upload) has no diffable base — returns null', async () => {
+test('resolveBearerDiffBase: a single-commit repo (fresh upload) has no diffable base — returns null', async (t) => {
+  if (!(await hasRealGit())) {
+    t.skip('git not installed on PATH');
+    return;
+  }
   const dir = await makeTempProject({ 'app.js': 'console.log(1);\n' });
   await runGit(dir, ['init', '-q', '-b', 'main']);
   await runGit(dir, ['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'add', '-A']);
@@ -159,7 +169,11 @@ test('resolveBearerDiffBase: a single-commit repo (fresh upload) has no diffable
   assert.equal(await resolveBearerDiffBase(dir), null);
 });
 
-test('resolveBearerDiffBase: HEAD genuinely ahead of origin/main — returns the base ref', async () => {
+test('resolveBearerDiffBase: HEAD genuinely ahead of origin/main — returns the base ref', async (t) => {
+  if (!(await hasRealGit())) {
+    t.skip('git not installed on PATH');
+    return;
+  }
   const dir = await makeDiffableGitRepo();
   const { runTool } = createToolRunner({});
   const { resolveBearerDiffBase } = createPiiDataFlowCheck({ runTool, fsUtils: {}, config: { enabled: true } });
@@ -173,7 +187,11 @@ test('resolveBearerDiffBase: no git repo at all — returns null, never throws',
   assert.equal(await resolveBearerDiffBase(dir), null);
 });
 
-test('checkPiiDataFlow: passes --diff to bearer when a genuine ancestor commit exists', async () => {
+test('checkPiiDataFlow: passes --diff to bearer when a genuine ancestor commit exists', async (t) => {
+  if (!(await hasRealGit())) {
+    t.skip('git not installed on PATH');
+    return;
+  }
   // A fake bearer that records its own argv (unlike makeFakeBearer, which
   // only ever returns canned JSON regardless of args) so the test can
   // assert on exactly what flags checkPiiDataFlow invoked it with.
