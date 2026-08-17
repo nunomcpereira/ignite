@@ -77,9 +77,19 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
   // using --diff there would make Ignite blind to real PII in a brand-new
   // project. Only reach for --diff when a distinct ancestor commit exists
   // (the pre-push-hook/dogfooding case: local HEAD is genuinely ahead of
-  // origin's default branch by the commit(s) being pushed).
+  // origin's default branch by the commit(s) being pushed) AND the working
+  // tree is clean — bearer's --diff literally `git switch --detach`es
+  // between the base and target commits inside the directory it scans, and
+  // hard-refuses outright ("uncommitted changes found... commit or stash")
+  // if there's anything uncommitted, which checkPiiDataFlow's outer
+  // try/catch would otherwise turn into a silent zero-findings "scan",
+  // not a fallback to the (slower but safe) full scan. Confirmed both
+  // failure modes empirically before writing this guard.
   async function resolveBearerDiffBase(root) {
     try {
+      const { stdout: statusOut } = await runTool('git', ['status', '--porcelain'], root);
+      if (statusOut.trim()) return null; // dirty working tree — --diff would hard-error
+
       const { stdout: headOut } = await runTool('git', ['rev-parse', 'HEAD'], root);
       const head = headOut.trim();
       if (!head) return null;

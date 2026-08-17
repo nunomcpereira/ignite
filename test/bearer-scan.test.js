@@ -180,6 +180,24 @@ test('resolveBearerDiffBase: HEAD genuinely ahead of origin/main — returns the
   assert.equal(await resolveBearerDiffBase(dir), 'origin/main');
 });
 
+// bearer's own --diff mode hard-errors ("uncommitted changes found... commit
+// or stash") rather than silently scanning anyway when the working tree
+// doesn't match HEAD - which checkPiiDataFlow's outer try/catch would
+// otherwise turn into a silent zero-findings "scan" instead of falling back
+// to the (slower but safe) full scan. resolveBearerDiffBase must refuse
+// --diff itself before that ever happens.
+test('resolveBearerDiffBase: dirty working tree (uncommitted changes) — returns null, never risks bearer\'s hard error', async (t) => {
+  if (!(await hasRealGit())) {
+    t.skip('git not installed on PATH');
+    return;
+  }
+  const dir = await makeDiffableGitRepo();
+  await fs.writeFile(path.join(dir, 'app.js'), 'console.log("uncommitted edit");\n');
+  const { runTool } = createToolRunner({});
+  const { resolveBearerDiffBase } = createPiiDataFlowCheck({ runTool, fsUtils: {}, config: { enabled: true } });
+  assert.equal(await resolveBearerDiffBase(dir), null);
+});
+
 test('resolveBearerDiffBase: no git repo at all — returns null, never throws', async () => {
   const dir = await makeTempProject({ 'app.js': 'console.log(1);\n' });
   const { runTool } = createToolRunner({});

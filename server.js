@@ -522,6 +522,29 @@ async function stageExistingProject(sourceDir, destDir, log) {
     fileCount++;
   }
 
+  // walkFiles deliberately skips .git (it's in SKIP_DIRS) during the
+  // per-file copy above, so a staged local-path project (the pre-push
+  // hook's real usage: projectPath is `git rev-parse --show-toplevel`,
+  // a genuine working repo) would otherwise lose its entire git history —
+  // and with it, checkPiiDataFlow's ability to use bearer's `--diff` mode
+  // (resolveBearerDiffBase needs a real origin/HEAD-tracked ancestor commit
+  // physically present in the scanned directory; bearer's --diff literally
+  // `git switch`es between commits inside the directory it's told to scan).
+  // Copied as a best-effort extra, not size-capped against
+  // MAX_EXTRACTED_BYTES like real project files above — .git isn't part of
+  // what's being reviewed/pushed, just auxiliary metadata that makes the
+  // incremental PII scan possible. Any failure here (no .git, permissions,
+  // whatever) just means checkPiiDataFlow falls back to its existing
+  // full-scan behavior — never blocks staging.
+  try {
+    const sourceGitDir = path.join(safeSource, '.git');
+    if ((await fsp.stat(sourceGitDir).catch(() => null))?.isDirectory()) {
+      await fsp.cp(sourceGitDir, path.join(destDir, '.git'), { recursive: true });
+    }
+  } catch (e) {
+    log(`⚠ Could not copy .git history into the staging dir (non-blocking, incremental PII scanning will fall back to a full scan): ${e.message}`);
+  }
+
   log(`Staged existing project: ${fileCount} files (${(totalBytes / 1024).toFixed(1)} KB).`);
   return { fileCount, totalBytes };
 }
