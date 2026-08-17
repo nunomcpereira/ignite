@@ -401,6 +401,11 @@
           <div class="sticky top-0 bg-white border-b border-slate-100">
             <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Files</p>
             <input id="studioTreeFilter" type="text" placeholder="Filter files…" class="w-[calc(100%-1.5rem)] mx-3 my-2 text-[11px] px-2 py-1 rounded border border-slate-200" />
+            <p class="px-3 pb-2 text-[10px] text-slate-400" title="Jump to the next file with an error / with an error-or-warning / back to where you jumped from">
+              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono">e</kbd> next error
+              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono ml-1.5">w</kbd> next issue
+              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono ml-1.5">p</kbd> back
+            </p>
           </div>
           <div id="studioTree" class="text-xs flex-1 overflow-y-auto"></div>
         </div>
@@ -1785,7 +1790,7 @@
     /* while the review gate is paused for this job (see server.js's    */
     /* reviewActive gate — every request below 409s once it's not).     */
     /* ------------------------------------------------------------ */
-    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null, historical: false };
+    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null, historical: false, navHistory: [] };
 
     // Historical Studio (a past project, no staging dir left on disk) can
     // only browse files that have a persisted finding, each showing only
@@ -1823,6 +1828,7 @@
       studioState.categoryFilter = null;
       studioState.languageFilter = null;
       studioState.locFilesByLanguage = null;
+      studioState.navHistory = [];
       $('studioSubtitle').textContent = `job ${jobId}`;
       if (fromReview) {
         // The review modal's Continue/Stop buttons resolve the review-gate
@@ -1892,6 +1898,7 @@
       studioState.categoryFilter = null;
       studioState.languageFilter = null;
       studioState.locFilesByLanguage = null;
+      studioState.navHistory = [];
       $('studioSubtitle').textContent = `${org}/${repo} — historical, read-only`;
       $('studioView').classList.remove('hidden');
       studioShowError(null);
@@ -2712,6 +2719,70 @@
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
       if (e.key === 'ArrowDown') { e.preventDefault(); studioNavigateIssue(1); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); studioNavigateIssue(-1); }
+    });
+
+    // The tree's own DOM order (not studioState.lastFiles' raw order) is
+    // the source of truth for "next" — it already reflects the sorted,
+    // nested dir/file order the user sees, and whatever category/severity/
+    // language filter (see renderStudioTree) currently narrows it, without
+    // this needing to duplicate that sorting/filtering logic.
+    function studioVisibleFileOrder() {
+      return [...$('studioTree').querySelectorAll('.studio-file-btn')].map((btn) => btn.dataset.path);
+    }
+
+    // 'e' -> next file (after the current one, wrapping around) that has at
+    // least one error; 'w' -> next file with an error OR a warning. Jumps
+    // straight to the first matching-severity issue in that file (not just
+    // the file itself), so the review workflow is "press e, see the next
+    // error" rather than "press e, then still have to click into it".
+    // Records where you jumped from onto navHistory so 'p' can retrace it.
+    async function studioJumpToNextFileWithSeverity(requireError) {
+      const order = studioVisibleFileOrder();
+      if (order.length === 0) return;
+      const matches = (relPath) => {
+        const issues = studioIssuesForFile(relPath);
+        return requireError ? issues.some((i) => i.severity === 'error') : issues.length > 0;
+      };
+      const startIdx = order.indexOf(studioState.currentPath);
+      let target = null;
+      for (let step = 1; step <= order.length; step++) {
+        const candidate = order[(startIdx + step + order.length) % order.length];
+        if (matches(candidate)) { target = candidate; break; }
+      }
+      if (!target) {
+        studioShowError(requireError ? 'No files with errors.' : 'No files with errors or warnings.');
+        return;
+      }
+      if (studioState.currentPath) {
+        studioState.navHistory.push({ path: studioState.currentPath, issueId: studioState.selectedIssue?.id || null });
+      }
+      await openStudioFile(target);
+      const targetIssues = studioIssuesForFile(target);
+      const firstMatch = requireError
+        ? targetIssues.find((i) => i.severity === 'error')
+        : targetIssues[0];
+      if (firstMatch) selectStudioIssue(firstMatch);
+    }
+
+    // 'p' -> undo the last 'e'/'w' jump, restoring both the file and (if one
+    // was selected) the exact finding you were looking at before jumping.
+    async function studioNavigateBackInHistory() {
+      const entry = studioState.navHistory.pop();
+      if (!entry) { studioShowError('No previous file to go back to.'); return; }
+      await openStudioFile(entry.path);
+      if (entry.issueId) {
+        const issue = studioIssuesForFile(entry.path).find((i) => i.id === entry.issueId);
+        if (issue) selectStudioIssue(issue);
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if ($('studioView').classList.contains('hidden')) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'e') { e.preventDefault(); studioJumpToNextFileWithSeverity(true); }
+      else if (e.key === 'w') { e.preventDefault(); studioJumpToNextFileWithSeverity(false); }
+      else if (e.key === 'p') { e.preventDefault(); studioNavigateBackInHistory(); }
     });
 
     async function selectStudioIssue(issue) {
