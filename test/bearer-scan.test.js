@@ -3,10 +3,38 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFile } = require('node:child_process');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
 
 const { withServerEnv, makeTempProject, makeFakeBearer } = require('./helpers');
+const { createPiiDataFlowCheck } = require('../checks/pii-dataflow');
+const { createToolRunner } = require('../lib/tool-runner');
 
 const noopLog = () => {};
+
+async function runGit(cwd, args) {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  });
+}
+
+// Real git operations (no fake bearer needed) — resolveBearerDiffBase only
+// ever shells out to git, never to bearer itself.
+async function makeDiffableGitRepo() {
+  const dir = await makeTempProject({ 'app.js': 'console.log(1);\n' });
+  await runGit(dir, ['init', '-q', '-b', 'main']);
+  await runGit(dir, ['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'add', '-A']);
+  await runGit(dir, ['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'base']);
+  await runGit(dir, ['remote', 'add', 'origin', 'https://ignite.local/scratch.git']);
+  await runGit(dir, ['update-ref', 'refs/remotes/origin/main', 'refs/heads/main']);
+  await runGit(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+  // Advance local HEAD past origin/main, like the pre-push-hook scenario
+  // (a new commit about to be pushed, not yet reflected on origin).
+  await fs.writeFile(path.join(dir, 'app.js'), 'console.log(2);\n');
+  await runGit(dir, ['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'commit', '-q', '-am', 'second commit']);
+  return dir;
+}
 
 function hasRealBearer() {
   return new Promise((resolve) => {
@@ -115,4 +143,88 @@ test('checkPiiDataFlow: real bearer binary end-to-end on a fresh (non-git) proje
     assert.ok(findings.every((f) => f.tool === 'bearer'));
     assert.ok(findings.every((f) => f.file === 'app.js'));
   })();
+});
+
+test('resolveBearerDiffBase: a single-commit repo (fresh upload) has no diffable base — returns null', async () => {
+  const dir = await makeTempProject({ 'app.js': 'console.log(1);\n' });
+  await runGit(dir, ['init', '-q', '-b', 'main']);
+  await runGit(dir, ['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'add', '-A']);
+  await runGit(dir, ['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'only commit']);
+  await runGit(dir, ['remote', 'add', 'origin', 'https://ignite.local/scratch.git']);
+  await runGit(dir, ['update-ref', 'refs/remotes/origin/main', 'refs/heads/main']);
+  await runGit(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+
+  const { runTool } = createToolRunner({});
+  const { resolveBearerDiffBase } = createPiiDataFlowCheck({ runTool, fsUtils: {}, config: { enabled: true } });
+  assert.equal(await resolveBearerDiffBase(dir), null);
+});
+
+test('resolveBearerDiffBase: HEAD genuinely ahead of origin/main — returns the base ref', async () => {
+  const dir = await makeDiffableGitRepo();
+  const { runTool } = createToolRunner({});
+  const { resolveBearerDiffBase } = createPiiDataFlowCheck({ runTool, fsUtils: {}, config: { enabled: true } });
+  assert.equal(await resolveBearerDiffBase(dir), 'origin/main');
+});
+
+test('resolveBearerDiffBase: no git repo at all — returns null, never throws', async () => {
+  const dir = await makeTempProject({ 'app.js': 'console.log(1);\n' });
+  const { runTool } = createToolRunner({});
+  const { resolveBearerDiffBase } = createPiiDataFlowCheck({ runTool, fsUtils: {}, config: { enabled: true } });
+  assert.equal(await resolveBearerDiffBase(dir), null);
+});
+
+test('checkPiiDataFlow: passes --diff to bearer when a genuine ancestor commit exists', async () => {
+  // A fake bearer that records its own argv (unlike makeFakeBearer, which
+  // only ever returns canned JSON regardless of args) so the test can
+  // assert on exactly what flags checkPiiDataFlow invoked it with.
+  const dir = await makeTempProject({});
+  const argvLog = path.join(dir, 'bearer-argv.json');
+  const scriptDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-bearer-argv-'));
+  const scriptPath = path.join(scriptDir, 'bearer');
+  await fs.writeFile(scriptPath, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === 'version') { process.stdout.write('bearer version 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'scan') {
+  fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(args));
+  process.stdout.write('{}');
+  process.exit(0);
+}
+process.exit(1);
+`, { mode: 0o755 });
+
+  const repoDir = await makeDiffableGitRepo();
+  await withServerEnv({ BEARER_ENABLED: 'true', BEARER_BINARY: scriptPath }, async (mod) => {
+    await mod.checkPiiDataFlow(repoDir, noopLog);
+  })();
+
+  const argv = JSON.parse(await fs.readFile(argvLog, 'utf8'));
+  assert.ok(argv.includes('--diff'), `expected --diff in bearer argv, got: ${argv.join(' ')}`);
+});
+
+test('checkPiiDataFlow: does NOT pass --diff for a fresh (single-commit, no ancestor) project', async () => {
+  const dir = await makeTempProject({ 'app.js': 'console.log(1);\n' });
+  const argvLog = path.join(dir, 'bearer-argv.json');
+  const scriptDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-bearer-argv-'));
+  const scriptPath = path.join(scriptDir, 'bearer');
+  await fs.writeFile(scriptPath, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === 'version') { process.stdout.write('bearer version 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'scan') {
+  fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(args));
+  process.stdout.write('{}');
+  process.exit(0);
+}
+process.exit(1);
+`, { mode: 0o755 });
+
+  await withServerEnv({ BEARER_ENABLED: 'true', BEARER_BINARY: scriptPath }, async (mod) => {
+    // No git repo pre-staged — ensureGitContextForBearer bootstraps a
+    // throwaway single-commit one, which has no ancestor to diff against.
+    await mod.checkPiiDataFlow(dir, noopLog);
+  })();
+
+  const argv = JSON.parse(await fs.readFile(argvLog, 'utf8'));
+  assert.ok(!argv.includes('--diff'), `expected no --diff in bearer argv for a fresh project, got: ${argv.join(' ')}`);
 });

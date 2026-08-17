@@ -44,16 +44,70 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
           'commit', '-q', '-m', 'ignite-bearer-scan', '--no-verify', '--allow-empty',
         ], root);
       }
-      const { stdout: branch } = await runTool('git', ['symbolic-ref', '--short', 'HEAD'], root);
-      const branchName = branch.trim() || 'main';
       const hasOrigin = await runTool('git', ['remote', 'get-url', 'origin'], root).then(() => true, () => false);
       if (!hasOrigin) {
+        // Only fill in a fake origin + remote-tracking HEAD when there
+        // wasn't a real one already — a genuine clone (the pre-push-hook/
+        // dogfooding case, or a scheduled re-check's clone) already has an
+        // accurate refs/remotes/origin/HEAD pointing at wherever origin's
+        // default branch actually is. Overwriting it unconditionally here
+        // (as this used to do) would silently reset that ref to match
+        // current HEAD on every single scan, destroying the exact signal
+        // resolveBearerDiffBase below depends on to tell "fresh upload,
+        // nothing to diff against" apart from "real history, safe to diff".
+        const { stdout: branch } = await runTool('git', ['symbolic-ref', '--short', 'HEAD'], root);
+        const branchName = branch.trim() || 'main';
         await runTool('git', ['remote', 'add', 'origin', 'https://ignite.local/scratch.git'], root);
+        await runTool('git', ['update-ref', `refs/remotes/origin/${branchName}`, `refs/heads/${branchName}`], root);
+        await runTool('git', ['symbolic-ref', `refs/remotes/origin/HEAD`, `refs/remotes/origin/${branchName}`], root);
       }
-      await runTool('git', ['update-ref', `refs/remotes/origin/${branchName}`, `refs/heads/${branchName}`], root);
-      await runTool('git', ['symbolic-ref', `refs/remotes/origin/HEAD`, `refs/remotes/origin/${branchName}`], root);
     } catch (e) {
       log?.(`⚠ Could not fully stage a git context for bearer (non-blocking): ${e.message}`);
+    }
+  }
+
+  // Bearer's own `--diff` mode re-analyzes only the files that changed
+  // between a base commit and HEAD (verified empirically: ~34s full scan vs
+  // ~2.5s for a single-file diff on this repo, with correct new-finding
+  // detection) — a real ~13x speedup, but only safe when there's a genuine
+  // "before" state to diff against. Diffing a commit against itself (the
+  // single-commit repo ensureGitContextForBearer bootstraps for a fresh
+  // ZIP/folder upload with no prior git history) silently returns *zero*
+  // findings, not "everything", since nothing looks different from itself —
+  // using --diff there would make Ignite blind to real PII in a brand-new
+  // project. Only reach for --diff when a distinct ancestor commit exists
+  // (the pre-push-hook/dogfooding case: local HEAD is genuinely ahead of
+  // origin's default branch by the commit(s) being pushed).
+  async function resolveBearerDiffBase(root) {
+    try {
+      const { stdout: headOut } = await runTool('git', ['rev-parse', 'HEAD'], root);
+      const head = headOut.trim();
+      if (!head) return null;
+
+      let base = '';
+      try {
+        const { stdout } = await runTool('git', ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], root);
+        base = stdout.trim().replace(/^refs\/remotes\//, '');
+      } catch { /* origin/HEAD not set — try common default-branch names below */ }
+      if (!base) {
+        for (const candidate of ['origin/main', 'origin/master']) {
+          try {
+            await runTool('git', ['rev-parse', '--verify', '--quiet', candidate], root);
+            base = candidate;
+            break;
+          } catch { /* try next candidate */ }
+        }
+      }
+      if (!base) return null;
+
+      const { stdout: baseShaOut } = await runTool('git', ['rev-parse', '--verify', '--quiet', base], root);
+      const baseSha = baseShaOut.trim();
+      if (!baseSha || baseSha === head) return null; // nothing to diff against
+
+      await runTool('git', ['merge-base', '--is-ancestor', base, 'HEAD'], root); // throws if base isn't a real ancestor of HEAD
+      return base;
+    } catch {
+      return null;
     }
   }
 
@@ -84,11 +138,16 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
     }
 
     await ensureGitContextForBearer(root, log);
-    log?.('Engine: Bearer CLI (External) — tracing sensitive data flows (PII/GDPR)...');
+    const diffBase = await resolveBearerDiffBase(root);
+    const args = ['scan', root, '--format', 'json', '--quiet', '--disable-version-check', '--exit-code', '0'];
+    if (diffBase) {
+      args.push('--diff');
+      log?.(`Engine: Bearer CLI (External) — incremental scan (--diff against ${diffBase}, only changed files re-analyzed)...`);
+    } else {
+      log?.('Engine: Bearer CLI (External) — tracing sensitive data flows (PII/GDPR)...');
+    }
     try {
-      const { stdout } = await runTool('bearer', [
-        'scan', root, '--format', 'json', '--quiet', '--disable-version-check', '--exit-code', '0',
-      ], root);
+      const { stdout } = await runTool('bearer', args, root);
       const data = stdout.trim() ? JSON.parse(stdout) : {};
       const findings = [];
       for (const [severity, entries] of Object.entries(data)) {
@@ -137,7 +196,7 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
     }
   }
 
-  return { checkPiiDataFlow, bearerTooling, ensureGitContextForBearer };
+  return { checkPiiDataFlow, bearerTooling, ensureGitContextForBearer, resolveBearerDiffBase };
 }
 
 module.exports = { createPiiDataFlowCheck };
