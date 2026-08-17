@@ -1598,55 +1598,6 @@ async function recordOverrides({ projectId, jobId, org, repo, phase, actor, appl
 /* Pipeline endpoint (streams NDJSON events)                           */
 /* ------------------------------------------------------------------ */
 
-/* Safe subset of config for the frontend. `orgs` accepts a comma-separated
-   string or an array; first entry is the default proposal. */
-app.get('/api/config', async (req, res) => {
-  const raw = CONFIG.github.orgs;
-  const orgs = (Array.isArray(raw) ? raw : String(raw).split(','))
-    .map((s) => String(s).trim())
-    .filter(Boolean);
-  // Phase 4 still runs everything else (secrets/AI-governance/IaC/SAST/
-  // etc.) with no LLM configured or reachable — only its LLM deep-scan
-  // sub-check is skipped — so its displayed name shouldn't claim an "AI"
-  // check ran when it didn't. Only swaps the *unmodified* default title;
-  // an org that already customized phase 4's title via config.json's
-  // `phases` override is left alone.
-  const aiAvailable = await llmAvailableCached();
-  const defaultPhase4Title = DEFAULT_PHASE_META.find((d) => d.id === 4)?.title;
-  const phases = PHASE_META.map((p) => {
-    if (p.id !== 4 || aiAvailable || p.title !== defaultPhase4Title) return p;
-    return { ...p, title: 'Security & Compliance Scan' };
-  });
-  res.json({ orgs, phases, version: IGNITE_VERSION });
-});
-
-// Status of the optional external tools Ignite integrates with but doesn't
-// require — each one soft-skips to a built-in fallback when missing, so this
-// is purely informational (drives the "connected/disconnected" pills in the
-// UI's top-right Tools panel), never gates anything itself.
-app.get('/api/tools/status', async (req, res) => {
-  const [ort, licensee, gitleaks, trivy, trivyImage, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog] = await Promise.all([
-    ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), trivyImageTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(),
-  ]);
-  res.json({
-    ort: { ...ort, enabled: true },
-    licensee: { ...licensee, enabled: true },
-    gitleaks: { ...gitleaks, enabled: GITLEAKS_ENABLED },
-    trivy: { ...trivy, enabled: TRIVY_ENABLED },
-    trivyImage: { ...trivyImage, enabled: TRIVY_IMAGE_ENABLED },
-    checkov: { ...checkov, enabled: CHECKOV_ENABLED },
-    hadolint: { ...hadolint, enabled: HADOLINT_ENABLED },
-    syft: { ...syft, enabled: SYFT_ENABLED },
-    cosign: { ...cosign, enabled: COSIGN_ENABLED },
-    semgrep: { ...semgrep, enabled: SEMGREP_ENABLED },
-    bearer: { ...bearer, enabled: BEARER_ENABLED },
-    jscpd: { ...jscpd, enabled: JSCPD_ENABLED },
-    gocloc: { ...gocloc, enabled: GOCLOC_ENABLED },
-    spectral: { ...spectral, enabled: SPECTRAL_ENABLED },
-    guarddog: { ...guarddog, enabled: GUARDDOG_ENABLED },
-  });
-});
-
 /* Onboarding history: project list, per-project steps + documents, and
    document download. Document blobs never leave the DB except via download. */
 app.get('/api/projects', (req, res) => {
@@ -2069,6 +2020,31 @@ const { generateSbom, generateSbomFallback, syftTooling } = createSbomCheck({
   config: { enabled: SYFT_ENABLED },
   studioManifests: STUDIO_MANIFESTS,
   studioMaxDepsPerManifest: STUDIO_MAX_DEPS_PER_MANIFEST,
+});
+
+const { mountConfigRoutes } = require('./routes/config');
+mountConfigRoutes(app, {
+  config: CONFIG,
+  llmAvailableCached,
+  defaultPhaseMeta: DEFAULT_PHASE_META,
+  phaseMeta: PHASE_META,
+  igniteVersion: IGNITE_VERSION,
+});
+
+const { mountToolsStatusRoutes } = require('./routes/tools-status');
+mountToolsStatusRoutes(app, {
+  toolings: {
+    ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling,
+    checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling,
+    bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling,
+  },
+  enabled: {
+    gitleaksEnabled: GITLEAKS_ENABLED, trivyEnabled: TRIVY_ENABLED, trivyImageEnabled: TRIVY_IMAGE_ENABLED,
+    checkovEnabled: CHECKOV_ENABLED, hadolintEnabled: HADOLINT_ENABLED, syftEnabled: SYFT_ENABLED,
+    cosignEnabled: COSIGN_ENABLED, semgrepEnabled: SEMGREP_ENABLED, bearerEnabled: BEARER_ENABLED,
+    jscpdEnabled: JSCPD_ENABLED, goclocEnabled: GOCLOC_ENABLED, spectralEnabled: SPECTRAL_ENABLED,
+    guarddogEnabled: GUARDDOG_ENABLED,
+  },
 });
 
 // license lookups are immutable per (system, name, version) — cache for the
