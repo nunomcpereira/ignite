@@ -371,222 +371,28 @@ const FILE_SIZE_MAX_LINES = Number(CONFIG.metrics.fileSize.maxLines) || 1000;
 /* Optional spectral-powered API schema lint (see CONFIG.api.spectral) */
 const SPECTRAL_ENABLED = Boolean(CONFIG.api.spectral.enabled);
 const SPECTRAL_BINARY = String(CONFIG.api.spectral.binary || 'spectral');
+
+// See lib/tool-runner.js — a factory, not a bare require, so the resolved
+// binary paths above are threaded in explicitly rather than the module
+// re-deriving them from CONFIG itself (keeps CONFIG-derived state living
+// only in server.js, which is what test/helpers.js's per-test re-require
+// cycle depends on).
+const { createToolRunner } = require('./lib/tool-runner');
+const {
+  ALLOWED_COMMANDS, runTool, runToolStreaming, extractFailureLines,
+  sanitizeCliArg, sanitizeCommand, sanitizeCliArgs, sanitizeCwd,
+  sanitizeAbsoluteProjectPath, sanitizeEnv, sanitizeUploadRelativePath,
+} = createToolRunner({
+  gitleaks: GITLEAKS_BINARY, trivy: TRIVY_BINARY, checkov: CHECKOV_BINARY, hadolint: HADOLINT_BINARY,
+  syft: SYFT_BINARY, cosign: COSIGN_BINARY, semgrep: SEMGREP_BINARY, bearer: BEARER_BINARY,
+  guarddog: GUARDDOG_BINARY, jscpd: JSCPD_BINARY, gocloc: GOCLOC_BINARY, spectral: SPECTRAL_BINARY,
+});
 const SPECTRAL_RULESET = String(CONFIG.api.spectral.ruleset || path.join(__dirname, 'spectral-default-ruleset.yaml'));
 
 const AI_INVOKE_REGEX = /\.(invoke|stream|ainvoke|astream)\(/;
 
 const GITHUB_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // org login rules
 const REPO_NAME_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
-const SAFE_UPLOAD_SEGMENT_REGEX = /^[^\0/\\]+$/;
-const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral', 'guarddog']));
-
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
-
-function runTool(tool, args, cwd, { env: envOverride = {}, allowedExitCodes = [0] } = {}) {
-  return new Promise((resolve, reject) => {
-    const safeTool = sanitizeCommand(tool);
-    const safeArgs = sanitizeCliArgs(args);
-    const safeCwd = sanitizeCwd(cwd);
-    const env = sanitizeEnv({ ...process.env, GIT_TERMINAL_PROMPT: '0', ...envOverride });
-
-    const execute = (command) => execFile(
-      command,
-      safeArgs,
-      { cwd: safeCwd, env, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        // ORT's analyzer exits 2 (not 0) whenever it found issues at/above
-        // its severity threshold — a normal outcome, not a tool failure —
-        // while still writing a complete analyzer-result.json. Callers that
-        // need this (runOrtAnalyze) opt in via allowedExitCodes.
-        if (err && !allowedExitCodes.includes(err.code)) {
-          const detail = (stderr || stdout || err.message || '').trim();
-          reject(new Error(`\`${command} ${safeArgs.join(' ')}\` failed: ${detail}`));
-        } else {
-          resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
-        }
-      }
-    );
-
-    switch (safeTool) {
-      case 'git': return execute('git');
-      case 'gh': return execute('gh');
-      case 'act': return execute('act');
-      case 'docker': return execute('docker');
-      case 'gitleaks': return execute(GITLEAKS_BINARY);
-      case 'licensee': return execute('licensee');
-      case 'ort': return execute('ort');
-      case 'trivy': return execute(TRIVY_BINARY);
-      case 'checkov': return execute(CHECKOV_BINARY);
-      case 'hadolint': return execute(HADOLINT_BINARY);
-      case 'syft': return execute(SYFT_BINARY);
-      case 'cosign': return execute(COSIGN_BINARY);
-      case 'semgrep': return execute(SEMGREP_BINARY);
-      case 'bearer': return execute(BEARER_BINARY);
-      case 'guarddog': return execute(GUARDDOG_BINARY);
-      case 'jscpd': return execute(JSCPD_BINARY);
-      case 'gocloc': return execute(GOCLOC_BINARY);
-      case 'spectral': return execute(SPECTRAL_BINARY);
-      default: return reject(new Error(`Unsupported command: ${safeTool}`));
-    }
-  });
-}
-
-function sanitizeCliArg(value, label) {
-  const s = String(value ?? '');
-  if (!s) throw new Error(`${label} cannot be empty.`);
-  if (/\0|\r|\n/.test(s)) throw new Error(`${label} contains illegal control characters.`);
-  return s;
-}
-
-function sanitizeCommand(cmd) {
-  const safeCmd = sanitizeCliArg(cmd, 'Command');
-  if (!ALLOWED_COMMANDS.has(safeCmd)) {
-    throw new Error(`Command is not allowed: ${safeCmd}`);
-  }
-  return safeCmd;
-}
-
-function sanitizeCliArgs(args) {
-  if (!Array.isArray(args)) throw new Error('Command arguments must be an array.');
-  return args.map((arg, i) => sanitizeCliArg(arg, `Argument #${i + 1}`));
-}
-
-function sanitizeCwd(cwd) {
-  const s = String(cwd ?? '').trim();
-  if (!s) throw new Error('Working directory is required.');
-  if (/\0|\r|\n/.test(s)) throw new Error('Working directory contains illegal control characters.');
-  return s;
-}
-
-function sanitizeAbsoluteProjectPath(projectPath) {
-  const safePath = sanitizeCwd(projectPath);
-  if (!path.isAbsolute(safePath)) {
-    throw new Error('projectPath must be an absolute path.');
-  }
-  return path.resolve(safePath);
-}
-
-function sanitizeEnv(env) {
-  const sanitized = {};
-  for (const [key, value] of Object.entries(env || {})) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-    const str = String(value ?? '');
-    if (/\0/.test(str)) continue;
-    sanitized[key] = str;
-  }
-  return sanitized;
-}
-
-function sanitizeUploadRelativePath(rawPath) {
-  const rel = String(rawPath ?? '').replace(/\\/g, '/').trim();
-  if (!rel || rel.includes('\0')) {
-    throw new Error(`Invalid path in folder upload: ${JSON.stringify(rawPath)}`);
-  }
-  if (rel.startsWith('/') || rel.startsWith('~/') || /^[A-Za-z]:\//.test(rel)) {
-    throw new Error(`Absolute paths are not allowed in folder upload: ${rel}`);
-  }
-
-  const normalized = path.posix.normalize(rel);
-  if (normalized === '.' || normalized.startsWith('../') || normalized.includes('/../')) {
-    throw new Error(`Blocked path traversal entry in folder upload: ${rel}`);
-  }
-
-  for (const segment of normalized.split('/')) {
-    if (!segment || segment === '.' || segment === '..') {
-      throw new Error(`Invalid path segment in folder upload: ${rel}`);
-    }
-    if (!SAFE_UPLOAD_SEGMENT_REGEX.test(segment)) {
-      throw new Error(`Invalid characters in folder upload path: ${rel}`);
-    }
-  }
-  return normalized;
-}
-
-/**
- * Long-running command with live line-by-line output streaming (used for
- * `act`, whose runs take minutes and produce continuous logs).
- */
-// eslint-disable-next-line no-control-regex
-const ANSI_REGEX = /\x1b\[[0-9;]*[a-zA-Z]/g;
-const FAILURE_LINE_REGEX = /❌|::error|error:|fatal:|\bfailure\b/i;
-
-// A non-zero exit code alone ("`act` exited with code 1.") tells you nothing
-// about what actually broke — the real cause is buried in the streamed
-// stdout/stderr. Pull out every line that looks like an actual failure
-// (marked with ❌, "Error:", "fatal:", "Failure -", etc.), deduped, so a
-// caller can either summarize it (extractFailureDetail) or report each one
-// as its own finding instead of one generic "exited with code N" blob.
-function extractFailureLines(lines) {
-  const seen = new Set();
-  const out = [];
-  for (const raw of lines) {
-    const l = raw.replace(ANSI_REGEX, '').trim();
-    if (l && FAILURE_LINE_REGEX.test(l) && !seen.has(l)) { seen.add(l); out.push(l); }
-  }
-  return out;
-}
-
-function runToolStreaming(tool, args, cwd, onLine, { timeoutMs = 15 * 60_000, env = {} } = {}) {
-  return new Promise((resolve, reject) => {
-    const safeTool = sanitizeCommand(tool);
-    const safeArgs = sanitizeCliArgs(args);
-    const safeCwd = sanitizeCwd(cwd);
-    const safeEnv = sanitizeEnv({ ...process.env, GIT_TERMINAL_PROMPT: '0', ...env });
-
-    let child;
-    let commandLabel;
-    switch (safeTool) {
-      case 'git':
-        commandLabel = 'git';
-        child = spawn('git', safeArgs, { cwd: safeCwd, env: safeEnv });
-        break;
-      case 'gh':
-        commandLabel = 'gh';
-        child = spawn('gh', safeArgs, { cwd: safeCwd, env: safeEnv });
-        break;
-      case 'act':
-        commandLabel = 'act';
-        child = spawn('act', safeArgs, { cwd: safeCwd, env: safeEnv });
-        break;
-      case 'docker':
-        commandLabel = 'docker';
-        child = spawn('docker', safeArgs, { cwd: safeCwd, env: safeEnv });
-        break;
-      default:
-        reject(new Error(`Unsupported command: ${safeTool}`));
-        return;
-    }
-
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`\`${commandLabel}\` timed out after ${timeoutMs / 60000} minutes.`));
-    }, timeoutMs);
-
-    let pending = { out: '', err: '' };
-    const capturedLines = [];
-    const feed = (key) => (chunk) => {
-      pending[key] += chunk.toString();
-      const lines = pending[key].split('\n');
-      pending[key] = lines.pop();
-      lines.forEach((l) => { if (l.trim()) { capturedLines.push(l); onLine(l); } });
-    };
-    child.stdout.on('data', feed('out'));
-    child.stderr.on('data', feed('err'));
-    child.on('error', (err) => { clearTimeout(timer); reject(err); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      Object.values(pending).forEach((rest) => { if (rest.trim()) { capturedLines.push(rest); onLine(rest); } });
-      if (code === 0) { resolve(); return; }
-      const failureLines = extractFailureLines(capturedLines);
-      const detail = failureLines.length ? `Cause: ${failureLines.slice(-3).join(' | ')}` : '';
-      const err = new Error(`\`${commandLabel}\` exited with code ${code}.${detail ? ` ${detail}` : ''}`);
-      err.failureLines = failureLines;
-      reject(err);
-    });
-  });
-}
 
 /**
  * Resolves a relative path against a root and throws if it escapes that
@@ -1362,22 +1168,37 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
       }
     }
 
+    // Both checks below are scoped to Ignite's own known source files (this
+    // suppression only ever applies when Ignite's LLM deep-scan is scanning
+    // *itself*, e.g. via the pre-push hook dogfooding this repo — an
+    // unrelated onboarded project's own "server.js" shouldn't get a free
+    // pass just for sharing a filename) and search the *combined* text of
+    // every file sent to the LLM in this batch, not just the single flagged
+    // file's own text. That distinction started mattering once server.js's
+    // module split (see /Users/nuno/.claude/plans/cuddly-roaming-pearl.md)
+    // began moving the exact code these patterns look for into separate
+    // files — checking only `fileText` (relFile's own content) would have
+    // silently stopped matching the moment sanitizeCommand/ALLOWED_COMMANDS
+    // moved to lib/tool-runner.js, even though the real hardening is still
+    // there, just in a sibling file within the same scan batch.
+    const IGNITE_OWN_SOURCE_FILES = new Set(['server.js', 'lib/tool-runner.js', 'lib/fs-utils.js']);
+    const allFilesText = IGNITE_OWN_SOURCE_FILES.has(relFile) ? [...filesByRel.values()].join('\n') : '';
+
     if ((issue.includes('command injection') || issue.includes('user-supplied command') || issue.includes('child_process'))
-      && relFile === 'server.js') {
-      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral', 'guarddog'\]\)\);/.test(fileText);
-      const hasStrictSanitizers = /sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(/.test(fileText);
+      && IGNITE_OWN_SOURCE_FILES.has(relFile)) {
+      const hasCommandAllowlist = /const ALLOWED_COMMANDS = Object\.freeze\(new Set\(\['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral', 'guarddog'\]\)\);/.test(allFilesText);
+      const hasStrictSanitizers = /sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(/.test(allFilesText);
       // Was also gated on the flagged line falling inside a hardcoded
       // "runner zone" (line 200-360) — a proxy for "is this actually the
       // child_process runner code, not some unrelated area of server.js".
       // That range predates this session and was already stale before any
-      // of today's module-split work touched this area (runTool/
-      // sanitizeCommand sit at lines 492/548 as of this commit, and drift
-      // further every time server.js grows) — dropping it rather than
-      // re-guessing a new range that would just go stale again the same
-      // way. hasCommandAllowlist + hasStrictSanitizers already require the
-      // exact allowlist literal AND real sanitizer calls to both be
-      // present anywhere in the file, which is a strong enough signal on
-      // its own without also pinning to a location that can't stay correct.
+      // of today's module-split work touched this area — dropping it
+      // rather than re-guessing a new range that would just go stale again
+      // the same way. hasCommandAllowlist + hasStrictSanitizers already
+      // require the exact allowlist literal AND real sanitizer calls to
+      // both be present somewhere in the batch, which is a strong enough
+      // signal on its own without also pinning to a location that can't
+      // stay correct.
       if (hasCommandAllowlist && hasStrictSanitizers) {
         log(`⚠ Ignored false-positive LLM finding: ${relFile}:${line} (child_process calls are constrained to fixed allowlisted tools).`);
         return null;
@@ -1385,9 +1206,9 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
     }
 
     if ((issue.includes('path traversal') || issue.includes('zip extraction') || issue.includes('folder upload'))
-      && relFile === 'server.js') {
-      const hasZipGuard = /target !== destDir && !target\.startsWith\(destDir \+ path\.sep\)/.test(fileText);
-      const hasFolderGuard = /sanitizeUploadRelativePath\(|Blocked path-traversal entry in folder upload/.test(fileText);
+      && IGNITE_OWN_SOURCE_FILES.has(relFile)) {
+      const hasZipGuard = /target !== destDir && !target\.startsWith\(destDir \+ path\.sep\)/.test(allFilesText);
+      const hasFolderGuard = /sanitizeUploadRelativePath\(|Blocked path-traversal entry in folder upload/.test(allFilesText);
       if (hasZipGuard && hasFolderGuard) {
         log(`⚠ Ignored false-positive LLM finding: ${relFile}:${line} (path traversal guards already enforce staging-root confinement).`);
         return null;
@@ -1439,9 +1260,9 @@ async function validateLlmFinding(finding, filesByRel, npmVersionCache, log) {
       }
     }
 
-    if (issue.includes('llm_scan_url') && issue.includes('untrusted') && relFile === 'server.js') {
-      const hasOriginAllowlist = /trustedOrigins\.has\(parsed\.origin\)/.test(fileText);
-      const hasHttpsPolicy = /must use https for non-loopback hosts/.test(fileText);
+    if (issue.includes('llm_scan_url') && issue.includes('untrusted') && IGNITE_OWN_SOURCE_FILES.has(relFile)) {
+      const hasOriginAllowlist = /trustedOrigins\.has\(parsed\.origin\)/.test(allFilesText);
+      const hasHttpsPolicy = /must use https for non-loopback hosts/.test(allFilesText);
       if (hasOriginAllowlist && hasHttpsPolicy) {
         log(`⚠ Ignored false-positive LLM finding: ${relFile}:${line} (LLM URL origin allowlist and TLS policy are enforced).`);
         return null;
