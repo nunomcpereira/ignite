@@ -11,10 +11,17 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { execFile } = require('node:child_process');
 
 const { withServerEnv, makeTempProject } = require('./helpers');
 
 const noopLog = () => {};
+
+function hasRealGit() {
+  return new Promise((resolve) => {
+    execFile('git', ['--version'], (err) => resolve(!err));
+  });
+}
 
 test('digestProjectTree: deterministic regardless of directory-walk order, changes when content changes', withServerEnv({}, async (mod) => {
   const dirA = await makeTempProject({ 'b.js': 'console.log(2);', 'a.js': 'console.log(1);' });
@@ -57,15 +64,20 @@ test('generateProvenance: no git context in a fresh upload — resolvedDependenc
   assert.deepEqual(provenance.predicate.buildDefinition.resolvedDependencies, []);
 }));
 
-test('generateProvenance: picks up the real source commit when the staged tree has git context', withServerEnv({}, async (mod) => {
-  const dir = await makeTempProject({ 'app.js': 'module.exports = 1;\n' });
-  const { execFile } = require('node:child_process');
-  const run = (args) => new Promise((resolve, reject) => execFile('git', args, { cwd: dir }, (err) => (err ? reject(err) : resolve())));
-  await run(['init', '-q']);
-  await run(['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'add', '-A']);
-  await run(['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
+test('generateProvenance: picks up the real source commit when the staged tree has git context (skipped if git is not installed)', async (t) => {
+  if (!(await hasRealGit())) {
+    t.skip('git not installed on PATH — install git to run this test');
+    return;
+  }
+  await withServerEnv({}, async (mod) => {
+    const dir = await makeTempProject({ 'app.js': 'module.exports = 1;\n' });
+    const run = (args) => new Promise((resolve, reject) => execFile('git', args, { cwd: dir }, (err) => (err ? reject(err) : resolve())));
+    await run(['init', '-q']);
+    await run(['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'add', '-A']);
+    await run(['-c', 'user.email=t@t.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
 
-  const provenance = await mod.generateProvenance(dir, noopLog, { org: 'o', repo: 'r' });
-  assert.equal(provenance.predicate.buildDefinition.resolvedDependencies.length, 1);
-  assert.match(provenance.predicate.buildDefinition.resolvedDependencies[0].uri, /^git\+commit:[0-9a-f]{40}$/);
-}));
+    const provenance = await mod.generateProvenance(dir, noopLog, { org: 'o', repo: 'r' });
+    assert.equal(provenance.predicate.buildDefinition.resolvedDependencies.length, 1);
+    assert.match(provenance.predicate.buildDefinition.resolvedDependencies[0].uri, /^git\+commit:[0-9a-f]{40}$/);
+  })();
+});
