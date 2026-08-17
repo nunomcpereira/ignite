@@ -822,6 +822,27 @@ async function* walkFiles(root) {
   }
 }
 
+// Runs `mapper` over `items` with at most `limit` in flight at once, but
+// resolves to results in the *original* item order regardless of which
+// finishes first — checkSecrets/checkAiGovernance's per-file I/O (stat +
+// readFile) is otherwise awaited one file at a time even though nothing
+// about reading file N depends on file N-1 finishing first, which is pure
+// wasted wall time on repos with many small files. Bounded (not
+// unbounded Promise.all) so a repo with thousands of files doesn't try to
+// open them all as file descriptors simultaneously.
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await mapper(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 function runTool(tool, args, cwd, { env: envOverride = {}, allowedExitCodes = [0] } = {}) {
   return new Promise((resolve, reject) => {
     const safeTool = sanitizeCommand(tool);
@@ -1345,6 +1366,12 @@ async function checkCodeowners(root) {
   return { found: false, path: null, emails: [] };
 }
 
+// How many files' worth of stat+readFile are ever in flight at once for
+// checkSecrets/checkAiGovernance — high enough to hide I/O latency behind
+// concurrency, low enough not to blow past a reasonable open-fd count on
+// a repo with thousands of files.
+const FILE_SCAN_CONCURRENCY = 16;
+
 async function checkSecrets(root, log, cacheKey) {
   const findings = [];
   let scanned = 0;
@@ -1354,34 +1381,32 @@ async function checkSecrets(root, log, cacheKey) {
   const prevCache = loadFileScanCache(cacheKey, 'secrets');
   const newCacheEntries = [];
 
+  // Cheap, synchronous, order-preserving filtering (extension + gitignore)
+  // happens up front while collecting the candidate list; the expensive
+  // part (stat + readFile) is what actually benefits from concurrency
+  // below, so only that part is parallelized.
+  const candidates = [];
   for await (const file of walkFiles(root)) {
     const ext = path.extname(file).toLowerCase();
     if (BINARY_EXTENSIONS.has(ext)) continue;
-
     const rel = path.relative(root, file);
     if (gitignorePatterns.length > 0 && isGitignored(gitignorePatterns, rel)) {
       gitignoredSkipped++;
       continue;
     }
+    candidates.push({ file, rel, ext });
+  }
 
+  const results = await mapWithConcurrency(candidates, FILE_SCAN_CONCURRENCY, async ({ file, rel, ext }) => {
     const stat = await fsp.stat(file);
-    if (stat.size > MAX_SCAN_FILE_BYTES) {
-      log(`Skipping oversized file (${(stat.size / 1e6).toFixed(1)} MB): ${path.relative(root, file)}`);
-      continue;
-    }
+    if (stat.size > MAX_SCAN_FILE_BYTES) return { rel, oversizedMb: stat.size / 1e6 };
 
     const buffer = await fsp.readFile(file);
-    if (looksBinary(buffer)) continue;
+    if (looksBinary(buffer)) return { rel, skip: true };
 
-    scanned++;
     const hash = hashBuffer(buffer);
     const cached = prevCache && prevCache.get(rel);
-    if (cached && cached.hash === hash) {
-      cacheHits++;
-      findings.push(...cached.findings);
-      newCacheEntries.push({ relPath: rel, hash, findings: cached.findings });
-      continue;
-    }
+    if (cached && cached.hash === hash) return { rel, hash, findings: cached.findings, cacheHit: true };
 
     const content = buffer.toString('utf8');
     const fileFindings = [];
@@ -1397,8 +1422,22 @@ async function checkSecrets(root, log, cacheKey) {
         });
       }
     });
-    findings.push(...fileFindings);
-    newCacheEntries.push({ relPath: rel, hash, findings: fileFindings });
+    return { rel, hash, findings: fileFindings };
+  });
+
+  // Results are merged back in the original walk order (mapWithConcurrency
+  // guarantees this) so findings/log output are identical to the old
+  // strictly-sequential version — only how the I/O got there is different.
+  for (const r of results) {
+    if (r.oversizedMb !== undefined) {
+      log(`Skipping oversized file (${r.oversizedMb.toFixed(1)} MB): ${r.rel}`);
+      continue;
+    }
+    if (r.skip) continue;
+    scanned++;
+    if (r.cacheHit) cacheHits++;
+    findings.push(...r.findings);
+    newCacheEntries.push({ relPath: r.rel, hash: r.hash, findings: r.findings });
   }
 
   saveFileScanCache(cacheKey, 'secrets', newCacheEntries);
@@ -1537,23 +1576,20 @@ async function checkAiGovernance(root, cacheKey) {
   const prevCache = loadFileScanCache(cacheKey, 'governance');
   const newCacheEntries = [];
 
+  const candidates = [];
   for await (const file of walkFiles(root)) {
     const ext = path.extname(file).toLowerCase();
     if (!['.py', '.js', '.ts'].includes(ext)) continue;
+    candidates.push({ file, rel: path.relative(root, file) });
+  }
 
+  const results = await mapWithConcurrency(candidates, FILE_SCAN_CONCURRENCY, async ({ file, rel }) => {
     const buffer = await fsp.readFile(file);
-    if (looksBinary(buffer)) continue;
+    if (looksBinary(buffer)) return { rel, skip: true };
 
-    scanned++;
-    const rel = path.relative(root, file);
     const hash = hashBuffer(buffer);
     const cached = prevCache && prevCache.get(rel);
-    if (cached && cached.hash === hash) {
-      cacheHits++;
-      findings.push(...cached.findings);
-      newCacheEntries.push({ relPath: rel, hash, findings: cached.findings });
-      continue;
-    }
+    if (cached && cached.hash === hash) return { rel, hash, findings: cached.findings, cacheHit: true };
 
     const content = buffer.toString('utf8');
     const fileFindings = [];
@@ -1571,8 +1607,15 @@ async function checkAiGovernance(root, cacheKey) {
         }
       });
     }
-    findings.push(...fileFindings);
-    newCacheEntries.push({ relPath: rel, hash, findings: fileFindings });
+    return { rel, hash, findings: fileFindings };
+  });
+
+  for (const r of results) {
+    if (r.skip) continue;
+    scanned++;
+    if (r.cacheHit) cacheHits++;
+    findings.push(...r.findings);
+    newCacheEntries.push({ relPath: r.rel, hash: r.hash, findings: r.findings });
   }
 
   saveFileScanCache(cacheKey, 'governance', newCacheEntries);
@@ -2562,64 +2605,78 @@ async function runHadolintIacScan(root, log) {
   }
 }
 
+// Trivy (primary), Checkov, and Hadolint each scan the same static tree
+// completely independently — nothing one produces feeds another, so
+// running them one after another (as this used to) only adds their
+// wall-clock times together for no reason. All three run concurrently;
+// the dedup below is order-independent (a Set rebuilt fresh each merge
+// step), so results are identical to the old sequential version — only
+// faster, never different. Tooling probes are launched up front too,
+// for the same reason.
 async function checkIacSecurity(root, log) {
-  const trivyTool = TRIVY_ENABLED ? await trivyTooling() : { ok: false, reason: 'trivy is disabled (security.trivy.enabled=false).' };
-  let findings;
-  let engine;
-  if (!trivyTool.ok) {
-    log?.(`⚠ Trivy IaC scan skipped: ${trivyTool.reason}`);
-    findings = await checkIacSecurityFallback(root);
-    engine = 'fallback';
-  } else {
+  const [trivyTool, checkovTool, hadolintTool] = await Promise.all([
+    TRIVY_ENABLED ? trivyTooling() : Promise.resolve({ ok: false, reason: 'trivy is disabled (security.trivy.enabled=false).' }),
+    CHECKOV_ENABLED ? checkovTooling() : Promise.resolve(null),
+    HADOLINT_ENABLED ? hadolintTooling() : Promise.resolve(null),
+  ]);
+
+  const trivyPromise = (async () => {
+    if (!trivyTool.ok) {
+      log?.(`⚠ Trivy IaC scan skipped: ${trivyTool.reason}`);
+      return { findings: await checkIacSecurityFallback(root), engine: 'fallback' };
+    }
     log?.('Engine: Trivy CLI (External) — scanning Dockerfiles/Terraform/Kubernetes/Helm for misconfigurations...');
     const trivyFindings = await runTrivyIacScan(root, log);
     if (trivyFindings === null) {
       log?.('⚠ Falling back to the built-in Dockerfile heuristic scan.');
-      findings = await checkIacSecurityFallback(root);
-      engine = 'fallback';
-    } else {
-      findings = trivyFindings;
-      engine = 'trivy';
+      return { findings: await checkIacSecurityFallback(root), engine: 'fallback' };
     }
-  }
+    return { findings: trivyFindings, engine: 'trivy' };
+  })();
 
-  if (CHECKOV_ENABLED) {
-    const checkovTool = await checkovTooling();
+  const checkovPromise = CHECKOV_ENABLED ? (async () => {
     if (!checkovTool.ok) {
       log?.(`⚠ Checkov supplemental scan skipped: ${checkovTool.reason}`);
-    } else {
-      log?.('Engine: Checkov CLI (External) — supplementing with additional IaC policy checks...');
-      const checkovFindings = await runCheckovIacScan(root, log);
-      if (checkovFindings) {
-        // Deduped on file+line+rule-id, not just file+line: trivy and
-        // checkov draw from different rule catalogs and routinely flag
-        // *different* real issues on the same line (e.g. a Dockerfile's
-        // FROM line triggers both an unpinned-tag and a root-user rule) —
-        // collapsing on line alone would silently drop distinct findings.
-        // This only catches true repeats (same tool-neutral rule surfacing
-        // twice), which in practice is rare across two different scanners.
-        const seen = new Set(findings.map((f) => `${f.file}:${f.line}:${f.kind}`));
-        const additional = checkovFindings.filter((f) => !seen.has(`${f.file}:${f.line}:${f.kind}`));
-        findings = [...findings, ...additional];
-        engine = `${engine}+checkov`;
-      }
+      return null;
     }
-  }
+    log?.('Engine: Checkov CLI (External) — supplementing with additional IaC policy checks...');
+    return runCheckovIacScan(root, log);
+  })() : Promise.resolve(null);
 
-  if (HADOLINT_ENABLED) {
-    const hadolintTool = await hadolintTooling();
+  const hadolintPromise = HADOLINT_ENABLED ? (async () => {
     if (!hadolintTool.ok) {
       log?.(`⚠ Hadolint supplemental scan skipped: ${hadolintTool.reason}`);
-    } else {
-      log?.('Engine: Hadolint CLI (External) — supplementing with Dockerfile-specific lint checks...');
-      const hadolintFindings = await runHadolintIacScan(root, log);
-      if (hadolintFindings) {
-        const seen = new Set(findings.map((f) => `${f.file}:${f.line}:${f.kind}`));
-        const additional = hadolintFindings.filter((f) => !seen.has(`${f.file}:${f.line}:${f.kind}`));
-        findings = [...findings, ...additional];
-        engine = `${engine}+hadolint`;
-      }
+      return null;
     }
+    log?.('Engine: Hadolint CLI (External) — supplementing with Dockerfile-specific lint checks...');
+    return runHadolintIacScan(root, log);
+  })() : Promise.resolve(null);
+
+  const [{ findings: baseFindings, engine: baseEngine }, checkovFindings, hadolintFindings] =
+    await Promise.all([trivyPromise, checkovPromise, hadolintPromise]);
+
+  let findings = baseFindings;
+  let engine = baseEngine;
+
+  // Deduped on file+line+rule-id, not just file+line: trivy/checkov/
+  // hadolint draw from different rule catalogs and routinely flag
+  // *different* real issues on the same line (e.g. a Dockerfile's FROM
+  // line triggers both an unpinned-tag and a root-user rule) — collapsing
+  // on line alone would silently drop distinct findings. This only catches
+  // true repeats (same tool-neutral rule surfacing twice), which in
+  // practice is rare across different scanners. Checkov is merged before
+  // hadolint (fixed order, independent of which subprocess actually
+  // finished first) so `engine`'s suffix ordering matches the old
+  // sequential version exactly.
+  if (checkovFindings) {
+    const seen = new Set(findings.map((f) => `${f.file}:${f.line}:${f.kind}`));
+    findings = [...findings, ...checkovFindings.filter((f) => !seen.has(`${f.file}:${f.line}:${f.kind}`))];
+    engine = `${engine}+checkov`;
+  }
+  if (hadolintFindings) {
+    const seen = new Set(findings.map((f) => `${f.file}:${f.line}:${f.kind}`));
+    findings = [...findings, ...hadolintFindings.filter((f) => !seen.has(`${f.file}:${f.line}:${f.kind}`))];
+    engine = `${engine}+hadolint`;
   }
 
   return { findings, engine };
@@ -3969,16 +4026,27 @@ async function runActionsLocally(root, wfFile, log) {
   }
   const wfPathForAct = path.join(localWorkflowDir, path.basename(wfFile));
 
-  // act needs the workspace to be a git repo for ref/branch metadata; Phase 5
-  // would create one anyway, so initialize it here and reuse it for shipping.
-  await runTool('git', ['init', '-b', 'main'], root);
-  await runTool('git', ['add', '.'], root);
-  await runTool(
-    'git',
-    ['-c', 'user.name=Onboarding Gatekeeper', '-c', 'user.email=gatekeeper@localhost',
-     'commit', '-m', 'chore: initial compliant code drop via onboarding gatekeeper'],
-    root
-  );
+  // act needs the workspace to be a git repo for ref/branch metadata. Bearer
+  // (checkPiiDataFlow, Phase 4, on by default) may already have initialized
+  // and committed this same root via ensureGitContextForBearer — reuse that
+  // instead of re-running init/add/commit unconditionally: a bare `git
+  // commit` (no --allow-empty) fails outright with "nothing to commit" once
+  // Bearer's own commit already staged everything, which would otherwise
+  // throw here every time Bearer ran first with no intervening file edits.
+  // Same guard Phase 6 (shipToGitHub) already uses for the same reason.
+  const alreadyRepo = fs.existsSync(path.join(root, '.git'));
+  if (alreadyRepo) {
+    log('Reusing repository initialized during Phase 4 (Bearer PII/data-flow scan).');
+  } else {
+    await runTool('git', ['init', '-b', 'main'], root);
+    await runTool('git', ['add', '.'], root);
+    await runTool(
+      'git',
+      ['-c', 'user.name=Onboarding Gatekeeper', '-c', 'user.email=gatekeeper@localhost',
+       'commit', '-m', 'chore: initial compliant code drop via onboarding gatekeeper'],
+      root
+    );
+  }
 
   let token = '';
   if (await isGhCliAvailable()) {
