@@ -37,7 +37,7 @@ const {
   collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues, validateOverrides, scoreForIssue,
 } = require('./override-engine');
 const {
-  SKIP_DIRS, SKIP_DIRS_REGEX, BINARY_EXTENSIONS, looksBinary, buildSnippet, walkFiles, mapWithConcurrency, hashBuffer,
+  SKIP_DIRS, SKIP_DIRS_REGEX, BINARY_EXTENSIONS, DOCKERFILE_NAME_RE, SECRET_SCAN_CODE_EXTS, looksBinary, buildSnippet, walkFiles, mapWithConcurrency, hashBuffer,
 } = require('./lib/fs-utils');
 
 /* ------------------------------------------------------------------ */
@@ -289,15 +289,6 @@ const LLM_SOURCE_EXTS = Object.freeze(new Set([
 // is an inline literal.
 const SECRET_REGEX =
   /(password|aws_secret|api_key|token|private_key)\s*[:=]\s*(['"]?)([a-zA-Z0-9_\-.~]{10,})/i;
-
-// In source code, an unquoted RHS is always identifier/property-access
-// syntax (a variable, `process.env.X`, `res.data.access_token`, ...) — never
-// a literal. Config/env formats (.env, YAML, INI, ...) have no such quoting
-// rule, so unquoted values there can genuinely be inline secrets.
-const SECRET_SCAN_CODE_EXTS = Object.freeze(new Set([
-  '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py', '.go', '.rb', '.php',
-  '.java', '.kt', '.cs', '.c', '.cpp', '.h', '.hpp', '.swift', '.rs', '.scala',
-]));
 
 function isLikelySecretValue(quote, ext) {
   return Boolean(quote) || !SECRET_SCAN_CODE_EXTS.has(ext);
@@ -2051,8 +2042,6 @@ async function checkIacSecurity(root, log) {
   return { findings, engine };
 }
 
-const DOCKERFILE_NAME_RE = /^Dockerfile(\.[A-Za-z0-9_-]+)?$/;
-
 // Engine: Ignite Built-In Pattern Matcher (Fallback) — used only when trivy
 // is unavailable. Deliberately narrow (two well-known Dockerfile smells)
 // rather than an attempt to replicate trivy's much larger rule set.
@@ -2310,116 +2299,15 @@ async function generateProvenance(root, log, { org, repo, jobId } = {}) {
   return provenance;
 }
 
-async function cosignTooling() {
-  try {
-    await runTool('cosign', ['version'], os.tmpdir());
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: '`cosign` is not installed (brew install cosign) — base-image signature verification is skipped.' };
-  }
-}
-
-// Collects every external base image referenced by FROM in the project's
-// Dockerfiles, alongside the exact file/line it came from (for Studio
-// addressability). Multi-stage build aliases (`FROM builder` referencing an
-// earlier `AS builder` stage) are excluded — they're not external images
-// and cosign has nothing to verify against.
-async function discoverBaseImages(root) {
-  const occurrences = [];
-  for await (const file of walkFiles(root)) {
-    if (!DOCKERFILE_NAME_RE.test(path.basename(file))) continue;
-    const buffer = await fsp.readFile(file);
-    if (looksBinary(buffer)) continue;
-    const content = buffer.toString('utf8');
-    const rel = path.relative(root, file);
-    const lines = content.split(/\r?\n/);
-    const stageNames = new Set();
-    lines.forEach((line, i) => {
-      const m = line.match(/^\s*FROM\s+(\S+?)(?:\s+AS\s+(\S+))?\s*$/i);
-      if (!m) return;
-      const image = m[1];
-      if (m[2]) stageNames.add(m[2]);
-      if (stageNames.has(image) || image.toLowerCase() === 'scratch') return;
-      occurrences.push({ file: rel, line: i + 1, image });
-    });
-  }
-  return occurrences;
-}
-
-// Verifies Sigstore/cosign keyless signatures on every unique external base
-// image found across the project's Dockerfiles. Each unique image is
-// verified once (cosign verify is a real network call to the image
-// registry + Rekor transparency log) and the result is fanned back out to
-// every file/line occurrence that referenced it. Never throws: any
-// tool/network failure is reported as an "unverifiable" finding rather than
-// aborting the run.
-async function checkImageProvenance(root, log) {
-  const tooling = COSIGN_ENABLED ? await cosignTooling() : { ok: false, reason: 'cosign is disabled (security.cosign.enabled=false).' };
-  if (!tooling.ok) {
-    log?.(`⚠ Cosign base-image signature check skipped: ${tooling.reason}`);
-    return { findings: [], engine: 'disabled' };
-  }
-
-  const occurrences = await discoverBaseImages(root);
-  if (occurrences.length === 0) return { findings: [], engine: 'cosign' };
-
-  log?.('Engine: Cosign CLI (External) — verifying Sigstore signatures on referenced base images...');
-  const uniqueImages = [...new Set(occurrences.map((o) => o.image))];
-  const verdictByImage = new Map();
-  let cacheHits = 0;
-  await Promise.all(uniqueImages.map(async (image) => {
-    if (COSIGN_CACHE_TTL_SECONDS > 0) {
-      const cached = store.getCosignVerifyCache(image, COSIGN_IDENTITY_REGEXP, COSIGN_ISSUER_REGEXP, COSIGN_CACHE_TTL_SECONDS);
-      if (cached) {
-        cacheHits++;
-        verdictByImage.set(image, cached);
-        log?.(`♻ ${image} — reused a signature verdict checked within the last ${COSIGN_CACHE_TTL_SECONDS}s.`);
-        return;
-      }
-    }
-    try {
-      await runTool('cosign', [
-        'verify',
-        '--certificate-identity-regexp', COSIGN_IDENTITY_REGEXP,
-        '--certificate-oidc-issuer-regexp', COSIGN_ISSUER_REGEXP,
-        image,
-      ], root, { allowedExitCodes: [0] });
-      verdictByImage.set(image, { verified: true });
-      log?.(`✓ ${image} — verifiable Sigstore signature.`);
-    } catch (e) {
-      verdictByImage.set(image, { verified: false, reason: e.message });
-      log?.(`⚠ ${image} — no verifiable Sigstore signature: ${e.message}`);
-    }
-    if (COSIGN_CACHE_TTL_SECONDS > 0) {
-      const v = verdictByImage.get(image);
-      store.saveCosignVerifyCache(image, COSIGN_IDENTITY_REGEXP, COSIGN_ISSUER_REGEXP, v.verified, v.reason);
-    }
-  }));
-  if (cacheHits > 0) log?.(`♻ ${cacheHits} image(s) served from the signature-verdict cache — no network call.`);
-
-  const findings = [];
-  const contentByFile = new Map();
-  for (const occ of occurrences) {
-    const verdict = verdictByImage.get(occ.image);
-    if (verdict.verified) continue;
-    let content = contentByFile.get(occ.file);
-    if (content === undefined) {
-      content = null;
-      try { content = await fsp.readFile(path.join(root, occ.file), 'utf8'); } catch { /* best-effort */ }
-      contentByFile.set(occ.file, content);
-    }
-    findings.push({
-      file: occ.file,
-      line: occ.line,
-      kind: 'unsigned-base-image',
-      tool: 'cosign',
-      severity: 'warning',
-      message: `Base image "${occ.image}" has no verifiable Sigstore/cosign signature — supply-chain provenance can't be confirmed.`,
-      code: content ? buildSnippet(content, occ.line) : null,
-    });
-  }
-  return { findings, engine: 'cosign' };
-}
+const { createImageProvenanceCheck } = require('./checks/image-provenance');
+const { cosignTooling, discoverBaseImages, checkImageProvenance } = createImageProvenanceCheck({
+  runTool,
+  store,
+  fsUtils: { walkFiles, looksBinary, buildSnippet, DOCKERFILE_NAME_RE },
+  config: {
+    enabled: COSIGN_ENABLED, identityRegexp: COSIGN_IDENTITY_REGEXP, issuerRegexp: COSIGN_ISSUER_REGEXP, cacheTtlSeconds: COSIGN_CACHE_TTL_SECONDS,
+  },
+});
 
 async function guarddogTooling() {
   try {
@@ -2750,128 +2638,20 @@ async function checkPiiDataFlow(root, log) {
   }
 }
 
-async function jscpdTooling() {
-  try {
-    await runTool('jscpd', ['--version'], os.tmpdir());
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: '`jscpd` is not installed (npm install -g jscpd) — duplication findings are simply omitted.' };
-  }
-}
+const { createCodeDuplicationCheck } = require('./checks/code-duplication');
+const { checkCodeDuplication, jscpdTooling } = createCodeDuplicationCheck({
+  runTool,
+  fsUtils: { buildSnippet },
+  config: {
+    enabled: JSCPD_ENABLED, minLines: JSCPD_MIN_LINES, minTokens: JSCPD_MIN_TOKENS, ignorePatterns: JSCPD_IGNORE_PATTERNS,
+  },
+});
 
-// Code-duplication scan via jscpd, which does its own multi-language file
-// discovery over `root` in one pass. Each clone becomes one finding
-// anchored at its first occurrence, referencing the second in the message
-// (Studio can only address one file/line per finding). No built-in
-// fallback — duplicate-block detection needs the real tool.
-async function checkCodeDuplication(root, log) {
-  const tooling = JSCPD_ENABLED ? await jscpdTooling() : { ok: false, reason: 'jscpd is disabled (metrics.jscpd.enabled=false).' };
-  if (!tooling.ok) {
-    log?.(`⚠ jscpd duplication scan skipped: ${tooling.reason}`);
-    return { findings: [], engine: 'disabled' };
-  }
-
-  log?.('Engine: jscpd CLI (External) — scanning for duplicated code blocks...');
-  const outDir = path.join(os.tmpdir(), `ignite-jscpd-${crypto.randomBytes(8).toString('hex')}`);
-  try {
-    await runTool('jscpd', [
-      root, '--reporters', 'json', '--output', outDir, '--silent',
-      '--min-lines', String(JSCPD_MIN_LINES), '--min-tokens', String(JSCPD_MIN_TOKENS),
-      ...(JSCPD_IGNORE_PATTERNS.length > 0 ? ['--ignore', JSCPD_IGNORE_PATTERNS.join(',')] : []),
-    ], root, { allowedExitCodes: [0, 1] });
-    const raw = await fsp.readFile(path.join(outDir, 'jscpd-report.json'), 'utf8').catch(() => null);
-    if (raw === null) return { findings: [], engine: 'jscpd' };
-    const data = JSON.parse(raw);
-    const duplicates = Array.isArray(data.duplicates) ? data.duplicates : [];
-    const findings = [];
-    for (const dup of duplicates) {
-      // Defensive guard on top of --min-lines: jscpd's own `lines` count
-      // can still undercount for a duplicate that's really just
-      // punctuation (a run of closing brackets/braces), so also require
-      // the reported span to actually meet the configured minimum here.
-      const dupLines = Number(dup.lines) || 0;
-      if (dupLines < JSCPD_MIN_LINES) continue;
-      const relFile = path.relative(root, path.resolve(root, dup.firstFile?.name || ''));
-      const line = Number(dup.firstFile?.startLoc?.line) || 1;
-      const endLine = Number(dup.firstFile?.endLoc?.line) || line;
-      const otherFile = dup.secondFile?.name ? path.relative(root, path.resolve(root, dup.secondFile.name)) : '?';
-      const otherLine = Number(dup.secondFile?.startLoc?.line) || 1;
-      const otherEndLine = Number(dup.secondFile?.endLoc?.line) || otherLine;
-      const otherRange = otherEndLine > otherLine ? `${otherLine}-${otherEndLine}` : String(otherLine);
-      let content = null;
-      try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
-      // Skip blocks whose duplicated span is nothing but punctuation/
-      // whitespace (stray closing braces, brackets, semicolons) — not a
-      // meaningful duplicate even if it cleared the token/line thresholds.
-      if (content) {
-        const spanLines = content.split('\n').slice(line - 1, endLine);
-        const meaningful = spanLines.some((l) => /[A-Za-z0-9_]/.test(l));
-        if (!meaningful) continue;
-      }
-      findings.push({
-        file: relFile,
-        line,
-        kind: 'duplicate-code',
-        tool: 'jscpd',
-        severity: 'warning',
-        message: `${dup.lines || 0}-line duplicate block, also found in ${otherFile}:${otherRange}.`,
-        code: content ? buildSnippet(content, line, { endLine }) : null,
-        // Structured pointer to the other occurrence (message above is the
-        // human-readable form of the same data) so Studio can render it as
-        // a link that jumps straight to — and highlights — that exact span,
-        // instead of making the reader go find it themselves.
-        duplicateRef: { file: otherFile, line: otherLine, endLine: otherEndLine },
-      });
-    }
-    return { findings, engine: 'jscpd' };
-  } catch (e) {
-    log?.(`⚠ jscpd duplication scan failed: ${e.message}`);
-    return { findings: [], engine: 'disabled' };
-  } finally {
-    await fsp.rm(outDir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-// Built-in "low encapsulation" check — no external tool, no fallback needed
-// (there's nothing to fall back *from*). Flags any single source file over
-// FILE_SIZE_MAX_LINES lines. Deliberately narrow: a raw line count, not an
-// attempt to measure cyclomatic complexity or responsibility count — those
-// need real per-language parsing to do honestly, while "this file is huge"
-// is a cheap, language-agnostic, directionally-correct proxy for the same
-// smell (harder to review, harder to test in isolation, and — concretely —
-// a bigger target for any per-file-cached SAST tool's cache to miss on
-// every unrelated change elsewhere in the file). Always advisory: file size
-// is something to track and gradually address, not a hard gate.
-async function checkFileEncapsulation(root, log) {
-  if (!FILE_SIZE_ENABLED) {
-    log?.('File-size check is disabled (metrics.fileSize.enabled=false).');
-    return { findings: [], engine: 'disabled' };
-  }
-
-  const findings = [];
-  for await (const file of walkFiles(root)) {
-    const ext = path.extname(file).toLowerCase();
-    if (!SECRET_SCAN_CODE_EXTS.has(ext)) continue;
-
-    const buffer = await fsp.readFile(file);
-    if (looksBinary(buffer)) continue;
-    const content = buffer.toString('utf8');
-    const lineCount = content.split(/\r?\n/).length;
-    if (lineCount <= FILE_SIZE_MAX_LINES) continue;
-
-    const rel = path.relative(root, file);
-    findings.push({
-      file: rel,
-      line: 1,
-      kind: 'file-too-large',
-      tool: 'ignite-built-in',
-      severity: 'warning',
-      message: `${rel} is ${lineCount} lines — over the ${FILE_SIZE_MAX_LINES}-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.`,
-      code: buildSnippet(content, 1),
-    });
-  }
-  return { findings, engine: 'built-in' };
-}
+const { createFileEncapsulationCheck } = require('./checks/file-encapsulation');
+const { checkFileEncapsulation } = createFileEncapsulationCheck({
+  fsUtils: { walkFiles, looksBinary, buildSnippet, SECRET_SCAN_CODE_EXTS },
+  config: { enabled: FILE_SIZE_ENABLED, maxLines: FILE_SIZE_MAX_LINES },
+});
 
 async function goclocTooling() {
   try {
