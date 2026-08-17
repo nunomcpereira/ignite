@@ -2820,6 +2820,70 @@ async function generateSbom(root, log) {
   }
 }
 
+// Content-addressed identity of exactly what was staged/scanned: a sha256
+// over every non-.git file's own sha256, sorted by relative path so the
+// digest is deterministic regardless of directory-walk order. Lets an
+// auditor confirm the tree that passed the pipeline is the same tree that
+// got pushed, without needing the staging directory to still exist (it's
+// force-removed after every run) — the digest alone is enough to compare
+// against a later re-hash of the pushed repo.
+async function digestProjectTree(root) {
+  const entries = [];
+  for await (const file of walkFiles(root)) {
+    const rel = path.relative(root, file).split(path.sep).join('/');
+    const buffer = await fsp.readFile(file).catch(() => null);
+    if (buffer === null) continue;
+    entries.push([rel, crypto.createHash('sha256').update(buffer).digest('hex')]);
+  }
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const combined = crypto.createHash('sha256');
+  for (const [rel, hash] of entries) combined.update(`${rel}:${hash}\n`);
+  return { sha256: combined.digest('hex'), fileCount: entries.length };
+}
+
+// Minimal build/commit provenance document — OWASP A08 (Software and Data
+// Integrity Failures) gap: cosign (above) verifies a Dockerfile's *base
+// image* provenance, but nothing previously recorded provenance for the
+// code Ignite itself is about to push. This is NOT a signed SLSA
+// attestation (no keyless/KMS signing, no transparency-log entry, no SLSA
+// builder-identity verification) — it's a same-shape, unsigned in-toto
+// Statement/SLSA-provenance-v1 predicate recording what was scanned, by
+// what, and when, so an auditor has *something* machine-readable to check
+// a later "is this the code that actually passed the pipeline" question
+// against. Attached as a downloadable project document (provenance.json),
+// same as the SBOM/LOC-metrics/posture-report artifacts — never gates a
+// run. Full SLSA L3 (signed, verifiable builder identity) is out of scope;
+// see the "note" field below, which says so explicitly rather than
+// implying more assurance than this actually provides.
+async function generateProvenance(root, log, { org, repo, jobId } = {}) {
+  const digest = await digestProjectTree(root);
+  let sourceCommit = null;
+  try {
+    const { stdout } = await runTool('git', ['rev-parse', 'HEAD'], root);
+    sourceCommit = stdout.trim() || null;
+  } catch { /* no git context (fresh ZIP/folder upload before Phase 5/6 init) — fine, omitted */ }
+
+  const provenance = {
+    _type: 'https://in-toto.io/Statement/v1',
+    subject: [{ name: org && repo ? `${org}/${repo}` : 'unknown', digest: { sha256: digest.sha256 } }],
+    predicateType: 'https://slsa.dev/provenance/v1',
+    predicate: {
+      buildDefinition: {
+        buildType: 'https://github.com/nunomcpereira/ignite/onboarding-pipeline/v1',
+        externalParameters: { org: org || null, repo: repo || null, jobId: jobId || null },
+        resolvedDependencies: sourceCommit ? [{ uri: `git+commit:${sourceCommit}` }] : [],
+      },
+      runDetails: {
+        builder: { id: 'https://github.com/nunomcpereira/ignite', version: { ignite: IGNITE_VERSION } },
+        metadata: { generatedAt: new Date().toISOString(), fileCount: digest.fileCount },
+      },
+    },
+    note: 'Minimal build/commit provenance for audit purposes — NOT a signed SLSA attestation (no keyless/KMS signing, no transparency-log entry, no verified builder identity). subject.digest is a sha256 over every staged file\'s own sha256, sorted by relative path.',
+  };
+  log?.(`✓ Provenance recorded — ${digest.fileCount} file(s), tree digest sha256:${digest.sha256.slice(0, 12)}…${sourceCommit ? `, source commit ${sourceCommit.slice(0, 12)}` : ''}.`);
+  return provenance;
+}
+
 async function cosignTooling() {
   try {
     await runTool('cosign', ['version'], os.tmpdir());
@@ -3691,6 +3755,18 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
           store.addUploadDocument(projectId, `sbom.${sbomEngine === 'syft' ? 'cyclonedx' : 'fallback'}.json`, 'application/json', sbomBuffer.length, sbomBuffer);
         }
         return { sbomEngine, sbom };
+      },
+    },
+    {
+      name: 'provenance',
+      run: async (blog) => {
+        blog('Recording build/commit provenance (unsigned — not a SLSA attestation)...');
+        const provenance = await generateProvenance(projectRoot, blog, { org, repo });
+        if (projectId !== null) {
+          const provenanceBuffer = Buffer.from(JSON.stringify(provenance, null, 2));
+          store.addUploadDocument(projectId, 'provenance.json', 'application/json', provenanceBuffer.length, provenanceBuffer);
+        }
+        return { provenance };
       },
     },
     {
@@ -5923,6 +5999,17 @@ app.get('/api/pipeline/:jobId/studio/posture', async (req, res) => {
   }
 });
 
+app.get('/api/pipeline/:jobId/studio/provenance', async (req, res) => {
+  const ctx = resolveStudioContext(req, res);
+  if (!ctx) return;
+  try {
+    const provenance = await generateProvenance(ctx.root, studioNoopLog, { org: ctx.org, repo: ctx.repo });
+    res.json({ ok: true, provenance });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Standalone, job-independent equivalent for agent/CI use — same
 // projectPath convention as /api/pipeline/validate-all.
 app.post('/api/dependencies/check', async (req, res) => {
@@ -7384,6 +7471,8 @@ module.exports = {
   runHadolintIacScan,
   checkContainerImageVulnerabilities,
   generateSbom,
+  generateProvenance,
+  digestProjectTree,
   checkImageProvenance,
   checkSemanticSast,
   checkPiiDataFlow,

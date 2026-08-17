@@ -380,6 +380,7 @@
         <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700">📄 SBOM</button>
         <button id="studioLocBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-700">📊 LOC Metrics</button>
         <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700">🛡️ Posture</button>
+        <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-700">📜 Provenance</button>
         <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700">Rescan ↻</button>
         <button id="studioCloseBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-600 hover:bg-slate-800">Close ✕</button>
       </div>
@@ -1795,7 +1796,7 @@
     function setStudioHistoricalUi(isHistorical) {
       studioState.historical = isHistorical;
       $('studioHistoricalBanner').classList.toggle('hidden', !isHistorical);
-      ['studioDepsBtn', 'studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioRescanBtn'].forEach((id) => {
+      ['studioDepsBtn', 'studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioProvenanceBtn', 'studioRescanBtn'].forEach((id) => {
         $(id).classList.toggle('hidden', isHistorical);
       });
     }
@@ -2278,6 +2279,29 @@
     }
     $('studioPostureBtn').addEventListener('click', () => openStudioReport(
       'posture', 'Compliance & Feature Posture', 'Scanning for SSO/RBAC/audit-logging/TLS/backups/encryption/rate-limiting posture (Semgrep if installed, else a built-in scanner)…', renderStudioPosture
+    ));
+
+    function renderStudioProvenance(data) {
+      const p = data.provenance || {};
+      const digest = p.subject?.[0]?.digest?.sha256 || '';
+      const commit = (p.predicate?.buildDefinition?.resolvedDependencies || [])
+        .map((d) => d.uri || '').find((u) => u.startsWith('git+commit:'))?.replace('git+commit:', '') || null;
+      $('studioCodeWrap').innerHTML = `<div class="p-4">
+        <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-800">${escapeHtml(p.note || '')}</div>
+        <table class="w-full text-left border border-slate-200 rounded-lg overflow-hidden mt-3">
+          <tbody>
+            <tr class="border-b border-slate-100"><td class="px-3 py-1.5 text-[11px] text-slate-400 w-40">Subject</td><td class="px-3 py-1.5 text-[11px] font-mono">${escapeHtml(p.subject?.[0]?.name || '')}</td></tr>
+            <tr class="border-b border-slate-100"><td class="px-3 py-1.5 text-[11px] text-slate-400">Tree digest (sha256)</td><td class="px-3 py-1.5 text-[11px] font-mono break-all">${escapeHtml(digest)}</td></tr>
+            <tr class="border-b border-slate-100"><td class="px-3 py-1.5 text-[11px] text-slate-400">File count</td><td class="px-3 py-1.5 text-[11px]">${escapeHtml(String(p.predicate?.runDetails?.metadata?.fileCount ?? ''))}</td></tr>
+            <tr class="border-b border-slate-100"><td class="px-3 py-1.5 text-[11px] text-slate-400">Source commit</td><td class="px-3 py-1.5 text-[11px] font-mono">${escapeHtml(commit || '(no git context)')}</td></tr>
+            <tr class="border-b border-slate-100"><td class="px-3 py-1.5 text-[11px] text-slate-400">Generated at</td><td class="px-3 py-1.5 text-[11px]">${escapeHtml(p.predicate?.runDetails?.metadata?.generatedAt || '')}</td></tr>
+            <tr><td class="px-3 py-1.5 text-[11px] text-slate-400">Builder</td><td class="px-3 py-1.5 text-[11px]">${escapeHtml(p.predicate?.runDetails?.builder?.id || '')} (ignite v${escapeHtml(p.predicate?.runDetails?.builder?.version?.ignite || '')})</td></tr>
+          </tbody>
+        </table>
+      </div>`;
+    }
+    $('studioProvenanceBtn').addEventListener('click', () => openStudioReport(
+      'provenance', 'Build Provenance', 'Recording build/commit provenance (unsigned — not a SLSA attestation)…', renderStudioProvenance
     ));
 
     function studioTreeToNested(files) {
