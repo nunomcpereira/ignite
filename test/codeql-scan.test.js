@@ -121,16 +121,22 @@ test('checkCodeqlCrossFile: flags a cross-file finding (codeFlow spans >1 file) 
     assert.equal(f.severity, 'error');
     assert.equal(f.crossFile, true);
     assert.equal(f.cwe, 'CWE-089');
+    assert.ok(Array.isArray(f.chain), 'a qualifying cross-file finding carries its source->sink chain');
+    assert.deepEqual(f.chain, [
+      { file: 'controller.js', line: 1, message: null },
+      { file: 'db.js', line: 1, message: null },
+    ]);
   })();
 });
 
-test('checkCodeqlCrossFile: a single-file finding is still reported, tagged crossFile:false', async () => {
+test('checkCodeqlCrossFile: a single-file finding is still reported, tagged crossFile:false, no chain', async () => {
   const { binary } = await makeFakeCodeQL({ javascript: SINGLE_FILE_SARIF });
   await withServerEnv({ CODEQL_ENABLED: 'true', CODEQL_BINARY: binary }, async (mod) => {
     const dir = await makeTempProject({ 'db.js': 'if (1 === 1) { doThing(); }\n' });
     const { findings } = await mod.checkCodeqlCrossFile(dir, noopLog);
     assert.equal(findings.length, 1);
     assert.equal(findings[0].crossFile, false);
+    assert.equal(findings[0].chain, null);
     assert.equal(findings[0].severity, 'warning');
   })();
 });

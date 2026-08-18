@@ -367,6 +367,12 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
         // single-file — surfaced by the UI so a reviewer can tell at a
         // glance which findings are genuinely new information.
         crossFile: Boolean(f.crossFile),
+        // The actual source->sink path (ordered {file, line, message}
+        // steps), only present when it crosses >1 file — lets Ignite
+        // Studio render the chain and jump step by step, not just show a
+        // crossFile badge. null for every non-CodeQL category and for
+        // CodeQL findings without a qualifying multi-file flow.
+        chain: f.chain || null,
         cweHint: f.cwe || null,
         owaspHint: null,
       });

@@ -97,23 +97,55 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
   // When the distinct files touched by any single flow's steps number more
   // than one, the finding only exists because CodeQL correlated multiple
   // files — the entire reason this check exists on top of Semgrep's
-  // intraprocedural engine. A finding with no multi-file flow (single-
-  // location queries, or a taint path that never leaves one file) is still
-  // reported — just tagged crossFile:false so the UI/issue list can
-  // distinguish "only found by combining multiple files" from "Semgrep
-  // could plausibly have caught this too."
-  function isCrossFileResult(result) {
+  // intraprocedural engine. Returns the step list for the flow that
+  // touches the most distinct files (usually there's only one codeFlow per
+  // result anyway) so Ignite Studio can render the actual chain — source
+  // through however many intermediate files to sink — not just flag that
+  // one exists. A finding with no multi-file flow (single-location
+  // queries, or a taint path that never leaves one file) gets `null`, so
+  // the UI/issue list can distinguish "only found by combining multiple
+  // files" from "Semgrep could plausibly have caught this too."
+  async function extractFlowChain(root, result) {
+    let best = null;
+    let bestFileCount = -1;
     for (const flow of result.codeFlows || []) {
-      const files = new Set();
+      const steps = [];
+      const filesSeen = new Set();
       for (const threadFlow of flow.threadFlows || []) {
         for (const loc of threadFlow.locations || []) {
-          const uri = loc.location?.physicalLocation?.artifactLocation?.uri;
-          if (uri) files.add(uri);
+          const pl = loc.location?.physicalLocation;
+          const uri = pl?.artifactLocation?.uri;
+          if (!uri) continue;
+          steps.push({
+            uri,
+            line: Number(pl?.region?.startLine) || 1,
+            message: loc.location?.message?.text || null,
+          });
+          filesSeen.add(uri);
         }
       }
-      if (files.size > 1) return true;
+      if (steps.length > 0 && filesSeen.size > bestFileCount) {
+        bestFileCount = filesSeen.size;
+        best = steps;
+      }
     }
-    return false;
+    if (!best) return null;
+
+    // Resolve each step to a root-relative path (SARIF's uri is whatever
+    // the extractor recorded, not necessarily already relative — same
+    // canonicalization gotcha relativeToRoot exists for elsewhere in
+    // Ignite), deduping consecutive steps that land on the exact same
+    // file+line (a read immediately followed by a use of the same
+    // variable at the same location is noise, not a real chain link).
+    const resolved = [];
+    for (const step of best) {
+      const absPath = path.isAbsolute(step.uri) ? step.uri : path.join(root, step.uri);
+      const relFile = await relativeToRoot(root, absPath);
+      const prev = resolved[resolved.length - 1];
+      if (prev && prev.file === relFile && prev.line === step.line) continue;
+      resolved.push({ file: relFile, line: step.line, message: step.message });
+    }
+    return { steps: resolved, fileCount: bestFileCount };
   }
 
   function extractCwe(rule) {
@@ -145,6 +177,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
         const severity = level === 'error' || (Number.isFinite(securitySeverity) && securitySeverity >= 7)
           ? 'error'
           : 'warning';
+        const flow = await extractFlowChain(root, result);
         findings.push({
           file: relFile,
           line,
@@ -153,7 +186,12 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
           language,
           severity,
           message: result.message?.text || rule.shortDescription?.text || 'CodeQL finding',
-          crossFile: isCrossFileResult(result),
+          crossFile: Boolean(flow && flow.fileCount > 1),
+          // Only worth carrying through (and rendering as a "chain" in
+          // Studio) when it actually crosses >1 file *and* has more than
+          // one step to show — a 1-step "flow" is just the finding's own
+          // location again.
+          chain: (flow && flow.fileCount > 1 && flow.steps.length > 1) ? flow.steps : null,
           cwe: extractCwe(rule),
         });
       }
