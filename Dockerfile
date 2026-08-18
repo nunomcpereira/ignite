@@ -20,6 +20,11 @@ ARG INSTALL_COSIGN=true
 ARG INSTALL_SEMGREP=true
 ARG INSTALL_BEARER=true
 ARG INSTALL_GUARDDOG=true
+# Off by default (unlike every other tool ARG above) - CodeQL is the
+# heaviest of the 13 soft-deps (a per-language database build, not a single
+# CLI pass) and matches CONFIG.security.codeql's own enabled:false default.
+# Set --build-arg INSTALL_CODEQL=true to opt in.
+ARG INSTALL_CODEQL=false
 ARG INSTALL_JSCPD=true
 ARG INSTALL_GOCLOC=true
 ARG INSTALL_SPECTRAL=true
@@ -108,6 +113,12 @@ RUN if [ "$INSTALL_BEARER" = "true" ]; then \
         | sh -s -- -b /usr/local/bin; \
     fi
 RUN if [ "$INSTALL_GUARDDOG" = "true" ]; then pipx install guarddog && pipx ensurepath; fi
+RUN if [ "$INSTALL_CODEQL" = "true" ]; then \
+      curl -fsSL -o /tmp/codeql.zip \
+        "https://github.com/github/codeql-cli-binaries/releases/latest/download/codeql-linux64.zip" \
+      && unzip -q /tmp/codeql.zip -d /opt \
+      && ln -s /opt/codeql/codeql /usr/local/bin/codeql && rm /tmp/codeql.zip; \
+    fi
 
 # --- Code metrics / API schema (npm-based) --------------------------------
 RUN if [ "$INSTALL_JSCPD" = "true" ]; then npm install -g jscpd; fi

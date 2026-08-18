@@ -86,6 +86,30 @@ guarddog_install() {
 }
 install INSTALL_GUARDDOG "command -v guarddog" "GuardDog" guarddog_install
 
+# --- CodeQL (cross-file static analysis) - off by default in CONFIG, unlike
+# every tool above, since it's the heaviest of the 13 (a real per-language
+# database build). This script still offers to install the CLI itself so
+# it's available to opt into later (CODEQL_ENABLED=true) without a second
+# install pass; skip it here too with INSTALL_CODEQL=false.
+codeql_install() {
+  local platform
+  case "$(uname -s)" in
+    Darwin) platform="osx64" ;;
+    Linux)  platform="linux64" ;;
+    *) log_warn "No prebuilt CodeQL CLI for this platform - see https://github.com/github/codeql-cli-binaries"; return 1 ;;
+  esac
+  local dest="${CODEQL_INSTALL_DIR:-$HOME/.codeql}"
+  mkdir -p "$dest" || return 1
+  curl -fsSL -o /tmp/codeql.zip "https://github.com/github/codeql-cli-binaries/releases/latest/download/codeql-${platform}.zip" || return 1
+  unzip -q -o /tmp/codeql.zip -d "$dest" && rm /tmp/codeql.zip
+  local bin_dir="/usr/local/bin"
+  [ -w "$bin_dir" ] || bin_dir="$HOME/.local/bin"
+  mkdir -p "$bin_dir"
+  ln -sf "$dest/codeql/codeql" "$bin_dir/codeql"
+  echo "CodeQL installed to $dest/codeql - ensure $bin_dir is on PATH."
+}
+install INSTALL_CODEQL "command -v codeql" "CodeQL" codeql_install
+
 # --- Code metrics / API schema (npm-based) ---
 install INSTALL_JSCPD    "command -v jscpd"    "jscpd"    'jscpd_install() { $HAS_NPM && npm install -g jscpd; }; jscpd_install'
 install INSTALL_GOCLOC   "command -v gocloc"   "gocloc"   'brew_install() { brew install gocloc; }; brew_install'

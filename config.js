@@ -132,8 +132,8 @@ function loadConfig() {
       // deep-scan's best-effort read of the actual data flow, which is
       // probabilistic and capped at `llm.maxFiles` files per run, not a
       // deterministic guarantee. Real cross-file taint analysis needs a
-      // paid Semgrep Pro subscription or a CodeQL setup (GitHub Advanced
-      // Security / GitHub Actions) — neither is wired into Ignite.
+      // paid Semgrep Pro subscription or a CodeQL setup — see
+      // security.codeql below, which is exactly that gap-filler.
       semgrep: { enabled: true, binary: 'semgrep', config: `p/security-audit,p/owasp-top-ten,${path.join(__dirname, 'ignite-auth-correctness-rules.yaml')}` },
       // Optional: sensitive data-flow (PII/GDPR) tracking via Bearer CLI
       // (https://github.com/Bearer/bearer) — traces personal data from
@@ -158,6 +158,46 @@ function loadConfig() {
       // fallback: this heuristic can't be meaningfully approximated without
       // the real tool.
       guarddog: { enabled: true, binary: 'guarddog' },
+      // Optional: cross-file static analysis via the CodeQL CLI
+      // (https://github.com/github/codeql-cli-binaries) — the gap
+      // security.semgrep's comment above documents: Semgrep OSS's engine is
+      // intraprocedural, so a vulnerability whose tainted data crosses
+      // file/function boundaries before reaching a sink isn't reliably
+      // caught by anything else in Phase 4. A CodeQL database build is
+      // whole-project and can take minutes per language, so — unlike every
+      // other Phase 4 tool — this one deliberately never runs as part of
+      // the fast interactive push-time pipeline (runPhase4Checks in
+      // server.js). It only runs from Ignite's separate deep-scan path
+      // (POST /api/pipeline/deep-scan and the in-app scheduler), which
+      // trades pipeline latency for cross-file coverage on already-
+      // onboarded repos (scheduled cadence) or brand-new ones (an explicit
+      // pre-push gate, not a silent substitution for the light pipeline).
+      // `enabled: false` by default (unlike the always-on tools above) —
+      // CodeQL is the heaviest of the thirteen soft-deps by a wide margin
+      // (a real per-language database build, not a single fast CLI pass),
+      // so it's opt-in until you've accepted that cost; set
+      // CODEQL_ENABLED=true to turn it on. `languages` limits which of
+      // CodeQL's query suites actually run (JS/TS, Python, Java, Go
+      // ship by default here); `querySuites` maps each language to a
+      // CodeQL query pack (security-extended by default — broad taint-
+      // tracking + security-and-quality coverage); `threads`/`ramMB` are
+      // passed straight to `codeql database create`/`analyze` (0 = let
+      // CodeQL pick its own default). No built-in fallback: cross-file
+      // taint analysis has no meaningful heuristic substitute.
+      codeql: {
+        enabled: false,
+        binary: 'codeql',
+        languages: ['javascript', 'python', 'java', 'go'],
+        querySuites: {
+          javascript: 'codeql/javascript-queries:codeql-suites/javascript-security-extended.qls',
+          python: 'codeql/python-queries:codeql-suites/python-security-extended.qls',
+          java: 'codeql/java-queries:codeql-suites/java-security-extended.qls',
+          go: 'codeql/go-queries:codeql-suites/go-security-extended.qls',
+        },
+        threads: 0,
+        ramMB: 0,
+        timeoutMs: 20 * 60_000,
+      },
       // Optional: OWASP A05/A06 gap — `trivy config` (above) only lints the
       // *Dockerfile source* for misconfiguration; it never looks at what's
       // actually inside the image a Dockerfile builds, so a base image with
@@ -365,6 +405,21 @@ function loadConfig() {
     merged.security.guarddog.enabled = String(process.env.GUARDDOG_ENABLED) === 'true';
   }
   if (process.env.GUARDDOG_BINARY) merged.security.guarddog.binary = process.env.GUARDDOG_BINARY;
+  if (process.env.CODEQL_ENABLED !== undefined) {
+    merged.security.codeql.enabled = String(process.env.CODEQL_ENABLED) === 'true';
+  }
+  if (process.env.CODEQL_BINARY) merged.security.codeql.binary = process.env.CODEQL_BINARY;
+  if (process.env.CODEQL_LANGUAGES) {
+    merged.security.codeql.languages = process.env.CODEQL_LANGUAGES.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  if (process.env.CODEQL_QUERY_SUITES) {
+    try {
+      merged.security.codeql.querySuites = { ...merged.security.codeql.querySuites, ...JSON.parse(process.env.CODEQL_QUERY_SUITES) };
+    } catch { /* malformed JSON — keep the default/config.json suites rather than crash boot */ }
+  }
+  if (process.env.CODEQL_THREADS !== undefined) merged.security.codeql.threads = Number(process.env.CODEQL_THREADS) || 0;
+  if (process.env.CODEQL_RAM_MB !== undefined) merged.security.codeql.ramMB = Number(process.env.CODEQL_RAM_MB) || 0;
+  if (process.env.CODEQL_TIMEOUT_MS !== undefined) merged.security.codeql.timeoutMs = Number(process.env.CODEQL_TIMEOUT_MS) || (20 * 60_000);
   if (process.env.TRIVY_IMAGE_ENABLED !== undefined) {
     merged.security.trivyImage.enabled = String(process.env.TRIVY_IMAGE_ENABLED) === 'true';
   }

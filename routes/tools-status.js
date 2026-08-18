@@ -8,24 +8,24 @@
  *
  * @param {import('express').Express} app
  * @param {object} deps
- * @param {object} deps.toolings - { ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling, checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling, bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling }
- * @param {object} deps.enabled - { gitleaksEnabled, trivyEnabled, trivyImageEnabled, checkovEnabled, hadolintEnabled, syftEnabled, cosignEnabled, semgrepEnabled, bearerEnabled, jscpdEnabled, goclocEnabled, spectralEnabled, guarddogEnabled }
+ * @param {object} deps.toolings - { ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling, checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling, bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling, codeqlTooling }
+ * @param {object} deps.enabled - { gitleaksEnabled, trivyEnabled, trivyImageEnabled, checkovEnabled, hadolintEnabled, syftEnabled, cosignEnabled, semgrepEnabled, bearerEnabled, jscpdEnabled, goclocEnabled, spectralEnabled, guarddogEnabled, codeqlEnabled }
  */
 function mountToolsStatusRoutes(app, { toolings, enabled }) {
   const {
     ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling,
     checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling,
-    bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling,
+    bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling, codeqlTooling,
   } = toolings;
   const {
     gitleaksEnabled, trivyEnabled, trivyImageEnabled, checkovEnabled, hadolintEnabled,
     syftEnabled, cosignEnabled, semgrepEnabled, bearerEnabled, jscpdEnabled,
-    goclocEnabled, spectralEnabled, guarddogEnabled,
+    goclocEnabled, spectralEnabled, guarddogEnabled, codeqlEnabled,
   } = enabled;
 
   app.get('/api/tools/status', async (req, res) => {
-    const [ort, licensee, gitleaks, trivy, trivyImage, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog] = await Promise.all([
-      ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), trivyImageTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(),
+    const [ort, licensee, gitleaks, trivy, trivyImage, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql] = await Promise.all([
+      ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), trivyImageTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(), codeqlTooling(),
     ]);
     res.json({
       ort: { ...ort, enabled: true },
@@ -43,6 +43,7 @@ function mountToolsStatusRoutes(app, { toolings, enabled }) {
       gocloc: { ...gocloc, enabled: goclocEnabled },
       spectral: { ...spectral, enabled: spectralEnabled },
       guarddog: { ...guarddog, enabled: guarddogEnabled },
+      codeql: { ...codeql, enabled: codeqlEnabled },
     });
   });
 }

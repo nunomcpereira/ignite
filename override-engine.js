@@ -52,6 +52,7 @@ const CATEGORY_SCORES = {
   'api-schema-lint': 4,
   'dependency-vulnerability': 8,
   'malicious-dependency': 9,
+  'codeql-sast': 8,
 };
 
 /**
@@ -149,9 +150,10 @@ function deriveCweOwasp(category, summary, explicit) {
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [duplication]
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [apiSchema]
  * @param {{ findings: Array<{file,line,kind,tool,severity,message}>, engine: string }} [maliciousDependencies]
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message,crossFile,cwe}>, engine: string }} [codeql] - deep-scan only, never present on the fast interactive pipeline's issue list
  * @returns {Array<{id, category, severity, score, summary, file, line}>}
  */
-function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies, codeql }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -342,6 +344,31 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
         file: f.file,
         line: f.line,
         snippet: null,
+      });
+    }
+  }
+
+  if (codeql) {
+    for (const f of codeql.findings) {
+      const category = 'codeql-sast';
+      const severity = f.severity === 'error' ? 'error' : 'warning';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: null,
+        // Distinguishes a finding that only exists because CodeQL traced
+        // taint across >=2 files (the whole reason this check runs on top
+        // of Semgrep's single-file engine) from one it also caught
+        // single-file — surfaced by the UI so a reviewer can tell at a
+        // glance which findings are genuinely new information.
+        crossFile: Boolean(f.crossFile),
+        cweHint: f.cwe || null,
+        owaspHint: null,
       });
     }
   }

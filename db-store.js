@@ -117,6 +117,16 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (tool, ecosystem, content_hash, tool_version)
     );
+    CREATE TABLE IF NOT EXISTS codeql_scan_cache (
+      org           TEXT NOT NULL,
+      repo          TEXT NOT NULL,
+      language      TEXT NOT NULL,
+      file_set_hash TEXT NOT NULL,
+      tool_version  TEXT NOT NULL,
+      findings_json TEXT NOT NULL,
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (org, repo, language, file_set_hash, tool_version)
+    );
     CREATE TABLE IF NOT EXISTS cosign_verify_cache (
       image             TEXT NOT NULL,
       identity_regexp   TEXT NOT NULL,
@@ -322,6 +332,22 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       `INSERT INTO manifest_scan_cache (tool, ecosystem, content_hash, tool_version, findings_json)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(tool, ecosystem, content_hash, tool_version)
+       DO UPDATE SET findings_json = excluded.findings_json, updated_at = datetime('now')`
+    ),
+
+    // Scoped to (org, repo) — unlike manifest_scan_cache, a CodeQL database
+    // is a whole-project artifact, so its cache key is the target repo
+    // itself, not a content-addressable manifest reusable across projects.
+    // tool_version (the codeql CLI's own version) is part of the key so
+    // upgrading the CLI/query packs invalidates stale results automatically.
+    getCodeqlScanCache: db.prepare(
+      `SELECT findings_json FROM codeql_scan_cache
+       WHERE org = ? AND repo = ? AND language = ? AND file_set_hash = ? AND tool_version = ?`
+    ),
+    upsertCodeqlScanCache: db.prepare(
+      `INSERT INTO codeql_scan_cache (org, repo, language, file_set_hash, tool_version, findings_json)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(org, repo, language, file_set_hash, tool_version)
        DO UPDATE SET findings_json = excluded.findings_json, updated_at = datetime('now')`
     ),
 
@@ -544,6 +570,17 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     saveManifestScanCache(tool, ecosystem, contentHash, toolVersion, findings) {
       stmt.upsertManifestScanCache.run(tool, ecosystem, contentHash, toolVersion, JSON.stringify(findings));
+    },
+
+    /* ---------------- CodeQL cross-file scan cache (keyed by org/repo, see schema comment) ---------------- */
+
+    getCodeqlScanCache(org, repo, language, fileSetHash, toolVersion) {
+      const row = stmt.getCodeqlScanCache.get(org, repo, language, fileSetHash, toolVersion);
+      return row ? JSON.parse(row.findings_json) : null;
+    },
+
+    saveCodeqlScanCache(org, repo, language, fileSetHash, toolVersion, findings) {
+      stmt.upsertCodeqlScanCache.run(org, repo, language, fileSetHash, toolVersion, JSON.stringify(findings));
     },
 
     /* ---------------- governance workflow cache (skip re-fetching unchanged workflows) ---------------- */

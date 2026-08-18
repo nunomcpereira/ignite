@@ -319,6 +319,15 @@ const BEARER_BINARY = String(CONFIG.security.bearer.binary || 'bearer');
 const GUARDDOG_ENABLED = Boolean(CONFIG.security.guarddog.enabled);
 const GUARDDOG_BINARY = String(CONFIG.security.guarddog.binary || 'guarddog');
 
+/* Optional CodeQL-powered cross-file static analysis (see CONFIG.security.codeql) — deep-scan only, never the fast pipeline */
+const CODEQL_ENABLED = Boolean(CONFIG.security.codeql.enabled);
+const CODEQL_BINARY = String(CONFIG.security.codeql.binary || 'codeql');
+const CODEQL_LANGUAGES = Array.isArray(CONFIG.security.codeql.languages) ? CONFIG.security.codeql.languages : ['javascript', 'python', 'java', 'go'];
+const CODEQL_QUERY_SUITES = CONFIG.security.codeql.querySuites || {};
+const CODEQL_THREADS = Number(CONFIG.security.codeql.threads) || 0;
+const CODEQL_RAM_MB = Number(CONFIG.security.codeql.ramMB) || 0;
+const CODEQL_TIMEOUT_MS = Number(CONFIG.security.codeql.timeoutMs) || (20 * 60_000);
+
 /* Optional Compliance & Feature Posture Engine — shares SEMGREP_BINARY (see CONFIG.compliance.posture) */
 const POSTURE_ENABLED = Boolean(CONFIG.compliance.posture.enabled);
 const POSTURE_RULESET = String(CONFIG.compliance.posture.ruleset || path.join(__dirname, 'ignite-posture-rules.yaml'));
@@ -356,6 +365,7 @@ const {
   gitleaks: GITLEAKS_BINARY, trivy: TRIVY_BINARY, checkov: CHECKOV_BINARY, hadolint: HADOLINT_BINARY,
   syft: SYFT_BINARY, cosign: COSIGN_BINARY, semgrep: SEMGREP_BINARY, bearer: BEARER_BINARY,
   guarddog: GUARDDOG_BINARY, jscpd: JSCPD_BINARY, gocloc: GOCLOC_BINARY, spectral: SPECTRAL_BINARY,
+  codeql: CODEQL_BINARY,
 });
 const SPECTRAL_RULESET = String(CONFIG.api.spectral.ruleset || path.join(__dirname, 'spectral-default-ruleset.yaml'));
 
@@ -887,6 +897,18 @@ const { checkMaliciousDependencies, guarddogTooling } = createMaliciousDependenc
   store,
   fsUtils: { walkFiles, hashBuffer },
   config: { enabled: GUARDDOG_ENABLED },
+});
+
+const { createCodeqlCrossFileCheck } = require('./checks/codeql-cross-file');
+const { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages } = createCodeqlCrossFileCheck({
+  runTool,
+  runToolStreaming,
+  store,
+  fsUtils: { walkFiles, hashBuffer, relativeToRoot },
+  config: {
+    enabled: CODEQL_ENABLED, binary: CODEQL_BINARY, languages: CODEQL_LANGUAGES,
+    querySuites: CODEQL_QUERY_SUITES, threads: CODEQL_THREADS, ramMB: CODEQL_RAM_MB, timeoutMs: CODEQL_TIMEOUT_MS,
+  },
 });
 
 const { createSemanticSastCheck } = require('./checks/semantic-sast');
@@ -1739,14 +1761,14 @@ mountToolsStatusRoutes(app, {
   toolings: {
     ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling,
     checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling,
-    bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling,
+    bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling, codeqlTooling,
   },
   enabled: {
     gitleaksEnabled: GITLEAKS_ENABLED, trivyEnabled: TRIVY_ENABLED, trivyImageEnabled: TRIVY_IMAGE_ENABLED,
     checkovEnabled: CHECKOV_ENABLED, hadolintEnabled: HADOLINT_ENABLED, syftEnabled: SYFT_ENABLED,
     cosignEnabled: COSIGN_ENABLED, semgrepEnabled: SEMGREP_ENABLED, bearerEnabled: BEARER_ENABLED,
     jscpdEnabled: JSCPD_ENABLED, goclocEnabled: GOCLOC_ENABLED, spectralEnabled: SPECTRAL_ENABLED,
-    guarddogEnabled: GUARDDOG_ENABLED,
+    guarddogEnabled: GUARDDOG_ENABLED, codeqlEnabled: CODEQL_ENABLED,
   },
 });
 
@@ -2526,5 +2548,7 @@ module.exports = {
   checkApiSchemas,
   checkFeaturePosture,
   checkMaliciousDependencies,
+  checkCodeqlCrossFile,
+  discoverCodeqlLanguages,
   normalizeWorkflowText,
 };

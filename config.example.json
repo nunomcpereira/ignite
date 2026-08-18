@@ -88,6 +88,20 @@
     "guarddog": {
       "enabled": true,
       "binary": "guarddog"
+    },
+    "codeql": {
+      "enabled": false,
+      "binary": "codeql",
+      "languages": ["javascript", "python", "java", "go"],
+      "querySuites": {
+        "javascript": "codeql/javascript-queries:codeql-suites/javascript-security-extended.qls",
+        "python": "codeql/python-queries:codeql-suites/python-security-extended.qls",
+        "java": "codeql/java-queries:codeql-suites/java-security-extended.qls",
+        "go": "codeql/go-queries:codeql-suites/go-security-extended.qls"
+      },
+      "threads": 0,
+      "ramMB": 0,
+      "timeoutMs": 1200000
     }
   },
   "compliance": {

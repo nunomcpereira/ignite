@@ -486,6 +486,65 @@ process.exit(1);
   return dir;
 }
 
+/**
+ * Writes a small Node script that stands in for the real `codeql` CLI, so
+ * tests can exercise the cross-file scan integration without requiring the
+ * CodeQL CLI (or a real, minutes-long database build) to be installed.
+ * Understands just enough of the real CLI surface: `version --format=json`,
+ * `database create <dbPath> ...`, `database analyze <dbPath> <suite>
+ * --format=sarif-latest --output=<path>`.
+ *
+ * `analyze` has no --language flag of its own (language is implicit in the
+ * database), so this fake recovers it the same way a real deep-scan run's
+ * per-language work directories are actually named by
+ * checks/codeql-cross-file.js (`ignite-codeql-<language>-XXXXXX/db`) —
+ * reading it back out of dbPath's parent directory name.
+ *
+ * Every `database create`/`database analyze` invocation is appended to
+ * `<returned>.callLogPath` (one word per line) so a test can assert on the
+ * cache short-circuit (a cache hit should mean zero further CLI calls for
+ * that language on a second run).
+ *
+ * @param {object} sarifByLanguage - e.g. { javascript: { runs: [...] } }
+ * @returns {Promise<{binary: string, callLogPath: string}>}
+ */
+async function makeFakeCodeQL(sarifByLanguage) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-codeql-'));
+  const scriptPath = path.join(dir, 'codeql');
+  const callLogPath = path.join(dir, 'calls.log');
+  const script = `#!/usr/bin/env node
+const fsn = require('fs');
+const pathn = require('path');
+const args = process.argv.slice(2);
+const callLog = ${JSON.stringify(callLogPath)};
+if (args[0] === 'version') {
+  fsn.writeFileSync(callLog, 'version\\n', { flag: 'a' });
+  process.stdout.write(JSON.stringify({ version: '2.99.0' }) + '\\n');
+  process.exit(0);
+}
+if (args[0] === 'database' && args[1] === 'create') {
+  fsn.writeFileSync(callLog, 'create\\n', { flag: 'a' });
+  fsn.mkdirSync(args[2], { recursive: true });
+  process.exit(0);
+}
+if (args[0] === 'database' && args[1] === 'analyze') {
+  fsn.writeFileSync(callLog, 'analyze\\n', { flag: 'a' });
+  const dbPath = args[2];
+  const outFlag = args.find((a) => a.startsWith('--output='));
+  const outPath = outFlag.slice('--output='.length);
+  const m = pathn.basename(pathn.dirname(dbPath)).match(/^ignite-codeql-([a-z]+)-/);
+  const lang = m ? m[1] : null;
+  const sarifByLanguage = ${JSON.stringify(sarifByLanguage)};
+  const sarif = (lang && sarifByLanguage[lang]) || { runs: [{ tool: { driver: { rules: [] } }, results: [] }] };
+  fsn.writeFileSync(outPath, JSON.stringify(sarif));
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return { binary: scriptPath, callLogPath };
+}
+
 module.exports = {
-  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral, makeFakeGuardDog, makeFakeDockerAndTrivyImage,
+  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral, makeFakeGuardDog, makeFakeDockerAndTrivyImage, makeFakeCodeQL,
 };

@@ -1727,6 +1727,10 @@
         label: 'GuardDog',
         info: 'Malicious-dependency heuristic scan (Datadog) — flags supply-chain-attack patterns (install-script exfiltration, obfuscated payloads, silent network calls) in npm/PyPI dependencies, independent of whether a CVE has been published yet. On by default (downloads and inspects every dependency’s real package contents — slower/heavier than the rest of Phase 4); no built-in fallback. Toggle via security.guarddog.enabled.',
       },
+      codeql: {
+        label: 'CodeQL',
+        info: 'Cross-file static analysis — traces a vulnerability across file/function boundaries, the one gap Semgrep OSS’s single-file engine can’t cover. Off by default (a real per-language database build — the heaviest of the 13 tools) and never runs on the fast push-time pipeline; only Deep Scan invokes it. No built-in fallback. Toggle via security.codeql.enabled.',
+      },
     };
 
     function renderToolsBar(status) {
