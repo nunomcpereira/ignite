@@ -20,11 +20,7 @@ ARG INSTALL_COSIGN=true
 ARG INSTALL_SEMGREP=true
 ARG INSTALL_BEARER=true
 ARG INSTALL_GUARDDOG=true
-# Off by default (unlike every other tool ARG above) - CodeQL is the
-# heaviest of the 13 soft-deps (a per-language database build, not a single
-# CLI pass) and matches CONFIG.security.codeql's own enabled:false default.
-# Set --build-arg INSTALL_CODEQL=true to opt in.
-ARG INSTALL_CODEQL=false
+ARG INSTALL_CODEQL=true
 ARG INSTALL_JSCPD=true
 ARG INSTALL_GOCLOC=true
 ARG INSTALL_SPECTRAL=true

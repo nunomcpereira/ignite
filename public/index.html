@@ -1729,7 +1729,7 @@
       },
       codeql: {
         label: 'CodeQL',
-        info: 'Cross-file static analysis — traces a vulnerability across file/function boundaries, the one gap Semgrep OSS’s single-file engine can’t cover. Off by default (a real per-language database build — the heaviest of the 13 tools) and never runs on the fast push-time pipeline; only Deep Scan invokes it. No built-in fallback. Toggle via security.codeql.enabled.',
+        info: 'Cross-file static analysis — traces a vulnerability across file/function boundaries, the one gap Semgrep OSS’s single-file engine can’t cover. On by default, same as the rest of Phase 4 — its database build measured at only ~3s added to Phase 4’s wall time, hiding inside whichever other tool is the long pole. No built-in fallback. Toggle via security.codeql.enabled.',
       },
     };
 
@@ -3596,7 +3596,6 @@
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
             </button>
             <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
-            <button type="button" class="hist-deep-scan text-[11px] font-semibold text-amber-700 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="Re-clones the pushed repo and runs the same checks as a normal push (structure audit, unit tests, full security scan, org governance CI) plus CodeQL cross-file static analysis. Slower than a normal push (minutes, not seconds).">🔎 Deep Scan</button>
             ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)">🧪 Studio</button>` : ''}
             ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
             <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold mt-0.5" data-id="${p.id}" title="Delete this project">✕</button>
@@ -3624,51 +3623,6 @@
               { org: btn.dataset.org, repo: btn.dataset.repo });
           } catch {
             openIssuesViewer([], 'Could not load issues for this project.');
-          }
-        });
-      });
-
-      // Deep Scan re-clones the pushed repo (no local staging dir survives
-      // a finished run — see the hardening invariants) and runs the full
-      // check set plus CodeQL cross-file analysis
-      // (POST /api/pipeline/deep-scan with no projectPath). Streaming
-      // NDJSON, same wire format as the interactive pipeline, but consumed
-      // here just to detect completion — the button becomes "Scanning…"
-      // and disables itself for the duration rather than showing a live
-      // log, since a deep scan commonly takes minutes.
-      historyList.querySelectorAll('.hist-deep-scan').forEach((btn) => {
-        btn.addEventListener('click', async (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          if (btn.disabled) return;
-          const org = btn.dataset.org;
-          const repo = btn.dataset.repo;
-          const originalLabel = btn.textContent;
-          btn.disabled = true;
-          btn.textContent = '🔎 Scanning…';
-          btn.classList.add('opacity-50', 'cursor-not-allowed');
-          try {
-            const res = await fetch('/api/pipeline/deep-scan', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ org, repo }),
-            });
-            const text = await res.text();
-            const lines = text.split('\n').filter(Boolean);
-            const doneEvent = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } })
-              .filter(Boolean).find((e) => e.type === 'done');
-            if (!doneEvent) throw new Error('Deep scan did not return a result.');
-            if (!doneEvent.ok) throw new Error(doneEvent.error || 'Deep scan failed.');
-            const crossFileCount = (doneEvent.issues || []).filter((i) => i.category === 'codeql-sast' && i.crossFile).length;
-            openIssuesViewer(doneEvent.issues || [],
-              `Deep scan complete — ${doneEvent.issues?.length || 0} issue(s), ${crossFileCount} only found by CodeQL's cross-file analysis.`,
-              { org, repo });
-          } catch (e) {
-            openIssuesViewer([], `Deep scan failed: ${e.message}`, { org, repo });
-          } finally {
-            btn.disabled = false;
-            btn.textContent = originalLabel;
-            btn.classList.remove('opacity-50', 'cursor-not-allowed');
           }
         });
       });

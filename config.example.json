@@ -90,7 +90,7 @@
       "binary": "guarddog"
     },
     "codeql": {
-      "enabled": false,
+      "enabled": true,
       "binary": "codeql",
       "languages": ["javascript", "python", "java", "go"],
       "querySuites": {

@@ -164,28 +164,27 @@ function loadConfig() {
       // intraprocedural, so a vulnerability whose tainted data crosses
       // file/function boundaries before reaching a sink isn't reliably
       // caught by anything else in Phase 4. A CodeQL database build is
-      // whole-project and can take minutes per language, so — unlike every
-      // other Phase 4 tool — this one deliberately never runs as part of
-      // the fast interactive push-time pipeline (runPhase4Checks in
-      // server.js). It only runs from Ignite's separate deep-scan path
-      // (POST /api/pipeline/deep-scan and the in-app scheduler), which
-      // trades pipeline latency for cross-file coverage on already-
-      // onboarded repos (scheduled cadence) or brand-new ones (an explicit
-      // pre-push gate, not a silent substitution for the light pipeline).
-      // `enabled: false` by default (unlike the always-on tools above) —
-      // CodeQL is the heaviest of the thirteen soft-deps by a wide margin
-      // (a real per-language database build, not a single fast CLI pass),
-      // so it's opt-in until you've accepted that cost; set
-      // CODEQL_ENABLED=true to turn it on. `languages` limits which of
-      // CodeQL's query suites actually run (JS/TS, Python, Java, Go
-      // ship by default here); `querySuites` maps each language to a
-      // CodeQL query pack (security-extended by default — broad taint-
-      // tracking + security-and-quality coverage); `threads`/`ramMB` are
-      // passed straight to `codeql database create`/`analyze` (0 = let
+      // whole-project and can take minutes per language in isolation, but
+      // measured for real against Ignite's own codebase it added only
+      // ~3 seconds to Phase 4's total wall time — Phase 4 runs every check
+      // concurrently, and CodeQL's build finishes well inside whichever
+      // other tool is already the long pole (typically Bearer). On by
+      // default as of that measurement, same as the always-on tools above
+      // — runs on every push, not a separate opt-in "deep scan" path (one
+      // existed, routes/pipeline-deep-scan.js, removed once the numbers
+      // showed the split wasn't earning its complexity). Set
+      // CODEQL_ENABLED=false to opt back out — e.g. if Bearer/Semgrep/
+      // GuardDog are disabled or fast enough on your codebase that
+      // CodeQL's own cost would actually become visible. `languages`
+      // limits which of CodeQL's query suites actually run (JS/TS, Python,
+      // Java, Go ship by default here); `querySuites` maps each language
+      // to a CodeQL query pack (security-extended by default — broad
+      // taint-tracking + security-and-quality coverage); `threads`/`ramMB`
+      // are passed straight to `codeql database create`/`analyze` (0 = let
       // CodeQL pick its own default). No built-in fallback: cross-file
       // taint analysis has no meaningful heuristic substitute.
       codeql: {
-        enabled: false,
+        enabled: true,
         binary: 'codeql',
         languages: ['javascript', 'python', 'java', 'go'],
         querySuites: {

@@ -55,9 +55,9 @@ const SINGLE_FILE_SARIF = {
   }],
 };
 
-test('checkCodeqlCrossFile: codeql is disabled by default', withServerEnv({}, async (mod) => {
+test('checkCodeqlCrossFile: codeql is enabled by default', withServerEnv({}, async (mod) => {
   const cfg = mod.loadConfig();
-  assert.equal(cfg.security.codeql.enabled, false);
+  assert.equal(cfg.security.codeql.enabled, true);
   assert.equal(cfg.security.codeql.binary, 'codeql');
   assert.deepEqual(cfg.security.codeql.languages, ['javascript', 'python', 'java', 'go']);
 }));

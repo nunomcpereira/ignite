@@ -86,11 +86,10 @@ guarddog_install() {
 }
 install INSTALL_GUARDDOG "command -v guarddog" "GuardDog" guarddog_install
 
-# --- CodeQL (cross-file static analysis) - off by default in CONFIG, unlike
-# every tool above, since it's the heaviest of the 13 (a real per-language
-# database build). This script still offers to install the CLI itself so
-# it's available to opt into later (CODEQL_ENABLED=true) without a second
-# install pass; skip it here too with INSTALL_CODEQL=false.
+# --- CodeQL (cross-file static analysis) - on by default in CONFIG, same as
+# the rest of Phase 4 (measured to add only ~3s to Phase 4's wall time, its
+# database build finishing inside whichever other tool is the long pole).
+# Skip installing it with INSTALL_CODEQL=false.
 codeql_install() {
   local platform
   case "$(uname -s)" in

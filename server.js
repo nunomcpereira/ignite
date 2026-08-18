@@ -984,14 +984,20 @@ const { checkFeaturePosture, checkFeaturePostureFallback, POSTURE_CATEGORIES } =
 // Shared by all three pipeline entry points (validate-all, onboard, the
 // interactive SSE pipeline) — they were each running an identical,
 // independently-maintained copy of this block.
-// deepScan (default false): adds one more task, CodeQL cross-file static
-// analysis (see checks/codeql-cross-file.js). Deliberately opt-in, not
-// merged into the fixed tasks list above — a CodeQL database build is
-// whole-project and can take minutes per language, which every other Phase
-// 4 check's concurrent-and-fast design assumes never happens. Only the
-// deep-scan route (routes/pipeline-deep-scan.js) passes deepScan: true; the
-// interactive/validate-all/onboard pipelines never do.
-async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, deepScan = false }) {
+//
+// CodeQL cross-file static analysis (checks/codeql-cross-file.js) runs as
+// one more task in the same concurrent batch, unconditionally — measured
+// for real (a full self-scan of Ignite's own codebase) to add roughly 3
+// seconds of wall time on top of the rest of Phase 4, because its 34.8s
+// cold database build finishes well inside Bearer's own ~67s tail; Phase
+// 4's concurrency already hides it almost entirely. That's what makes it
+// safe to run on every push, not just a separate opt-in "deep scan" path —
+// there used to be one (routes/pipeline-deep-scan.js), removed once the
+// measurement showed the split wasn't earning its complexity. Still fully
+// toggleable via CONFIG.security.codeql.enabled (on by default) for
+// environments where Bearer/Semgrep/GuardDog are disabled or fast enough
+// that CodeQL's cost would actually show up.
+async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }) {
   const tasks = [
     {
       name: 'secrets',
@@ -1239,13 +1245,10 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, 
         return { postureEngine, posture };
       },
     },
-  ];
-
-  if (deepScan) {
-    tasks.push({
+    {
       name: 'codeql',
       run: async (blog) => {
-        blog('Check 15 — cross-file static analysis (CodeQL deep scan)...');
+        blog('Check 15 — cross-file static analysis (CodeQL)...');
         const codeql = await checkCodeqlCrossFile(projectRoot, blog, { org, repo });
         if (codeql.findings.length > 0) {
           const crossFileCount = codeql.findings.filter((f) => f.crossFile).length;
@@ -1258,8 +1261,8 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, 
         }
         return codeql;
       },
-    });
-  }
+    },
+  ];
 
   const settled = await Promise.all(tasks.map(async (t) => {
     const lines = [];
@@ -2424,29 +2427,6 @@ mountValidateAllRoute(app, {
   actTooling,
   fetchGovernanceWorkflow,
   runActionsLocally,
-});
-
-const { mountDeepScanRoute } = require('./routes/pipeline-deep-scan');
-mountDeepScanRoute(app, {
-  store,
-  phaseTitles: PHASE_TITLES,
-  phaseEnabled: PHASE_ENABLED,
-  repoNameRegex: REPO_NAME_REGEX,
-  githubNameRegex: GITHUB_NAME_REGEX,
-  actEvent: ACT_EVENT,
-  sanitizeAbsoluteProjectPath,
-  stageExistingProject,
-  resolveProjectRoot,
-  checkEnvFiles,
-  checkCodeowners,
-  runProjectUnitTests,
-  runLicenseComplianceCheck,
-  runDependencyVulnerabilityCheck,
-  runPhase4Checks,
-  actTooling,
-  fetchGovernanceWorkflow,
-  runActionsLocally,
-  runTool,
 });
 
 const { mountOnboardRoute } = require('./routes/pipeline-onboard');
