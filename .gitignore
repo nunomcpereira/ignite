@@ -4,8 +4,7 @@ config.json
 .env
 ignite.db
 ignite.db-*
-data/retained-projects/
-data/codeql-dbs/
 **/*.log
 test-results/
 playwright-report/
+docs/ux/stitch_ignite.zip

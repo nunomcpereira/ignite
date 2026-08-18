@@ -17,7 +17,10 @@
 function mountHistoryRoutes(app, { store, auth, runningRuns, scheduleIntervals, computeNextRunAt }) {
   const fsp = require('fs/promises');
   const path = require('path');
-  const CODEQL_DB_ROOT = path.join(__dirname, '..', 'data', 'codeql-dbs');
+  // Outside the repo working tree — see routes/pipeline-interactive.js's
+  // retained-source comment for why.
+  const IGNITE_DATA_DIR = process.env.IGNITE_DATA_DIR || path.join(require('os').homedir(), '.ignite');
+  const CODEQL_DB_ROOT = path.join(IGNITE_DATA_DIR, 'codeql-dbs');
 
   app.get('/api/projects', (req, res) => {
     res.json(store.listProjects());

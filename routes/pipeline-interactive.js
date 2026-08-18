@@ -61,6 +61,11 @@ function mountInteractivePipelineRoute(app, {
   const path = require('path');
   const os = require('os');
   const crypto = require('crypto');
+  // Outside the repo working tree on purpose — see the retained-source
+  // comment below for why (a whole-repo scan of Ignite's own source, like
+  // its own pre-push hook, must never sweep up another project's retained
+  // code sitting in a subdirectory of the same checkout).
+  const IGNITE_DATA_DIR = process.env.IGNITE_DATA_DIR || path.join(os.homedir(), '.ignite');
 
   app.post(
     '/api/pipeline',
@@ -588,9 +593,20 @@ function mountInteractivePipelineRoute(app, {
       // routes/studio.js's resolveStudioContext 'retained' branch). Separate
       // from pendingEffectivations above, which is a short-TTL mechanism
       // just for the "Effectivate" action, not for browsing.
+      //
+      // Lives outside the repo working tree entirely (~/.ignite by default,
+      // IGNITE_DATA_DIR to override) rather than under repo-root data/ —
+      // learned the hard way dogfooding this on Ignite's own repo: any
+      // uploaded project's source retained here is real (possibly
+      // sensitive) third-party code, and a repo-root location gets swept
+      // into whole-repo scans that don't consult .gitignore the way
+      // checkSecrets does (CodeQL's --source-root walks the real
+      // filesystem tree directly) — Ignite's own pre-push hook flagged 590
+      // findings from a retained project sitting in data/retained-projects/
+      // before this moved outside the tree entirely.
       if (snapshotReady && projectId !== null) {
         try {
-          const retainedRoot = path.join(__dirname, '..', 'data', 'retained-projects');
+          const retainedRoot = path.join(IGNITE_DATA_DIR, 'retained-projects');
           const retainedDir = path.join(retainedRoot, String(projectId));
           await fsp.mkdir(retainedRoot, { recursive: true });
           await fsp.rm(retainedDir, { recursive: true, force: true });
@@ -601,7 +617,7 @@ function mountInteractivePipelineRoute(app, {
             // Its CodeQL database(s), if Studio ever built any for it, are
             // scoped to the same "kept past this run's own lifetime" reason
             // as the retained source itself — evict together.
-            await fsp.rm(path.join(__dirname, '..', 'data', 'codeql-dbs', String(evicted.project_id)), { recursive: true, force: true }).catch(() => {});
+            await fsp.rm(path.join(IGNITE_DATA_DIR, 'codeql-dbs', String(evicted.project_id)), { recursive: true, force: true }).catch(() => {});
             store.deleteRetainedSource(evicted.project_id);
           }
         } catch (e) {

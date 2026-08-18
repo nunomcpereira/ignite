@@ -52,7 +52,15 @@ function mountStudioRoutes(app, {
   // rebuilding it. Cleaned up in routes/history.js alongside retained
   // sources, since both are "extra state kept past a run's own lifetime"
   // for the same reason (post-mortem Studio parity).
-  const CODEQL_DB_ROOT = path.join(__dirname, '..', 'data', 'codeql-dbs');
+  //
+  // Outside the repo working tree (~/.ignite by default, IGNITE_DATA_DIR to
+  // override) — not repo-root data/ — for the same reason retained sources
+  // live there too (see routes/pipeline-interactive.js): a database built
+  // from another project's real source shouldn't sit inside a directory
+  // Ignite's own whole-repo tooling (its pre-push hook, an IDE index, etc.)
+  // might walk.
+  const IGNITE_DATA_DIR = process.env.IGNITE_DATA_DIR || path.join(require('os').homedir(), '.ignite');
+  const CODEQL_DB_ROOT = path.join(IGNITE_DATA_DIR, 'codeql-dbs');
   function codeqlDbDirFor(projectId) {
     return projectId !== null && projectId !== undefined ? path.join(CODEQL_DB_ROOT, String(projectId)) : null;
   }
