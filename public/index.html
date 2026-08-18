@@ -4154,6 +4154,7 @@
           Load into main view
         </button>
         ${p.repo_url ? `<a href="${escapeHtml(p.repo_url)}" target="_blank" rel="noopener" class="block text-[11px] font-mono text-brand-600 hover:text-brand-800 underline underline-offset-2 truncate mb-2">${escapeHtml(p.repo_url)}</a>` : ''}
+        ${p.scan_location ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="${escapeAttr(p.scan_location)}"><span class="font-semibold text-slate-400">Scanned from:</span> <span class="font-mono">${escapeHtml(p.scan_location)}</span></p>` : ''}
         ${(p.status === 'failed' || p.status === 'aborted') && p.error ? `<p class="text-[11px] text-rose-600 mb-2">✗ ${escapeHtml(p.error)}</p>` : ''}
         <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Pipeline steps</p>
         <div class="space-y-1.5 mb-3">${stepsHtml || '<p class="text-[11px] text-slate-400">No step history recorded.</p>'}</div>

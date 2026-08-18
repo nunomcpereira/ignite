@@ -206,7 +206,10 @@ function mountInteractivePipelineRoute(app, {
         log1(`Target: ${org}/${repo} (private)`);
         log1(`GxP-regulated process: ${isGxp ? 'YES — validation documents are mandatory' : 'no'}`);
         if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
-        projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'ui'));
+        const scanLocation = zipFile
+          ? `Archive: ${zipFile.originalname}`
+          : `Folder upload: ${dirFiles.length} file(s)`;
+        projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'ui'), scanLocation);
         runState.projectId = projectId;
         for (const id of Object.keys(record)) persistPhase(Number(id));
         status(1, 'success');

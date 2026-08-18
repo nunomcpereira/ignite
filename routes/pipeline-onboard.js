@@ -139,7 +139,7 @@ function mountOnboardRoute(app, {
       log1(`Target: ${org}/${repo} (private)`);
       log1(`GxP-regulated process: ${isGxp ? 'YES' : 'no'}`);
       if (dryRun) log1('Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.');
-      projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'api'));
+      projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'api'), projectPath);
       for (const id of Object.keys(record)) persistPhase(Number(id));
       status(1, 'success');
 

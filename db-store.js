@@ -14,6 +14,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       repo        TEXT NOT NULL,
       gxp         INTEGER NOT NULL DEFAULT 0,
       source      TEXT NOT NULL DEFAULT 'ui',
+      scan_location TEXT,
       status      TEXT NOT NULL DEFAULT 'running',
       error       TEXT,
       repo_url    TEXT,
@@ -196,6 +197,16 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
 
+  // Migration for DBs created before scan_location existed — the local
+  // path (validate-all/onboard) or upload description (interactive UI)
+  // the source tree was actually read from for this run, so a past run is
+  // traceable back to what was scanned, not just its org/repo target.
+  try {
+    db.exec('ALTER TABLE projects ADD COLUMN scan_location TEXT');
+  } catch (e) {
+    if (!/duplicate column/i.test(e.message)) throw e;
+  }
+
   // Migration for DBs created before scheduled re-checks existed. Disabled
   // by default — an existing effectivated repo doesn't opt into recurring
   // checks just because the column now exists.
@@ -215,7 +226,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
   }
 
   const stmt = {
-    insertProject: db.prepare('INSERT INTO projects (job_id, org, repo, gxp, source) VALUES (?, ?, ?, ?, ?)'),
+    insertProject: db.prepare('INSERT INTO projects (job_id, org, repo, gxp, source, scan_location) VALUES (?, ?, ?, ?, ?, ?)'),
     finishProject: db.prepare(
       `UPDATE projects SET status = ?, error = ?, repo_url = ?, pr_url = ?, finished_at = datetime('now') WHERE id = ?`
     ),
@@ -230,7 +241,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       'INSERT INTO documents (project_id, kind, name, url, mime, size, data) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ),
     listProjects: db.prepare(`
-      SELECT p.id, p.job_id, p.org, p.repo, p.gxp, p.source, p.status, p.error, p.repo_url, p.pr_url,
+      SELECT p.id, p.job_id, p.org, p.repo, p.gxp, p.source, p.scan_location, p.status, p.error, p.repo_url, p.pr_url,
              p.created_at, p.finished_at,
              (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS doc_count,
              (SELECT COUNT(*) FROM issues i WHERE i.project_id = p.id) AS issue_count,
@@ -238,7 +249,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       FROM projects p ORDER BY p.id DESC LIMIT 100
     `),
     getProject: db.prepare(
-      'SELECT id, org, repo, gxp, source, status, error, repo_url, pr_url, created_at, finished_at FROM projects WHERE id = ?'
+      'SELECT id, org, repo, gxp, source, scan_location, status, error, repo_url, pr_url, created_at, finished_at FROM projects WHERE id = ?'
     ),
     getSteps: db.prepare('SELECT phase, title, state, logs FROM steps WHERE project_id = ? ORDER BY phase'),
     getProjectDocuments: db.prepare(
@@ -443,8 +454,8 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
   };
 
   return {
-    createProject(jobId, org, repo, isGxp, source = 'ui') {
-      return Number(stmt.insertProject.run(jobId, org, repo, isGxp ? 1 : 0, source).lastInsertRowid);
+    createProject(jobId, org, repo, isGxp, source = 'ui', scanLocation = null) {
+      return Number(stmt.insertProject.run(jobId, org, repo, isGxp ? 1 : 0, source, scanLocation).lastInsertRowid);
     },
 
     finishProject(status, error, repoUrl, prUrl, projectId) {

@@ -114,7 +114,7 @@ function mountValidateAllRoute(app, {
       log1(`Source project path: ${projectPath}`);
       log1(`Target metadata: ${org}/${repo}`);
       log1(`GxP-regulated process: ${isGxp ? 'YES' : 'no'}`);
-      projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'api'));
+      projectId = store.createProject(jobId, org, repo, isGxp, resolveRequestSource(req, 'api'), projectPath);
       for (const id of Object.keys(record)) persistPhase(Number(id));
       status(1, 'success');
 
