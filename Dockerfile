@@ -109,11 +109,24 @@ RUN if [ "$INSTALL_BEARER" = "true" ]; then \
         | sh -s -- -b /usr/local/bin; \
     fi
 RUN if [ "$INSTALL_GUARDDOG" = "true" ]; then pipx install guarddog && pipx ensurepath; fi
+# GitHub only ships an x86_64 ("linux64") CodeQL CLI build for Linux - no
+# native arm64 release exists (confirmed against the actual release asset
+# list, not assumed). On an arm64 build host (Apple Silicon's Docker
+# Desktop building for its own platform, the common case) that bundle's own
+# Java runtime silently can't run - a broken `codeql` on PATH that fails at
+# scan time, not build time. Soft-skip instead, same as Ignite treats any
+# other missing optional tool: install it on amd64, skip with a clear
+# reason on arm64 (`docker compose build --platform linux/amd64` emulates
+# amd64 via Rosetta/QEMU if you need CodeQL on an Apple Silicon host).
 RUN if [ "$INSTALL_CODEQL" = "true" ]; then \
-      curl -fsSL -o /tmp/codeql.zip \
-        "https://github.com/github/codeql-cli-binaries/releases/latest/download/codeql-linux64.zip" \
-      && unzip -q /tmp/codeql.zip -d /opt \
-      && ln -s /opt/codeql/codeql /usr/local/bin/codeql && rm /tmp/codeql.zip; \
+      if [ "$TARGETARCH" = "arm64" ]; then \
+        echo "Skipping CodeQL install: no native linux/arm64 CLI build exists upstream (see github/codeql-cli-binaries releases). Build with --platform linux/amd64 to get CodeQL via emulation, or leave it disabled on this platform." >&2; \
+      else \
+        curl -fsSL -o /tmp/codeql.zip \
+          "https://github.com/github/codeql-cli-binaries/releases/latest/download/codeql-linux64.zip" \
+        && unzip -q /tmp/codeql.zip -d /opt \
+        && ln -s /opt/codeql/codeql /usr/local/bin/codeql && rm /tmp/codeql.zip; \
+      fi; \
     fi
 
 # --- Code metrics / API schema (npm-based) --------------------------------
