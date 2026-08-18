@@ -67,19 +67,47 @@ If you cannot safely propose a fix from the snippet alone, respond {"explanation
     return fenced ? fenced[1] : trimmed;
   }
 
+  // Distinguishes "the LLM call itself failed" (llmComplete's thrown
+  // err.code — timeout/network_error/http_error/empty_response) from "the
+  // LLM responded but not in the shape we asked for" (invalid_response,
+  // thrown here) — both were previously indistinguishable from a genuine
+  // "no fix" decline once they reached the client, all collapsing into the
+  // same generic fallback text.
+  function friendlyLlmErrorMessage(e) {
+    switch (e.code) {
+      case 'timeout':
+        return `The AI took too long to respond (over ${Math.round((e.timeoutMs || 60_000) / 1000)}s) and the request was cancelled. Try again, or check whether the local LLM is overloaded.`;
+      case 'network_error':
+        return `Could not reach the AI service: ${e.message}`;
+      case 'http_error':
+        return `The AI service returned an error (HTTP ${e.status}).`;
+      case 'empty_response':
+        return 'The AI returned an empty response.';
+      case 'invalid_response':
+        return e.message;
+      default:
+        return e.message;
+    }
+  }
+
   async function suggestFixForIssue(issue) {
     if (!Array.isArray(issue.snippet?.lines) || issue.snippet.lines.length === 0) return null;
     const codeBlock = issue.snippet.lines.map((l) => `${l.number}: ${l.text}`).join('\n').slice(0, 4000);
     const user = `Category: ${issue.category}\nSeverity: ${issue.severity}\nLocation: ${issue.file || 'unknown'}${issue.line ? ':' + issue.line : ''}\nTechnical summary: ${issue.summary}\n\nCode:\n${codeBlock}`;
     const text = await llmComplete(ISSUE_SUGGEST_FIX_PROMPT, user, { temperature: 0.2, timeoutMs: 60_000, label: `issue-suggest-fix ${issue.category}:${issue.file || '?'}:${issue.line || 0}` });
-    if (!text) return null;
     let parsed;
     try {
       parsed = JSON.parse(stripJsonFence(text));
     } catch {
-      return null;
+      const err = new Error('The AI response could not be parsed as JSON.');
+      err.code = 'invalid_response';
+      throw err;
     }
-    if (typeof parsed.replacement !== 'string' && parsed.replacement !== null) return null;
+    if (typeof parsed.replacement !== 'string' && parsed.replacement !== null) {
+      const err = new Error('The AI response did not match the expected fix schema.');
+      err.code = 'invalid_response';
+      throw err;
+    }
     return {
       explanation: String(parsed.explanation || ''),
       replacement: parsed.replacement,
@@ -104,7 +132,7 @@ If you cannot safely propose a fix from the snippet alone, respond {"explanation
       if (explanation) store.cacheIssueExplanation(hash, explanation);
       res.json({ ok: true, explanation, cached: false });
     } catch (e) {
-      res.status(502).json({ ok: false, error: e.message });
+      res.status(502).json({ ok: false, error: friendlyLlmErrorMessage(e) });
     }
   });
 
@@ -120,7 +148,7 @@ If you cannot safely propose a fix from the snippet alone, respond {"explanation
       const suggestion = await suggestFixForIssue(issue);
       res.json({ ok: true, suggestion });
     } catch (e) {
-      res.status(502).json({ ok: false, error: e.message });
+      res.status(502).json({ ok: false, error: friendlyLlmErrorMessage(e) });
     }
   });
 }

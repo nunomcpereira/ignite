@@ -1049,6 +1049,7 @@
         ? `<button type="button" class="open-studio-btn text-[11px] font-semibold text-violet-600 hover:underline" data-idx="${idx}" data-issue="${escapeAttr(JSON.stringify({
             id: issue.id, category: issue.category, severity: issue.severity, file: issue.file,
             line: issue.line, summary: issue.summary, snippet: issue.snippet, duplicateRef: issue.duplicateRef,
+            crossFile: issue.crossFile, chain: issue.chain,
           }))}">Open in Studio ⧉</button>`
         : '';
       // A code-duplication finding's summary references the *other*
@@ -1880,7 +1881,14 @@
 
       if (issue && issue.file) {
         await openStudioFile(issue.file);
-        selectStudioIssue(issue);
+        // Prefer the freshly-fetched, full-fidelity issue over the slim
+        // one the caller passed in (open-studio-btn's data-issue only
+        // whitelists a handful of fields for its DOM attribute) — same id,
+        // but this one carries crossFile/chain/cwe/score/etc. Falls back to
+        // the passed issue if the id isn't found (e.g. it hasn't been
+        // persisted yet).
+        const fullIssue = studioState.issues.find((i) => i.id === issue.id) || issue;
+        selectStudioIssue(fullIssue);
       }
     }
 
@@ -2790,14 +2798,32 @@
     });
 
     async function selectStudioIssue(issue) {
+      const isNewIssue = studioState.selectedIssue?.id !== issue.id;
       studioState.selectedIssue = issue;
       studioState.jumpHighlightRange = null;
+      // Cross-file chain findings: issue.line already points at the sink
+      // (the last step), so start the chain position there too — clicking
+      // "← Prev step" walks back toward the source, matching how you'd
+      // read the finding (I landed here, how did the data get here?).
+      if (Array.isArray(issue.chain) && isNewIssue) {
+        studioState.chainStepIndex = issue.chain.length - 1;
+      }
       if (studioState.historical) {
         scrollStudioToLine(issue.line);
       } else if (!studioState.editing) {
         renderStudioCodeView(studioState.originalContent);
         scrollStudioToLine(issue.line);
       }
+      studioRenderIssuePanel(issue);
+    }
+
+    // Extracted from selectStudioIssue so studioGoToChainStep can rebuild
+    // just the panel (explain/fix buttons, chain controls) after navigating
+    // to a different file for a chain step, without re-running
+    // selectStudioIssue's own file-open/scroll-to-issue.line logic (which
+    // would always snap back to the sink instead of staying on the step
+    // just navigated to).
+    function studioRenderIssuePanel(issue) {
       const explainId = `studio-explain-${issue.id}`;
       const fixId = `studio-fix-${issue.id}`;
       const list = studioIssuesForFile(studioState.currentPath);
@@ -2820,6 +2846,24 @@
           <p class="text-xs text-slate-700 mt-1.5">${escapeHtml(issue.summary)}</p>
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
+        ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
+        <div class="border border-amber-200 bg-amber-50 rounded-lg p-2 mb-3">
+          <p class="text-[10px] font-bold text-amber-700 uppercase mb-0.5">Cross-file call chain</p>
+          <p class="text-[10px] text-amber-600 mb-1.5">${issue.chain.length} steps across ${new Set(issue.chain.map((s) => s.file)).size} files — this finding only exists because CodeQL traced data across all of them.</p>
+          <div id="studio-chain-steps" class="flex flex-col gap-0.5 max-h-40 overflow-y-auto">
+            ${issue.chain.map((step, i) => `
+              <button type="button" class="studio-chain-step w-full text-left text-[11px] font-mono px-1.5 py-1 rounded border border-transparent hover:border-amber-300 hover:bg-amber-100 flex items-center gap-2" data-i="${i}">
+                <span class="studio-chain-dot inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-200 text-amber-800 text-[9px] font-bold shrink-0">${i + 1}</span>
+                <span class="truncate">${escapeHtml(step.file)}:${step.line}</span>
+                ${i === 0 ? '<span class="text-[9px] text-amber-500 shrink-0">source</span>' : i === issue.chain.length - 1 ? '<span class="text-[9px] text-amber-500 shrink-0">sink</span>' : ''}
+              </button>`).join('')}
+          </div>
+          <div class="flex items-center justify-between mt-1.5 pt-1.5 border-t border-amber-200">
+            <button type="button" id="studio-chain-prev" class="text-[10px] font-semibold text-amber-700 hover:underline disabled:opacity-30 disabled:no-underline">← Prev step</button>
+            <span id="studio-chain-pos" class="text-[10px] text-amber-600 font-mono"></span>
+            <button type="button" id="studio-chain-next" class="text-[10px] font-semibold text-amber-700 hover:underline disabled:opacity-30 disabled:no-underline">Next step →</button>
+          </div>
+        </div>` : ''}
         <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2">Explain this issue</button>
         <div id="${explainId}-body" class="text-[11px] text-slate-600 mb-3"></div>
         <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 mb-2">Suggest AI fix</button>
@@ -2827,6 +2871,9 @@
         <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-3">← Back to file's issues</button>`;
       if (issue.duplicateRef) {
         document.getElementById('studio-jump-duplicate')?.addEventListener('click', () => studioNavigateToDuplicateRef(issue.duplicateRef));
+      }
+      if (Array.isArray(issue.chain) && issue.chain.length > 1) {
+        studioWireChainControls(issue);
       }
 
       $('studio-issue-prev').addEventListener('click', () => studioNavigateIssue(-1));
@@ -2845,6 +2892,15 @@
             }),
           });
           const data = await res.json();
+          // A 502 (real failure — timeout/network/HTTP error, see
+          // lib/llm-client.js's typed errors) carries data.error, not
+          // data.explanation/data.reason — checking res.ok first stops a
+          // genuine failure from silently reading as "the AI had nothing
+          // to say," which is what happened before this check existed.
+          if (!res.ok || data.ok === false) {
+            $(`${explainId}-body`).textContent = data.error || 'Could not fetch an explanation.';
+            return;
+          }
           $(`${explainId}-body`).textContent = data.explanation || data.reason || 'No explanation available.';
         } catch {
           $(`${explainId}-body`).textContent = 'Could not fetch an explanation.';
@@ -2863,6 +2919,14 @@
             }),
           });
           const data = await res.json();
+          // Same res.ok check as the explain handler above — a 502 carries
+          // data.error (a real failure reason: timeout, network, malformed
+          // AI response), not data.suggestion/data.reason, and used to
+          // silently read as the generic "no fix" fallback below.
+          if (!res.ok || data.ok === false) {
+            $(`${fixId}-body`).innerHTML = `<p class="text-rose-500">${escapeHtml(data.error || 'Could not fetch a fix suggestion.')}</p>`;
+            return;
+          }
           if (!data.suggestion || data.suggestion.replacement == null) {
             $(`${fixId}-body`).innerHTML = `<p class="text-slate-500">${escapeHtml(data.suggestion?.explanation || data.reason || 'No fix could be suggested for this snippet.')}</p>`;
             return;
@@ -2878,6 +2942,56 @@
           $(`${fixId}-body`).innerHTML = '<p class="text-rose-500">Could not fetch a fix suggestion.</p>';
         }
       });
+    }
+
+    // Highlights the current chain step (in the step list and the
+    // position counter) and wires each step button plus the prev/next
+    // buttons to studioGoToChainStep — called once per panel render since
+    // studioRenderIssuePanel rebuilds the whole panel's HTML from scratch.
+    function studioWireChainControls(issue) {
+      const idx = studioState.chainStepIndex ?? issue.chain.length - 1;
+      $('studio-chain-pos').textContent = `${idx + 1} / ${issue.chain.length}`;
+      $('studio-chain-prev').disabled = idx <= 0;
+      $('studio-chain-next').disabled = idx >= issue.chain.length - 1;
+      $('studio-chain-prev').addEventListener('click', () => studioGoToChainStep(idx - 1));
+      $('studio-chain-next').addEventListener('click', () => studioGoToChainStep(idx + 1));
+      document.querySelectorAll('.studio-chain-step').forEach((btn) => {
+        const i = Number(btn.dataset.i);
+        const active = i === idx;
+        btn.classList.toggle('bg-amber-200', active);
+        btn.classList.toggle('border-amber-400', active);
+        const dot = btn.querySelector('.studio-chain-dot');
+        if (dot) {
+          dot.classList.toggle('bg-amber-500', active);
+          dot.classList.toggle('text-white', active);
+          dot.classList.toggle('bg-amber-200', !active);
+          dot.classList.toggle('text-amber-800', !active);
+        }
+        btn.addEventListener('click', () => studioGoToChainStep(i));
+      });
+    }
+
+    // Jumps the editor to one step of the currently-selected finding's
+    // cross-file chain — opening a different file if that step lives
+    // elsewhere (openStudioFile wipes studioState.selectedIssue as a side
+    // effect via renderStudioIssueListForFile, so it's restored here before
+    // rebuilding the panel) and highlighting just that line, not the whole
+    // finding's own file:line the way selectStudioIssue's default jump
+    // does.
+    async function studioGoToChainStep(newIndex) {
+      const issue = studioState.selectedIssue;
+      if (!issue || !Array.isArray(issue.chain)) return;
+      const clamped = Math.max(0, Math.min(issue.chain.length - 1, newIndex));
+      const step = issue.chain[clamped];
+      if (step.file !== studioState.currentPath) {
+        await openStudioFile(step.file);
+      }
+      studioState.selectedIssue = issue;
+      studioState.chainStepIndex = clamped;
+      studioState.jumpHighlightRange = { line: step.line, endLine: step.line };
+      if (!studioState.editing) renderStudioCodeView(studioState.originalContent);
+      scrollStudioToLine(step.line);
+      studioRenderIssuePanel(issue);
     }
 
     function studioApplySuggestion() {
