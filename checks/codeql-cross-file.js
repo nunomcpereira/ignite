@@ -172,19 +172,41 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
     const sarifPath = path.join(workDir, 'results.sarif');
     try {
       log?.(`  → building CodeQL database for ${language}...`);
-      await runToolStreaming('codeql', [
-        'database', 'create', dbPath,
-        `--language=${language}`, `--source-root=${root}`, '--overwrite',
-        ...(CODEQL_THREADS ? [`--threads=${CODEQL_THREADS}`] : []),
-        ...(CODEQL_RAM_MB ? [`--ram=${CODEQL_RAM_MB}`] : []),
-      ], root, () => {}, { timeoutMs: CODEQL_TIMEOUT_MS });
+      const createLines = [];
+      try {
+        await runToolStreaming('codeql', [
+          'database', 'create', dbPath,
+          `--language=${language}`, `--source-root=${root}`, '--overwrite',
+          ...(CODEQL_THREADS ? [`--threads=${CODEQL_THREADS}`] : []),
+          ...(CODEQL_RAM_MB ? [`--ram=${CODEQL_RAM_MB}`] : []),
+        ], root, (line) => createLines.push(line), { timeoutMs: CODEQL_TIMEOUT_MS });
+      } catch (e) {
+        // lib/tool-runner.js's own failure-line heuristic (FAILURE_LINE_REGEX)
+        // is tuned for `act`/CI-style output and misses CodeQL's own error
+        // phrasing ("A fatal error occurred: ..." — no "fatal:" or "error:"
+        // substring), so the last captured line is far more likely to be the
+        // actually-useful detail than whatever extractFailureLines found.
+        throw new Error(`${e.message} Last output: ${createLines.slice(-2).join(' | ') || '(none captured)'}`);
+      }
 
       log?.(`  → analyzing ${language} database (${suite})...`);
-      await runToolStreaming('codeql', [
-        'database', 'analyze', dbPath, suite,
-        '--format=sarif-latest', `--output=${sarifPath}`,
-        ...(CODEQL_THREADS ? [`--threads=${CODEQL_THREADS}`] : []),
-      ], root, () => {}, { timeoutMs: CODEQL_TIMEOUT_MS });
+      const analyzeLines = [];
+      try {
+        // --download: the CLI bundle ships no query packs of its own (see
+        // https://github.com/github/codeql-cli-binaries) — codeql/*-queries
+        // is fetched from GitHub's package registry on first use per
+        // machine, then cached under ~/.codeql/packages for every run
+        // after. Confirmed for real: analyze fails outright with exit code
+        // 2 ("Query pack ... cannot be found") without this flag on a
+        // machine that has never run a query pack before.
+        await runToolStreaming('codeql', [
+          'database', 'analyze', dbPath, suite, '--download',
+          '--format=sarif-latest', `--output=${sarifPath}`,
+          ...(CODEQL_THREADS ? [`--threads=${CODEQL_THREADS}`] : []),
+        ], root, (line) => analyzeLines.push(line), { timeoutMs: CODEQL_TIMEOUT_MS });
+      } catch (e) {
+        throw new Error(`${e.message} Last output: ${analyzeLines.slice(-2).join(' | ') || '(none captured)'}`);
+      }
 
       return await parseSarif(root, sarifPath, language);
     } finally {
