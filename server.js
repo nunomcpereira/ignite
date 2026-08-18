@@ -984,7 +984,14 @@ const { checkFeaturePosture, checkFeaturePostureFallback, POSTURE_CATEGORIES } =
 // Shared by all three pipeline entry points (validate-all, onboard, the
 // interactive SSE pipeline) — they were each running an identical,
 // independently-maintained copy of this block.
-async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }) {
+// deepScan (default false): adds one more task, CodeQL cross-file static
+// analysis (see checks/codeql-cross-file.js). Deliberately opt-in, not
+// merged into the fixed tasks list above — a CodeQL database build is
+// whole-project and can take minutes per language, which every other Phase
+// 4 check's concurrent-and-fast design assumes never happens. Only the
+// deep-scan route (routes/pipeline-deep-scan.js) passes deepScan: true; the
+// interactive/validate-all/onboard pipelines never do.
+async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, deepScan = false }) {
   const tasks = [
     {
       name: 'secrets',
@@ -1234,6 +1241,26 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     },
   ];
 
+  if (deepScan) {
+    tasks.push({
+      name: 'codeql',
+      run: async (blog) => {
+        blog('Check 15 — cross-file static analysis (CodeQL deep scan)...');
+        const codeql = await checkCodeqlCrossFile(projectRoot, blog, { org, repo });
+        if (codeql.findings.length > 0) {
+          const crossFileCount = codeql.findings.filter((f) => f.crossFile).length;
+          blog(`✗ ${codeql.findings.length} CodeQL finding(s) (${crossFileCount} genuinely cross-file):`);
+          codeql.findings.forEach((f) => blog(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}]${f.crossFile ? ' [cross-file]' : ''} ${f.file}:${f.line} — ${f.message}`));
+        } else if (codeql.engine === 'codeql') {
+          blog(`✓ Check 15 passed — no CodeQL findings across ${codeql.languages.length} language(s) scanned.`);
+        } else {
+          blog('✓ Check 15 skipped — codeql disabled or not installed.');
+        }
+        return codeql;
+      },
+    });
+  }
+
   const settled = await Promise.all(tasks.map(async (t) => {
     const lines = [];
     const value = await t.run((line) => lines.push(line));
@@ -1255,6 +1282,7 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     fileEncapsulation: byName.fileEncapsulation,
     apiSchema: byName.apiSchema,
     maliciousDependencies: byName.maliciousDependencies,
+    codeql: byName.codeql,
   });
   return { issues };
 }
@@ -2396,6 +2424,20 @@ mountValidateAllRoute(app, {
   actTooling,
   fetchGovernanceWorkflow,
   runActionsLocally,
+});
+
+const { mountDeepScanRoute } = require('./routes/pipeline-deep-scan');
+mountDeepScanRoute(app, {
+  store,
+  repoNameRegex: REPO_NAME_REGEX,
+  githubNameRegex: GITHUB_NAME_REGEX,
+  sanitizeAbsoluteProjectPath,
+  stageExistingProject,
+  resolveProjectRoot,
+  runLicenseComplianceCheck,
+  runDependencyVulnerabilityCheck,
+  runPhase4Checks,
+  runTool,
 });
 
 const { mountOnboardRoute } = require('./routes/pipeline-onboard');
