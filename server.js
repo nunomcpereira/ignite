@@ -2429,14 +2429,23 @@ mountValidateAllRoute(app, {
 const { mountDeepScanRoute } = require('./routes/pipeline-deep-scan');
 mountDeepScanRoute(app, {
   store,
+  phaseTitles: PHASE_TITLES,
+  phaseEnabled: PHASE_ENABLED,
   repoNameRegex: REPO_NAME_REGEX,
   githubNameRegex: GITHUB_NAME_REGEX,
+  actEvent: ACT_EVENT,
   sanitizeAbsoluteProjectPath,
   stageExistingProject,
   resolveProjectRoot,
+  checkEnvFiles,
+  checkCodeowners,
+  runProjectUnitTests,
   runLicenseComplianceCheck,
   runDependencyVulnerabilityCheck,
   runPhase4Checks,
+  actTooling,
+  fetchGovernanceWorkflow,
+  runActionsLocally,
   runTool,
 });
 
