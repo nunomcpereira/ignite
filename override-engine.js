@@ -153,6 +153,48 @@ function deriveCweOwasp(category, summary, explicit) {
  * @param {{ findings: Array<{file,line,kind,tool,severity,message,crossFile,cwe}>, engine: string }} [codeql] - deep-scan only, never present on the fast interactive pipeline's issue list
  * @returns {Array<{id, category, severity, score, summary, file, line}>}
  */
+/**
+ * Turns checkCodeqlCrossFile's raw findings into issue-shaped objects.
+ * Factored out of collectPhase4Issues (which still calls this for the
+ * normal pipeline) so Ignite Studio's on-demand "Run CodeQL" endpoint
+ * (routes/studio.js) can build just this slice of the issue list without
+ * needing secrets/governance/etc. results at hand — those are required,
+ * unguarded arguments to collectPhase4Issues itself.
+ *
+ * @param {{ findings: Array<{file,line,kind,tool,severity,message,crossFile,chain,cwe}> }} codeql
+ * @returns {Array<{id, category, severity, score, summary, file, line, snippet, crossFile, chain, cweHint, owaspHint}>}
+ */
+function collectCodeqlIssues(codeql) {
+  return codeql.findings.map((f) => {
+    const category = 'codeql-sast';
+    const severity = f.severity === 'error' ? 'error' : 'warning';
+    return {
+      id: buildIssueId({ category, file: f.file, line: f.line }),
+      category,
+      severity,
+      score: scoreForIssue({ category, severity }),
+      summary: f.message || f.kind,
+      file: f.file,
+      line: f.line,
+      snippet: null,
+      // Distinguishes a finding that only exists because CodeQL traced
+      // taint across >=2 files (the whole reason this check runs on top
+      // of Semgrep's single-file engine) from one it also caught
+      // single-file — surfaced by the UI so a reviewer can tell at a
+      // glance which findings are genuinely new information.
+      crossFile: Boolean(f.crossFile),
+      // The actual source->sink path (ordered {file, line, message}
+      // steps), only present when it crosses >1 file — lets Ignite
+      // Studio render the chain and jump step by step, not just show a
+      // crossFile badge. null for every non-CodeQL category and for
+      // CodeQL findings without a qualifying multi-file flow.
+      chain: f.chain || null,
+      cweHint: f.cwe || null,
+      owaspHint: null,
+    };
+  });
+}
+
 function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies, codeql }) {
   const issues = [];
 
@@ -348,36 +390,7 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
     }
   }
 
-  if (codeql) {
-    for (const f of codeql.findings) {
-      const category = 'codeql-sast';
-      const severity = f.severity === 'error' ? 'error' : 'warning';
-      issues.push({
-        id: buildIssueId({ category, file: f.file, line: f.line }),
-        category,
-        severity,
-        score: scoreForIssue({ category, severity }),
-        summary: f.message || f.kind,
-        file: f.file,
-        line: f.line,
-        snippet: null,
-        // Distinguishes a finding that only exists because CodeQL traced
-        // taint across >=2 files (the whole reason this check runs on top
-        // of Semgrep's single-file engine) from one it also caught
-        // single-file — surfaced by the UI so a reviewer can tell at a
-        // glance which findings are genuinely new information.
-        crossFile: Boolean(f.crossFile),
-        // The actual source->sink path (ordered {file, line, message}
-        // steps), only present when it crosses >1 file — lets Ignite
-        // Studio render the chain and jump step by step, not just show a
-        // crossFile badge. null for every non-CodeQL category and for
-        // CodeQL findings without a qualifying multi-file flow.
-        chain: f.chain || null,
-        cweHint: f.cwe || null,
-        owaspHint: null,
-      });
-    }
-  }
+  if (codeql) issues.push(...collectCodeqlIssues(codeql));
 
   if (llm && llm.available) {
     for (const f of llm.findings) {
@@ -545,6 +558,6 @@ function validateOverrides(issues, overrides) {
 }
 
 module.exports = {
-  buildIssueId, collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues,
+  buildIssueId, collectPhase4Issues, collectCodeqlIssues, collectLicenseIssues, collectDependencyVulnerabilityIssues,
   validateOverrides, scoreForIssue, deriveCweOwasp,
 };

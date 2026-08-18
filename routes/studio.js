@@ -40,8 +40,9 @@ function mountStudioRoutes(app, {
   const {
     checkSecrets, checkAiGovernance, checkLlmDeepScan, checkIacSecurity,
     generateSbom, generateLocMetrics, checkFeaturePosture, generateProvenance,
+    checkCodeqlCrossFile,
   } = checks;
-  const { collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues } = overrideEngine;
+  const { collectPhase4Issues, collectCodeqlIssues, collectLicenseIssues, collectDependencyVulnerabilityIssues } = overrideEngine;
   const { scanDependencyLicenses, scanProjectLicenseFiles, scanDependencyVulnerabilities } = licenseScan;
 
   const STUDIO_MAX_FILE_BYTES = 500_000; // browser-editor cap, independent of the LLM deep-scan's own per-file cap
@@ -78,6 +79,12 @@ function mountStudioRoutes(app, {
           runState.allIssues.push(...others, ...freshIssues);
           runState.persistIssuesSnapshot();
         },
+        replaceCodeql: (freshIssues) => {
+          const others = runState.allIssues.filter((i) => i.category !== 'codeql-sast');
+          runState.allIssues.length = 0;
+          runState.allIssues.push(...others, ...freshIssues);
+          runState.persistIssuesSnapshot();
+        },
       };
     }
 
@@ -109,6 +116,12 @@ function mountStudioRoutes(app, {
             const current = store.getProjectIssues(projectId);
             const overriddenIds = new Set(current.filter((i) => i.status === 'overridden').map((i) => i.id));
             const merged = [...current.filter((i) => i.category !== 'dependency-vulnerability'), ...freshIssues];
+            store.replaceProjectIssues(projectId, merged, overriddenIds);
+          },
+          replaceCodeql: (freshIssues) => {
+            const current = store.getProjectIssues(projectId);
+            const overriddenIds = new Set(current.filter((i) => i.status === 'overridden').map((i) => i.id));
+            const merged = [...current.filter((i) => i.category !== 'codeql-sast'), ...freshIssues];
             store.replaceProjectIssues(projectId, merged, overriddenIds);
           },
         };
@@ -232,6 +245,50 @@ function mountStudioRoutes(app, {
       res.json({ ok: true, issues: ctx.getIssues(), resolvedIds, newIds });
     } catch (e) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // On-demand CodeQL run against the currently staged tree — streaming
+  // NDJSON, unlike /studio/rescan just above, because a CodeQL database
+  // build is a real per-language build+analyze that can take tens of
+  // seconds to minutes, nothing like the per-file-cached checks rescan
+  // covers. Ignite Studio's "Run CodeQL" button consumes this the same way
+  // the interactive pipeline consumes POST /api/pipeline: read the response
+  // body as a stream, one JSON event per line, rendering each `log` line
+  // live into a terminal-style output panel rather than waiting for one
+  // final response the way /studio/rescan's callers do.
+  app.post('/api/pipeline/:jobId/studio/codeql', async (req, res) => {
+    const ctx = resolveStudioContext(req, res);
+    if (!ctx) return;
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    const send = (event) => res.write(JSON.stringify(event) + '\n');
+    const log = (message) => send({ type: 'log', message });
+    try {
+      const codeql = await checkCodeqlCrossFile(ctx.root, log, { org: ctx.org, repo: ctx.repo });
+      if (codeql.engine !== 'codeql') {
+        log(`✓ CodeQL skipped — disabled or not installed (security.codeql.enabled).`);
+      } else if (codeql.findings.length === 0) {
+        log(`✓ No CodeQL findings across ${codeql.languages.length} language(s) scanned.`);
+      } else {
+        const crossFileCount = codeql.findings.filter((f) => f.crossFile).length;
+        log(`✗ ${codeql.findings.length} CodeQL finding(s) (${crossFileCount} genuinely cross-file).`);
+      }
+      const freshIssues = collectCodeqlIssues(codeql);
+
+      const previousIds = new Set(ctx.getIssues().filter((i) => i.category === 'codeql-sast').map((i) => i.id));
+      const freshIds = new Set(freshIssues.map((i) => i.id));
+      const resolvedIds = [...previousIds].filter((id) => !freshIds.has(id));
+      const newIds = [...freshIds].filter((id) => !previousIds.has(id));
+
+      ctx.replaceCodeql(freshIssues);
+      send({ type: 'done', ok: true, issues: ctx.getIssues(), resolvedIds, newIds });
+    } catch (e) {
+      log(`✗ ${e.message}`);
+      send({ type: 'done', ok: false, error: e.message });
+    } finally {
+      res.end();
     }
   });
 

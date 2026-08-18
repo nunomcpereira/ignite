@@ -33,7 +33,7 @@ const { createReviewDecisionStore } = require('./review-decisions-store');
 const { createAuth, isValidEmail } = require('./auth');
 const { loadConfig } = require('./config');
 const {
-  collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues, validateOverrides, scoreForIssue,
+  collectPhase4Issues, collectCodeqlIssues, collectLicenseIssues, collectDependencyVulnerabilityIssues, validateOverrides, scoreForIssue,
 } = require('./override-engine');
 const {
   SKIP_DIRS, SKIP_DIRS_REGEX, BINARY_EXTENSIONS, DOCKERFILE_NAME_RE, SECRET_SCAN_CODE_EXTS, looksBinary, buildSnippet, walkFiles, mapWithConcurrency, hashBuffer, relativeToRoot,
@@ -1815,8 +1815,9 @@ mountStudioRoutes(app, {
   checks: {
     checkSecrets, checkAiGovernance, checkLlmDeepScan, checkIacSecurity,
     generateSbom, generateLocMetrics, checkFeaturePosture, generateProvenance,
+    checkCodeqlCrossFile,
   },
-  overrideEngine: { collectPhase4Issues, collectLicenseIssues, collectDependencyVulnerabilityIssues },
+  overrideEngine: { collectPhase4Issues, collectCodeqlIssues, collectLicenseIssues, collectDependencyVulnerabilityIssues },
   licenseScan: { scanDependencyLicenses, scanProjectLicenseFiles, scanDependencyVulnerabilities },
 });
 
