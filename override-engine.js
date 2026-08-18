@@ -8,8 +8,16 @@
  * validate-all API so both enforce the same override rules.
  */
 
-function buildIssueId({ category, file, line }) {
-  return `${category}::${file || 'unknown'}::${line ?? 0}`;
+function buildIssueId({ category, file, line, discriminator }) {
+  const base = `${category}::${file || 'unknown'}::${line ?? 0}`;
+  // Most categories get one real finding per file+line, so category::file::line
+  // is already a stable, unique id. A whole-image CVE scan is the exception —
+  // every vulnerability is reported against the same nominal Dockerfile:1
+  // (there's no real per-CVE line to point at), so without a discriminator
+  // hundreds of distinct CVEs would collapse onto one id and a single blank
+  // override would silently blanket all of them, present and future. The
+  // discriminator (package + CVE id) keeps each one individually reviewable.
+  return discriminator ? `${base}::${discriminator}` : base;
 }
 
 // A "secret" living under a test directory/filename (test/, tests/,
@@ -168,15 +176,20 @@ function collectCodeqlIssues(codeql) {
   return codeql.findings.map((f) => {
     const category = 'codeql-sast';
     const severity = f.severity === 'error' ? 'error' : 'warning';
+    // Two distinct CodeQL alerts (different rules - e.g. a TOCTOU query and
+    // a tainted-path query) routinely anchor to the same file+line. Without
+    // f.kind (the rule id) as a discriminator they'd collapse onto one
+    // issue id and acknowledging one would silently override the other too
+    // - same collision this fix applies to container-image-cve below.
     return {
-      id: buildIssueId({ category, file: f.file, line: f.line }),
+      id: buildIssueId({ category, file: f.file, line: f.line, discriminator: f.kind }),
       category,
       severity,
       score: scoreForIssue({ category, severity }),
       summary: f.message || f.kind,
       file: f.file,
       line: f.line,
-      snippet: null,
+      snippet: f.snippet || null,
       // Distinguishes a finding that only exists because CodeQL traced
       // taint across >=2 files (the whole reason this check runs on top
       // of Semgrep's single-file engine) from one it also caught
@@ -250,8 +263,12 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
     for (const f of imageVulnerabilities.findings) {
       const category = 'container-image-cve';
       const severity = (f.severity === 'critical' || f.severity === 'high') ? 'error' : 'warning';
+      // f.kind is the VulnerabilityID (e.g. "cve-2024-...") — combined with
+      // the package name it uniquely identifies this finding even though
+      // every whole-image CVE shares the same file:line (see buildIssueId).
+      const discriminator = f.pkgName ? `${f.kind}@${f.pkgName}` : f.kind;
       issues.push({
-        id: buildIssueId({ category, file: f.file, line: f.line }),
+        id: buildIssueId({ category, file: f.file, line: f.line, discriminator }),
         category,
         severity,
         score: scoreForIssue({ category, severity }),

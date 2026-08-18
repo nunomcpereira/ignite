@@ -904,7 +904,7 @@ const { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages, runCustomC
   runTool,
   runToolStreaming,
   store,
-  fsUtils: { walkFiles, hashBuffer, relativeToRoot },
+  fsUtils: { walkFiles, hashBuffer, relativeToRoot, buildSnippet },
   config: {
     enabled: CODEQL_ENABLED, binary: CODEQL_BINARY, languages: CODEQL_LANGUAGES,
     querySuites: CODEQL_QUERY_SUITES, threads: CODEQL_THREADS, ramMB: CODEQL_RAM_MB, timeoutMs: CODEQL_TIMEOUT_MS,
@@ -1878,7 +1878,7 @@ function isPlaceholderLicenseList(licenses) {
 // data `npm view <pkg>@<version> license` would show).
 async function fetchNpmRegistryLicense(name, version) {
   try {
-    const url = `https://registry.npmjs.org/${encodeURIComponent(name).replace('%40', '@')}/${encodeURIComponent(version)}`;
+    const url = `https://registry.npmjs.org/${encodeURIComponent(name).replace(/%40/g, '@')}/${encodeURIComponent(version)}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const data = await res.json();

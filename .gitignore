@@ -7,4 +7,4 @@ ignite.db-*
 **/*.log
 test-results/
 playwright-report/
-docs/ux/stitch_ignite.zip
+docs/ux/

@@ -54,12 +54,29 @@ ENV PATH="/opt/pipx/bin:${PATH}"
 # wheel matches this platform. (The JRE ORT needs is installed separately
 # below - Debian bookworm's default-jre-headless (OpenJDK 17) is too old:
 # ORT 91.1.0's classes are compiled for class file version 69, i.e. JRE 25.)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# `apt-get upgrade` runs first: the node:24-bookworm-slim base layer is
+# built once and then sits in registries/caches, so by the time this image
+# gets built its already-installed OS packages (bsdutils, curl, gzip, glibc,
+# openssl, perl, ...) routinely trail current Debian security patches - this
+# was Ignite's own #1 source of container-image-cve findings scanning its
+# own image (500+ base-package CVEs on a stale bookworm-slim pull). Pulling
+# latest security fixes for what's already on the image is a normal, safe
+# rebuild-time step - it doesn't change which packages are installed, only
+# their patch level within the same Debian release.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
       curl ca-certificates gnupg git unzip cmake \
       python3 python3-pip python3-venv pipx \
       ruby-full build-essential libicu-dev zlib1g-dev \
       libgit2-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
+
+# npm ships bundled inside the node:* base image and carries its own vendored
+# dependency tree (brace-expansion, undici, fast-uri, ip-address, ...) that's
+# pinned to whatever npm version that Node release shipped with - often
+# behind npm's latest patched versions of those same packages. Updating npm
+# itself pulls in its current (patched) bundled deps.
+RUN npm install -g npm@latest
 
 # JRE 25 for ORT (see note above) - Adoptium's versioned release URL, not
 # their apt repo (which targets Ubuntu, not this Debian bookworm base).
@@ -147,6 +164,25 @@ RUN if [ "$INSTALL_ORT" = "true" ]; then \
       && mkdir -p /opt/ort && tar xzf /tmp/ort.tgz -C /opt/ort --strip-components=1 \
       && ln -s /opt/ort/bin/ort /usr/local/bin/ort && rm /tmp/ort.tgz; \
     fi
+
+# Everything above that needed a compiler toolchain has already run by this
+# point: guarddog's pygit2 (native ext, needs libgit2-dev+pkg-config+
+# build-essential if no prebuilt wheel matched) and the licensee gem (native
+# ext, needs ruby's build-essential-based toolchain) are both installed.
+# None of that is needed again post-build, and it was Ignite's own single
+# largest source of container-image-cve findings scanning its own image -
+# build-essential pulls in linux-libc-dev (kernel headers, never executed,
+# irrelevant at runtime) which alone accounted for ~30% of all findings.
+# `apt-get purge` (not `--auto-remove` on the whole system) targets only the
+# build-only packages themselves; the separate `autoremove` then drops
+# whatever was pulled in solely for them (gcc, linux-libc-dev, etc.) while
+# leaving alone anything still relied on by git/python3/ruby/openssl/curl -
+# those keep their own runtime shared libraries regardless of this cleanup.
+RUN apt-get purge -y \
+      build-essential cmake libgit2-dev pkg-config libicu-dev zlib1g-dev \
+      gnupg unzip \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 # --- Phase 5 org governance CI (act) - talks to the *host* Docker daemon via
 # the socket docker-compose.yml mounts in, not a nested Docker-in-Docker ---

@@ -89,6 +89,7 @@ function createContainerImageVulnerabilitiesCheck({ runTool, runToolStreaming, f
               file: relDockerfile,
               line: 1,
               kind: String(v.VulnerabilityID || 'cve').toLowerCase(),
+              pkgName: v.PkgName || null,
               tool: 'trivy-image',
               severity: String(v.Severity || 'MEDIUM').toLowerCase(),
               message: `${v.PkgName || 'package'}@${v.InstalledVersion || '?'}: ${v.Title || v.VulnerabilityID || 'known vulnerability'}${v.FixedVersion ? ` (fixed in ${v.FixedVersion})` : ''}`,

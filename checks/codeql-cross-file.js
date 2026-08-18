@@ -27,7 +27,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
   const path = require('path');
   const os = require('os');
   const crypto = require('crypto');
-  const { walkFiles, hashBuffer, relativeToRoot } = fsUtils;
+  const { walkFiles, hashBuffer, relativeToRoot, buildSnippet } = fsUtils;
 
   const CODEQL_ENABLED = Boolean(config.enabled);
   const CODEQL_LANGUAGES = Array.isArray(config.languages) && config.languages.length
@@ -178,6 +178,15 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
           ? 'error'
           : 'warning';
         const flow = await extractFlowChain(root, result);
+        // A snippet of the actual flagged line's source text (not just its
+        // line number) - unlike every other Phase 4 check, CodeQL findings
+        // previously carried none, which meant a pure line-number shift from
+        // an unrelated edit elsewhere in the file (adding/removing lines
+        // above) always looked identical to a brand-new finding downstream
+        // (override-engine.js's buildIssueId, and the pre-push hook's
+        // .ignite-review.md carry-forward matching). Best-effort: a read
+        // failure just leaves it null, same as every other check's pattern.
+        const srcContent = await fsp.readFile(absPath, 'utf8').catch(() => null);
         findings.push({
           file: relFile,
           line,
@@ -186,6 +195,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
           language,
           severity,
           message: result.message?.text || rule.shortDescription?.text || 'CodeQL finding',
+          snippet: srcContent ? buildSnippet(srcContent, line) : null,
           crossFile: Boolean(flow && flow.fileCount > 1),
           // Only worth carrying through (and rendering as a "chain" in
           // Studio) when it actually crosses >1 file *and* has more than

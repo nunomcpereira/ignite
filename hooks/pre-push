@@ -27,6 +27,18 @@
 # whether or not that run reported it, until you delete the entry yourself
 # or the code around it changes enough to produce a different id.
 #
+# Line-drift carry-forward: the id embeds a line number, so any edit above a
+# flagged line (even one totally unrelated to it) changes the id and would
+# otherwise turn an already-justified finding back into a fresh blank one.
+# When a finding's language check reports a `# Code:` snippet (the flagged
+# line's own source text), a "new" id is matched against existing entries by
+# same category + file + byte-identical `# Code:` text; on a match the old
+# entry's justification is reused (annotated "auto-carried-forward from
+# <old id>") and the old entry is dropped rather than duplicated. This only
+# fires when the flagged line's actual text is unchanged - if the line
+# itself was edited, the code text differs, no match is found, and it's
+# treated as a genuinely new finding needing real review, same as always.
+#
 # Delta check: a full run records the pushed commit in the local (untracked)
 # .git/ignite-last-validated-ok. The next push skips the check entirely if
 # the working tree at HEAD is byte-identical to that commit's tree (ignoring
@@ -173,24 +185,63 @@ node -e '
     let existing = "";
     try { existing = fs.readFileSync(reviewFile, "utf8"); } catch { /* first run */ }
     const existingIds = new Set();
-    const existingBlocks = [];
+    // Parsed alongside the raw block text so a pure line-number drift (an
+    // unrelated edit elsewhere in the file shifting every line below it)
+    // can be told apart from a genuinely new finding: same category+file,
+    // and the flagged line own source text (# Code:) unchanged, even
+    // though the id (which embeds the line number) is now different.
+    const existingParsed = [];
     for (const block of existing.split(/\n(?=ID: )/)) {
       const idMatch = block.match(/^ID:\s*(.+)$/m);
       if (!idMatch) continue;
-      existingIds.add(idMatch[1].trim());
-      existingBlocks.push(block.replace(/\n+$/, ""));
+      const id = idMatch[1].trim();
+      existingIds.add(id);
+      const locMatch = block.match(/^#\s+(\S+?)(?::(\d+))?$/m);
+      const codeMatch = block.match(/^# Code:\s*(.*)$/m);
+      const ackMatch = block.match(/^Acknowledge:\s*(.*)$/m);
+      existingParsed.push({
+        id,
+        category: id.split("::")[0],
+        file: locMatch ? locMatch[1] : null,
+        code: codeMatch ? codeMatch[1].trim() : null,
+        justification: (ackMatch ? ackMatch[1] : "").trim(),
+        raw: block.replace(/\n+$/, ""),
+        superseded: false,
+      });
     }
+    const codeForIssue = (issue) => {
+      const s = issue.snippet;
+      if (!s || !Array.isArray(s.lines)) return null;
+      const hit = s.lines.find((l) => l.number === s.highlightLine);
+      return hit ? hit.text.trim() : null;
+    };
     const newBlocks = [];
     for (const issue of issues) {
       if (existingIds.has(issue.id)) continue;
       const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
+      const code = codeForIssue(issue);
+      // Carry-forward: an already-justified entry, same category+file, whose
+      // recorded flagged-line text is byte-identical to this "new" issue -
+      // the id only changed because something above it in the file shifted
+      // line numbers. Reuse its justification instead of asking for the
+      // same review again; the old entry is dropped (superseded) so the
+      // file does not accumulate a duplicate for every edit that touches it.
+      const match = code
+        ? existingParsed.find((e) => !e.superseded && e.justification && e.category === issue.category && e.file === issue.file && e.code === code)
+        : null;
+      if (match) match.superseded = true;
+      const ackLine = match
+        ? `Acknowledge: ${match.justification} (auto-carried-forward from ${match.id} - pure line-number drift, flagged code unchanged)`
+        : "Acknowledge: ";
       newBlocks.push([
         `ID: ${issue.id}`,
         `# [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`,
         `#   ${loc}`,
-        "Acknowledge: ",
+        ...(code ? [`# Code: ${code}`] : []),
+        ackLine,
       ].join("\n"));
     }
+    const existingBlocks = existingParsed.filter((e) => !e.superseded).map((e) => e.raw);
     const header = [
       "# Ignite pre-push acknowledgments - meant to be committed: a filled-in",
       "# justification is a real audit record, reviewable like code.",
@@ -201,6 +252,9 @@ node -e '
       "# permanently, resubmitted as an override on every future push, even",
       "# after the id it names stops being reported - delete an entry yourself",
       "# if you want to stop carrying it forward.",
+      "# A `# Code:` line, when present, is the flagged source line own text -",
+      "# used to auto-carry-forward this justification if an unrelated edit",
+      "# elsewhere in the file later shifts its line number. Do not hand-edit it.",
       "",
     ].join("\n");
     fs.writeFileSync(reviewFile, header + [...existingBlocks, ...newBlocks].join("\n\n") + "\n");

@@ -18,6 +18,13 @@ const scrypt = promisify(crypto.scrypt);
 const SESSION_COOKIE = 'ignite_sid';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 
+// __proto__/constructor/prototype can never be real cookie names we care
+// about (SESSION_COOKIE is 'ignite_sid') - rejecting them outright means
+// `out[key] = val` below is never a property-name-from-user-input write
+// onto anything but this fresh plain object, regardless of what a client
+// sends as a cookie name.
+const UNSAFE_COOKIE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function parseCookies(header) {
   const out = {};
   String(header || '')
@@ -27,7 +34,7 @@ function parseCookies(header) {
       if (idx === -1) return;
       const key = pair.slice(0, idx).trim();
       const val = pair.slice(idx + 1).trim();
-      if (key) out[key] = decodeURIComponent(val);
+      if (key && !UNSAFE_COOKIE_KEYS.has(key)) out[key] = decodeURIComponent(val);
     });
   return out;
 }
@@ -47,7 +54,12 @@ async function verifyPassword(password, stored) {
 }
 
 function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ''));
+  const str = String(email || '');
+  // RFC 5321's own length cap - also bounds the regex below to trivial
+  // input sizes, so its worst-case backtracking cost never grows large
+  // enough to matter regardless of crafted input shape.
+  if (!str || str.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str);
 }
 
 // A fixed, valid-shaped hash to verify against when the account doesn't
