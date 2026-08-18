@@ -40,10 +40,22 @@ function mountStudioRoutes(app, {
   const {
     checkSecrets, checkAiGovernance, checkLlmDeepScan, checkIacSecurity,
     generateSbom, generateLocMetrics, checkFeaturePosture, generateProvenance,
-    checkCodeqlCrossFile,
+    checkCodeqlCrossFile, runCustomCodeqlQuery,
   } = checks;
   const { collectPhase4Issues, collectCodeqlIssues, collectLicenseIssues, collectDependencyVulnerabilityIssues } = overrideEngine;
   const { scanDependencyLicenses, scanProjectLicenseFiles, scanDependencyVulnerabilities } = licenseScan;
+
+  // Where each project's CodeQL database(s) live once a Studio "Run CodeQL"
+  // has built one — outside any staging/retained-source dir (those can be
+  // wiped/evicted independently), keyed by project id so a later ad-hoc
+  // query (runCustomCodeqlQuery, below) can find the same database without
+  // rebuilding it. Cleaned up in routes/history.js alongside retained
+  // sources, since both are "extra state kept past a run's own lifetime"
+  // for the same reason (post-mortem Studio parity).
+  const CODEQL_DB_ROOT = path.join(__dirname, '..', 'data', 'codeql-dbs');
+  function codeqlDbDirFor(projectId) {
+    return projectId !== null && projectId !== undefined ? path.join(CODEQL_DB_ROOT, String(projectId)) : null;
+  }
 
   const STUDIO_MAX_FILE_BYTES = 500_000; // browser-editor cap, independent of the LLM deep-scan's own per-file cap
   function studioNoopLog() {}
@@ -56,6 +68,7 @@ function mountStudioRoutes(app, {
       reviewDecisions.touch(jobId);
       return {
         jobId,
+        projectId: runState.projectId,
         root: runState.projectRoot,
         backupRoot: runState.sourceBackupDir,
         org: runState.org,
@@ -97,6 +110,7 @@ function mountStudioRoutes(app, {
         const project = kept ? kept : store.getProject(projectId);
         return {
           jobId,
+          projectId,
           root: source,
           backupRoot: source,
           org: project.org,
@@ -268,7 +282,8 @@ function mountStudioRoutes(app, {
     const send = (event) => res.write(JSON.stringify(event) + '\n');
     const log = (message) => send({ type: 'log', message });
     try {
-      const codeql = await checkCodeqlCrossFile(ctx.root, log, { org: ctx.org, repo: ctx.repo });
+      const keepDbDir = codeqlDbDirFor(ctx.projectId);
+      const codeql = await checkCodeqlCrossFile(ctx.root, log, { org: ctx.org, repo: ctx.repo, keepDbDir });
       if (codeql.engine !== 'codeql') {
         log(`✓ CodeQL skipped — disabled or not installed (security.codeql.enabled).`);
       } else if (codeql.findings.length === 0) {
@@ -285,7 +300,40 @@ function mountStudioRoutes(app, {
       const newIds = [...freshIds].filter((id) => !previousIds.has(id));
 
       ctx.replaceCodeql(freshIssues);
-      send({ type: 'done', ok: true, issues: ctx.getIssues(), resolvedIds, newIds });
+      send({ type: 'done', ok: true, issues: ctx.getIssues(), resolvedIds, newIds, languages: codeql.languages });
+    } catch (e) {
+      log(`✗ ${e.message}`);
+      send({ type: 'done', ok: false, error: e.message });
+    } finally {
+      res.end();
+    }
+  });
+
+  // Ad-hoc CodeQL query — runs a user-supplied .ql query against whichever
+  // database "Run CodeQL" already built for this project/language (see
+  // codeqlDbDirFor above), rather than the fixed security-extended suite.
+  // Streamed NDJSON for the same reason /studio/codeql is: query
+  // compilation + evaluation against a real database can take a while.
+  // Purely exploratory — results aren't persisted as issues or cached.
+  app.post('/api/pipeline/:jobId/studio/codeql/query', async (req, res) => {
+    const ctx = resolveStudioContext(req, res);
+    if (!ctx) return;
+    const language = String(req.body?.language || '').trim();
+    const queryText = String(req.body?.query || '');
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    const send = (event) => res.write(JSON.stringify(event) + '\n');
+    const log = (message) => send({ type: 'log', message });
+    try {
+      if (!language) throw new Error('language is required.');
+      if (!queryText.trim()) throw new Error('query is required.');
+      if (queryText.length > 20_000) throw new Error('Query is too large (max 20,000 characters).');
+      const dbDir = codeqlDbDirFor(ctx.projectId);
+      if (!dbDir) throw new Error('No CodeQL database available for this project.');
+      const result = await runCustomCodeqlQuery({ root: ctx.root, dbDir, language, queryText, log });
+      log(`✓ ${result.rows.length} row(s) returned.`);
+      send({ type: 'done', ok: true, columns: result.columns, rows: result.rows });
     } catch (e) {
       log(`✗ ${e.message}`);
       send({ type: 'done', ok: false, error: e.message });

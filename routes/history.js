@@ -16,6 +16,8 @@
  */
 function mountHistoryRoutes(app, { store, auth, runningRuns, scheduleIntervals, computeNextRunAt }) {
   const fsp = require('fs/promises');
+  const path = require('path');
+  const CODEQL_DB_ROOT = path.join(__dirname, '..', 'data', 'codeql-dbs');
 
   app.get('/api/projects', (req, res) => {
     res.json(store.listProjects());
@@ -76,6 +78,7 @@ function mountHistoryRoutes(app, { store, auth, runningRuns, scheduleIntervals, 
     if (!store.projectExists(id)) return res.status(404).json({ error: 'Project not found.' });
     const retainedDir = store.getRetainedSource(id);
     if (retainedDir) await fsp.rm(retainedDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(path.join(CODEQL_DB_ROOT, String(id)), { recursive: true, force: true }).catch(() => {});
     store.deleteProjectById(id);
     res.json({ ok: true });
   });
@@ -84,6 +87,7 @@ function mountHistoryRoutes(app, { store, auth, runningRuns, scheduleIntervals, 
     for (const { dir_path } of store.listRetainedSources()) {
       await fsp.rm(dir_path, { recursive: true, force: true }).catch(() => {});
     }
+    await fsp.rm(CODEQL_DB_ROOT, { recursive: true, force: true }).catch(() => {});
     store.deleteAllProjects();
     res.json({ ok: true });
   });

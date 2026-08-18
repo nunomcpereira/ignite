@@ -383,6 +383,7 @@
         <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-700">📜 Provenance</button>
         <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700">Rescan ↻</button>
         <button id="studioCodeqlBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700" title="Runs the real CodeQL CLI against the currently staged project — a database build, so this can take from several seconds to a couple of minutes. Progress streams into the Output panel below.">🔎 Run CodeQL</button>
+        <button id="studioCodeqlQueryBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700" title="Write and run your own .ql query against a database Run CodeQL already built. Results filter the file tree.">🧬 Custom Query</button>
         <button id="studioCloseBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-600 hover:bg-slate-800">Close ✕</button>
       </div>
       <p id="studioError" class="hidden text-xs text-rose-600 bg-rose-50 border-b border-rose-200 px-5 py-2"></p>
@@ -1813,7 +1814,7 @@
     /* while the review gate is paused for this job (see server.js's    */
     /* reviewActive gate — every request below 409s once it's not).     */
     /* ------------------------------------------------------------ */
-    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null, historical: false, historicalDocs: {}, navHistory: [] };
+    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null, historical: false, historicalDocs: {}, navHistory: [], codeqlDbLanguages: [], queryResultFiles: null };
 
     // Historical Studio (a past project, no staging dir left on disk) can
     // only browse files that have a persisted finding, each showing only
@@ -1829,7 +1830,7 @@
       studioState.historical = isHistorical;
       studioState.historicalDocs = {};
       $('studioHistoricalBanner').classList.toggle('hidden', !isHistorical);
-      ['studioDepsBtn', 'studioRescanBtn', 'studioCodeqlBtn'].forEach((id) => {
+      ['studioDepsBtn', 'studioRescanBtn', 'studioCodeqlBtn', 'studioCodeqlQueryBtn'].forEach((id) => {
         $(id).classList.toggle('hidden', isHistorical);
       });
       if (isHistorical) {
@@ -2088,12 +2089,15 @@
       const languageBadge = studioState.languageFilter
         ? `<span class="ml-3 text-[10px] font-bold px-1.5 py-0.5 rounded border bg-cyan-50 text-cyan-700 border-cyan-200">Language: ${escapeHtml(studioState.languageFilter)}</span>`
         : '';
+      const queryBadge = studioState.queryResultFiles
+        ? `<span class="ml-3 text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">Custom query: ${studioState.queryResultFiles.size} file(s)</span>`
+        : '';
       const errorActive = studioState.severityFilter === 'error';
       const warningActive = studioState.severityFilter === 'warning';
       bar.innerHTML = `<button type="button" class="studio-severity-chip font-semibold ${errorActive ? 'underline' : ''} ${errorCount > 0 ? 'text-rose-600 hover:text-rose-700' : 'text-emerald-600'}" data-severity="error">${errorCount} error${errorCount === 1 ? '' : 's'}</button>` +
         `<button type="button" class="studio-severity-chip ml-2 font-semibold ${warningActive ? 'underline' : ''} ${warningCount > 0 ? 'text-amber-600 hover:text-amber-700' : 'text-slate-400'}" data-severity="warning">${warningCount} warning${warningCount === 1 ? '' : 's'}</button>` +
-        `<span class="ml-2 text-slate-400">across ${new Set(studioState.issues.map((i) => i.file)).size} file(s)</span>${catHtml}${languageBadge}` +
-        (studioState.categoryFilter || studioState.languageFilter || studioState.severityFilter ? `<button type="button" id="studioClearCategoryFilter" class="ml-3 text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200">✕ clear filter</button>` : '');
+        `<span class="ml-2 text-slate-400">across ${new Set(studioState.issues.map((i) => i.file)).size} file(s)</span>${catHtml}${languageBadge}${queryBadge}` +
+        (studioState.categoryFilter || studioState.languageFilter || studioState.severityFilter || studioState.queryResultFiles ? `<button type="button" id="studioClearCategoryFilter" class="ml-3 text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200">✕ clear filter</button>` : '');
       bar.classList.remove('hidden');
       bar.querySelectorAll('.studio-category-chip').forEach((btn) => {
         btn.addEventListener('click', () => studioSetCategoryFilter(btn.dataset.category));
@@ -2104,7 +2108,8 @@
       const clearBtn = document.getElementById('studioClearCategoryFilter');
       if (clearBtn) {
         clearBtn.addEventListener('click', () => {
-          if (studioState.languageFilter) { studioSetLanguageFilter(studioState.languageFilter); }
+          if (studioState.queryResultFiles) { studioClearQueryResultFilter(); }
+          else if (studioState.languageFilter) { studioSetLanguageFilter(studioState.languageFilter); }
           else if (studioState.severityFilter) { studioSetSeverityFilter(studioState.severityFilter); }
           else { studioSetCategoryFilter(studioState.categoryFilter); }
         });
@@ -2513,6 +2518,8 @@
       } else if (studioState.languageFilter && studioState.locFilesByLanguage) {
         const langFiles = studioState.locFilesByLanguage.get(studioState.languageFilter) || new Set();
         visible = visible.filter((f) => langFiles.has(f.path));
+      } else if (studioState.queryResultFiles) {
+        visible = visible.filter((f) => studioState.queryResultFiles.has(f.path));
       }
       const tree = studioTreeToNested(visible);
       $('studioTree').innerHTML = renderStudioTreeNode(tree, 0);
@@ -2524,6 +2531,7 @@
     function studioSetCategoryFilter(category) {
       studioState.languageFilter = null;
       studioState.severityFilter = null;
+      studioState.queryResultFiles = null;
       studioState.categoryFilter = studioState.categoryFilter === category ? null : category;
       renderStudioSummaryBar();
       renderStudioTree(studioState.lastFiles || []);
@@ -2535,6 +2543,7 @@
     function studioSetSeverityFilter(severity) {
       studioState.categoryFilter = null;
       studioState.languageFilter = null;
+      studioState.queryResultFiles = null;
       studioState.severityFilter = studioState.severityFilter === severity ? null : severity;
       renderStudioSummaryBar();
       renderStudioTree(studioState.lastFiles || []);
@@ -2548,10 +2557,29 @@
     function studioSetLanguageFilter(language, locData) {
       studioState.categoryFilter = null;
       studioState.severityFilter = null;
+      studioState.queryResultFiles = null;
       studioState.languageFilter = studioState.languageFilter === language ? null : language;
       renderStudioTree(studioState.lastFiles || []);
       renderStudioSummaryBar();
       if (locData) renderStudioLocMetrics(locData);
+    }
+
+    // Narrows the tree to just the files a custom CodeQL query's result
+    // rows point at (see studioRunCustomCodeqlQuery) — mutually exclusive
+    // with the other three filters, same convention as studioSetLanguageFilter.
+    function studioSetQueryResultFilter(fileSet) {
+      studioState.categoryFilter = null;
+      studioState.severityFilter = null;
+      studioState.languageFilter = null;
+      studioState.queryResultFiles = fileSet;
+      renderStudioTree(studioState.lastFiles || []);
+      renderStudioSummaryBar();
+    }
+
+    function studioClearQueryResultFilter() {
+      studioState.queryResultFiles = null;
+      renderStudioTree(studioState.lastFiles || []);
+      renderStudioSummaryBar();
     }
 
     function studioMarkActiveFile(relPath) {
@@ -2873,6 +2901,7 @@
         if (!doneEvent.ok) throw new Error(doneEvent.error || 'CodeQL run failed.');
 
         studioState.issues = (doneEvent.issues || []).filter((i) => Boolean(i.file));
+        if (Array.isArray(doneEvent.languages)) studioState.codeqlDbLanguages = doneEvent.languages;
         renderStudioTree(await studioCurrentFiles());
         renderStudioSummaryBar();
         if (studioState.currentPath) studioMarkActiveFile(studioState.currentPath);
@@ -2893,6 +2922,152 @@
       }
     }
     $('studioCodeqlBtn').addEventListener('click', () => studioRunCodeql());
+
+    // "Custom Query" — renders a query-builder form into the code pane
+    // (same slot openStudioReport's panels use), not a modal, so switching
+    // to a file and back doesn't lose the last query/results. Needs a
+    // database "Run CodeQL" already built this session (studioState.
+    // codeqlDbLanguages) — querying from a cold state would just rebuild
+    // the whole database first, defeating the point of a fast ad-hoc query.
+    function renderStudioCodeqlQueryPanel() {
+      studioState.currentPath = null;
+      studioMarkActiveFile(null);
+      $('studioFilePath').textContent = 'Custom CodeQL Query';
+      $('studioDirtyBadge').classList.add('hidden');
+      $('studioEditBtn').classList.add('hidden');
+      $('studioSaveBtn').classList.add('hidden');
+      $('studioManifestBtn').classList.add('hidden');
+      $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+      studioShowError(null);
+
+      const languages = studioState.codeqlDbLanguages || [];
+      if (languages.length === 0) {
+        $('studioCodeWrap').innerHTML = `<div class="p-4">
+          <p class="text-slate-500 text-sm">No CodeQL database available yet — click <span class="font-semibold">🔎 Run CodeQL</span> first, then come back here to query it.</p>
+        </div>`;
+        return;
+      }
+      const optionsHtml = languages.map((l) => `<option value="${escapeAttr(l)}">${escapeHtml(l)}</option>`).join('');
+      $('studioCodeWrap').innerHTML = `<div class="p-4 flex flex-col h-full">
+        <div class="flex items-center gap-2 mb-2">
+          <label class="text-[11px] font-semibold text-slate-500">Language</label>
+          <select id="studioQueryLanguage" class="text-[11px] border border-slate-200 rounded px-2 py-1">${optionsHtml}</select>
+          <button type="button" id="studioQueryRunBtn" class="ml-auto text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:bg-orange-700">▶ Run query</button>
+        </div>
+        <textarea id="studioQueryText" class="w-full flex-1 min-h-[180px] font-mono text-[12px] leading-relaxed border border-slate-200 rounded-lg p-2" spellcheck="false" placeholder="import ${escapeHtml(languages[0])}\n\nfrom ...\nselect ...">${STUDIO_QUERY_EXAMPLES[languages[0]] || ''}</textarea>
+        <p class="text-[10px] text-slate-400 mt-1">Runs against the database "Run CodeQL" already built for this language — no rebuild. Results below, and the file tree narrows to files your query's rows point at.</p>
+        <div id="studioQueryResultsWrap" class="mt-3"></div>
+      </div>`;
+      $('studioQueryLanguage').addEventListener('change', () => {
+        const ta = $('studioQueryText');
+        if (!ta.dataset.touched) ta.value = STUDIO_QUERY_EXAMPLES[$('studioQueryLanguage').value] || '';
+      });
+      $('studioQueryText').addEventListener('input', (e) => { e.target.dataset.touched = '1'; });
+      $('studioQueryRunBtn').addEventListener('click', () => studioRunCustomCodeqlQuery());
+    }
+    $('studioCodeqlQueryBtn').addEventListener('click', () => renderStudioCodeqlQueryPanel());
+
+    // Placeholder query text per language — just enough to compile so a
+    // first-time user has something to run/adapt rather than a blank box.
+    const STUDIO_QUERY_EXAMPLES = {
+      javascript: 'import javascript\n\nfrom Function f\nselect f, "A function."',
+      python: 'import python\n\nfrom Function f\nselect f, "A function."',
+      java: 'import java\n\nfrom Method m\nselect m, "A method."',
+      go: 'import go\n\nfrom FuncDecl f\nselect f, "A function declaration."',
+    };
+
+    async function studioRunCustomCodeqlQuery() {
+      const language = $('studioQueryLanguage').value;
+      const query = $('studioQueryText').value;
+      const wrap = $('studioQueryResultsWrap');
+      const btn = $('studioQueryRunBtn');
+      studioShowError(null);
+      btn.disabled = true;
+      btn.textContent = '▶ Running…';
+      $('studioOutputPanel').classList.remove('hidden');
+      $('studioOutputTaskLabel').textContent = `codeql query run (${language})`;
+      $('studioOutputLog').textContent = '';
+      studioOutputSetStatus('running');
+      studioOutputAppendLine(`$ Running custom query against the ${language} database…`);
+      wrap.innerHTML = '';
+      try {
+        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/codeql/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ language, query }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Server error (HTTP ${res.status}).`);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneEvent = null;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const evt = JSON.parse(line);
+            if (evt.type === 'log') studioOutputAppendLine(evt.message);
+            else if (evt.type === 'done') doneEvent = evt;
+          }
+        }
+        if (!doneEvent) throw new Error('Connection to the server was interrupted mid-run.');
+        if (!doneEvent.ok) throw new Error(doneEvent.error || 'Query failed.');
+        studioOutputSetStatus('success');
+        renderStudioQueryResults(doneEvent.columns, doneEvent.rows);
+      } catch (e) {
+        studioOutputAppendLine(`$ ✗ ${e.message}`);
+        studioOutputSetStatus('failed');
+        studioShowError(e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '▶ Run query';
+      }
+    }
+
+    function renderStudioQueryResults(columns, rows) {
+      const wrap = $('studioQueryResultsWrap');
+      if (!rows || rows.length === 0) {
+        wrap.innerHTML = '<p class="text-[11px] text-slate-400">Query ran successfully — 0 rows.</p>';
+        return;
+      }
+      const locatedFiles = new Set(rows.filter((r) => r.location).map((r) => r.location.file));
+      const headHtml = columns.map((c) => `<th class="px-2 py-1">${escapeHtml(c)}</th>`).join('');
+      const rowsHtml = rows.map((r) => {
+        const cellsHtml = r.cells.map((c) => `<td class="px-2 py-1 font-mono text-[11px] truncate max-w-xs" title="${escapeAttr(c)}">${escapeHtml(c)}</td>`).join('');
+        const jumpBtn = r.location
+          ? `<button type="button" class="studio-query-row-jump text-[10px] font-semibold text-brand-600 hover:underline" data-file="${escapeAttr(r.location.file)}" data-line="${r.location.line}">${escapeHtml(r.location.file)}:${r.location.line}</button>`
+          : '<span class="text-[10px] text-slate-300">—</span>';
+        return `<tr class="border-b border-slate-100">${cellsHtml}<td class="px-2 py-1">${jumpBtn}</td></tr>`;
+      }).join('');
+      wrap.innerHTML = `
+        <div class="flex items-center gap-2 mb-1.5">
+          <span class="text-[11px] text-slate-500">${rows.length} row(s)${locatedFiles.size > 0 ? `, ${locatedFiles.size} file(s) with a location` : ''}</span>
+          ${locatedFiles.size > 0 ? `<button type="button" id="studioQueryFilterTreeBtn" class="text-[11px] font-semibold text-amber-700 hover:underline">Filter tree to these files</button>` : ''}
+        </div>
+        <div class="overflow-auto max-h-64 border border-slate-200 rounded-lg">
+          <table class="w-full text-left text-[11px]">
+            <thead class="bg-slate-50 sticky top-0"><tr>${headHtml}<th class="px-2 py-1">Location</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>`;
+      const filterBtn = document.getElementById('studioQueryFilterTreeBtn');
+      if (filterBtn) filterBtn.addEventListener('click', () => studioSetQueryResultFilter(locatedFiles));
+      wrap.querySelectorAll('.studio-query-row-jump').forEach((b) => {
+        b.addEventListener('click', async () => {
+          await openStudioFile(b.dataset.file);
+          studioState.jumpHighlightRange = { line: Number(b.dataset.line), endLine: Number(b.dataset.line) };
+          renderStudioCodeView(studioState.originalContent);
+          scrollStudioToLine(Number(b.dataset.line));
+        });
+      });
+    }
 
     // Rescan already returns the fresh issue list but not the file tree —
     // re-derive tree file paths from the tree endpoint so issue-count badges

@@ -598,6 +598,10 @@ function mountInteractivePipelineRoute(app, {
           store.retainProjectSource(projectId, retainedDir);
           for (const evicted of store.listEvictableRetainedSources(5)) {
             await fsp.rm(evicted.dir_path, { recursive: true, force: true }).catch(() => {});
+            // Its CodeQL database(s), if Studio ever built any for it, are
+            // scoped to the same "kept past this run's own lifetime" reason
+            // as the retained source itself — evict together.
+            await fsp.rm(path.join(__dirname, '..', 'data', 'codeql-dbs', String(evicted.project_id)), { recursive: true, force: true }).catch(() => {});
             store.deleteRetainedSource(evicted.project_id);
           }
         } catch (e) {

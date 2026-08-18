@@ -5,6 +5,7 @@ config.json
 ignite.db
 ignite.db-*
 data/retained-projects/
+data/codeql-dbs/
 **/*.log
 test-results/
 playwright-report/

@@ -199,7 +199,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
     return findings;
   }
 
-  async function runOneLanguage(root, language, log) {
+  async function runOneLanguage(root, language, log, keepDbDir) {
     const suite = CODEQL_QUERY_SUITES[language];
     if (!suite) {
       log?.(`⚠ No CodeQL query suite configured for "${language}" (security.codeql.querySuites) — skipped.`);
@@ -225,6 +225,22 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
         // substring), so the last captured line is far more likely to be the
         // actually-useful detail than whatever extractFailureLines found.
         throw new Error(`${e.message} Last output: ${createLines.slice(-2).join(' | ') || '(none captured)'}`);
+      }
+
+      // Keep this database around (outside workDir, which the `finally`
+      // below always wipes) so Studio's ad-hoc query runner
+      // (runCustomCodeqlQuery) can query it later without a full rebuild —
+      // this is the one distinguishing artifact of an actual `codeql
+      // database create` that the SARIF findings alone don't preserve.
+      // Best-effort: a failure here shouldn't fail the standing scan.
+      if (keepDbDir) {
+        try {
+          await fsp.rm(keepDbDir, { recursive: true, force: true });
+          await fsp.mkdir(path.dirname(keepDbDir), { recursive: true });
+          await fsp.cp(dbPath, keepDbDir, { recursive: true });
+        } catch (e) {
+          log?.(`  ⚠ Could not persist the ${language} database for later ad-hoc querying: ${e.message}`);
+        }
       }
 
       log?.(`  → analyzing ${language} database (${suite})...`);
@@ -258,13 +274,17 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
    *
    * @param {string} root - staged project root
    * @param {Function} log
-   * @param {{ org?: string|null, repo?: string|null }} [ctx] - identifies
-   *   the target repo for the per-language findings cache. A missing
-   *   org/repo (no known target yet) just means every language always
-   *   rebuilds — no cache hit, no cache write, not an error.
+   * @param {{ org?: string|null, repo?: string|null, keepDbDir?: string|null }} [ctx] -
+   *   org/repo identify the target repo for the per-language findings
+   *   cache (a missing org/repo just means every language always rebuilds
+   *   — no cache hit, no cache write, not an error). keepDbDir, if given,
+   *   is a directory each freshly-built language database is copied into
+   *   (as keepDbDir/<language>/db) for runCustomCodeqlQuery to reuse later
+   *   — not touched on a cache hit, since the file set (and therefore the
+   *   database that would be rebuilt) hasn't changed either.
    */
   async function checkCodeqlCrossFile(root, log, ctx = {}) {
-    const { org = null, repo = null } = ctx;
+    const { org = null, repo = null, keepDbDir = null } = ctx;
     const tooling = CODEQL_ENABLED ? await codeqlTooling() : { ok: false, reason: 'codeql is disabled (security.codeql.enabled=false).' };
     if (!tooling.ok) {
       log?.(`⚠ CodeQL cross-file scan skipped: ${tooling.reason}`);
@@ -291,7 +311,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
         log?.(`  ♻ ${language}: unchanged since the last deep scan of ${org}/${repo} — reused cached CodeQL results.`);
       } else {
         try {
-          langFindings = await runOneLanguage(root, language, log);
+          langFindings = await runOneLanguage(root, language, log, keepDbDir ? path.join(keepDbDir, language, 'db') : null);
         } catch (e) {
           log?.(`⚠ CodeQL ${language} scan failed: ${e.message}`);
           continue;
@@ -308,7 +328,101 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
     return { findings, engine: 'codeql', languages };
   }
 
-  return { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages };
+  // `codeql bqrs decode --format=json --entities=all` is the only decode
+  // mode that actually carries source locations for entity-typed columns
+  // (a bare `select someEntity, "message"` — no .getLocation() needed in
+  // the query itself) — verified against the real CLI (2.26.3): plain
+  // --format=csv/json render entities as a truncated display `label` only,
+  // dropping the url entirely; --entities=all adds
+  // `{id, label, url: {uri, startLine, startColumn, endLine, endColumn}}`
+  // per entity cell. Non-entity columns (string/number/boolean) come
+  // through as bare JSON values, not objects.
+  async function parseQueryResultJson(root, json) {
+    const select = json['#select'];
+    if (!select) return { columns: [], rows: [] };
+    const columns = (select.columns || []).map((c, i) => c.name || `col${i + 1}`);
+    const rows = [];
+    for (const tuple of select.tuples || []) {
+      const cells = [];
+      let location = null;
+      for (const cell of tuple) {
+        if (cell && typeof cell === 'object' && 'label' in cell) {
+          cells.push(cell.label);
+          // First entity cell whose location resolves inside this project
+          // (CodeQL library/stdlib stub locations point outside root
+          // entirely — e.g. its own bundled externs — and aren't useful
+          // to jump to in Studio's file tree).
+          if (!location && cell.url?.uri?.startsWith('file://')) {
+            const absPath = decodeURIComponent(cell.url.uri.replace('file://', ''));
+            if (absPath.startsWith(path.resolve(root) + path.sep)) {
+              location = { file: await relativeToRoot(root, absPath), line: Number(cell.url.startLine) || 1 };
+            }
+          }
+        } else {
+          cells.push(cell === null || cell === undefined ? '' : String(cell));
+        }
+      }
+      rows.push({ cells, location });
+    }
+    return { columns, rows };
+  }
+
+  /**
+   * Runs a user-supplied ad-hoc .ql query against an already-built CodeQL
+   * database (see runOneLanguage's keepDbDir) — no findings-cache, no
+   * issue persistence, purely exploratory. Scaffolds a throwaway qlpack
+   * (a single query file can't compile on its own — it needs a qlpack.yml
+   * declaring the language's standard library as a dependency) and shells
+   * out to `codeql query run` + `codeql bqrs decode`.
+   *
+   * @param {{ root: string, dbDir: string, language: string, queryText: string, log?: Function }} args
+   * @returns {Promise<{ columns: string[], rows: Array<{cells: string[], location: {file,line}|null}> }>}
+   */
+  async function runCustomCodeqlQuery({ root, dbDir, language, queryText, log }) {
+    const dbStat = await fsp.stat(dbDir).catch(() => null);
+    if (!dbStat) {
+      throw new Error(`No CodeQL database found for "${language}" — click "Run CodeQL" first to build one.`);
+    }
+    const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), `ignite-codeql-query-${language}-`));
+    const packDir = path.join(workDir, 'pack');
+    const queryFile = path.join(packDir, 'query.ql');
+    const bqrsPath = path.join(workDir, 'results.bqrs');
+    const jsonPath = path.join(workDir, 'results.json');
+    try {
+      await fsp.mkdir(packDir, { recursive: true });
+      await fsp.writeFile(
+        path.join(packDir, 'qlpack.yml'),
+        `name: ignite/ad-hoc-query\nversion: 0.0.0\ndependencies:\n  codeql/${language}-all: "*"\n`
+      );
+      await fsp.writeFile(queryFile, queryText);
+
+      log?.(`  → resolving query pack dependencies for ${language}...`);
+      const installLines = [];
+      try {
+        await runToolStreaming('codeql', ['pack', 'install', packDir], packDir, (l) => installLines.push(l), { timeoutMs: 5 * 60_000 });
+      } catch (e) {
+        throw new Error(`${e.message} Last output: ${installLines.slice(-2).join(' | ') || '(none captured)'}`);
+      }
+
+      log?.(`  → running query against the ${language} database...`);
+      const runLines = [];
+      try {
+        await runToolStreaming('codeql', [
+          'query', 'run', queryFile, `--database=${dbDir}`, `--output=${bqrsPath}`,
+        ], packDir, (l) => runLines.push(l), { timeoutMs: CODEQL_TIMEOUT_MS });
+      } catch (e) {
+        throw new Error(`${e.message} Last output: ${runLines.slice(-2).join(' | ') || '(none captured)'}`);
+      }
+
+      await runTool('codeql', ['bqrs', 'decode', '--format=json', '--entities=all', `--output=${jsonPath}`, bqrsPath], packDir);
+      const json = JSON.parse(await fsp.readFile(jsonPath, 'utf8'));
+      return await parseQueryResultJson(root, json);
+    } finally {
+      await fsp.rm(workDir, { recursive: true, force: true });
+    }
+  }
+
+  return { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages, runCustomCodeqlQuery };
 }
 
 module.exports = { createCodeqlCrossFileCheck };

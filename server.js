@@ -900,7 +900,7 @@ const { checkMaliciousDependencies, guarddogTooling } = createMaliciousDependenc
 });
 
 const { createCodeqlCrossFileCheck } = require('./checks/codeql-cross-file');
-const { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages } = createCodeqlCrossFileCheck({
+const { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages, runCustomCodeqlQuery } = createCodeqlCrossFileCheck({
   runTool,
   runToolStreaming,
   store,
@@ -1815,7 +1815,7 @@ mountStudioRoutes(app, {
   checks: {
     checkSecrets, checkAiGovernance, checkLlmDeepScan, checkIacSecurity,
     generateSbom, generateLocMetrics, checkFeaturePosture, generateProvenance,
-    checkCodeqlCrossFile,
+    checkCodeqlCrossFile, runCustomCodeqlQuery,
   },
   overrideEngine: { collectPhase4Issues, collectCodeqlIssues, collectLicenseIssues, collectDependencyVulnerabilityIssues },
   licenseScan: { scanDependencyLicenses, scanProjectLicenseFiles, scanDependencyVulnerabilities },
