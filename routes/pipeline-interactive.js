@@ -577,6 +577,30 @@ function mountInteractivePipelineRoute(app, {
           console.error(`Could not persist step history for job ${jobId}: ${e.message}`);
         }
       }
+      // Keep a persistent copy of this run's source for the 5 most recently
+      // completed runs that made it through Phase 4 (snapshotReady) — any
+      // outcome (shipped, dry run, stopped at review, CI failure) — so
+      // Studio's Dependencies/SBOM/LOC/Posture/CodeQL-run/Rescan buttons
+      // work identically after the run ends as they do live (see
+      // routes/studio.js's resolveStudioContext 'retained' branch). Separate
+      // from pendingEffectivations above, which is a short-TTL mechanism
+      // just for the "Effectivate" action, not for browsing.
+      if (snapshotReady && projectId !== null) {
+        try {
+          const retainedRoot = path.join(__dirname, '..', 'data', 'retained-projects');
+          const retainedDir = path.join(retainedRoot, String(projectId));
+          await fsp.mkdir(retainedRoot, { recursive: true });
+          await fsp.rm(retainedDir, { recursive: true, force: true });
+          await cloneDirectoryWithoutSymlinks(sourceBackupDir, retainedDir);
+          store.retainProjectSource(projectId, retainedDir);
+          for (const evicted of store.listEvictableRetainedSources(5)) {
+            await fsp.rm(evicted.dir_path, { recursive: true, force: true }).catch(() => {});
+            store.deleteRetainedSource(evicted.project_id);
+          }
+        } catch (e) {
+          console.error(`Could not retain source for project ${projectId}: ${e.message}`);
+        }
+      }
       // Forceful cleanup regardless of outcome: staging dir, the uploaded ZIP,
       // and any multer temp files not yet moved into staging. The one exception
       // is the source snapshot of a run that didn't ship for real (dry run,

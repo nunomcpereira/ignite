@@ -4,6 +4,7 @@ config.json
 .env
 ignite.db
 ignite.db-*
+data/retained-projects/
 **/*.log
 test-results/
 playwright-report/

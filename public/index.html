@@ -1813,21 +1813,58 @@
     /* while the review gate is paused for this job (see server.js's    */
     /* reviewActive gate — every request below 409s once it's not).     */
     /* ------------------------------------------------------------ */
-    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null, historical: false, navHistory: [] };
+    const studioState = { jobId: null, issues: [], currentPath: null, originalContent: '', editing: false, dirty: false, suggestion: null, categoryFilter: null, languageFilter: null, locFilesByLanguage: null, severityFilter: null, jumpHighlightRange: null, historical: false, historicalDocs: {}, navHistory: [] };
 
     // Historical Studio (a past project, no staging dir left on disk) can
     // only browse files that have a persisted finding, each showing only
     // the small snippet captured at scan time — not the whole file, and
-    // not the whole project. Toggles off everything that needs a live
-    // staged project: full-file browsing/editing, and the Dependencies/
-    // SBOM/LOC/Posture/Rescan buttons, which all recompute against the
-    // (long since deleted) staging directory.
+    // not the whole project. Dependencies/Rescan/Run-CodeQL always need a
+    // live staged project (a real manifest tree / CLI invocation), so those
+    // stay hidden in historical mode no matter what. SBOM/LOC/Posture/
+    // Provenance, though, are captured as DB documents at run time
+    // regardless of live/kept/shipped (see runPhase4Checks' store.addUploadDocument
+    // calls) — openHistoricalStudio fetches the project's document list and
+    // reveals only the buttons for reports that actually exist for this run.
     function setStudioHistoricalUi(isHistorical) {
       studioState.historical = isHistorical;
+      studioState.historicalDocs = {};
       $('studioHistoricalBanner').classList.toggle('hidden', !isHistorical);
-      ['studioDepsBtn', 'studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioProvenanceBtn', 'studioRescanBtn', 'studioCodeqlBtn'].forEach((id) => {
+      ['studioDepsBtn', 'studioRescanBtn', 'studioCodeqlBtn'].forEach((id) => {
         $(id).classList.toggle('hidden', isHistorical);
       });
+      if (isHistorical) {
+        ['studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioProvenanceBtn'].forEach((id) => {
+          $(id).classList.add('hidden');
+        });
+      }
+    }
+
+    // Fetches the raw JSON blob behind a persisted report document
+    // (SBOM/LOC/posture/provenance) and hands it to the same render
+    // function the live Studio buttons use — historical Studio just needs
+    // to reshape each document's stored payload to match what that render
+    // function already expects (see openHistoricalStudio's transforms).
+    async function openStudioReportFromDoc(title, render, transform) {
+      studioState.currentPath = null;
+      studioMarkActiveFile(null);
+      $('studioFilePath').textContent = title;
+      $('studioDirtyBadge').classList.add('hidden');
+      $('studioEditBtn').classList.add('hidden');
+      $('studioSaveBtn').classList.add('hidden');
+      $('studioManifestBtn').classList.add('hidden');
+      $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+      $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading historical snapshot…</p>';
+      studioShowError(null);
+      try {
+        const doc = transform.doc;
+        const res = await fetch(`/api/documents/${doc.id}`);
+        if (!res.ok) throw new Error(`Could not load ${title}.`);
+        const raw = await res.json();
+        render(transform.reshape(raw, doc));
+      } catch (e) {
+        studioShowError(e.message);
+        $('studioCodeWrap').innerHTML = '';
+      }
     }
 
     function studioIssuesForFile(relPath) {
@@ -1959,6 +1996,23 @@
       $('studioCodeWrap').innerHTML = files.length > 0
         ? '<p class="p-4 text-slate-400">Select a file from the tree.</p>'
         : '<p class="p-4 text-slate-400">No file-addressable findings for this run.</p>';
+
+      // Reveal whichever report buttons have a persisted document for this
+      // project — a shipped run may predate one of these checks being
+      // enabled, so presence is checked per-report rather than assumed.
+      try {
+        const proj = await (await fetch(`/api/projects/${projectId}`)).json();
+        const docs = proj.documents || [];
+        const sbomDoc = docs.find((d) => /^sbom\./.test(d.name));
+        const locDoc = docs.find((d) => d.name === 'loc-metrics.json');
+        const postureDoc = docs.find((d) => d.name === 'posture-report.json');
+        const provenanceDoc = docs.find((d) => d.name === 'provenance.json');
+        studioState.historicalDocs = { sbom: sbomDoc, loc: locDoc, posture: postureDoc, provenance: provenanceDoc };
+        if (sbomDoc) $('studioSbomBtn').classList.remove('hidden');
+        if (locDoc) $('studioLocBtn').classList.remove('hidden');
+        if (postureDoc) $('studioPostureBtn').classList.remove('hidden');
+        if (provenanceDoc) $('studioProvenanceBtn').classList.remove('hidden');
+      } catch { /* documents are a bonus view — a failed fetch just leaves the buttons hidden */ }
     }
 
     function closeStudio() {
@@ -2191,6 +2245,9 @@
     }
 
     function studioEngineBadge(engine, externalLabel) {
+      if (engine === null) {
+        return '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">Historical snapshot — engine not recorded</span>';
+      }
       const isExternal = engine && !String(engine).includes('fallback') && engine !== 'disabled';
       const label = isExternal ? `${externalLabel} (External)` : 'Ignite Built-In (Fallback)';
       const chip = isExternal ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200';
@@ -2221,9 +2278,17 @@
         </table>
       </div>`;
     }
-    $('studioSbomBtn').addEventListener('click', () => openStudioReport(
-      'sbom', 'Software Bill of Materials (SBOM)', 'Generating SBOM (Syft if installed, else a manifest-derived component list)…', renderStudioSbom
-    ));
+    $('studioSbomBtn').addEventListener('click', () => {
+      if (studioState.historical) {
+        return openStudioReportFromDoc('Software Bill of Materials (SBOM)', renderStudioSbom, {
+          doc: studioState.historicalDocs.sbom,
+          reshape: (raw, doc) => ({ sbom: raw, engine: doc.name.includes('cyclonedx') ? 'syft' : 'fallback' }),
+        });
+      }
+      return openStudioReport(
+        'sbom', 'Software Bill of Materials (SBOM)', 'Generating SBOM (Syft if installed, else a manifest-derived component list)…', renderStudioSbom
+      );
+    });
 
     function renderStudioLocMetrics(data) {
       const metrics = data.metrics;
@@ -2268,9 +2333,21 @@
         row.addEventListener('click', () => studioSetLanguageFilter(row.dataset.language, data));
       });
     }
-    $('studioLocBtn').addEventListener('click', () => openStudioReport(
-      'loc-metrics', 'LOC Metrics', 'Computing per-language LOC metrics (gocloc)…', renderStudioLocMetrics
-    ));
+    $('studioLocBtn').addEventListener('click', () => {
+      if (studioState.historical) {
+        // The stored loc-metrics.json doesn't carry which engine produced
+        // it (gocloc vs. the built-in fallback) — only the live endpoint's
+        // response wrapper does — so the badge reads as neither, rather
+        // than guessing.
+        return openStudioReportFromDoc('LOC Metrics', renderStudioLocMetrics, {
+          doc: studioState.historicalDocs.loc,
+          reshape: (raw) => ({ metrics: raw, engine: null }),
+        });
+      }
+      return openStudioReport(
+        'loc-metrics', 'LOC Metrics', 'Computing per-language LOC metrics (gocloc)…', renderStudioLocMetrics
+      );
+    });
 
     const STUDIO_POSTURE_STATUS_META = {
       DETECTED: { label: 'DETECTED', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: '✓' },
@@ -2326,9 +2403,19 @@
         btn.addEventListener('click', () => openStudioFile(btn.dataset.path));
       });
     }
-    $('studioPostureBtn').addEventListener('click', () => openStudioReport(
-      'posture', 'Compliance & Feature Posture', 'Scanning for SSO/RBAC/audit-logging/TLS/backups/encryption/rate-limiting posture (Semgrep if installed, else a built-in scanner)…', renderStudioPosture
-    ));
+    $('studioPostureBtn').addEventListener('click', () => {
+      if (studioState.historical) {
+        // posture-report.json is already stored as { engine, posture } —
+        // the exact shape renderStudioPosture expects, no reshaping needed.
+        return openStudioReportFromDoc('Compliance & Feature Posture', renderStudioPosture, {
+          doc: studioState.historicalDocs.posture,
+          reshape: (raw) => raw,
+        });
+      }
+      return openStudioReport(
+        'posture', 'Compliance & Feature Posture', 'Scanning for SSO/RBAC/audit-logging/TLS/backups/encryption/rate-limiting posture (Semgrep if installed, else a built-in scanner)…', renderStudioPosture
+      );
+    });
 
     function renderStudioProvenance(data) {
       const p = data.provenance || {};
@@ -2349,9 +2436,17 @@
         </table>
       </div>`;
     }
-    $('studioProvenanceBtn').addEventListener('click', () => openStudioReport(
-      'provenance', 'Build Provenance', 'Recording build/commit provenance (unsigned — not a SLSA attestation)…', renderStudioProvenance
-    ));
+    $('studioProvenanceBtn').addEventListener('click', () => {
+      if (studioState.historical) {
+        return openStudioReportFromDoc('Build Provenance', renderStudioProvenance, {
+          doc: studioState.historicalDocs.provenance,
+          reshape: (raw) => ({ provenance: raw }),
+        });
+      }
+      return openStudioReport(
+        'provenance', 'Build Provenance', 'Recording build/commit provenance (unsigned — not a SLSA attestation)…', renderStudioProvenance
+      );
+    });
 
     function studioTreeToNested(files) {
       const root = { dirs: new Map(), files: [] };
@@ -3796,7 +3891,7 @@
         <div class="flex items-start gap-2 px-5 py-3.5">
           <div class="flex-1 min-w-0">
             <div class="flex items-start gap-2">
-              <p class="flex-1 min-w-0 text-sm font-semibold text-slate-800 truncate">${escapeHtml(org)}/${escapeHtml(repo)}</p>
+              <p class="flex-1 min-w-0 text-sm font-semibold text-slate-800 truncate" title="${escapeAttr(org)}/${escapeAttr(repo)}">${escapeHtml(org)}/${escapeHtml(repo)}</p>
               ${histSourceBadge('ui')}
               <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border ${HIST_STATUS.running} uppercase shrink-0">running</span>
             </div>
@@ -3820,20 +3915,22 @@
       }
       historyList.innerHTML = projects.map((p) => `
         <div class="hist-item" data-id="${p.id}">
-          <div class="flex items-start gap-2 px-5 py-3.5 hover:bg-slate-50 transition-colors">
-            <button type="button" class="hist-toggle flex-1 min-w-0 text-left">
+          <div class="flex flex-col gap-1.5 px-5 py-3.5 hover:bg-slate-50 transition-colors">
+            <button type="button" class="hist-toggle w-full text-left">
               <div class="flex items-start gap-2">
-              <p class="flex-1 min-w-0 text-sm font-semibold text-slate-800 truncate">${escapeHtml(p.org)}/${escapeHtml(p.repo)}</p>
+              <p class="flex-1 min-w-0 text-sm font-semibold text-slate-800 truncate" title="${escapeAttr(p.org)}/${escapeAttr(p.repo)}">${escapeHtml(p.org)}/${escapeHtml(p.repo)}</p>
               ${p.gxp ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-violet-50 text-violet-700 border-violet-200 shrink-0">GxP</span>' : ''}
               ${histSourceBadge(p.source)}
               <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border ${HIST_STATUS[p.status] || HIST_STATUS.running} uppercase shrink-0">${escapeHtml(p.status)}</span>
               </div>
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
             </button>
-            <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
-            ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)">🧪 Studio</button>` : ''}
-            ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0 mt-0.5" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
-            <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold mt-0.5" data-id="${p.id}" title="Delete this project">✕</button>
+            <div class="flex items-center gap-3 flex-wrap">
+              <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
+              ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${p.retained ? 'Full Ignite Studio — source retained for this run (Dependencies/SBOM/LOC/Posture/CodeQL/Rescan all available)' : 'Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)'}">${p.retained ? '🧪 Studio (full)' : '🧪 Studio'}</button>` : ''}
+              ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
+              <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold ml-auto" data-id="${p.id}" title="Delete this project">✕</button>
+            </div>
           </div>
           <div class="hist-detail hidden px-5 pb-4"></div>
         </div>`).join('');
@@ -3842,7 +3939,20 @@
         btn.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          openHistoricalStudio(Number(btn.dataset.id), btn.dataset.org, btn.dataset.repo);
+          const projectId = Number(btn.dataset.id);
+          const org = btn.dataset.org;
+          const repo = btn.dataset.repo;
+          // Source retained on disk for this run (see resolveStudioContext's
+          // 'retained' branch in routes/studio.js) → open the same live
+          // Studio window a still-open review uses, keyed by job id, so
+          // Dependencies/SBOM/LOC/Posture/CodeQL-run/Rescan all work exactly
+          // like they do live. Otherwise fall back to the findings-only
+          // read-only reconstruction.
+          if (btn.dataset.retained && btn.dataset.jobId) {
+            openStudio(btn.dataset.jobId, null);
+          } else {
+            openHistoricalStudio(projectId, org, repo);
+          }
         });
       });
 

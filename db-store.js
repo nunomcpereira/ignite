@@ -89,6 +89,9 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       file         TEXT,
       line         INTEGER,
       snippet_json TEXT,
+      cross_file   INTEGER NOT NULL DEFAULT 0,
+      chain_json   TEXT,
+      cwe          TEXT,
       status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','overridden')),
       created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -144,6 +147,11 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (repo, filename)
     );
+    CREATE TABLE IF NOT EXISTS retained_sources (
+      project_id  INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      dir_path    TEXT NOT NULL,
+      retained_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE IF NOT EXISTS github_connections (
       user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       github_login TEXT NOT NULL,
@@ -159,6 +167,23 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     db.exec('ALTER TABLE issues ADD COLUMN score INTEGER');
   } catch (e) {
     if (!/duplicate column/i.test(e.message)) throw e;
+  }
+
+  // Migration for DBs created before cross_file/chain_json/cwe existed —
+  // without these, CodeQL's cross-file chain data (its one distinguishing
+  // feature over Semgrep) silently vanished the moment a run's issues were
+  // persisted for history, even though it survived fine in the live/kept
+  // in-memory view.
+  for (const ddl of [
+    `ALTER TABLE issues ADD COLUMN cross_file INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE issues ADD COLUMN chain_json TEXT`,
+    `ALTER TABLE issues ADD COLUMN cwe TEXT`,
+  ]) {
+    try {
+      db.exec(ddl);
+    } catch (e) {
+      if (!/duplicate column/i.test(e.message)) throw e;
+    }
   }
 
   // Migration for DBs created before projects.source existed. Existing rows
@@ -205,10 +230,11 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       'INSERT INTO documents (project_id, kind, name, url, mime, size, data) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ),
     listProjects: db.prepare(`
-      SELECT p.id, p.org, p.repo, p.gxp, p.source, p.status, p.error, p.repo_url, p.pr_url,
+      SELECT p.id, p.job_id, p.org, p.repo, p.gxp, p.source, p.status, p.error, p.repo_url, p.pr_url,
              p.created_at, p.finished_at,
              (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS doc_count,
-             (SELECT COUNT(*) FROM issues i WHERE i.project_id = p.id) AS issue_count
+             (SELECT COUNT(*) FROM issues i WHERE i.project_id = p.id) AS issue_count,
+             (SELECT 1 FROM retained_sources r WHERE r.project_id = p.id) AS retained
       FROM projects p ORDER BY p.id DESC LIMIT 100
     `),
     getProject: db.prepare(
@@ -221,6 +247,16 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     getDocumentForDownload: db.prepare('SELECT kind, name, url, mime, data FROM documents WHERE id = ?'),
     hasProject: db.prepare('SELECT id FROM projects WHERE id = ?'),
     deleteProjectDocuments: db.prepare('DELETE FROM documents WHERE project_id = ?'),
+    getRetainedSource: db.prepare('SELECT dir_path FROM retained_sources WHERE project_id = ?'),
+    upsertRetainedSource: db.prepare(
+      `INSERT INTO retained_sources (project_id, dir_path, retained_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(project_id) DO UPDATE SET dir_path = excluded.dir_path, retained_at = excluded.retained_at`
+    ),
+    listRetainedSources: db.prepare('SELECT project_id, dir_path FROM retained_sources ORDER BY retained_at DESC'),
+    listEvictableRetainedSources: db.prepare(
+      'SELECT project_id, dir_path FROM retained_sources ORDER BY retained_at DESC LIMIT -1 OFFSET ?'
+    ),
+    deleteRetainedSource: db.prepare('DELETE FROM retained_sources WHERE project_id = ?'),
     deleteProjectSteps: db.prepare('DELETE FROM steps WHERE project_id = ?'),
     deleteProject: db.prepare('DELETE FROM projects WHERE id = ?'),
     deleteProjectOverrides: db.prepare('DELETE FROM overrides WHERE project_id = ?'),
@@ -264,11 +300,11 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     deleteProjectIssues: db.prepare('DELETE FROM issues WHERE project_id = ?'),
     insertIssue: db.prepare(
-      `INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
     getProjectIssues: db.prepare(
-      `SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, status, created_at
+      `SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, status, created_at
        FROM issues WHERE project_id = ? ORDER BY id`
     ),
 
@@ -435,6 +471,10 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       return stmt.listProjects.all();
     },
 
+    getProject(projectId) {
+      return stmt.getProject.get(projectId) ?? null;
+    },
+
     getProjectDetails(projectId) {
       const project = stmt.getProject.get(projectId);
       if (!project) return null;
@@ -461,16 +501,47 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       stmt.deleteProjectSteps.run(projectId);
       stmt.deleteProjectOverrides.run(projectId);
       stmt.deleteProjectIssues.run(projectId);
+      stmt.deleteRetainedSource.run(projectId);
       stmt.deleteProject.run(projectId);
       if (project) stmt.deleteFileScanCacheForRepo.run(project.org, project.repo);
     },
 
     deleteAllProjects() {
-      db.exec('DELETE FROM documents; DELETE FROM steps; DELETE FROM overrides; DELETE FROM issues; DELETE FROM projects; DELETE FROM file_scan_cache;');
+      db.exec('DELETE FROM documents; DELETE FROM steps; DELETE FROM overrides; DELETE FROM issues; DELETE FROM retained_sources; DELETE FROM projects; DELETE FROM file_scan_cache;');
     },
 
     getDocument(documentId) {
       return stmt.getDocumentForDownload.get(documentId);
+    },
+
+    /* ---------------- retained sources (post-mortem Studio parity) --------
+       Full local source kept for the 5 most recently completed runs (any
+       outcome that passed Phase 4, so it has real files worth browsing —
+       see pipeline-interactive.js), so Studio's Dependencies/SBOM/LOC/
+       Posture/CodeQL-run/Rescan buttons work the same after the run ends
+       as they do live. LRU by retained_at; callers do the actual fs.rm of
+       evicted directories — this store only tracks which dir belongs to
+       which project. */
+    retainProjectSource(projectId, dirPath) {
+      stmt.upsertRetainedSource.run(projectId, dirPath);
+    },
+
+    getRetainedSource(projectId) {
+      return stmt.getRetainedSource.get(projectId)?.dir_path ?? null;
+    },
+
+    listRetainedSources() {
+      return stmt.listRetainedSources.all();
+    },
+
+    // Rows beyond the `keep` most recently retained — the caller fs.rm's
+    // each dir_path, then calls deleteRetainedSource for each project_id.
+    listEvictableRetainedSources(keep) {
+      return stmt.listEvictableRetainedSources.all(keep);
+    },
+
+    deleteRetainedSource(projectId) {
+      stmt.deleteRetainedSource.run(projectId);
     },
 
     /* ---------------- auth: users + sessions ---------------- */
@@ -665,6 +736,9 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
           issue.file || null,
           issue.line ?? null,
           issue.snippet ? JSON.stringify(issue.snippet) : null,
+          issue.crossFile ? 1 : 0,
+          issue.chain ? JSON.stringify(issue.chain) : null,
+          issue.cwe || null,
           overridden.has(issue.id) ? 'overridden' : 'open'
         );
       }
@@ -681,6 +755,9 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
         file: row.file,
         line: row.line,
         snippet: row.snippet_json ? JSON.parse(row.snippet_json) : null,
+        crossFile: Boolean(row.cross_file),
+        chain: row.chain_json ? JSON.parse(row.chain_json) : null,
+        cwe: row.cwe,
         status: row.status,
         created_at: row.created_at,
       }));

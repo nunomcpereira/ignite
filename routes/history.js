@@ -15,6 +15,8 @@
  * @param {Function} deps.computeNextRunAt - lib/scheduled-rechecks.js's createScheduledRechecks() result
  */
 function mountHistoryRoutes(app, { store, auth, runningRuns, scheduleIntervals, computeNextRunAt }) {
+  const fsp = require('fs/promises');
+
   app.get('/api/projects', (req, res) => {
     res.json(store.listProjects());
   });
@@ -68,15 +70,20 @@ function mountHistoryRoutes(app, { store, auth, runningRuns, scheduleIntervals, 
     res.json({ ok: true, running: false, issues: store.getProjectIssues(projectId), projectId });
   });
 
-  app.delete('/api/projects/:id', (req, res) => {
+  app.delete('/api/projects/:id', async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid project id.' });
     if (!store.projectExists(id)) return res.status(404).json({ error: 'Project not found.' });
+    const retainedDir = store.getRetainedSource(id);
+    if (retainedDir) await fsp.rm(retainedDir, { recursive: true, force: true }).catch(() => {});
     store.deleteProjectById(id);
     res.json({ ok: true });
   });
 
-  app.delete('/api/projects', (req, res) => {
+  app.delete('/api/projects', async (req, res) => {
+    for (const { dir_path } of store.listRetainedSources()) {
+      await fsp.rm(dir_path, { recursive: true, force: true }).catch(() => {});
+    }
     store.deleteAllProjects();
     res.json({ ok: true });
   });

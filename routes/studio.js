@@ -92,13 +92,15 @@ function mountStudioRoutes(app, {
     if (projectId !== null) {
       cleanupExpiredEffectivations();
       const kept = pendingEffectivations.get(projectId);
-      if (kept) {
+      const source = kept ? kept.sourceBackupDir : store.getRetainedSource(projectId);
+      if (source) {
+        const project = kept ? kept : store.getProject(projectId);
         return {
           jobId,
-          root: kept.sourceBackupDir,
-          backupRoot: kept.sourceBackupDir,
-          org: kept.org,
-          repo: kept.repo,
+          root: source,
+          backupRoot: source,
+          org: project.org,
+          repo: project.repo,
           getIssues: () => store.getProjectIssues(projectId),
           replacePhase4: (freshIssues) => {
             const current = store.getProjectIssues(projectId);
