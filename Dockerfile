@@ -190,7 +190,16 @@ RUN if [ "$INSTALL_ACT" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/nektos/act/master/install.sh \
         | sh -s -- -b /usr/local/bin; \
     fi
-ARG DOCKER_CLI_VERSION=27.3.1
+# 29.7.2, not 27.3.1: the CLI dropped its vendored github.com/moby/go-archive
+# dependency somewhere after 27.x (confirmed via `go version -m` against a
+# real 29.7.2 build - zero "archive"-named modules linked in, vs. 27.x's
+# github.com/moby/go-archive@v0.1.0), which carries a crafted-tar-archive
+# path-traversal bug (CVE-2026-17106, fixed upstream in go-archive 0.3.0).
+# `act` (installed above, always latest) still vendors the same vulnerable
+# go-archive@v0.1.0 as of its current release and even its unreleased
+# master branch - no upstream fix exists there yet, so this bump only
+# closes the Docker-CLI-side instance, not act's.
+ARG DOCKER_CLI_VERSION=29.7.2
 RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64)"; \
       curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
