@@ -435,6 +435,16 @@
         </div>
         <!-- Code pane -->
         <div class="flex-1 min-w-0 min-h-[50vh] sm:min-h-0 flex flex-col border-b sm:border-b-0 sm:border-r border-slate-200 bg-white">
+          <!-- Purely cosmetic "open file" tab chip, kept in sync with
+               studioFilePath by a MutationObserver (see wireStudioTabBar)
+               rather than touching every one of studioFilePath's many
+               .textContent = ... call sites individually. -->
+          <div id="studioTabBar" class="hidden items-center gap-0.5 px-2 pt-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
+            <span class="inline-flex items-center gap-2 text-xs font-semibold text-brand-700 bg-white border border-b-0 border-slate-200 border-t-2 border-t-brand-600 rounded-t-md px-3 py-1.5">
+              <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>
+              <span id="studioTabLabel"></span>
+            </span>
+          </div>
           <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
             <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate">Select a file from the tree ←</span>
             <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100">📦 View license compliance for this manifest</button>
@@ -458,13 +468,15 @@
            it. Hidden until the first run; stays mounted (not torn down)
            after that so its scrollback survives switching files. -->
       <div id="studioOutputPanel" class="hidden shrink-0 border-t border-slate-700 bg-slate-950 flex flex-col" style="height: 220px;">
-        <div class="flex items-center gap-2 px-3 py-1.5 border-b border-slate-800 shrink-0">
-          <span id="studioOutputStatus" class="w-2 h-2 rounded-full bg-slate-600 shrink-0"></span>
-          <span class="text-[11px] font-semibold text-slate-300 uppercase tracking-wide">Output</span>
-          <span id="studioOutputTaskLabel" class="text-[11px] text-slate-500 font-mono"></span>
+        <div class="flex items-center gap-4 px-3 pt-1.5 border-b border-slate-800 shrink-0">
+          <span class="flex items-center gap-1.5 text-[11px] font-bold text-white uppercase tracking-wide pb-1.5 border-b-2 border-brand-500">
+            <span id="studioOutputStatus" class="w-2 h-2 rounded-full bg-slate-600 shrink-0"></span>
+            Output
+          </span>
+          <span id="studioOutputTaskLabel" class="text-[11px] text-slate-500 font-mono pb-1.5"></span>
           <span class="flex-1"></span>
-          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200">Clear</button>
-          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200">Close ✕</button>
+          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5">Clear</button>
+          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5">Close ✕</button>
         </div>
         <pre id="studioOutputLog" class="flex-1 overflow-y-auto px-3 py-2 text-[11px] font-mono text-slate-300 leading-relaxed whitespace-pre-wrap"></pre>
       </div>
@@ -2116,6 +2128,17 @@
       if (e.key === 'Escape' && !$('studioView').classList.contains('hidden')) closeStudio();
     });
 
+    // Keeps the cosmetic "open file" tab chip (studioTabBar) in sync with
+    // studioFilePath's text without touching that element's many existing
+    // .textContent = ... call sites individually.
+    new MutationObserver(() => {
+      const text = $('studioFilePath').textContent || '';
+      const isPlaceholder = text.startsWith('Select a file');
+      $('studioTabBar').classList.toggle('hidden', isPlaceholder);
+      $('studioTabBar').classList.toggle('flex', !isPlaceholder);
+      if (!isPlaceholder) $('studioTabLabel').textContent = text.split(/[\s/]/).filter(Boolean).pop() || text;
+    }).observe($('studioFilePath'), { childList: true, characterData: true, subtree: true });
+
     // The seven external tools that supplement/replace trivy don't each get
     // their own top-bar button the way SBOM/LOC/Posture do (their findings
     // land as regular file-level issues instead of a standalone report) —
@@ -3292,6 +3315,23 @@
     // selectStudioIssue's own file-open/scroll-to-issue.line logic (which
     // would always snap back to the sink instead of staying on the step
     // just navigated to).
+    // "sql-injection" -> "Sql Injection" — good enough to head the
+    // description card without a hand-maintained per-category title map.
+    function studioHumanizeCategory(category) {
+      return String(category || 'Finding').split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
+
+    // Dark unified-diff box (red strikethrough removed lines, green added
+    // lines) for the AI-suggested-fix card — matches the mockup's diff
+    // presentation instead of only showing the replacement in isolation.
+    function studioDiffBoxHtml(oldText, newText) {
+      const oldLines = String(oldText || '').split('\n');
+      const newLines = String(newText || '').split('\n');
+      const removed = oldLines.map((l) => `<div class="text-rose-400 line-through decoration-rose-500/60">- ${escapeHtml(l)}</div>`).join('');
+      const added = newLines.map((l) => `<div class="text-emerald-400">+ ${escapeHtml(l)}</div>`).join('');
+      return `<pre class="bg-slate-900 rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed mb-2">${removed}${added}</pre>`;
+    }
+
     function studioRenderIssuePanel(issue) {
       const explainId = `studio-explain-${issue.id}`;
       const fixId = `studio-fix-${issue.id}`;
@@ -3300,19 +3340,30 @@
       const dupRefLabel = issue.duplicateRef
         ? `${issue.duplicateRef.file}:${issue.duplicateRef.endLine > issue.duplicateRef.line ? `${issue.duplicateRef.line}-${issue.duplicateRef.endLine}` : issue.duplicateRef.line}`
         : '';
+      const isHigh = issue.severity === 'error';
+      const cweNum = issue.cwe ? String(issue.cwe).match(/\d+/)?.[0] : null;
       $('studioIssuePanel').innerHTML = `
-        <div class="border border-slate-200 rounded-lg p-2 mb-3">
-          <div class="flex items-center justify-between mb-1">
-            <span class="text-[10px] font-semibold text-slate-400">${idx + 1} of ${list.length}</span>
-            <div class="flex items-center gap-1">
-              <button type="button" id="studio-issue-prev" title="Previous issue (↑)" aria-label="Previous issue" ${idx <= 0 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▲</button>
-              <button type="button" id="studio-issue-next" title="Next issue (↓)" aria-label="Next issue" ${idx === -1 || idx >= list.length - 1 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▼</button>
-            </div>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <div class="border border-slate-200 rounded-lg p-2.5">
+            <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Severity</p>
+            <span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded ${isHigh ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}">⚠ ${isHigh ? 'High' : 'Medium'}</span>
           </div>
-          <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${issue.severity === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'}">${issue.severity.toUpperCase()}</span>
-          <span class="text-[10px] font-semibold text-slate-400 uppercase ml-1">${escapeHtml(issue.category)}</span>
-          <span class="text-[10px] font-mono text-slate-400 ml-1">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</span>
-          <p class="text-xs text-slate-700 mt-1.5">${escapeHtml(issue.summary)}</p>
+          <div class="border border-slate-200 rounded-lg p-2.5">
+            <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Status</p>
+            <span class="text-xs font-semibold text-slate-600">Open</span>
+          </div>
+        </div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-[10px] font-semibold text-slate-400">${idx + 1} of ${list.length}</span>
+          <div class="flex items-center gap-1">
+            <button type="button" id="studio-issue-prev" title="Previous issue (↑)" aria-label="Previous issue" ${idx <= 0 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▲</button>
+            <button type="button" id="studio-issue-next" title="Next issue (↓)" aria-label="Next issue" ${idx === -1 || idx >= list.length - 1 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▼</button>
+          </div>
+        </div>
+        <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-3">
+          <p class="text-sm font-bold text-slate-800 mb-1">${escapeHtml(studioHumanizeCategory(issue.category))}</p>
+          <p class="text-xs text-slate-600 leading-relaxed">${escapeHtml(issue.summary)}</p>
+          <p class="text-[10px] font-mono text-slate-400 mt-2">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</p>
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
         ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
@@ -3335,9 +3386,23 @@
         </div>` : ''}
         <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2">Explain this issue</button>
         <div id="${explainId}-body" class="text-[11px] text-slate-600 mb-3"></div>
-        <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 mb-2">Suggest AI fix</button>
-        <div id="${fixId}-body" class="text-[11px] text-slate-600"></div>
-        <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-3">← Back to file's issues</button>`;
+        <div class="border border-slate-200 rounded-lg p-3 mb-3">
+          <p class="text-xs font-bold text-slate-800 flex items-center gap-1.5 mb-2">
+            <svg class="w-3.5 h-3.5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>
+            AI Suggested Fix
+          </p>
+          <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100">Generate suggested fix</button>
+          <div id="${fixId}-body" class="text-[11px] text-slate-600 mt-2"></div>
+        </div>
+        ${issue.cwe ? `
+        <div class="mb-3">
+          <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">References</p>
+          <a href="${cweNum ? `https://cwe.mitre.org/data/definitions/${cweNum}.html` : '#'}" target="_blank" rel="noopener" class="text-[11px] font-semibold text-brand-600 hover:underline flex items-start gap-1">
+            <svg class="w-3 h-3 mt-0.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
+            <span>${escapeHtml(issue.cwe)}${issue.owasp ? ` — ${escapeHtml(issue.owasp)}` : ''}</span>
+          </a>
+        </div>` : ''}
+        <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-1">← Back to file's issues</button>`;
       if (issue.duplicateRef) {
         document.getElementById('studio-jump-duplicate')?.addEventListener('click', () => studioNavigateToDuplicateRef(issue.duplicateRef));
       }
@@ -3403,9 +3468,12 @@
           studioState.suggestion = data.suggestion;
           $(`${fixId}-body`).innerHTML = `
             <p class="mb-2">${escapeHtml(data.suggestion.explanation)}</p>
-            <p class="text-[10px] font-semibold text-slate-400 uppercase mb-1">Suggested replacement (lines ${data.suggestion.startLine}-${data.suggestion.endLine})</p>
-            <pre class="bg-emerald-50 border border-emerald-200 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap mb-2">${escapeHtml(data.suggestion.replacement)}</pre>
-            <button type="button" id="studio-apply-fix" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">Apply into editor</button>`;
+            <p class="text-[10px] font-semibold text-slate-400 uppercase mb-1">Lines ${data.suggestion.startLine}-${data.suggestion.endLine}</p>
+            ${studioDiffBoxHtml(issue.snippet, data.suggestion.replacement)}
+            <button type="button" id="studio-apply-fix" class="w-full flex items-center justify-center gap-1.5 text-[11px] font-bold px-2.5 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 shadow-sm">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
+              Apply Fix
+            </button>`;
           $('studio-apply-fix').addEventListener('click', studioApplySuggestion);
         } catch {
           $(`${fixId}-body`).innerHTML = '<p class="text-rose-500">Could not fetch a fix suggestion.</p>';
