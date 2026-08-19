@@ -84,73 +84,144 @@
     })();
   </script>
 </head>
-<body class="bg-gradient-to-b from-brand-50 via-white to-white text-slate-700 min-h-screen antialiased font-sans">
-  <div class="max-w-7xl mx-auto px-6 py-12">
+<body class="bg-slate-50 text-slate-700 min-h-screen antialiased font-sans">
 
-    <!-- Header -->
-    <header class="mb-10 text-center">
-      <div class="inline-flex items-center gap-3 mb-3">
-        <div class="w-11 h-11 rounded-2xl bg-brand-600 shadow-lg shadow-brand-600/25 flex items-center justify-center">
-          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
-          </svg>
+  <!-- Top nav bar -->
+  <header class="sticky top-0 z-40 bg-white border-b border-slate-200 h-14 flex items-center justify-between px-4 sm:px-6">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center shrink-0">
+        <svg class="w-4.5 h-4.5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
+        </svg>
+      </div>
+      <h1 class="text-base font-bold tracking-tight text-brand-700">Ignite Studio</h1>
+      <span id="appVersion" class="text-[10px] font-mono font-semibold text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 hidden sm:inline-block"></span>
+    </div>
+    <div class="flex items-center gap-1 relative">
+      <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" title="Help &amp; documentation"
+         class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 17.25h.007v.008H12v-.008z"/>
+        </svg>
+      </a>
+      <button id="themeToggleBtn" type="button" title="Toggle dark mode"
+              class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg id="themeToggleIconSun" class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
+        </svg>
+        <svg id="themeToggleIconMoon" class="hidden w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
+        </svg>
+      </button>
+      <button id="accountMenuBtn" type="button" title="Account &amp; connected tools"
+              class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg class="w-[20px] h-[20px]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+      </button>
+      <div id="accountMenu" class="hidden absolute right-0 top-11 w-80 max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-cardHover p-3 space-y-2 z-50 max-h-[80vh] overflow-y-auto">
+        <div id="authBar" class="text-sm"></div>
+        <div id="toolsBar" class="text-sm"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Lateral icon rail — Dashboard is this single-page app's only "screen"
+       (so it's shown active/non-interactive); History opens a slide-over
+       drawer with Recent Checks + Effectivated Repos, which used to sit
+       permanently inline below the pipeline and crowded the page. -->
+  <nav class="hidden sm:flex flex-col items-center gap-1 w-14 shrink-0 fixed left-0 top-14 bottom-0 bg-white border-r border-slate-200 py-4 z-30">
+    <button type="button" title="Dashboard" class="w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
+    </button>
+    <button id="historyDrawerBtn" type="button" title="Recent checks &amp; effectivated repos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    </button>
+  </nav>
+
+  <!-- History drawer: slide-over panel (not an inline section) holding
+       Recent Checks + Effectivated Repos, opened from the lateral rail. -->
+  <div id="historyDrawerBackdrop" class="hidden fixed inset-0 bg-slate-900/40 z-40"></div>
+  <div id="historyDrawer" class="hidden fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-50 border-l border-slate-200 shadow-2xl z-50 flex flex-col transition-transform">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-white shrink-0">
+      <h2 class="text-sm font-bold text-slate-900">Recent Checks &amp; Effectivated Repos</h2>
+      <button id="historyDrawerCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-6">
+      <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
+          <div class="flex items-center gap-3">
+            <button id="historyClearBtn" title="Clear all"
+              class="text-slate-400 hover:text-red-600 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
+              </svg>
+            </button>
+            <button id="historyRefreshBtn" title="Refresh"
+              class="text-slate-400 hover:text-brand-600 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+              </svg>
+            </button>
+          </div>
         </div>
-        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Ignite</h1>
-        <span id="appVersion" class="text-[11px] font-mono font-semibold text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 self-start mt-1"></span>
-      </div>
-      <p class="text-sm text-slate-500">Onboarding gatekeeper — upload a project · pass compliance gates · ship to GitHub</p>
-    </header>
+        <div id="historyList" class="divide-y divide-slate-100 max-h-[45vh] overflow-y-auto">
+          <p class="p-5 text-xs text-slate-400">Loading…</p>
+        </div>
+      </section>
 
-    <!-- Auth bar + external tools status: fixed top-right on wider screens;
-         below sm it drops into normal document flow instead of floating
-         over the header/card content, since a viewport that narrow has no
-         room to spare for an overlay. -->
-    <div class="static sm:fixed sm:top-4 sm:right-4 z-40 flex flex-col items-stretch sm:items-end gap-2 mb-6 sm:mb-0">
-      <div class="flex items-center gap-2">
-        <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" title="Help &amp; documentation"
-           class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 17.25h.007v.008H12v-.008z"/>
-          </svg>
-        </a>
-        <button id="themeToggleBtn" type="button" title="Toggle dark mode"
-                class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
-          <svg id="themeToggleIconSun" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
-          </svg>
-          <svg id="themeToggleIconMoon" class="hidden w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
-          </svg>
-        </button>
-      </div>
-      <div id="authBar" class="text-sm"></div>
-      <div id="toolsBar" class="text-sm"></div>
+      <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Effectivated Repos</h2>
+          <button id="effectivatedRefreshBtn" title="Refresh"
+            class="text-slate-400 hover:text-brand-600 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+            </svg>
+          </button>
+        </div>
+        <p class="px-5 pt-3 text-[11px] text-slate-400">Repos Ignite has actually pushed to. Enable a schedule to re-run checks against the default branch — failures notify the repo's CODEOWNERS contact, or file a GitHub issue if none is found.</p>
+        <div id="effectivatedList" class="divide-y divide-slate-100 max-h-[40vh] overflow-y-auto">
+          <p class="p-5 text-xs text-slate-400">Loading…</p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="max-w-4xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+
+    <!-- Page header -->
+    <div class="text-center mb-10">
+      <h2 class="text-2xl font-bold tracking-tight text-slate-900">Initialize Project Pipeline</h2>
+      <p class="text-base text-slate-500 mt-1">Upload your project payload to begin automated analysis and provisioning.</p>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-8 items-start">
     <main class="min-w-0">
 
     <!-- Phase 1: Input card -->
-    <section class="bg-white border border-slate-200 rounded-2xl p-6 mb-8 shadow-card">
-      <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest mb-4">Input &amp; Metadata</h2>
-
+    <section class="mb-8">
       <div id="dropzone"
-        class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer transition-all hover:border-brand-400 hover:bg-brand-50/60">
+        class="relative overflow-hidden bg-white border-2 border-dashed border-slate-300 hover:border-brand-400 rounded-lg p-12 text-center cursor-pointer transition-colors shadow-sm">
         <input type="file" id="fileInput" accept=".zip,application/zip" class="hidden" />
         <input type="file" id="dirInput" webkitdirectory class="hidden" />
         <div id="dropIdle">
-          <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-100 flex items-center justify-center">
-            <svg class="w-6 h-6 text-brand-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
-            </svg>
+          <svg class="w-14 h-14 mx-auto mb-4 text-brand-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l-3 3m3-3l3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
+          </svg>
+          <h3 class="text-lg font-bold text-slate-900">Drag &amp; Drop Project Payload</h3>
+          <p class="text-sm text-slate-500 mt-1.5 max-w-md mx-auto">Upload a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> to initiate the pipeline sequence.</p>
+          <div class="flex items-center justify-center gap-3 mt-5">
+            <button type="button" id="pickZipBtn" class="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-card transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
+              Choose File…
+            </button>
+            <button type="button" id="pickDirBtn" class="text-sm font-semibold text-brand-600 hover:text-brand-800">or choose a folder</button>
           </div>
-          <p class="text-sm text-slate-500">Drag &amp; drop a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> here</p>
-          <div class="flex items-center justify-center gap-2 mt-3">
-            <button type="button" id="pickZipBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">Choose ZIP…</button>
-            <button type="button" id="pickDirBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">Choose Folder…</button>
-          </div>
-          <p class="text-xs text-slate-400 mt-2">Up to 250 MB · node_modules, .git and build output are skipped automatically</p>
+          <p class="text-xs text-slate-400 mt-4">Up to 250 MB · node_modules, .git and build output are skipped automatically</p>
         </div>
         <div id="dropReady" class="hidden">
           <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-600 flex items-center justify-center shadow-md shadow-brand-600/25">
@@ -163,8 +234,10 @@
         </div>
       </div>
       <p id="dropError" class="hidden text-xs font-medium text-rose-600 mt-2"></p>
+    </section>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
+    <section class="mb-8">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label for="orgInput" class="block text-xs font-semibold text-slate-600 mb-1.5">GitHub Organization Name</label>
           <input id="orgInput" type="text" placeholder="acme-corp" autocomplete="off" spellcheck="false"
@@ -240,13 +313,19 @@
       <p class="flex-1 min-w-0 text-xs text-violet-700"><span class="font-semibold">Viewing history</span> — <span id="historyViewLabel"></span> — read-only.</p>
       <button id="historyViewBackBtn" type="button" class="text-xs font-semibold text-violet-700 hover:underline shrink-0">Back to live ✕</button>
     </div>
-    <div class="flex items-center justify-end gap-2">
+    <div class="flex items-center justify-between gap-2 mb-4">
+      <div class="flex items-center gap-3">
+        <h2 class="text-lg font-bold text-slate-900">Pipeline Status</h2>
+        <span id="pipelineStatusBadge" class="hidden text-[11px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-md border items-center gap-1.5"></span>
+      </div>
+      <div class="flex items-center gap-2">
       <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
         📋 Checks report
       </button>
       <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
         View flagged issues
       </button>
+      </div>
     </div>
     <section id="pipeline" class="space-y-3"></section>
 
@@ -257,49 +336,6 @@
     <div id="insightCard" class="hidden mt-4"></div>
 
     </main>
-
-    <!-- Recent checks history panel -->
-    <aside class="lg:sticky lg:top-6 space-y-6">
-      <section class="bg-white border border-slate-200 rounded-2xl shadow-card overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
-          <div class="flex items-center gap-3">
-            <button id="historyClearBtn" title="Clear all"
-              class="text-slate-400 hover:text-red-600 transition-colors">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
-              </svg>
-            </button>
-            <button id="historyRefreshBtn" title="Refresh"
-              class="text-slate-400 hover:text-brand-600 transition-colors">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div id="historyList" class="divide-y divide-slate-100 max-h-[75vh] overflow-y-auto">
-          <p class="p-5 text-xs text-slate-400">Loading…</p>
-        </div>
-      </section>
-
-      <section class="bg-white border border-slate-200 rounded-2xl shadow-card overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Effectivated Repos</h2>
-          <button id="effectivatedRefreshBtn" title="Refresh"
-            class="text-slate-400 hover:text-brand-600 transition-colors">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
-            </svg>
-          </button>
-        </div>
-        <p class="px-5 pt-3 text-[11px] text-slate-400">Repos Ignite has actually pushed to. Enable a schedule to re-run checks against the default branch — failures notify the repo's CODEOWNERS contact, or file a GitHub issue if none is found.</p>
-        <div id="effectivatedList" class="divide-y divide-slate-100 max-h-[50vh] overflow-y-auto">
-          <p class="p-5 text-xs text-slate-400">Loading…</p>
-        </div>
-      </section>
-    </aside>
-    </div>
 
     <footer class="mt-12 text-center text-xs text-slate-400">
       Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>
@@ -372,25 +408,35 @@
        on disk). Not a real route — a full-viewport overlay over the app. -->
   <div id="studioView" class="hidden fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-3 sm:p-6">
     <div class="bg-slate-100 rounded-2xl shadow-2xl w-full h-full max-w-[1600px] flex flex-col overflow-hidden">
-      <div class="flex flex-wrap items-center gap-2 sm:gap-3 px-3 sm:px-5 py-3 bg-slate-900 text-white shrink-0 rounded-t-2xl">
-        <span class="text-sm font-semibold">🧪 Ignite Studio</span>
-        <span id="studioSubtitle" class="text-xs text-slate-400"></span>
-        <span class="hidden sm:block sm:flex-1"></span>
-        <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700">📦 Dependencies</button>
-        <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700">📄 SBOM</button>
-        <button id="studioLocBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-700">📊 LOC Metrics</button>
-        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700">🛡️ Posture</button>
-        <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-700">📜 Provenance</button>
-        <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700">Rescan ↻</button>
-        <button id="studioCodeqlBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700" title="Runs the real CodeQL CLI against the currently staged project — a database build, so this can take from several seconds to a couple of minutes. Progress streams into the Output panel below.">🔎 Run CodeQL</button>
-        <button id="studioCodeqlQueryBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700" title="Write and run your own .ql query against a database Run CodeQL already built. Results filter the file tree.">🧬 Custom Query</button>
-        <button id="studioCloseBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-600 hover:bg-slate-800">Close ✕</button>
+      <div class="flex flex-wrap items-center gap-x-1 gap-y-2 px-3 sm:px-5 py-2.5 bg-white text-slate-700 border-b border-slate-200 shrink-0 rounded-t-2xl">
+        <div class="flex items-center gap-2 pr-3 mr-2 border-r border-slate-200">
+          <span class="text-sm font-bold text-brand-700">Ignite Studio</span>
+          <span id="studioSubtitle" class="text-xs text-slate-400"></span>
+        </div>
+        <!-- View tabs: "Code" is the always-on file/editor pane; the rest
+             swap the same three-pane body for a read-only report view. -->
+        <span class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px">Code</span>
+        <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">Dependencies</button>
+        <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">SBOM</button>
+        <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">LOC Metrics</button>
+        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">Posture</button>
+        <span class="flex-1"></span>
+        <div class="flex items-center gap-1.5">
+          <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">📜 Provenance</button>
+          <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Rescan ↻</button>
+          <button id="studioCodeqlQueryBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Write and run your own .ql query against a database Run CodeQL already built. Results filter the file tree.">Custom Query</button>
+          <button id="studioCodeqlBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-sm" title="Runs the real CodeQL CLI against the currently staged project — a database build, so this can take from several seconds to a couple of minutes. Progress streams into the Output panel below.">🔎 Run CodeQL</button>
+          <button id="studioCloseBtn" type="button" title="Close" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
       </div>
       <p id="studioError" class="hidden text-xs text-rose-600 bg-rose-50 border-b border-rose-200 px-5 py-2"></p>
       <p id="studioHistoricalBanner" class="hidden text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-5 py-2">
         ⚠ Historical view — you're not seeing the full project. Staging files are wiped after every run, so only the
         code captured around each flagged finding is available here, not the whole file. Gaps between findings are
         marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
+        Dependencies, Rescan, Run CodeQL and Custom Query all need a live staged project, so they're hidden here too.
       </p>
       <div id="studioSummaryBar" class="hidden text-[11px] text-slate-600 bg-white border-b border-slate-100 px-5 py-2"></div>
       <!-- Below sm, the three panes stack vertically (each independently
@@ -401,7 +447,7 @@
         <!-- File tree -->
         <div class="w-full sm:w-64 shrink-0 max-h-48 sm:max-h-none border-b sm:border-b-0 sm:border-r border-slate-200 bg-white overflow-y-auto flex flex-col">
           <div class="sticky top-0 bg-white border-b border-slate-100">
-            <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Files</p>
+            <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Explorer</p>
             <input id="studioTreeFilter" type="text" placeholder="Filter files…" class="w-[calc(100%-1.5rem)] mx-3 my-2 text-[11px] px-2 py-1 rounded border border-slate-200" />
             <p class="px-3 pb-2 text-[10px] text-slate-400" title="Jump to the next file with an error / with an error-or-warning / back to where you jumped from">
               <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono">e</kbd> next error
@@ -413,6 +459,16 @@
         </div>
         <!-- Code pane -->
         <div class="flex-1 min-w-0 min-h-[50vh] sm:min-h-0 flex flex-col border-b sm:border-b-0 sm:border-r border-slate-200 bg-white">
+          <!-- Purely cosmetic "open file" tab chip, kept in sync with
+               studioFilePath by a MutationObserver (see wireStudioTabBar)
+               rather than touching every one of studioFilePath's many
+               .textContent = ... call sites individually. -->
+          <div id="studioTabBar" class="hidden items-center gap-0.5 px-2 pt-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
+            <span class="inline-flex items-center gap-2 text-xs font-semibold text-brand-700 bg-white border border-b-0 border-slate-200 border-t-2 border-t-brand-600 rounded-t-md px-3 py-1.5">
+              <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>
+              <span id="studioTabLabel"></span>
+            </span>
+          </div>
           <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
             <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate">Select a file from the tree ←</span>
             <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100">📦 View license compliance for this manifest</button>
@@ -425,7 +481,7 @@
         </div>
         <!-- Issue detail -->
         <div class="w-full sm:w-96 shrink-0 max-h-64 sm:max-h-none bg-white overflow-y-auto">
-          <p class="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest sticky top-0 bg-white border-b border-slate-100">Issue detail</p>
+          <p class="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest sticky top-0 bg-white border-b border-slate-100">Issue Details</p>
           <div id="studioIssuePanel" class="p-3 text-xs text-slate-500"></div>
         </div>
       </div>
@@ -436,13 +492,15 @@
            it. Hidden until the first run; stays mounted (not torn down)
            after that so its scrollback survives switching files. -->
       <div id="studioOutputPanel" class="hidden shrink-0 border-t border-slate-700 bg-slate-950 flex flex-col" style="height: 220px;">
-        <div class="flex items-center gap-2 px-3 py-1.5 border-b border-slate-800 shrink-0">
-          <span id="studioOutputStatus" class="w-2 h-2 rounded-full bg-slate-600 shrink-0"></span>
-          <span class="text-[11px] font-semibold text-slate-300 uppercase tracking-wide">Output</span>
-          <span id="studioOutputTaskLabel" class="text-[11px] text-slate-500 font-mono"></span>
+        <div class="flex items-center gap-4 px-3 pt-1.5 border-b border-slate-800 shrink-0">
+          <span class="flex items-center gap-1.5 text-[11px] font-bold text-white uppercase tracking-wide pb-1.5 border-b-2 border-brand-500">
+            <span id="studioOutputStatus" class="w-2 h-2 rounded-full bg-slate-600 shrink-0"></span>
+            Output
+          </span>
+          <span id="studioOutputTaskLabel" class="text-[11px] text-slate-500 font-mono pb-1.5"></span>
           <span class="flex-1"></span>
-          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200">Clear</button>
-          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200">Close ✕</button>
+          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5">Clear</button>
+          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5">Close ✕</button>
         </div>
         <pre id="studioOutputLog" class="flex-1 overflow-y-auto px-3 py-2 text-[11px] font-mono text-slate-300 leading-relaxed whitespace-pre-wrap"></pre>
       </div>
@@ -603,7 +661,7 @@
       const bar = $('authBar');
       if (authState.user) {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-3 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 border-b border-slate-100">
             <span class="text-xs text-slate-600">Signed in as <strong class="text-slate-800">${escapeHtml(authState.user.name || authState.user.email)}</strong></span>
             <button id="logoutBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign out</button>
             ${renderGithubConnectRow()}
@@ -619,7 +677,7 @@
 
       if (authState.mode === 'oidc') {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+          <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
             ${authTooltip('Not signed in — required to attribute guideline overrides.')}
             <a href="/api/auth/oidc/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with company IdP →</a>
           </div>`;
@@ -628,7 +686,7 @@
 
       if (authState.mode === 'github') {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+          <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
             ${authTooltip('Not signed in — required to attribute guideline overrides.')}
             <a href="/api/auth/github/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with GitHub →</a>
           </div>`;
@@ -636,8 +694,8 @@
       }
 
       bar.innerHTML = `
-        <div class="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-card">
-          <p class="text-[11px] text-slate-500 mb-2 text-center">Sign in to attribute guideline overrides in the audit log.</p>
+        <div class="pb-2 border-b border-slate-100">
+          <p class="text-[11px] text-slate-500 mb-2">Sign in to attribute guideline overrides in the audit log.</p>
           <div class="flex items-center gap-2">
             <input id="authEmail" type="email" placeholder="email" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
             <input id="authPassword" type="password" placeholder="password" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
@@ -695,11 +753,11 @@
     /* Rendering                                                     */
     /* ------------------------------------------------------------ */
     const STATE_META = {
-      pending: { label: 'Pending',  chip: 'bg-slate-100 text-slate-500 border-slate-200', ring: 'border-slate-300 text-slate-400 bg-white' },
-      running: { label: 'Running',  chip: 'bg-brand-50 text-brand-700 border-brand-200', ring: 'border-brand-600 text-brand-600 bg-white running-dot' },
-      success: { label: 'Success',  chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', ring: 'border-emerald-500 text-emerald-600 bg-white' },
-      failed:  { label: 'Failed',   chip: 'bg-rose-50 text-rose-700 border-rose-200', ring: 'border-rose-500 text-rose-600 bg-white' },
-      skipped: { label: 'Skipped',  chip: 'bg-amber-50 text-amber-700 border-amber-200', ring: 'border-amber-400 text-amber-500 bg-white' },
+      pending: { label: 'Pending',  text: 'text-slate-400', chip: 'bg-slate-100 text-slate-500 border-slate-200', ring: 'border-slate-200 text-slate-400 bg-slate-50' },
+      running: { label: 'Running',  text: 'text-brand-600 font-bold', chip: 'bg-brand-50 text-brand-700 border-brand-200', ring: 'border-brand-300 text-brand-600 bg-brand-50 running-dot' },
+      success: { label: 'Complete', text: 'text-emerald-600', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', ring: 'border-emerald-200 text-emerald-600 bg-emerald-50' },
+      failed:  { label: 'Failed',   text: 'text-rose-600', chip: 'bg-rose-50 text-rose-700 border-rose-200', ring: 'border-rose-200 text-rose-600 bg-rose-50' },
+      skipped: { label: 'Skipped',  text: 'text-amber-600', chip: 'bg-amber-50 text-amber-700 border-amber-200', ring: 'border-amber-200 text-amber-500 bg-amber-50' },
     };
 
     // Backend phase ids are fixed (1-6) and never renumbered — every event,
@@ -712,7 +770,19 @@
       return idx >= 0 ? idx + 1 : id;
     }
 
-    function iconFor(st, id) {
+    // Distinct per-phase glyphs for the 'pending' (not-yet-started) state —
+    // matching the mockup, where each stage keeps a semantic icon (shield
+    // for the security scan, policy badge for governance, server rack for
+    // provisioning…) instead of a bare step number.
+    const PHASE_PENDING_ICON = {
+      1: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>',
+      3: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 7.5h16.5M4.5 7.5v10.125c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V7.5M9 11.25h6M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5A1.125 1.125 0 0020.625 3.75H3.375A1.125 1.125 0 002.25 4.875v1.5c0 .621.504 1.125 1.125 1.125z"/></svg>',
+      4: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>',
+      5: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>',
+      6: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 17.25v-.228a4.5 4.5 0 00-.12-1.03l-2.268-9.64a3.375 3.375 0 00-3.285-2.602H7.923a3.375 3.375 0 00-3.285 2.602l-2.268 9.64a4.5 4.5 0 00-.12 1.03v.228m19.5 0a3 3 0 01-3 3H5.25a3 3 0 01-3-3m19.5 0a3 3 0 00-3-3H5.25a3 3 0 00-3 3m16.5 0h.008v.008h-.008v-.008zm-3 0h.008v.008h-.008v-.008z"/></svg>',
+    };
+
+    function iconFor(st, phaseId) {
       // 'flagged' isn't a real backend phase state — it's the client-side
       // "scan completed but carries findings deferred to the final review
       // gate" case (see hasFlaggedIssues in renderPipeline). It needs its
@@ -722,7 +792,7 @@
       if (st === 'success') return '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>';
       if (st === 'failed')  return '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
       if (st === 'running') return '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>';
-      return String(id);
+      return PHASE_PENDING_ICON[phaseId] || '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>';
     }
 
     function renderPipeline() {
@@ -740,8 +810,8 @@
         const meta = hasFlaggedIssues
           ? {
               label: ph.blockingCount > 0 ? `Flagged (${ph.blockingCount} blocking)` : `Flagged (${ph.issueCount})`,
-              chip: 'bg-amber-50 text-amber-700 border-amber-200',
-              ring: 'border-amber-500 text-amber-600 bg-white',
+              text: 'text-amber-600 font-bold',
+              ring: 'border-amber-200 text-amber-600 bg-amber-50',
             }
           : STATE_META[ph.state];
         const hasLogs = ph.logs.length > 0;
@@ -756,24 +826,48 @@
         const durationHtml = durationMs != null
           ? `<span class="text-[11px] font-mono text-slate-400 shrink-0">${formatDuration(durationMs)}</span>`
           : '';
+        // Purely cosmetic progress readout matching the mockup's per-phase
+        // bar — the backend has no fractional progress, so pending/running/
+        // done map to 0% / an indeterminate pulsing bar / 100%.
+        const progressPct = ph.state === 'pending' ? 0 : (ph.state === 'running' ? 65 : 100);
+        // A short always-visible log preview for the active phase (mirrors
+        // the mockup's embedded snippet); the full scrollback stays behind
+        // the existing <details> toggle / maximize button.
+        const previewHtml = ph.state === 'running' && hasLogs ? `
+              <div class="bg-slate-900 rounded p-2.5 mt-2.5 font-mono text-[11px] leading-relaxed overflow-hidden">
+                ${ph.logs.slice(-3).map(formatLogLine).join('')}
+              </div>` : '';
+        // Mirrors the mockup's de-emphasis of stages that aren't the current
+        // focus: done/pending steps sit at reduced opacity while the
+        // running (or failed, which needs attention) card stays sharp.
+        const cardOpacity = (ph.state === 'pending') ? 'opacity-60' : (ph.state === 'success' || ph.state === 'skipped') ? 'opacity-80' : '';
         return `
         <div class="relative">
-          ${!isLast ? '<div class="absolute left-[27px] top-[54px] bottom-[-12px] w-px bg-slate-200"></div>' : ''}
-          <details class="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-card transition-shadow hover:shadow-cardHover" ${ph.state === 'running' || ph.state === 'failed' ? 'open' : ''}>
-            <summary class="flex items-center gap-4 p-4 ${hasLogs ? 'cursor-pointer hover:bg-slate-50' : 'cursor-default'} select-none transition-colors">
-              <div class="w-7 h-7 shrink-0 rounded-full border-2 ${meta.ring} flex items-center justify-center text-xs font-bold z-10">
-                ${iconFor(iconState, idx + 1)}
+          ${!isLast ? '<div class="absolute left-[19px] top-[52px] bottom-[-12px] w-px bg-slate-200"></div>' : ''}
+          <details class="bg-white border ${ph.state === 'running' ? 'border-2 border-brand-400' : 'border-slate-200'} rounded-lg overflow-hidden shadow-sm transition-all hover:shadow-card ${cardOpacity}" ${ph.state === 'failed' ? 'open' : ''}>
+            <summary class="flex items-start gap-3 p-4 ${hasLogs ? 'cursor-pointer hover:bg-slate-50/60' : 'cursor-default'} select-none transition-colors">
+              <div class="w-8 h-8 shrink-0 rounded-full border ${meta.ring} flex items-center justify-center text-xs font-bold z-10">
+                ${iconFor(iconState, p.id)}
               </div>
               <div class="flex-1 min-w-0">
-                <p class="text-sm font-semibold text-slate-800"><span class="text-brand-600 font-bold">Phase ${idx + 1}</span> <span class="text-slate-300 mx-1">·</span> ${p.title}</p>
-                <p class="text-xs text-slate-500 truncate">${p.desc}</p>
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-sm font-bold text-slate-800 truncate">${idx + 1}. ${p.title}</p>
+                  <div class="flex items-center gap-2 shrink-0">
+                    ${durationHtml}
+                    <span class="text-xs font-mono ${meta.text}">${iconState === 'running' ? progressPct + '%' : meta.label}</span>
+                    ${canMaximize ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
+                    </button>` : ''}
+                    ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : ''}
+                  </div>
+                </div>
+                <p class="text-xs text-slate-500 mt-0.5">${p.desc}</p>
+                ${ph.state === 'running' ? `
+                <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2.5">
+                  <div class="h-full bg-brand-600 rounded-full transition-all duration-700" style="width:${progressPct}%"></div>
+                </div>` : ''}
+                ${previewHtml}
               </div>
-              ${durationHtml}
-              <span class="text-[11px] font-semibold px-2.5 py-1 rounded-full border ${meta.chip}">${meta.label}</span>
-              ${canMaximize ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
-              </button>` : ''}
-              ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : '<span class="w-4"></span>'}
             </summary>
             ${hasLogs ? `
             <div class="border-t border-slate-100 p-3 bg-slate-50/60">
@@ -794,6 +888,30 @@
           openPhaseMaximized(Number(btn.dataset.phaseId));
         });
       });
+
+      renderPipelineStatusBadge();
+    }
+
+    // The small pill next to the "Pipeline Status" heading — mirrors the
+    // mockup's top-right "RUNNING" indicator, extended with FAILED/COMPLETE
+    // so it stays meaningful once a run finishes instead of just vanishing.
+    function renderPipelineStatusBadge() {
+      const badge = $('pipelineStatusBadge');
+      const phases = PHASES.map((p) => state.phases[p.id] || { state: 'pending' });
+      const started = phases.some((ph) => ph.state !== 'pending');
+      if (!started) { badge.classList.add('hidden'); return; }
+      let variant;
+      if (phases.some((ph) => ph.state === 'running')) {
+        variant = { label: 'Running', cls: 'border-brand-200 text-brand-700 bg-brand-50', spin: true };
+      } else if (phases.some((ph) => ph.state === 'failed')) {
+        variant = { label: 'Failed', cls: 'border-rose-200 text-rose-700 bg-rose-50', spin: false };
+      } else if (phases.every((ph) => ph.state === 'success' || ph.state === 'skipped')) {
+        variant = { label: 'Complete', cls: 'border-emerald-200 text-emerald-700 bg-emerald-50', spin: false };
+      } else {
+        variant = { label: 'Running', cls: 'border-brand-200 text-brand-700 bg-brand-50', spin: true };
+      }
+      badge.className = `inline-flex text-[11px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-md border items-center gap-1.5 ${variant.cls}`;
+      badge.innerHTML = `${variant.spin ? '<svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>' : ''}${variant.label}`;
     }
 
     function openPhaseMaximized(phaseId) {
@@ -934,6 +1052,7 @@
       PHASES.forEach((p) => { state.phases[p.id] = { state: 'pending', logs: [], startedAt: null, endedAt: null }; });
       state.jobId = null;
       state.historyView = null;
+      state.lastReviewIssues = [];
       $('historyViewBanner').classList.add('hidden');
       updateViewIssuesButton();
       resultBanner.classList.add('hidden');
@@ -1548,6 +1667,10 @@
     function handleReviewRequired(ev) {
       const issues = ev.issues || [];
       state.reviewJobId = ev.jobId;
+      // Cached so the post-run result dashboard (showResult /
+      // renderCriticalFindings) can show top findings without a second
+      // fetch — this is the same issue list the review modal just rendered.
+      state.lastReviewIssues = issues;
       const modal = $('reviewModal');
       const list = $('reviewIssueList');
       const actorRow = $('reviewActorRow');
@@ -1773,19 +1896,15 @@
         </div>`;
       }).join('');
       const total = Object.keys(TOOLS_META).length;
-      // Below sm, the full 14-row list is collapsed behind a tap-to-expand
-      // summary instead of always rendered - on the fixed corner cluster's
-      // desktop layout there's room to just show everything, but stacked
-      // into normal mobile document flow it'd push the upload form far
-      // down the page. `hidden sm:flex` means the row list is closed by
-      // default on mobile and always visible at sm+ regardless of that
-      // state (the toggle below only ever matters below sm).
-      bar.innerHTML = `<div class="bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-card">
-        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2 sm:pointer-events-none">
+      // The account-menu popover is a fixed, narrow width regardless of
+      // viewport, so the full tool list is always collapsed behind a
+      // tap-to-expand summary rather than shown inline.
+      bar.innerHTML = `<div class="px-0 py-2">
+        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2">
           <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">External tools</span>
-          <span class="text-[10px] font-semibold text-slate-500 sm:hidden">${connectedCount}/${total} connected <span id="toolsBarChevron">▾</span></span>
+          <span class="text-[10px] font-semibold text-slate-500">${connectedCount}/${total} connected <span id="toolsBarChevron">▾</span></span>
         </button>
-        <div id="toolsBarList" class="hidden sm:flex flex-col gap-1.5 mt-1.5">
+        <div id="toolsBarList" class="hidden flex-col gap-1.5 mt-1.5">
           ${rows}
         </div>
       </div>`;
@@ -2037,6 +2156,17 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !$('studioView').classList.contains('hidden')) closeStudio();
     });
+
+    // Keeps the cosmetic "open file" tab chip (studioTabBar) in sync with
+    // studioFilePath's text without touching that element's many existing
+    // .textContent = ... call sites individually.
+    new MutationObserver(() => {
+      const text = $('studioFilePath').textContent || '';
+      const isPlaceholder = text.startsWith('Select a file');
+      $('studioTabBar').classList.toggle('hidden', isPlaceholder);
+      $('studioTabBar').classList.toggle('flex', !isPlaceholder);
+      if (!isPlaceholder) $('studioTabLabel').textContent = text.split(/[\s/]/).filter(Boolean).pop() || text;
+    }).observe($('studioFilePath'), { childList: true, characterData: true, subtree: true });
 
     // The seven external tools that supplement/replace trivy don't each get
     // their own top-bar button the way SBOM/LOC/Posture do (their findings
@@ -3214,6 +3344,23 @@
     // selectStudioIssue's own file-open/scroll-to-issue.line logic (which
     // would always snap back to the sink instead of staying on the step
     // just navigated to).
+    // "sql-injection" -> "Sql Injection" — good enough to head the
+    // description card without a hand-maintained per-category title map.
+    function studioHumanizeCategory(category) {
+      return String(category || 'Finding').split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
+
+    // Dark unified-diff box (red strikethrough removed lines, green added
+    // lines) for the AI-suggested-fix card — matches the mockup's diff
+    // presentation instead of only showing the replacement in isolation.
+    function studioDiffBoxHtml(oldText, newText) {
+      const oldLines = String(oldText || '').split('\n');
+      const newLines = String(newText || '').split('\n');
+      const removed = oldLines.map((l) => `<div class="text-rose-400 line-through decoration-rose-500/60">- ${escapeHtml(l)}</div>`).join('');
+      const added = newLines.map((l) => `<div class="text-emerald-400">+ ${escapeHtml(l)}</div>`).join('');
+      return `<pre class="bg-slate-900 rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed mb-2">${removed}${added}</pre>`;
+    }
+
     function studioRenderIssuePanel(issue) {
       const explainId = `studio-explain-${issue.id}`;
       const fixId = `studio-fix-${issue.id}`;
@@ -3222,19 +3369,30 @@
       const dupRefLabel = issue.duplicateRef
         ? `${issue.duplicateRef.file}:${issue.duplicateRef.endLine > issue.duplicateRef.line ? `${issue.duplicateRef.line}-${issue.duplicateRef.endLine}` : issue.duplicateRef.line}`
         : '';
+      const isHigh = issue.severity === 'error';
+      const cweNum = issue.cwe ? String(issue.cwe).match(/\d+/)?.[0] : null;
       $('studioIssuePanel').innerHTML = `
-        <div class="border border-slate-200 rounded-lg p-2 mb-3">
-          <div class="flex items-center justify-between mb-1">
-            <span class="text-[10px] font-semibold text-slate-400">${idx + 1} of ${list.length}</span>
-            <div class="flex items-center gap-1">
-              <button type="button" id="studio-issue-prev" title="Previous issue (↑)" aria-label="Previous issue" ${idx <= 0 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▲</button>
-              <button type="button" id="studio-issue-next" title="Next issue (↓)" aria-label="Next issue" ${idx === -1 || idx >= list.length - 1 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▼</button>
-            </div>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <div class="border border-slate-200 rounded-lg p-2.5">
+            <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Severity</p>
+            <span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded ${isHigh ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}">⚠ ${isHigh ? 'High' : 'Medium'}</span>
           </div>
-          <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${issue.severity === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'}">${issue.severity.toUpperCase()}</span>
-          <span class="text-[10px] font-semibold text-slate-400 uppercase ml-1">${escapeHtml(issue.category)}</span>
-          <span class="text-[10px] font-mono text-slate-400 ml-1">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</span>
-          <p class="text-xs text-slate-700 mt-1.5">${escapeHtml(issue.summary)}</p>
+          <div class="border border-slate-200 rounded-lg p-2.5">
+            <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Status</p>
+            <span class="text-xs font-semibold text-slate-600">Open</span>
+          </div>
+        </div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-[10px] font-semibold text-slate-400">${idx + 1} of ${list.length}</span>
+          <div class="flex items-center gap-1">
+            <button type="button" id="studio-issue-prev" title="Previous issue (↑)" aria-label="Previous issue" ${idx <= 0 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▲</button>
+            <button type="button" id="studio-issue-next" title="Next issue (↓)" aria-label="Next issue" ${idx === -1 || idx >= list.length - 1 ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent">▼</button>
+          </div>
+        </div>
+        <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-3">
+          <p class="text-sm font-bold text-slate-800 mb-1">${escapeHtml(studioHumanizeCategory(issue.category))}</p>
+          <p class="text-xs text-slate-600 leading-relaxed">${escapeHtml(issue.summary)}</p>
+          <p class="text-[10px] font-mono text-slate-400 mt-2">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</p>
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
         ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
@@ -3257,9 +3415,23 @@
         </div>` : ''}
         <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2">Explain this issue</button>
         <div id="${explainId}-body" class="text-[11px] text-slate-600 mb-3"></div>
-        <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 mb-2">Suggest AI fix</button>
-        <div id="${fixId}-body" class="text-[11px] text-slate-600"></div>
-        <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-3">← Back to file's issues</button>`;
+        <div class="border border-slate-200 rounded-lg p-3 mb-3">
+          <p class="text-xs font-bold text-slate-800 flex items-center gap-1.5 mb-2">
+            <svg class="w-3.5 h-3.5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>
+            AI Suggested Fix
+          </p>
+          <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100">Generate suggested fix</button>
+          <div id="${fixId}-body" class="text-[11px] text-slate-600 mt-2"></div>
+        </div>
+        ${issue.cwe ? `
+        <div class="mb-3">
+          <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">References</p>
+          <a href="${cweNum ? `https://cwe.mitre.org/data/definitions/${cweNum}.html` : '#'}" target="_blank" rel="noopener" class="text-[11px] font-semibold text-brand-600 hover:underline flex items-start gap-1">
+            <svg class="w-3 h-3 mt-0.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
+            <span>${escapeHtml(issue.cwe)}${issue.owasp ? ` — ${escapeHtml(issue.owasp)}` : ''}</span>
+          </a>
+        </div>` : ''}
+        <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-1">← Back to file's issues</button>`;
       if (issue.duplicateRef) {
         document.getElementById('studio-jump-duplicate')?.addEventListener('click', () => studioNavigateToDuplicateRef(issue.duplicateRef));
       }
@@ -3325,9 +3497,12 @@
           studioState.suggestion = data.suggestion;
           $(`${fixId}-body`).innerHTML = `
             <p class="mb-2">${escapeHtml(data.suggestion.explanation)}</p>
-            <p class="text-[10px] font-semibold text-slate-400 uppercase mb-1">Suggested replacement (lines ${data.suggestion.startLine}-${data.suggestion.endLine})</p>
-            <pre class="bg-emerald-50 border border-emerald-200 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap mb-2">${escapeHtml(data.suggestion.replacement)}</pre>
-            <button type="button" id="studio-apply-fix" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">Apply into editor</button>`;
+            <p class="text-[10px] font-semibold text-slate-400 uppercase mb-1">Lines ${data.suggestion.startLine}-${data.suggestion.endLine}</p>
+            ${studioDiffBoxHtml(issue.snippet, data.suggestion.replacement)}
+            <button type="button" id="studio-apply-fix" class="w-full flex items-center justify-center gap-1.5 text-[11px] font-bold px-2.5 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 shadow-sm">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
+              Apply Fix
+            </button>`;
           $('studio-apply-fix').addEventListener('click', studioApplySuggestion);
         } catch {
           $(`${fixId}-body`).innerHTML = '<p class="text-rose-500">Could not fetch a fix suggestion.</p>';
@@ -3398,16 +3573,101 @@
       $('studioDirtyBadge').classList.toggle('hidden', !studioState.dirty);
     }
 
+    // Clickable top-N critical-findings rows for the result dashboard —
+    // opens Studio at that exact finding when a live staged project is
+    // still around to browse (state.reviewJobId), else falls back to the
+    // read-only issues modal.
+    function criticalFindingsHtml(issues) {
+      const errors = issues.filter((i) => i.severity === 'error');
+      const list = (errors.length ? errors : issues).slice(0, 3);
+      if (list.length === 0) return '';
+      return `
+        <div class="mt-5">
+          <p class="text-sm font-bold text-slate-900 mb-3">Critical Findings</p>
+          <div class="space-y-2">
+            ${list.map((issue) => {
+              const loc = `${escapeHtml(issue.file || 'unknown')}${issue.line ? ':' + issue.line : ''}`;
+              const isError = issue.severity === 'error';
+              return `
+              <button type="button" class="result-finding-row w-full flex items-center gap-3 text-left bg-white border border-slate-200 rounded-xl p-3 hover:border-brand-300 hover:shadow-card transition-all" data-issue="${escapeAttr(JSON.stringify({ id: issue.id, category: issue.category, severity: issue.severity, file: issue.file, line: issue.line, summary: issue.summary, snippet: issue.snippet }))}">
+                <span class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center ${isError ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">${isError ? '<path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>' : '<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 4.626c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>'}</svg>
+                </span>
+                <span class="flex-1 min-w-0">
+                  <span class="block text-sm font-bold text-slate-800 truncate">${escapeHtml(studioHumanizeCategory(issue.category))}</span>
+                  <span class="block text-xs font-mono text-slate-400 truncate">${loc}</span>
+                </span>
+                <svg class="w-4 h-4 text-slate-300 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>
+              </button>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }
+
+    function wireCriticalFindingsRows() {
+      resultBanner.querySelectorAll('.result-finding-row').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const issue = JSON.parse(btn.dataset.issue);
+          if (state.reviewJobId) openStudio(state.reviewJobId, issue, { fromReview: true });
+          else $('viewIssuesBtn').click();
+        });
+      });
+    }
+
+    // The stat header row (errors/warnings mini-cards with a proportion
+    // bar) shared by the dry-run-pass-with-warnings and halted branches —
+    // mirrors a "scan summary dashboard" reference the team liked, built
+    // from state.lastReviewIssues (the same list the review modal shows).
+    function scanStatHeaderHtml(issues) {
+      if (issues.length === 0) return '';
+      const errorCount = issues.filter((i) => i.severity === 'error').length;
+      const warningCount = issues.length - errorCount;
+      const pct = (n) => Math.max(4, Math.round((n / issues.length) * 100));
+      return `
+        <div class="grid grid-cols-2 gap-3 mt-5">
+          <div class="bg-white border border-slate-200 rounded-xl p-3.5">
+            <p class="flex items-center gap-1.5 text-xs font-semibold text-rose-600 mb-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 8v4m0 4h.01"/></svg>
+              Errors
+            </p>
+            <p class="text-2xl font-black text-slate-900">${errorCount}</p>
+            <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2"><div class="h-full bg-rose-500 rounded-full" style="width:${pct(errorCount)}%"></div></div>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-xl p-3.5">
+            <p class="flex items-center gap-1.5 text-xs font-semibold text-amber-600 mb-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 4.626c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+              Warnings
+            </p>
+            <p class="text-2xl font-black text-slate-900">${warningCount}</p>
+            <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2"><div class="h-full bg-amber-500 rounded-full" style="width:${pct(warningCount)}%"></div></div>
+          </div>
+        </div>
+        ${criticalFindingsHtml(issues)}`;
+    }
+
     function showResult(ok, { repoUrl, prUrl, error, phase, dryRun, effectivatable, projectId } = {}) {
       resultBanner.classList.remove('hidden');
+      const issues = state.lastReviewIssues || [];
       if (ok && dryRun) {
         const canEffectivate = !!effectivatable && projectId != null;
+        const hasIssues = issues.length > 0;
         resultBanner.innerHTML = `
-          <div class="bg-brand-50 border border-brand-200 rounded-2xl p-6 text-center shadow-card">
-            <p class="text-brand-800 font-semibold mb-1">Simulation complete — all checks passed</p>
-            <p class="text-sm text-brand-700">Dry run only: no repository was created and nothing was pushed to GitHub.</p>
+          <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-card">
+            <div class="flex items-start gap-4">
+              <div class="w-12 h-12 shrink-0 rounded-full bg-emerald-50 flex items-center justify-center">
+                <svg class="w-6 h-6 text-emerald-600" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <p class="text-lg font-bold text-slate-900">Scan Passed</p>
+                  <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">Simulation complete</span>
+                </div>
+                <p class="text-sm text-slate-500 mt-0.5">Every check ran clean${hasIssues ? `, though ${issues.length} non-blocking finding${issues.length === 1 ? '' : 's'} were flagged below` : ''}. Dry run only — no repository was created and nothing was pushed to GitHub.</p>
+              </div>
+            </div>
+            ${scanStatHeaderHtml(issues)}
             ${canEffectivate ? `
-            <div class="mt-4 flex items-center justify-center gap-2">
+            <div class="mt-6 pt-5 border-t border-slate-100 flex items-center justify-center gap-2">
               <button type="button" id="effectivateBtn" data-project-id="${projectId}"
                       class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25">
                 Effectivate — provision &amp; push for real
@@ -3417,9 +3677,10 @@
                 Open in Ignite Studio ⧉
               </button>
             </div>
-            <p class="text-[11px] text-slate-400 mt-2">This snapshot's source stays browsable in Studio until you start a new run, the server restarts, or it expires (24h) — same lifetime as Effectivate.</p>
-            <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden"></p>` : ''}
+            <p class="text-[11px] text-slate-400 mt-2 text-center">This snapshot's source stays browsable in Studio until you start a new run, the server restarts, or it expires (24h) — same lifetime as Effectivate.</p>
+            <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden text-center"></p>` : ''}
           </div>`;
+        wireCriticalFindingsRows();
         if (canEffectivate) {
           $('effectivateBtn').addEventListener('click', () => attemptEffectivate(projectId, []));
           $('resultStudioBtn').addEventListener('click', () => openStudio(state.jobId, null));
@@ -3438,13 +3699,25 @@
       } else {
         const canEffectivate = !!effectivatable && projectId != null;
         resultBanner.innerHTML = `
-          <div class="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center shadow-card">
-            <p class="text-rose-800 font-semibold mb-1">Pipeline halted${phase ? ` at Phase ${displayPhaseNumber(phase)}` : ''}</p>
-            <p class="text-sm text-rose-600">${escapeHtml(error || 'Unknown error')}</p>
-            <p class="text-xs text-slate-500 mt-3">Fix the violations above, re-zip, and try again. Staging files were cleaned up.</p>
+          <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-card">
+            <div class="flex items-start gap-4">
+              <div class="w-12 h-12 shrink-0 rounded-full bg-rose-50 flex items-center justify-center">
+                <svg class="w-6 h-6 text-rose-600" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <p class="text-lg font-bold text-slate-900">Scan Failed</p>
+                  <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border bg-rose-50 text-rose-700 border-rose-200">Pipeline Halted${phase ? ` — Phase ${displayPhaseNumber(phase)}` : ''}</span>
+                </div>
+                <p class="text-sm text-slate-500 mt-0.5">${escapeHtml(error || 'Unknown error')}</p>
+              </div>
+              ${issues.length > 0 ? `<div class="text-right shrink-0"><p class="text-3xl font-black text-slate-900">${issues.length}</p><p class="text-[11px] text-slate-400">Total Issues Found</p></div>` : ''}
+            </div>
+            ${scanStatHeaderHtml(issues)}
+            <p class="text-xs text-slate-500 mt-5 pt-5 border-t border-slate-100">Fix the violations above, re-zip, and try again. Staging files were cleaned up.</p>
             ${canEffectivate ? `
             <p class="text-xs text-slate-500 mt-3">Every flagged finding was already scanned and validated — if all blocking findings are acknowledged/justified, you can still ship this exact snapshot without re-uploading:</p>
-            <div class="mt-2 flex items-center justify-center gap-2">
+            <div class="mt-2 flex items-center gap-2">
               <button type="button" id="effectivateBtn" data-project-id="${projectId}"
                       class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md">
                 Effectivate — provision &amp; push for real
@@ -3456,6 +3729,7 @@
             </div>
             <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden"></p>` : ''}
           </div>`;
+        wireCriticalFindingsRows();
         if (canEffectivate) {
           $('effectivateBtn').addEventListener('click', () => attemptEffectivate(projectId, []));
           $('resultStudioBtn').addEventListener('click', () => openStudio(state.jobId, null));
@@ -4371,6 +4645,38 @@
       syncThemeIcon();
     });
     syncThemeIcon();
+
+    // Account menu — collapses the sign-in bar + connected-tools status
+    // (both rendered elsewhere via renderAuthBar()/loadToolsStatus()) into
+    // a single popover off the header, matching the mockup's compact
+    // account icon instead of a permanently-visible floating panel.
+    $('accountMenuBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      $('accountMenu').classList.toggle('hidden');
+    });
+    document.addEventListener('click', (e) => {
+      const menu = $('accountMenu');
+      if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== $('accountMenuBtn')) {
+        menu.classList.add('hidden');
+      }
+    });
+
+    // History drawer — Recent Checks + Effectivated Repos, opened from the
+    // lateral rail instead of sitting permanently inline on the page.
+    function openHistoryDrawer() {
+      $('historyDrawerBackdrop').classList.remove('hidden');
+      $('historyDrawer').classList.remove('hidden');
+    }
+    function closeHistoryDrawer() {
+      $('historyDrawerBackdrop').classList.add('hidden');
+      $('historyDrawer').classList.add('hidden');
+    }
+    $('historyDrawerBtn').addEventListener('click', openHistoryDrawer);
+    $('historyDrawerCloseBtn').addEventListener('click', closeHistoryDrawer);
+    $('historyDrawerBackdrop').addEventListener('click', closeHistoryDrawer);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('historyDrawer').classList.contains('hidden')) closeHistoryDrawer();
+    });
 
     /* Initial render */
     resetPhases();
