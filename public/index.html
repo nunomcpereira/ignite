@@ -84,52 +84,57 @@
     })();
   </script>
 </head>
-<body class="bg-gradient-to-b from-brand-50 via-white to-white text-slate-700 min-h-screen antialiased font-sans">
-  <div class="max-w-7xl mx-auto px-6 py-12">
+<body class="bg-slate-50 text-slate-700 min-h-screen antialiased font-sans">
 
-    <!-- Header -->
-    <header class="mb-10 text-center">
-      <div class="inline-flex items-center gap-3 mb-3">
-        <div class="w-11 h-11 rounded-2xl bg-brand-600 shadow-lg shadow-brand-600/25 flex items-center justify-center">
-          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
-          </svg>
-        </div>
-        <h1 class="text-lg font-bold tracking-tight text-brand-700">Ignite Studio</h1>
-        <span id="appVersion" class="text-[11px] font-mono font-semibold text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 self-start mt-1"></span>
+  <!-- Top nav bar -->
+  <header class="sticky top-0 z-40 bg-white border-b border-slate-200 h-14 flex items-center justify-between px-4 sm:px-6">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center shrink-0">
+        <svg class="w-4.5 h-4.5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
+        </svg>
       </div>
-      <h2 class="text-2xl font-bold tracking-tight text-slate-900 mt-6">Initialize Project Pipeline</h2>
+      <h1 class="text-base font-bold tracking-tight text-brand-700">Ignite Studio</h1>
+      <span id="appVersion" class="text-[10px] font-mono font-semibold text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 hidden sm:inline-block"></span>
+    </div>
+    <div class="flex items-center gap-1 relative">
+      <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" title="Help &amp; documentation"
+         class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 17.25h.007v.008H12v-.008z"/>
+        </svg>
+      </a>
+      <button id="themeToggleBtn" type="button" title="Toggle dark mode"
+              class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg id="themeToggleIconSun" class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
+        </svg>
+        <svg id="themeToggleIconMoon" class="hidden w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
+        </svg>
+      </button>
+      <button id="accountMenuBtn" type="button" title="Account &amp; connected tools"
+              class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg class="w-[20px] h-[20px]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+      </button>
+      <div id="accountMenu" class="hidden absolute right-0 top-11 w-80 max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-cardHover p-3 space-y-2 z-50 max-h-[80vh] overflow-y-auto">
+        <div id="authBar" class="text-sm"></div>
+        <div id="toolsBar" class="text-sm"></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-4xl mx-auto px-6 py-12">
+
+    <!-- Page header -->
+    <div class="text-center mb-10">
+      <h2 class="text-2xl font-bold tracking-tight text-slate-900">Initialize Project Pipeline</h2>
       <p class="text-base text-slate-500 mt-1">Upload your project payload to begin automated analysis and provisioning.</p>
-    </header>
-
-    <!-- Auth bar + external tools status: fixed top-right on wider screens;
-         below sm it drops into normal document flow instead of floating
-         over the header/card content, since a viewport that narrow has no
-         room to spare for an overlay. -->
-    <div class="static sm:fixed sm:top-4 sm:right-4 z-40 flex flex-col items-stretch sm:items-end gap-2 mb-6 sm:mb-0">
-      <div class="flex items-center gap-2">
-        <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" title="Help &amp; documentation"
-           class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 17.25h.007v.008H12v-.008z"/>
-          </svg>
-        </a>
-        <button id="themeToggleBtn" type="button" title="Toggle dark mode"
-                class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:bg-slate-50 shadow-card">
-          <svg id="themeToggleIconSun" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
-          </svg>
-          <svg id="themeToggleIconMoon" class="hidden w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
-          </svg>
-        </button>
-      </div>
-      <div id="authBar" class="text-sm"></div>
-      <div id="toolsBar" class="text-sm"></div>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-8 items-start">
     <main class="min-w-0">
 
     <!-- Phase 1: Input card -->
@@ -264,7 +269,7 @@
     </main>
 
     <!-- Recent checks history panel -->
-    <aside class="lg:sticky lg:top-6 space-y-6">
+    <div class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-6 items-start">
       <section class="bg-white border border-slate-200 rounded-2xl shadow-card overflow-hidden">
         <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
@@ -303,7 +308,6 @@
           <p class="p-5 text-xs text-slate-400">Loading…</p>
         </div>
       </section>
-    </aside>
     </div>
 
     <footer class="mt-12 text-center text-xs text-slate-400">
@@ -608,7 +612,7 @@
       const bar = $('authBar');
       if (authState.user) {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-3 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 border-b border-slate-100">
             <span class="text-xs text-slate-600">Signed in as <strong class="text-slate-800">${escapeHtml(authState.user.name || authState.user.email)}</strong></span>
             <button id="logoutBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign out</button>
             ${renderGithubConnectRow()}
@@ -624,7 +628,7 @@
 
       if (authState.mode === 'oidc') {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+          <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
             ${authTooltip('Not signed in — required to attribute guideline overrides.')}
             <a href="/api/auth/oidc/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with company IdP →</a>
           </div>`;
@@ -633,7 +637,7 @@
 
       if (authState.mode === 'github') {
         bar.innerHTML = `
-          <div class="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shadow-card">
+          <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
             ${authTooltip('Not signed in — required to attribute guideline overrides.')}
             <a href="/api/auth/github/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with GitHub →</a>
           </div>`;
@@ -641,8 +645,8 @@
       }
 
       bar.innerHTML = `
-        <div class="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-card">
-          <p class="text-[11px] text-slate-500 mb-2 text-center">Sign in to attribute guideline overrides in the audit log.</p>
+        <div class="pb-2 border-b border-slate-100">
+          <p class="text-[11px] text-slate-500 mb-2">Sign in to attribute guideline overrides in the audit log.</p>
           <div class="flex items-center gap-2">
             <input id="authEmail" type="email" placeholder="email" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
             <input id="authPassword" type="password" placeholder="password" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
@@ -1798,19 +1802,15 @@
         </div>`;
       }).join('');
       const total = Object.keys(TOOLS_META).length;
-      // Below sm, the full 14-row list is collapsed behind a tap-to-expand
-      // summary instead of always rendered - on the fixed corner cluster's
-      // desktop layout there's room to just show everything, but stacked
-      // into normal mobile document flow it'd push the upload form far
-      // down the page. `hidden sm:flex` means the row list is closed by
-      // default on mobile and always visible at sm+ regardless of that
-      // state (the toggle below only ever matters below sm).
-      bar.innerHTML = `<div class="bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-card">
-        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2 sm:pointer-events-none">
+      // The account-menu popover is a fixed, narrow width regardless of
+      // viewport, so the full tool list is always collapsed behind a
+      // tap-to-expand summary rather than shown inline.
+      bar.innerHTML = `<div class="px-0 py-2">
+        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2">
           <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">External tools</span>
-          <span class="text-[10px] font-semibold text-slate-500 sm:hidden">${connectedCount}/${total} connected <span id="toolsBarChevron">▾</span></span>
+          <span class="text-[10px] font-semibold text-slate-500">${connectedCount}/${total} connected <span id="toolsBarChevron">▾</span></span>
         </button>
-        <div id="toolsBarList" class="hidden sm:flex flex-col gap-1.5 mt-1.5">
+        <div id="toolsBarList" class="hidden flex-col gap-1.5 mt-1.5">
           ${rows}
         </div>
       </div>`;
@@ -4396,6 +4396,21 @@
       syncThemeIcon();
     });
     syncThemeIcon();
+
+    // Account menu — collapses the sign-in bar + connected-tools status
+    // (both rendered elsewhere via renderAuthBar()/loadToolsStatus()) into
+    // a single popover off the header, matching the mockup's compact
+    // account icon instead of a permanently-visible floating panel.
+    $('accountMenuBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      $('accountMenu').classList.toggle('hidden');
+    });
+    document.addEventListener('click', (e) => {
+      const menu = $('accountMenu');
+      if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== $('accountMenuBtn')) {
+        menu.classList.add('hidden');
+      }
+    });
 
     /* Initial render */
     resetPhases();
