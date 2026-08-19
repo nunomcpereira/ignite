@@ -127,7 +127,72 @@
     </div>
   </header>
 
-  <div class="max-w-4xl mx-auto px-6 py-12">
+  <!-- Lateral icon rail — Dashboard is this single-page app's only "screen"
+       (so it's shown active/non-interactive); History opens a slide-over
+       drawer with Recent Checks + Effectivated Repos, which used to sit
+       permanently inline below the pipeline and crowded the page. -->
+  <nav class="hidden sm:flex flex-col items-center gap-1 w-14 shrink-0 fixed left-0 top-14 bottom-0 bg-white border-r border-slate-200 py-4 z-30">
+    <button type="button" title="Dashboard" class="w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
+    </button>
+    <button id="historyDrawerBtn" type="button" title="Recent checks &amp; effectivated repos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    </button>
+  </nav>
+
+  <!-- History drawer: slide-over panel (not an inline section) holding
+       Recent Checks + Effectivated Repos, opened from the lateral rail. -->
+  <div id="historyDrawerBackdrop" class="hidden fixed inset-0 bg-slate-900/40 z-40"></div>
+  <div id="historyDrawer" class="hidden fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-50 border-l border-slate-200 shadow-2xl z-50 flex flex-col transition-transform">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-white shrink-0">
+      <h2 class="text-sm font-bold text-slate-900">Recent Checks &amp; Effectivated Repos</h2>
+      <button id="historyDrawerCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-6">
+      <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
+          <div class="flex items-center gap-3">
+            <button id="historyClearBtn" title="Clear all"
+              class="text-slate-400 hover:text-red-600 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
+              </svg>
+            </button>
+            <button id="historyRefreshBtn" title="Refresh"
+              class="text-slate-400 hover:text-brand-600 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div id="historyList" class="divide-y divide-slate-100 max-h-[45vh] overflow-y-auto">
+          <p class="p-5 text-xs text-slate-400">Loading…</p>
+        </div>
+      </section>
+
+      <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Effectivated Repos</h2>
+          <button id="effectivatedRefreshBtn" title="Refresh"
+            class="text-slate-400 hover:text-brand-600 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+            </svg>
+          </button>
+        </div>
+        <p class="px-5 pt-3 text-[11px] text-slate-400">Repos Ignite has actually pushed to. Enable a schedule to re-run checks against the default branch — failures notify the repo's CODEOWNERS contact, or file a GitHub issue if none is found.</p>
+        <div id="effectivatedList" class="divide-y divide-slate-100 max-h-[40vh] overflow-y-auto">
+          <p class="p-5 text-xs text-slate-400">Loading…</p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="max-w-4xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
 
     <!-- Page header -->
     <div class="text-center mb-10">
@@ -272,48 +337,6 @@
 
     </main>
 
-    <!-- Recent checks history panel -->
-    <div class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-6 items-start">
-      <section class="bg-white border border-slate-200 rounded-2xl shadow-card overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
-          <div class="flex items-center gap-3">
-            <button id="historyClearBtn" title="Clear all"
-              class="text-slate-400 hover:text-red-600 transition-colors">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
-              </svg>
-            </button>
-            <button id="historyRefreshBtn" title="Refresh"
-              class="text-slate-400 hover:text-brand-600 transition-colors">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div id="historyList" class="divide-y divide-slate-100 max-h-[75vh] overflow-y-auto">
-          <p class="p-5 text-xs text-slate-400">Loading…</p>
-        </div>
-      </section>
-
-      <section class="bg-white border border-slate-200 rounded-2xl shadow-card overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Effectivated Repos</h2>
-          <button id="effectivatedRefreshBtn" title="Refresh"
-            class="text-slate-400 hover:text-brand-600 transition-colors">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
-            </svg>
-          </button>
-        </div>
-        <p class="px-5 pt-3 text-[11px] text-slate-400">Repos Ignite has actually pushed to. Enable a schedule to re-run checks against the default branch — failures notify the repo's CODEOWNERS contact, or file a GitHub issue if none is found.</p>
-        <div id="effectivatedList" class="divide-y divide-slate-100 max-h-[50vh] overflow-y-auto">
-          <p class="p-5 text-xs text-slate-400">Loading…</p>
-        </div>
-      </section>
-    </div>
-
     <footer class="mt-12 text-center text-xs text-slate-400">
       Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>
       Staging files are wiped from disk after every run, pass or fail.
@@ -413,6 +436,7 @@
         ⚠ Historical view — you're not seeing the full project. Staging files are wiped after every run, so only the
         code captured around each flagged finding is available here, not the whole file. Gaps between findings are
         marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
+        Dependencies, Rescan, Run CodeQL and Custom Query all need a live staged project, so they're hidden here too.
       </p>
       <div id="studioSummaryBar" class="hidden text-[11px] text-slate-600 bg-white border-b border-slate-100 px-5 py-2"></div>
       <!-- Below sm, the three panes stack vertically (each independently
@@ -4531,6 +4555,23 @@
       if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== $('accountMenuBtn')) {
         menu.classList.add('hidden');
       }
+    });
+
+    // History drawer — Recent Checks + Effectivated Repos, opened from the
+    // lateral rail instead of sitting permanently inline on the page.
+    function openHistoryDrawer() {
+      $('historyDrawerBackdrop').classList.remove('hidden');
+      $('historyDrawer').classList.remove('hidden');
+    }
+    function closeHistoryDrawer() {
+      $('historyDrawerBackdrop').classList.add('hidden');
+      $('historyDrawer').classList.add('hidden');
+    }
+    $('historyDrawerBtn').addEventListener('click', openHistoryDrawer);
+    $('historyDrawerCloseBtn').addEventListener('click', closeHistoryDrawer);
+    $('historyDrawerBackdrop').addEventListener('click', closeHistoryDrawer);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('historyDrawer').classList.contains('hidden')) closeHistoryDrawer();
     });
 
     /* Initial render */
