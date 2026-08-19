@@ -95,10 +95,11 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
           </svg>
         </div>
-        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Ignite</h1>
+        <h1 class="text-lg font-bold tracking-tight text-brand-700">Ignite Studio</h1>
         <span id="appVersion" class="text-[11px] font-mono font-semibold text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 self-start mt-1"></span>
       </div>
-      <p class="text-sm text-slate-500">Onboarding gatekeeper — upload a project · pass compliance gates · ship to GitHub</p>
+      <h2 class="text-2xl font-bold tracking-tight text-slate-900 mt-6">Initialize Project Pipeline</h2>
+      <p class="text-base text-slate-500 mt-1">Upload your project payload to begin automated analysis and provisioning.</p>
     </header>
 
     <!-- Auth bar + external tools status: fixed top-right on wider screens;
@@ -132,25 +133,25 @@
     <main class="min-w-0">
 
     <!-- Phase 1: Input card -->
-    <section class="bg-white border border-slate-200 rounded-2xl p-6 mb-8 shadow-card">
-      <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest mb-4">Input &amp; Metadata</h2>
-
+    <section class="mb-8">
       <div id="dropzone"
-        class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer transition-all hover:border-brand-400 hover:bg-brand-50/60">
+        class="relative overflow-hidden bg-white border-2 border-dashed border-slate-300 hover:border-brand-400 rounded-xl p-12 text-center cursor-pointer transition-colors shadow-card">
         <input type="file" id="fileInput" accept=".zip,application/zip" class="hidden" />
         <input type="file" id="dirInput" webkitdirectory class="hidden" />
         <div id="dropIdle">
-          <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-100 flex items-center justify-center">
-            <svg class="w-6 h-6 text-brand-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
-            </svg>
+          <svg class="w-12 h-12 mx-auto mb-4 text-brand-600" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M19.35 10.04A7.49 7.49 0 0012 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 000 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+          </svg>
+          <h3 class="text-lg font-bold text-slate-900">Drag &amp; Drop Project Payload</h3>
+          <p class="text-sm text-slate-500 mt-1.5 max-w-md mx-auto">Upload a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> to initiate the pipeline sequence.</p>
+          <div class="flex items-center justify-center gap-3 mt-5">
+            <button type="button" id="pickZipBtn" class="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-card transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
+              Choose File…
+            </button>
+            <button type="button" id="pickDirBtn" class="text-sm font-semibold text-brand-600 hover:text-brand-800">or choose a folder</button>
           </div>
-          <p class="text-sm text-slate-500">Drag &amp; drop a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> here</p>
-          <div class="flex items-center justify-center gap-2 mt-3">
-            <button type="button" id="pickZipBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">Choose ZIP…</button>
-            <button type="button" id="pickDirBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">Choose Folder…</button>
-          </div>
-          <p class="text-xs text-slate-400 mt-2">Up to 250 MB · node_modules, .git and build output are skipped automatically</p>
+          <p class="text-xs text-slate-400 mt-4">Up to 250 MB · node_modules, .git and build output are skipped automatically</p>
         </div>
         <div id="dropReady" class="hidden">
           <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-600 flex items-center justify-center shadow-md shadow-brand-600/25">
@@ -163,8 +164,10 @@
         </div>
       </div>
       <p id="dropError" class="hidden text-xs font-medium text-rose-600 mt-2"></p>
+    </section>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
+    <section class="bg-white border border-slate-200 rounded-xl p-6 mb-8 shadow-card">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label for="orgInput" class="block text-xs font-semibold text-slate-600 mb-1.5">GitHub Organization Name</label>
           <input id="orgInput" type="text" placeholder="acme-corp" autocomplete="off" spellcheck="false"
@@ -233,6 +236,8 @@
         Initiate Onboarding Pipeline
       </button>
     </section>
+
+    <h2 class="text-lg font-bold text-slate-900 mb-4">Pipeline Status</h2>
 
     <!-- Pipeline stepper -->
     <div id="historyViewBanner" class="hidden mb-3 flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-xl px-4 py-2.5">
@@ -695,11 +700,11 @@
     /* Rendering                                                     */
     /* ------------------------------------------------------------ */
     const STATE_META = {
-      pending: { label: 'Pending',  chip: 'bg-slate-100 text-slate-500 border-slate-200', ring: 'border-slate-300 text-slate-400 bg-white' },
-      running: { label: 'Running',  chip: 'bg-brand-50 text-brand-700 border-brand-200', ring: 'border-brand-600 text-brand-600 bg-white running-dot' },
-      success: { label: 'Success',  chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', ring: 'border-emerald-500 text-emerald-600 bg-white' },
-      failed:  { label: 'Failed',   chip: 'bg-rose-50 text-rose-700 border-rose-200', ring: 'border-rose-500 text-rose-600 bg-white' },
-      skipped: { label: 'Skipped',  chip: 'bg-amber-50 text-amber-700 border-amber-200', ring: 'border-amber-400 text-amber-500 bg-white' },
+      pending: { label: 'Pending',  text: 'text-slate-400', chip: 'bg-slate-100 text-slate-500 border-slate-200', ring: 'border-slate-200 text-slate-400 bg-slate-50' },
+      running: { label: 'Running',  text: 'text-brand-600 font-bold', chip: 'bg-brand-50 text-brand-700 border-brand-200', ring: 'border-brand-300 text-brand-600 bg-brand-50 running-dot' },
+      success: { label: 'Complete', text: 'text-emerald-600', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', ring: 'border-emerald-200 text-emerald-600 bg-emerald-50' },
+      failed:  { label: 'Failed',   text: 'text-rose-600', chip: 'bg-rose-50 text-rose-700 border-rose-200', ring: 'border-rose-200 text-rose-600 bg-rose-50' },
+      skipped: { label: 'Skipped',  text: 'text-amber-600', chip: 'bg-amber-50 text-amber-700 border-amber-200', ring: 'border-amber-200 text-amber-500 bg-amber-50' },
     };
 
     // Backend phase ids are fixed (1-6) and never renumbered — every event,
@@ -740,8 +745,8 @@
         const meta = hasFlaggedIssues
           ? {
               label: ph.blockingCount > 0 ? `Flagged (${ph.blockingCount} blocking)` : `Flagged (${ph.issueCount})`,
-              chip: 'bg-amber-50 text-amber-700 border-amber-200',
-              ring: 'border-amber-500 text-amber-600 bg-white',
+              text: 'text-amber-600 font-bold',
+              ring: 'border-amber-200 text-amber-600 bg-amber-50',
             }
           : STATE_META[ph.state];
         const hasLogs = ph.logs.length > 0;
@@ -756,24 +761,44 @@
         const durationHtml = durationMs != null
           ? `<span class="text-[11px] font-mono text-slate-400 shrink-0">${formatDuration(durationMs)}</span>`
           : '';
+        // Purely cosmetic progress readout matching the mockup's per-phase
+        // bar — the backend has no fractional progress, so pending/running/
+        // done map to 0% / an indeterminate pulsing bar / 100%.
+        const progressPct = ph.state === 'pending' ? 0 : (ph.state === 'running' ? 65 : 100);
+        // A short always-visible log preview for the active phase (mirrors
+        // the mockup's embedded snippet); the full scrollback stays behind
+        // the existing <details> toggle / maximize button.
+        const previewHtml = ph.state === 'running' && hasLogs ? `
+              <div class="bg-slate-900 rounded p-2.5 mt-2.5 font-mono text-[11px] leading-relaxed overflow-hidden">
+                ${ph.logs.slice(-3).map(formatLogLine).join('')}
+              </div>` : '';
         return `
         <div class="relative">
-          ${!isLast ? '<div class="absolute left-[27px] top-[54px] bottom-[-12px] w-px bg-slate-200"></div>' : ''}
-          <details class="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-card transition-shadow hover:shadow-cardHover" ${ph.state === 'running' || ph.state === 'failed' ? 'open' : ''}>
-            <summary class="flex items-center gap-4 p-4 ${hasLogs ? 'cursor-pointer hover:bg-slate-50' : 'cursor-default'} select-none transition-colors">
-              <div class="w-7 h-7 shrink-0 rounded-full border-2 ${meta.ring} flex items-center justify-center text-xs font-bold z-10">
+          ${!isLast ? '<div class="absolute left-[19px] top-[52px] bottom-[-12px] w-px bg-slate-200"></div>' : ''}
+          <details class="bg-white border ${ph.state === 'running' ? 'border-2 border-brand-400' : 'border-slate-200'} rounded-lg overflow-hidden shadow-card transition-shadow hover:shadow-cardHover" ${ph.state === 'failed' ? 'open' : ''}>
+            <summary class="flex items-start gap-3 p-4 ${hasLogs ? 'cursor-pointer hover:bg-slate-50/60' : 'cursor-default'} select-none transition-colors">
+              <div class="w-8 h-8 shrink-0 rounded-full border ${meta.ring} flex items-center justify-center text-xs font-bold z-10">
                 ${iconFor(iconState, idx + 1)}
               </div>
               <div class="flex-1 min-w-0">
-                <p class="text-sm font-semibold text-slate-800"><span class="text-brand-600 font-bold">Phase ${idx + 1}</span> <span class="text-slate-300 mx-1">·</span> ${p.title}</p>
-                <p class="text-xs text-slate-500 truncate">${p.desc}</p>
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-sm font-bold text-slate-800 truncate">${idx + 1}. ${p.title}</p>
+                  <div class="flex items-center gap-2 shrink-0">
+                    ${durationHtml}
+                    <span class="text-xs font-mono ${meta.text}">${iconState === 'running' ? progressPct + '%' : meta.label}</span>
+                    ${canMaximize ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
+                    </button>` : ''}
+                    ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : ''}
+                  </div>
+                </div>
+                <p class="text-xs text-slate-500 mt-0.5">${p.desc}</p>
+                ${ph.state === 'running' ? `
+                <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2.5">
+                  <div class="h-full bg-brand-600 rounded-full transition-all duration-700" style="width:${progressPct}%"></div>
+                </div>` : ''}
+                ${previewHtml}
               </div>
-              ${durationHtml}
-              <span class="text-[11px] font-semibold px-2.5 py-1 rounded-full border ${meta.chip}">${meta.label}</span>
-              ${canMaximize ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
-              </button>` : ''}
-              ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : '<span class="w-4"></span>'}
             </summary>
             ${hasLogs ? `
             <div class="border-t border-slate-100 p-3 bg-slate-50/60">
