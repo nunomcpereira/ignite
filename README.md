@@ -514,6 +514,28 @@ configurable via env vars documented at the top of the script
 `git push --no-verify`. Full walkthrough with sample output: [the docs
 site](https://nunomcpereira.github.io/ignite/#pre-push-hook).
 
+## VS Code extension
+
+`vscode-extension/` is a thin client that runs the same `validate-all` pipeline against the currently open workspace folder, natively in the editor - no separate web UI, no upload/picker flow. Works with VS Code, Cursor, or VS Code Insiders.
+
+```bash
+cd vscode-extension
+./install.sh   # builds + installs the .vsix, reload window after
+```
+
+Requires a running Ignite server (`npm start` in the repo root, default `http://localhost:51337`).
+
+Commands (Command Palette):
+
+- **Ignite: Scan Workspace** - runs phases 1-5 (phase 5 only if `ignite.runLocalCi` is on) against the open folder; findings land in the Problems panel, a Findings tree, and an Output channel.
+- **Ignite: Install Pre-Push Hook** - installs `hooks/pre-push` (above) into this repo's git hooks.
+- **Ignite: Open Review File** - opens `.ignite-review.md` for filling in `Acknowledge:` justifications on blocking findings, same file/flow the pre-push hook uses.
+- **Ignite: Refresh Tools Status** - re-probes the optional external tools in a Tools Status tree.
+
+Settings: `ignite.baseUrl` (default `http://localhost:51337`), `ignite.runLocalCi` (default `false`), `ignite.showOverriddenIssues` (default `false`). Full detail, dev/debug instructions, and building the `.vsix` for someone else without installing it: [`vscode-extension/README.md`](vscode-extension/README.md).
+
+Screenshots (Findings/Tools Status trees, inline Problems-panel diagnostics): see the [docs site's VS Code section](https://nunomcpereira.github.io/ignite/#5-or-scan-straight-from-vs-code---no-upload-no-browser).
+
 ## AI validation guidelines - MCP server & API
 
 `guidelines/` holds the company AI validation guideline catalog (AI-governance,

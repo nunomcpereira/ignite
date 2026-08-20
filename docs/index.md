@@ -114,6 +114,18 @@ turn it green.
 
 ![Studio - Compliance & Feature Posture](assets/images/07-studio-posture.png)
 
+### 5. Or scan straight from VS Code - no upload, no browser
+
+For people who don't want the web UI, the [VS Code extension](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension) runs the same `validate-all` pipeline against whatever folder you have open, natively in the editor. It's a thin client - all scanning still happens on a locally running Ignite server - but findings land as real Problems-panel diagnostics with squiggles at the exact line, plus a Findings tree broken down by phase and a Tools Status tree showing which of the optional external scanners are actually installed.
+
+![VS Code - Findings tree by phase and Tools Status](assets/images/08-vscode-findings-tools.png)
+
+Run **Ignite: Scan Workspace** from the Command Palette; a blocking finding also shows up as an inline diagnostic right where it happened, so there's no context-switch to a browser to see what broke.
+
+![VS Code - Problems panel with inline diagnostics on the offending lines](assets/images/09-vscode-problems-panel.png)
+
+**Ignite: Install Pre-Push Hook** wires the same [pre-push hook](#pre-push-hook) into the open repo's git hooks from inside the editor, and **Ignite: Open Review File** opens `.ignite-review.md` for filling in `Acknowledge:` justifications on blocking findings - the identical override flow the terminal-based hook uses, just without leaving VS Code. Works with VS Code, Cursor, or VS Code Insiders; full install/settings reference in the [extension's own README](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension#readme).
+
 ## What gets checked
 
 Six phases and twelve+ optional external-tool integrations (all soft
