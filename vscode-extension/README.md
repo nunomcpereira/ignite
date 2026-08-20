@@ -23,7 +23,7 @@ To build the `.vsix` without installing it (e.g. to hand it to someone else): `n
 
 - **Ignite: Scan Workspace** — runs phases 1–5 (Phase 5/org-governance-CI only if `ignite.runLocalCi` is on) against the open folder. Results land in the Problems panel, the Findings tree, and the Output channel.
 - **Ignite: Install Pre-Push Hook** — installs Ignite's own `hooks/pre-push` script into this repo's git hooks, so `git push` gets the same gate as the manual scan.
-- **Ignite: Open Review File** — opens `.ignite-review.md`, the same append-only justification file the pre-push hook reads/writes. Fill in `Acknowledge:` for a blocking finding, rescan (or push) to have it resubmitted as an attributed override.
+- **Ignite: Open Review File** — opens `.ignite/acknowledgments.md`, the same append-only justification file the pre-push hook reads/writes. Fill in `Acknowledge:` for a blocking finding, rescan (or push) to have it resubmitted as an attributed override. Each scan also drops a point-in-time snapshot of every finding at `.ignite/scans/<timestamp>/findings.md`.
 - **Ignite: Refresh Tools Status** — re-probes the 13 optional external tools (trivy, semgrep, bearer, codeql, …) in the Tools Status tree.
 
 ## Settings
@@ -42,3 +42,9 @@ npm run watch   # or: npm run compile
 ```
 
 Press `F5` (or Run → Start Debugging) to launch an Extension Development Host with this extension loaded, against whatever folder you open in it. Requires `npm start` running in the `ignite` repo first.
+
+```bash
+npm test   # compiles, then runs the node:test suite in dist/*.test.js
+```
+
+Unit coverage lives next to the code it tests (e.g. `src/reviewFile.test.ts` for `.ignite/acknowledgments.md` and `.ignite/scans/<timestamp>/findings.md`), not in a separate directory.

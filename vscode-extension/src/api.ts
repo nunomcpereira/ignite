@@ -77,7 +77,7 @@ export interface ValidateAllOptions {
   runLocalCi: boolean;
   org?: string;
   repo?: string;
-  /** Justified entries read from .ignite-review.md — same shape hooks/pre-push resubmits. */
+  /** Justified entries read from .ignite/acknowledgments.md — same shape hooks/pre-push resubmits. */
   overrides?: OverrideSubmission[];
   actor?: { email: string; name: string };
 }

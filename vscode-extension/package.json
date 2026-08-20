@@ -17,7 +17,7 @@
       { "command": "ignite.scanWorkspace", "title": "Ignite: Scan Workspace", "icon": "$(shield)" },
       { "command": "ignite.showOutput", "title": "Ignite: Show Output" },
       { "command": "ignite.openReviewFile", "title": "Ignite: Open Review File" },
-      { "command": "ignite.acknowledgeIssue", "title": "Ignite: Acknowledge in .ignite-review.md" },
+      { "command": "ignite.acknowledgeIssue", "title": "Ignite: Acknowledge in .ignite/acknowledgments.md" },
       { "command": "ignite.installPrePushHook", "title": "Ignite: Install Pre-Push Hook" },
       { "command": "ignite.refreshToolsStatus", "title": "Ignite: Refresh Tools Status", "icon": "$(refresh)" }
     ],
@@ -57,7 +57,7 @@
         "ignite.showOverriddenIssues": {
           "type": "boolean",
           "default": false,
-          "description": "Show issues already acknowledged in .ignite-review.md as dimmed diagnostics instead of hiding them."
+          "description": "Show issues already acknowledged in .ignite/acknowledgments.md as dimmed diagnostics instead of hiding them."
         }
       }
     }
@@ -65,7 +65,8 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run compile",
+    "test": "tsc -p ./ && node --test dist/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

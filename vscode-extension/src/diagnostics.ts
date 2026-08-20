@@ -22,7 +22,7 @@ export function issueDiagnostic(issue: IgniteIssue): vscode.Diagnostic {
 
 /**
  * Publishes one Diagnostic per file-addressable issue. Issues already
- * acknowledged in .ignite-review.md are dropped unless showOverridden is
+ * acknowledged in .ignite/acknowledgments.md are dropped unless showOverridden is
  * set, mirroring the web UI's OVERRIDDEN badge — an acknowledged finding
  * is a resolved audit record, not something to keep nagging about.
  */

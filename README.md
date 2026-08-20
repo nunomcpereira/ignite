@@ -482,8 +482,8 @@ with a clear message if the Ignite server isn't reachable, and prints the
 failing phase's logs so you don't have to open the UI to see what broke.
 
 **Blocking findings can be acknowledged from the terminal.** On a blocking
-finding, the hook writes `.ignite-review.md` at the repo root - one entry
-per finding, each with a blank `Acknowledge:` line, same shape as the id
+finding, the hook writes `.ignite/acknowledgments.md` at the repo root - one
+entry per finding, each with a blank `Acknowledge:` line, same shape as the id
 (`<category>::<file>::<line>`) `validate-all`'s response now carries for
 exactly this purpose (`issues` on a failed response). Fill in a
 justification, `git push` again: the hook resubmits every filled-in line as
@@ -492,6 +492,10 @@ user.name`/`user.email`, and rewrites the file down to whatever's still
 unresolved. It's a durable local ledger, not a one-shot prompt - an id
 already justified stays overridden on future pushes until the line it's
 attached to changes (a new line number is a new id).
+
+Every run (pass or fail) also drops a point-in-time snapshot of every
+reported finding at `.ignite/scans/<timestamp>/findings.md` - a per-scan
+history folder, unlike the append-only, carried-forward acknowledgments file.
 
 ```bash
 # Install into one repo:
@@ -529,7 +533,7 @@ Commands (Command Palette):
 
 - **Ignite: Scan Workspace** - runs phases 1-5 (phase 5 only if `ignite.runLocalCi` is on) against the open folder; findings land in the Problems panel, a Findings tree, and an Output channel.
 - **Ignite: Install Pre-Push Hook** - installs `hooks/pre-push` (above) into this repo's git hooks.
-- **Ignite: Open Review File** - opens `.ignite-review.md` for filling in `Acknowledge:` justifications on blocking findings, same file/flow the pre-push hook uses.
+- **Ignite: Open Review File** - opens `.ignite/acknowledgments.md` for filling in `Acknowledge:` justifications on blocking findings, same file/flow the pre-push hook uses.
 - **Ignite: Refresh Tools Status** - re-probes the optional external tools in a Tools Status tree.
 
 Settings: `ignite.baseUrl` (default `http://localhost:51337`), `ignite.runLocalCi` (default `false`), `ignite.showOverriddenIssues` (default `false`). Full detail, dev/debug instructions, and building the `.vsix` for someone else without installing it: [`vscode-extension/README.md`](vscode-extension/README.md).

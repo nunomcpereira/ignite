@@ -203,7 +203,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
         // an unrelated edit elsewhere in the file (adding/removing lines
         // above) always looked identical to a brand-new finding downstream
         // (override-engine.js's buildIssueId, and the pre-push hook's
-        // .ignite-review.md carry-forward matching). Best-effort: a read
+        // .ignite/acknowledgments.md carry-forward matching). Best-effort: a read
         // failure just leaves it null, same as every other check's pattern.
         const srcContent = await fsp.readFile(absPath, 'utf8').catch(() => null);
         findings.push({

@@ -53,8 +53,12 @@ function parseBlocks(text: string): ParsedEntry[] {
   return entries;
 }
 
+export function igniteDir(repoRoot: string): string {
+  return path.join(repoRoot, '.ignite');
+}
+
 export function reviewFilePath(repoRoot: string): string {
-  return path.join(repoRoot, '.ignite-review.md');
+  return path.join(igniteDir(repoRoot), 'acknowledgments.md');
 }
 
 async function readFileSafe(p: string): Promise<string> {
@@ -120,8 +124,54 @@ export async function appendUnresolvedIssues(repoRoot: string, issues: IgniteIss
     );
   }
   const remainingExisting = existing.filter((e) => !e.superseded).map((e) => e.raw);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, HEADER + [...remainingExisting, ...newBlocks].join('\n\n') + '\n');
   return newBlocks.filter((b) => b.endsWith('Acknowledge: ')).length;
+}
+
+/** Filesystem-safe timestamp (no colons) for a scan snapshot folder name. */
+function scanTimestamp(date: Date): string {
+  return date.toISOString().replace(/:/g, '-').replace(/\.\d+Z$/, 'Z');
+}
+
+export function scanSnapshotPath(repoRoot: string, date: Date = new Date()): string {
+  return path.join(igniteDir(repoRoot), 'scans', scanTimestamp(date), 'findings.md');
+}
+
+/**
+ * Snapshots every finding from one scan run as markdown, one file per
+ * datetime under .ignite/scans/<timestamp>/findings.md - a point-in-time
+ * record, unlike the append-only, carry-forward acknowledgments.md.
+ */
+export async function writeScanSnapshot(repoRoot: string, issues: IgniteIssue[], date: Date = new Date()): Promise<string> {
+  const filePath = scanSnapshotPath(repoRoot, date);
+  const lines: string[] = [`# Ignite scan findings — ${date.toISOString()}`, ''];
+  if (issues.length === 0) {
+    lines.push('No findings.');
+  } else {
+    for (const issue of issues) {
+      const loc = issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : '(no file)';
+      lines.push(`## [${(issue.severity || '').toUpperCase()}] ${issue.category} - ${issue.summary}`);
+      lines.push('');
+      lines.push(`- ID: \`${issue.id}\``);
+      lines.push(`- Location: ${loc}`);
+      lines.push(`- Score: ${issue.score}`);
+      if (issue.status) lines.push(`- Status: ${issue.status}`);
+      if (issue.cwe) lines.push(`- CWE: ${issue.cwe}`);
+      if (issue.owasp) lines.push(`- OWASP: ${issue.owasp}`);
+      const hit = issue.snippet?.lines?.find((l) => l.number === issue.snippet?.highlightLine);
+      if (hit) {
+        lines.push('');
+        lines.push('```');
+        lines.push(hit.text);
+        lines.push('```');
+      }
+      lines.push('');
+    }
+  }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, lines.join('\n'));
+  return filePath;
 }
 
 /** Byte offset of a given issue id's `Acknowledge:` line, for jumping the editor there. */

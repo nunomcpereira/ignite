@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { validateAll, checkReachable, IgniteUnreachableError, type IgniteIssue } from './api';
 import { publishDiagnostics, DIAGNOSTIC_SOURCE } from './diagnostics';
 import { getActor, getOriginOrgRepo, getRepoRoot } from './git';
-import { loadOverrides, appendUnresolvedIssues, reviewFilePath, findAcknowledgeLineNumber } from './reviewFile';
+import { loadOverrides, appendUnresolvedIssues, reviewFilePath, findAcknowledgeLineNumber, writeScanSnapshot } from './reviewFile';
 import { installPrePushHook } from './prePushHook';
 import { FindingsTreeProvider } from './panels/findingsTree';
 import { ToolsStatusTreeProvider } from './panels/toolsStatusTree';
@@ -121,6 +121,8 @@ async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
     lastResultIssues = issues;
     publishDiagnostics(diagnostics, workspaceRoot, issues, showOverridden);
     findingsTree.setResult(result.phases ?? [], issues, workspaceRoot);
+    const snapshotPath = await writeScanSnapshot(repoRoot, issues);
+    outputChannel.appendLine(`  Findings snapshot: ${snapshotPath}`);
 
     const unresolvedErrors = issues.filter((i) => i.severity === 'error' && i.status !== 'overridden');
     if (result.ok) {
@@ -182,7 +184,7 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         await vscode.workspace.fs.stat(uri);
       } catch {
-        vscode.window.showInformationMessage('No .ignite-review.md yet — run a scan with unresolved findings first.');
+        vscode.window.showInformationMessage('No .ignite/acknowledgments.md yet — run a scan with unresolved findings first.');
         return;
       }
       await vscode.window.showTextDocument(uri);
