@@ -17,7 +17,7 @@ function hasRealGitleaks() {
 
 test('checkSecrets: regex scan still finds hardcoded credentials (baseline, gitleaks untouched)', withServerEnv({}, async (mod) => {
   const dir = await makeTempProject({
-    'config.js': `module.exports = { apiKey: "api_key\x3a 'sk_live_1234567890abcdef'" };\n`,
+    'config.js': `module.exports = { apiKey: "api_key\x3a 'not_a_real_secret_1234567890abcdef'" };\n`,
   });
   const { findings, scanned } = await mod.checkSecrets(dir, noopLog);
   assert.ok(scanned >= 1);
