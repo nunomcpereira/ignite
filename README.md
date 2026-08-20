@@ -516,7 +516,7 @@ configurable via env vars documented at the top of the script
 (`IGNITE_RUN_LOCAL_CI`, `IGNITE_WARNING_MODE`), plus a logged
 `IGNITE_PREPUSH_SKIP=true` escape hatch for one push, preferable to a silent
 `git push --no-verify`. Full walkthrough with sample output: [the docs
-site](https://nunomcpereira.github.io/ignite/#pre-push-hook).
+site](https://nunomcpereira.github.io/ignite/pre-push-hook).
 
 ## VS Code extension
 
@@ -538,7 +538,7 @@ Commands (Command Palette):
 
 Settings: `ignite.baseUrl` (default `http://localhost:51337`), `ignite.runLocalCi` (default `false`), `ignite.showOverriddenIssues` (default `false`). Full detail, dev/debug instructions, and building the `.vsix` for someone else without installing it: [`vscode-extension/README.md`](vscode-extension/README.md).
 
-Screenshots (Findings/Tools Status trees, inline Problems-panel diagnostics): see the [docs site's VS Code section](https://nunomcpereira.github.io/ignite/#5-or-scan-straight-from-vs-code---no-upload-no-browser).
+Screenshots (Findings/Tools Status trees, inline Problems-panel diagnostics): see the [docs site's VS Code section](https://nunomcpereira.github.io/ignite/how-it-works#5-or-scan-straight-from-vs-code--no-upload-no-browser).
 
 ## AI validation guidelines - MCP server & API
 

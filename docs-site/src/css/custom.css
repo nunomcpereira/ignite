@@ -1,0 +1,134 @@
+/**
+ * Ignite docs theme — the app's own blue-and-white palette (Ignite Studio's
+ * "Run CodeQL" / AI-suggested-fix blue), tuned for light and dark mode.
+ */
+:root {
+  --ifm-color-primary: #2563eb;
+  --ifm-color-primary-dark: #1d55d6;
+  --ifm-color-primary-darker: #1b4fca;
+  --ifm-color-primary-darkest: #1641a6;
+  --ifm-color-primary-light: #3b73ee;
+  --ifm-color-primary-lighter: #4a7ef0;
+  --ifm-color-primary-lightest: #77a0f4;
+  --ifm-code-font-size: 90%;
+  --ifm-container-width-xl: 1400px;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #60a5fa;
+  --ifm-color-primary-dark: #4993f8;
+  --ifm-color-primary-darker: #3b8af7;
+  --ifm-color-primary-darkest: #1c72f0;
+  --ifm-color-primary-light: #77b3fb;
+  --ifm-color-primary-lighter: #83bafb;
+  --ifm-color-primary-lightest: #abd0fd;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* Give the reading column more room than Infima's default ~750px, and let
+   a wide markdown table (the threat/tool reference) scroll inside itself
+   instead of clipping or blowing out the page width. */
+.markdown {
+  --ifm-leading: 1.65;
+  font-size: 1.05rem;
+  line-height: 1.75;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown admonition {
+  margin-bottom: 1.4em;
+}
+
+.markdown li {
+  margin-top: 0.4em;
+}
+
+.markdown li > p {
+  margin-bottom: 0.6em;
+}
+
+.markdown h1 {
+  margin-bottom: 1.2em;
+}
+
+.markdown h2 {
+  margin-top: 2.6em;
+  margin-bottom: 1em;
+  padding-top: 0.4em;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.markdown h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.markdown h3 {
+  margin-top: 2em;
+  margin-bottom: 0.8em;
+}
+
+.markdown h4 {
+  margin-top: 1.6em;
+  margin-bottom: 0.6em;
+}
+
+.markdown > p:first-of-type {
+  margin-top: 0.5em;
+}
+
+.markdown pre {
+  margin-bottom: 1.4em;
+}
+
+.theme-admonition {
+  margin-bottom: 1.6em;
+}
+
+.theme-doc-markdown table {
+  display: block;
+  overflow-x: auto;
+  width: max-content;
+  max-width: 100%;
+}
+
+.theme-doc-markdown table th,
+.theme-doc-markdown table td {
+  white-space: normal;
+  min-width: 12rem;
+}
+
+.theme-doc-markdown table th:first-child,
+.theme-doc-markdown table td:first-child {
+  min-width: 16rem;
+}
+
+.theme-doc-markdown img {
+  border-radius: var(--ifm-global-radius);
+  border: 1px solid var(--ifm-color-emphasis-200);
+  box-shadow: var(--ifm-global-shadow-lw);
+}
+
+/* Homepage hero: an inline architecture diagram that blends with the page's
+   own background/foreground (var(--ifm-color-*)) instead of sitting in a
+   separate card, so it matches the site exactly in both light and dark mode. */
+.heroShot {
+  margin: 0.5em 0 2.2em;
+  text-align: center;
+}
+
+.heroShot svg {
+  width: 100%;
+  height: auto;
+}
+
+.heroShot figcaption {
+  margin-top: 1em;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.92rem;
+  font-style: italic;
+}
