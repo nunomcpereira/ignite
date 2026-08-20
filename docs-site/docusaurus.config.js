@@ -63,7 +63,8 @@ const config = {
     ({
       image: 'img/social-card.png',
       colorMode: {
-        respectPrefersColorScheme: true,
+        defaultMode: 'light',
+        respectPrefersColorScheme: false,
       },
       navbar: {
         title: 'Ignite',

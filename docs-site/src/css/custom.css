@@ -89,22 +89,20 @@
   margin-bottom: 1.6em;
 }
 
+/* Wide reference tables (the threat/tool list): wrap and fill the column
+   instead of relying on a hard-to-notice horizontal scrollbar. Taller rows,
+   but every word stays on screen without hunting for a scroll affordance. */
 .theme-doc-markdown table {
-  display: block;
-  overflow-x: auto;
-  width: max-content;
-  max-width: 100%;
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+  overflow: visible;
 }
 
 .theme-doc-markdown table th,
 .theme-doc-markdown table td {
   white-space: normal;
-  min-width: 12rem;
-}
-
-.theme-doc-markdown table th:first-child,
-.theme-doc-markdown table td:first-child {
-  min-width: 16rem;
+  overflow-wrap: break-word;
 }
 
 .theme-doc-markdown img {

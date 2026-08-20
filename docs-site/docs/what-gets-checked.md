@@ -33,8 +33,6 @@ the tool/check combination that catches it — and, since every external tool
 is a soft dependency, exactly which tool actually intervenes *if it's
 installed* (Ignite still runs, and falls back where it can, if it isn't).
 
-Scroll sideways inside the table on narrower screens — it isn't clipped.
-
 | Threat / attack class | How Ignite catches it | Tool(s) / check | If the tool isn't available |
 |---|---|---|---|
 | Committed raw `.env`/`.env.*` files leaking live credentials into repo history | Denies any `.env`/`.env.*` file anywhere in the tree (unless already `.gitignore`d) before anything else runs | Built-in structure audit | N/A — built-in, no external tool involved |
