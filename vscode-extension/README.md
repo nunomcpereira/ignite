@@ -9,6 +9,16 @@ Thin client only: no scanning logic lives here. Every check runs on a locally ru
 - A running Ignite server reachable at `ignite.baseUrl` (default `http://localhost:51337`).
 - The workspace folder you have open is what gets scanned — there's no upload/picker flow.
 
+## Install
+
+```bash
+./install.sh
+```
+
+Builds the extension and installs it into your editor as a real (non-debug) extension via a packaged `.vsix` — works with VS Code, Cursor, or VS Code Insiders, whichever `code`/`code-insiders`/`cursor` CLI is on your PATH (needs "Shell Command: Install 'code' command in PATH" run once from the Command Palette if `code` isn't found). Reload the window afterward to activate it. Rerun `./install.sh` any time to pick up changes — it reinstalls over the previous version.
+
+To build the `.vsix` without installing it (e.g. to hand it to someone else): `npx @vscode/vsce package --allow-missing-repository --skip-license -o ignite-vscode.vsix`, then `code --install-extension ignite-vscode.vsix` on their machine.
+
 ## Commands
 
 - **Ignite: Scan Workspace** — runs phases 1–5 (Phase 5/org-governance-CI only if `ignite.runLocalCi` is on) against the open folder. Results land in the Problems panel, the Findings tree, and the Output channel.
