@@ -335,8 +335,10 @@ const POSTURE_RULESET = String(CONFIG.compliance.posture.ruleset || path.join(__
 /* Optional jscpd-powered code-duplication scan (see CONFIG.metrics.jscpd) */
 const JSCPD_ENABLED = Boolean(CONFIG.metrics.jscpd.enabled);
 const JSCPD_BINARY = String(CONFIG.metrics.jscpd.binary || 'jscpd');
-const JSCPD_MIN_LINES = Number(CONFIG.metrics.jscpd.minLines) || 5;
-const JSCPD_MIN_TOKENS = Number(CONFIG.metrics.jscpd.minTokens) || 50;
+// jscpd's own defaults (5 lines / 50 tokens) flag trivial boilerplate repetition
+// as findings; raised so only genuinely substantial duplicate blocks surface.
+const JSCPD_MIN_LINES = Number(CONFIG.metrics.jscpd.minLines) || 15;
+const JSCPD_MIN_TOKENS = Number(CONFIG.metrics.jscpd.minTokens) || 150;
 const JSCPD_IGNORE_PATTERNS = Array.isArray(CONFIG.metrics.jscpd.ignorePatterns) ? CONFIG.metrics.jscpd.ignorePatterns : [];
 
 /* Optional gocloc-powered LOC metrics (see CONFIG.metrics.gocloc) */
@@ -1265,11 +1267,9 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
   ];
 
   const settled = await Promise.all(tasks.map(async (t) => {
-    const lines = [];
-    const value = await t.run((line) => lines.push(line));
-    return { name: t.name, lines, value };
+    const value = await t.run((line) => log?.(line));
+    return { name: t.name, value };
   }));
-  for (const r of settled) r.lines.forEach((line) => log?.(line));
   const byName = Object.fromEntries(settled.map((r) => [r.name, r.value]));
 
   const issues = collectPhase4Issues({

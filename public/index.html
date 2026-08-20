@@ -920,7 +920,7 @@
       $('phaseMaxTitle').textContent = `Phase ${displayPhaseNumber(phaseId)} · ${p ? p.title : ''}`;
       $('phaseMaxBody').innerHTML = ph.logs.length > 0
         ? ph.logs.map(formatLogLine).join('')
-        : '<p class="text-slate-400 text-sm">This phase runs several checks concurrently — logs appear all at once when they finish, not incrementally. Still running…</p>';
+        : '<p class="text-slate-400 text-sm">This phase runs several checks concurrently — lines from each check stream in as they happen, interleaved. Still running…</p>';
       $('phaseMaxModal').classList.remove('hidden');
     }
 
@@ -1159,8 +1159,16 @@
     // issues viewer, and the per-project history panel.
     function renderIssueCard(issue, idx, { interactive }) {
       const loc = `${escapeHtml(issue.file || 'unknown')}${issue.line ? ':' + issue.line : ''}`;
+      // code-duplication is always advisory (never blocks a run, always
+      // scores 1/10 — see override-engine.js) — badged as a distinct green
+      // "nice to have" tier rather than the same amber used for genuine
+      // warnings, so it doesn't read as equally actionable in a scan of the
+      // issue list.
+      const isNiceToHave = issue.category === 'code-duplication';
       const badge = issue.severity === 'error'
         ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-rose-50 text-rose-700 border-rose-200">BLOCKING</span>'
+        : isNiceToHave
+        ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">NICE TO HAVE</span>'
         : '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">WARNING</span>';
       const statusBadge = !interactive && issue.status === 'overridden'
         ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">OVERRIDDEN</span>'
@@ -1170,7 +1178,7 @@
       // only reflects override-gating status. Older persisted issues from
       // before this field existed simply omit the chip.
       const scoreTier = typeof issue.score === 'number'
-        ? (issue.score >= 8 ? 'bg-rose-50 text-rose-700 border-rose-200' : issue.score >= 5 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200')
+        ? (isNiceToHave ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : issue.score >= 8 ? 'bg-rose-50 text-rose-700 border-rose-200' : issue.score >= 5 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200')
         : null;
       const scoreBadge = scoreTier
         ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${scoreTier}" title="Severity score (0-10)">${issue.score}/10</span>`
@@ -2197,7 +2205,12 @@
     function renderStudioSummaryBar() {
       const bar = $('studioSummaryBar');
       const errorCount = studioState.issues.filter((i) => i.severity === 'error').length;
-      const warningCount = studioState.issues.length - errorCount;
+      // code-duplication is always advisory/lowest-score (see override-engine.js)
+      // and can run into the hundreds on a real codebase — split it out of the
+      // "warnings" bucket into its own "nice to have" count so the headline
+      // number reflects things actually worth triaging.
+      const niceToHaveCount = studioState.issues.filter((i) => i.category === 'code-duplication').length;
+      const warningCount = studioState.issues.length - errorCount - niceToHaveCount;
       const byCategory = new Map();
       studioState.issues.forEach((i) => byCategory.set(i.category, (byCategory.get(i.category) || 0) + 1));
       const toolSlugs = new Set(STUDIO_TOOL_CATEGORIES.map((c) => c.slug));
@@ -2224,8 +2237,10 @@
         : '';
       const errorActive = studioState.severityFilter === 'error';
       const warningActive = studioState.severityFilter === 'warning';
+      const niceToHaveActive = studioState.severityFilter === 'nice-to-have';
       bar.innerHTML = `<button type="button" class="studio-severity-chip font-semibold ${errorActive ? 'underline' : ''} ${errorCount > 0 ? 'text-rose-600 hover:text-rose-700' : 'text-emerald-600'}" data-severity="error">${errorCount} error${errorCount === 1 ? '' : 's'}</button>` +
         `<button type="button" class="studio-severity-chip ml-2 font-semibold ${warningActive ? 'underline' : ''} ${warningCount > 0 ? 'text-amber-600 hover:text-amber-700' : 'text-slate-400'}" data-severity="warning">${warningCount} warning${warningCount === 1 ? '' : 's'}</button>` +
+        `<button type="button" class="studio-severity-chip ml-2 font-semibold ${niceToHaveActive ? 'underline' : ''} ${niceToHaveCount > 0 ? 'text-emerald-600 hover:text-emerald-700' : 'text-slate-400'}" data-severity="nice-to-have">${niceToHaveCount} nice to have</button>` +
         `<span class="ml-2 text-slate-400">across ${new Set(studioState.issues.map((i) => i.file)).size} file(s)</span>${catHtml}${languageBadge}${queryBadge}` +
         (studioState.categoryFilter || studioState.languageFilter || studioState.severityFilter || studioState.queryResultFiles ? `<button type="button" id="studioClearCategoryFilter" class="ml-3 text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200">✕ clear filter</button>` : '');
       bar.classList.remove('hidden');
@@ -2631,6 +2646,15 @@
       return html;
     }
 
+    // "nice-to-have" isn't a real issue.severity value (only 'error'/'warning'
+    // are) — it's the code-duplication category pulled out of the "warning"
+    // bucket for display, so filtering on it has to check category instead.
+    function studioIssueMatchesSeverityFilter(issue, filter) {
+      if (filter === 'nice-to-have') return issue.category === 'code-duplication';
+      if (filter === 'warning') return issue.severity === 'warning' && issue.category !== 'code-duplication';
+      return issue.severity === filter;
+    }
+
     function renderStudioTree(files) {
       studioState.lastFiles = files;
       // A category chip in the summary bar (see renderStudioSummaryBar), the
@@ -2644,7 +2668,7 @@
       if (studioState.categoryFilter) {
         visible = visible.filter((f) => studioIssuesForFile(f.path).some((i) => i.category === studioState.categoryFilter));
       } else if (studioState.severityFilter) {
-        visible = visible.filter((f) => studioIssuesForFile(f.path).some((i) => i.severity === studioState.severityFilter));
+        visible = visible.filter((f) => studioIssuesForFile(f.path).some((i) => studioIssueMatchesSeverityFilter(i, studioState.severityFilter)));
       } else if (studioState.languageFilter && studioState.locFilesByLanguage) {
         const langFiles = studioState.locFilesByLanguage.get(studioState.languageFilter) || new Set();
         visible = visible.filter((f) => langFiles.has(f.path));
@@ -2832,10 +2856,11 @@
         // per clone pair) — jumpHighlightRange is the ad-hoc equivalent so
         // navigating there still shows the reader the whole matched block.
         const inJumpRange = !!jumpRange && n >= jumpRange.line && n <= jumpRange.endLine;
+        const hasOnlyNiceToHave = hits.length > 0 && hits.every((h) => h.issue.category === 'code-duplication');
         const bg = hits.length > 0
-          ? (isSelected ? (hasError ? 'bg-rose-100' : 'bg-amber-100') : (hasError ? 'bg-rose-50' : 'bg-amber-50'))
+          ? (isSelected ? (hasError ? 'bg-rose-100' : hasOnlyNiceToHave ? 'bg-emerald-100' : 'bg-amber-100') : (hasError ? 'bg-rose-50' : hasOnlyNiceToHave ? 'bg-emerald-50' : 'bg-amber-50'))
           : (inJumpRange ? 'bg-indigo-50' : '');
-        const badges = hits.filter((h) => !h.noBadge).map((h) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}" title="${escapeAttr(h.issue.summary)}">${h.num}</span>`).join('');
+        const badges = hits.filter((h) => !h.noBadge).map((h) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white' : h.issue.category === 'code-duplication' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}" title="${escapeAttr(h.issue.summary)}">${h.num}</span>`).join('');
         return `<div class="flex ${bg}" data-line="${n}">` +
           `<span class="w-10 shrink-0 text-right pr-2 text-slate-400 select-none border-r border-slate-100">${n}</span>` +
           `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span></div>`;
@@ -3217,15 +3242,21 @@
         $('studioIssuePanel').innerHTML = '<p>No flagged issues in this file.</p>';
         return;
       }
-      $('studioIssuePanel').innerHTML = issues.map((issue, i) => `
+      $('studioIssuePanel').innerHTML = issues.map((issue, i) => {
+        const isNiceToHave = issue.category === 'code-duplication';
+        const dotClass = issue.severity === 'error' ? 'bg-rose-600 text-white' : isNiceToHave ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white';
+        const chipClass = issue.severity === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : isNiceToHave ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200';
+        const chipLabel = issue.severity === 'error' ? 'ERROR' : isNiceToHave ? 'NICE TO HAVE' : 'WARNING';
+        return `
         <button type="button" class="studio-issue-pick w-full text-left border border-slate-200 rounded-lg p-2 mb-2 hover:border-violet-300 flex gap-2" data-i="${i}">
-          <span class="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold shrink-0 mt-0.5 ${issue.severity === 'error' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}">${i + 1}</span>
+          <span class="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold shrink-0 mt-0.5 ${dotClass}">${i + 1}</span>
           <span class="flex-1 min-w-0">
-            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${issue.severity === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'}">${issue.severity.toUpperCase()}</span>
+            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${chipClass}">${chipLabel}</span>
             <span class="text-[10px] font-mono text-slate-400 ml-1">line ${issue.line || '?'}</span>
             <p class="text-[11px] text-slate-700 mt-1">${escapeHtml(issue.summary)}</p>
           </span>
-        </button>`).join('');
+        </button>`;
+      }).join('');
       // Refresh the code pane's numbered badges to match — but never while
       // the user has the textarea open, or this would blow away an
       // in-progress edit. Historical mode has no numbered-badge code view
@@ -3579,7 +3610,10 @@
     // read-only issues modal.
     function criticalFindingsHtml(issues) {
       const errors = issues.filter((i) => i.severity === 'error');
-      const list = (errors.length ? errors : issues).slice(0, 3);
+      const realWarnings = issues.filter((i) => i.severity === 'warning' && i.category !== 'code-duplication');
+      // code-duplication is advisory noise, not a "critical finding" — only
+      // surfaces here if there's truly nothing else flagged.
+      const list = (errors.length ? errors : realWarnings.length ? realWarnings : issues).slice(0, 3);
       if (list.length === 0) return '';
       return `
         <div class="mt-5">

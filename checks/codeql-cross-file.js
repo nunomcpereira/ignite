@@ -148,6 +148,25 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
     return { steps: resolved, fileCount: bestFileCount };
   }
 
+  // CodeQL's own SARIF messages for a multi-source path-problem query embed
+  // one clause per source feeding the sink, each tagged `[label](N)` (N =
+  // index into relatedLocations) — e.g. 8 different password fields all
+  // hashed by the same call produces 8 near-identical sentences differing
+  // only by that index. Ignite has nowhere to render relatedLocations as
+  // actual links, so left raw this reads as the same sentence "repeated 8
+  // times". Strip the index markers and collapse to one clause when they're
+  // otherwise identical, noting how many sources collapsed into it.
+  function normalizeSarifMessage(text) {
+    if (!text) return text;
+    const plain = (s) => s.replace(/\[([^\]]+)\]\(\d+\)/g, '$1');
+    const clauses = text.split(/(?<=[.?!])\s+(?=\[[^\]]+\]\(\d+\))/).map((c) => plain(c).trim());
+    if (clauses.length <= 1) return plain(text);
+    const uniqueClauses = [...new Set(clauses)];
+    return uniqueClauses.length === 1
+      ? `${uniqueClauses[0]} (${clauses.length} sources flow into this same sink)`
+      : uniqueClauses.join(' ');
+  }
+
   function extractCwe(rule) {
     const tags = Array.isArray(rule?.properties?.tags) ? rule.properties.tags : [];
     for (const tag of tags) {
@@ -194,7 +213,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
           tool: 'codeql',
           language,
           severity,
-          message: result.message?.text || rule.shortDescription?.text || 'CodeQL finding',
+          message: normalizeSarifMessage(result.message?.text) || rule.shortDescription?.text || 'CodeQL finding',
           snippet: srcContent ? buildSnippet(srcContent, line) : null,
           crossFile: Boolean(flow && flow.fileCount > 1),
           // Only worth carrying through (and rendering as a "chain" in

@@ -85,9 +85,13 @@ const XSS_SINK_REGEXES = [
 // use case, since there's no correct security use of MD5/SHA-1 for hashing
 // or DES/ECB for encryption today (unlike Math.random(), which is fine for
 // non-security randomness and would be too noisy to flag unconditionally).
+// hashlib.md5()/sha1() are flagged unconditionally below *unless* the call
+// passes Python 3.9+'s usedforsecurity=False — that kwarg is Python's own
+// way of saying "not a security use" (FIPS-mode hashlib raises otherwise),
+// e.g. an ETag or dedup-key digest.
 const WEAK_CRYPTO_REGEXES = [
   /crypto\.createHash\(\s*['"](md5|sha1)['"]\s*\)/i,
-  /hashlib\.(md5|sha1)\(/i,
+  /hashlib\.(md5|sha1)\((?![^)]*usedforsecurity\s*=\s*False)/i,
   /MessageDigest\.getInstance\(\s*['"](MD5|SHA-?1)['"]\s*\)/i,
   /createCipheriv\(\s*['"]des/i,
   /Cipher\.getInstance\(\s*['"](DES|[^'"]*\/ECB\/)/i,

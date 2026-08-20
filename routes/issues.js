@@ -55,16 +55,51 @@ Write 2-4 sentences in plain language with no jargon: what is concretely wrong i
     return await llmComplete(ISSUE_EXPLAIN_PROMPT, user, { temperature: 0.3, timeoutMs: 60_000, label: `issue-explain ${issue.category}:${issue.file || '?'}:${issue.line || 0}` });
   }
 
+  // A JSON-object response schema (as originally used here) forces the model
+  // to escape every quote inside the replacement code as a JSON string — for
+  // multi-line snippets full of string literals (Python dict/f-string code,
+  // JSX, etc.) local models reliably get that escaping wrong (e.g. escaping
+  // the quotes around an f-string but not the ones around a dict key),
+  // producing JSON that *looks* almost valid but isn't recoverable by brace-
+  // matching alone. A plain delimited text format sidesteps the problem
+  // entirely: the replacement code is copied verbatim, no escaping required.
   const ISSUE_SUGGEST_FIX_PROMPT = `You are a senior software engineer proposing a concrete fix for one single flagged code issue, using the exact numbered code snippet shown.
 Propose a corrected replacement for ONLY the exact line range shown in the snippet (from its first to its last numbered line) — do not rewrite the whole file, do not renumber lines, do not add lines outside that range.
-Respond with ONLY a JSON object in this schema:
-{"explanation":"<1-3 sentences: what changed and why it fixes the issue>","replacement":"<the corrected text for that exact line range, newline-separated, no line-number prefixes>"}
-If you cannot safely propose a fix from the snippet alone, respond {"explanation":"<why not>","replacement":null}.`;
+Respond in EXACTLY this plain-text format and nothing else — no JSON, no code fences, no text before or after:
+EXPLANATION: <1-3 sentences: what changed and why it fixes the issue>
+REPLACEMENT:
+<the corrected text for that exact line range, copied verbatim with no escaping, newline-separated, no line-number prefixes>
+If you cannot safely propose a fix from the snippet alone, respond:
+EXPLANATION: <why not>
+REPLACEMENT: NONE`;
 
-  function stripJsonFence(text) {
+  function stripCodeFence(text) {
     const trimmed = text.trim();
-    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    const fenced = trimmed.match(/^```(?:\w+)?\s*([\s\S]*?)\s*```$/);
     return fenced ? fenced[1] : trimmed;
+  }
+
+  // Trims fully-blank leading/trailing lines without disturbing the
+  // indentation of the code itself.
+  function trimBlockLines(raw) {
+    const lines = raw.replace(/\r\n/g, '\n').split('\n');
+    while (lines.length && lines[0].trim() === '') lines.shift();
+    while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+    return lines.join('\n');
+  }
+
+  function parseSuggestFixResponse(text) {
+    const trimmed = stripCodeFence(text);
+    const match = trimmed.match(/EXPLANATION:\s*([\s\S]*?)\n\s*REPLACEMENT:\s*([\s\S]*)$/i);
+    if (!match) {
+      const err = new Error('The AI response did not match the expected fix format.');
+      err.code = 'invalid_response';
+      throw err;
+    }
+    const explanation = match[1].trim();
+    const replacementBlock = trimBlockLines(stripCodeFence(match[2]));
+    const replacement = replacementBlock.toUpperCase() === 'NONE' ? null : replacementBlock;
+    return { explanation, replacement };
   }
 
   // Distinguishes "the LLM call itself failed" (llmComplete's thrown
@@ -95,21 +130,9 @@ If you cannot safely propose a fix from the snippet alone, respond {"explanation
     const codeBlock = issue.snippet.lines.map((l) => `${l.number}: ${l.text}`).join('\n').slice(0, 4000);
     const user = `Category: ${issue.category}\nSeverity: ${issue.severity}\nLocation: ${issue.file || 'unknown'}${issue.line ? ':' + issue.line : ''}\nTechnical summary: ${issue.summary}\n\nCode:\n${codeBlock}`;
     const text = await llmComplete(ISSUE_SUGGEST_FIX_PROMPT, user, { temperature: 0.2, timeoutMs: 60_000, label: `issue-suggest-fix ${issue.category}:${issue.file || '?'}:${issue.line || 0}` });
-    let parsed;
-    try {
-      parsed = JSON.parse(stripJsonFence(text));
-    } catch {
-      const err = new Error('The AI response could not be parsed as JSON.');
-      err.code = 'invalid_response';
-      throw err;
-    }
-    if (typeof parsed.replacement !== 'string' && parsed.replacement !== null) {
-      const err = new Error('The AI response did not match the expected fix schema.');
-      err.code = 'invalid_response';
-      throw err;
-    }
+    const parsed = parseSuggestFixResponse(text);
     return {
-      explanation: String(parsed.explanation || ''),
+      explanation: parsed.explanation,
       replacement: parsed.replacement,
       startLine: issue.snippet.startLine,
       endLine: issue.snippet.startLine + issue.snippet.lines.length - 1,

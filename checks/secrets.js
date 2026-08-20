@@ -43,6 +43,59 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
     return Boolean(quote) || !SECRET_SCAN_CODE_EXTS.has(ext);
   }
 
+  // Pulls the top-level `[allowlist]` table out of a gitleaks.toml — deliberately
+  // not `[rules.allowlist]` (per-rule, nested under `[[rules]]`), just the global
+  // one, since that's the table gitleaks itself consults for every rule including
+  // its built-ins. Hand-rolled rather than a TOML dependency: only two array
+  // fields (`regexes`, `paths`) of `'''...'''`/`"..."`-quoted strings are needed.
+  function parseGitleaksAllowlist(text) {
+    const lines = text.split(/\r?\n/);
+    const startIdx = lines.findIndex((l) => /^\[allowlist\]\s*(#.*)?$/.test(l.trim()));
+    if (startIdx === -1) return { regexes: [], paths: [] };
+    const blockLines = [];
+    for (let i = startIdx + 1; i < lines.length; i++) {
+      if (/^\[/.test(lines[i].trim())) break; // next table — [allowlist] block ends here
+      blockLines.push(lines[i]);
+    }
+    const block = blockLines.join('\n');
+
+    function extractArray(field) {
+      const arrMatch = block.match(new RegExp(`${field}\\s*=\\s*\\[([\\s\\S]*?)\\]`));
+      if (!arrMatch) return [];
+      const items = [];
+      const itemRe = /'''([\s\S]*?)'''|"""([\s\S]*?)"""|'([^'\n]*)'|"([^"\n]*)"/g;
+      let m;
+      while ((m = itemRe.exec(arrMatch[1])) !== null) {
+        const raw = m[1] ?? m[2] ?? m[3] ?? m[4];
+        try {
+          items.push(new RegExp(raw));
+        } catch {
+          // malformed pattern in the project's own config — skip it rather
+          // than let a bad regex crash the scan.
+        }
+      }
+      return items;
+    }
+
+    return { regexes: extractArray('regexes'), paths: extractArray('paths') };
+  }
+
+  async function loadGitleaksAllowlist(root, explicitConfigPath) {
+    const candidatePath = explicitConfigPath || path.join(root, '.gitleaks.toml');
+    try {
+      const text = await fsp.readFile(candidatePath, 'utf8');
+      return parseGitleaksAllowlist(text);
+    } catch {
+      return { regexes: [], paths: [] }; // no gitleaks.toml — nothing to honor
+    }
+  }
+
+  function isAllowlisted(allowlist, relPath, lineText) {
+    if (allowlist.paths.some((re) => re.test(relPath))) return true;
+    if (allowlist.regexes.some((re) => re.test(lineText))) return true;
+    return false;
+  }
+
   async function gitleaksTooling() {
     try {
       await runTool('gitleaks', ['version'], os.tmpdir());
@@ -109,6 +162,10 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
     let cacheHits = 0;
     let gitignoredSkipped = 0;
     const gitignorePatterns = await loadGitignorePatterns(root);
+    const allowlist = await loadGitleaksAllowlist(root, GITLEAKS_CONFIG_PATH);
+    if (allowlist.regexes.length > 0 || allowlist.paths.length > 0) {
+      log(`ℹ Honoring project's .gitleaks.toml allowlist (${allowlist.regexes.length} regex, ${allowlist.paths.length} path rule(s)) for the built-in credential scan.`);
+    }
     const prevCache = loadFileScanCache(cacheKey, 'secrets');
     const newCacheEntries = [];
 
@@ -144,7 +201,7 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
       const lines = content.split(/\r?\n/);
       lines.forEach((line, i) => {
         const match = line.match(SECRET_REGEX);
-        if (match && isLikelySecretValue(match[2], ext)) {
+        if (match && isLikelySecretValue(match[2], ext) && !isAllowlisted(allowlist, rel, line)) {
           fileFindings.push({
             file: rel,
             line: i + 1,

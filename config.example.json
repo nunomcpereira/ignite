@@ -114,8 +114,8 @@
     "jscpd": {
       "enabled": false,
       "binary": "jscpd",
-      "minLines": 5,
-      "minTokens": 50,
+      "minLines": 15,
+      "minTokens": 150,
       "ignorePatterns": [
         "docs/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**",
         "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
