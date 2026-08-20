@@ -6,6 +6,7 @@ import { loadOverrides, appendUnresolvedIssues, reviewFilePath, findAcknowledgeL
 import { installPrePushHook } from './prePushHook';
 import { FindingsTreeProvider } from './panels/findingsTree';
 import { ToolsStatusTreeProvider } from './panels/toolsStatusTree';
+import { LiveLogPrinter, ScanProgressPoller } from './progress';
 
 let outputChannel: vscode.OutputChannel;
 let diagnostics: vscode.DiagnosticCollection;
@@ -23,7 +24,7 @@ function activeWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
 function setStatusBar(state: 'idle' | 'running' | 'ok' | 'errors', detail?: string): void {
   switch (state) {
     case 'running':
-      statusBarItem.text = '$(sync~spin) Ignite: scanning…';
+      statusBarItem.text = `$(sync~spin) Ignite: ${detail ?? 'scanning…'}`;
       break;
     case 'ok':
       statusBarItem.text = '$(shield) Ignite: passed';
@@ -37,14 +38,6 @@ function setStatusBar(state: 'idle' | 'running' | 'ok' | 'errors', detail?: stri
   statusBarItem.tooltip = 'Run Ignite: Scan Workspace';
   statusBarItem.command = 'ignite.scanWorkspace';
   statusBarItem.show();
-}
-
-function logPhases(phases: { phase: number; title: string; state: string; logs: string[] }[]): void {
-  for (const p of phases) {
-    if (p.logs.length === 0) continue;
-    outputChannel.appendLine(`\n── Phase ${p.phase} — ${p.title} [${p.state}] ──`);
-    p.logs.forEach((l) => outputChannel.appendLine(l));
-  }
 }
 
 async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
@@ -80,16 +73,49 @@ async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
     getOriginOrgRepo(repoRoot),
   ]);
 
-  try {
-    const result = await validateAll(workspaceRoot, {
-      runLocalCi,
-      org: org || undefined,
-      repo: repo || undefined,
-      overrides,
-      actor: actor ?? undefined,
-    });
+  const printer = new LiveLogPrinter(outputChannel);
+  let progressReport: ((message: string) => void) | undefined;
+  // validate-all is one synchronous request with no NDJSON streaming, but
+  // each phase's logs land in the DB live as the server-side run progresses
+  // (see api.ts's listProjects/getProjectDetails doc comment) — polling
+  // those two endpoints is how "Phase 4 — Security & AI Compliance Scan"
+  // ends up next to the spinner instead of a static "scanning…" for
+  // however many minutes Bearer/CodeQL/GuardDog take on a real project.
+  const poller = new ScanProgressPoller(org, repo, printer, (phase, title, elapsedSeconds) => {
+    setStatusBar('running', `Phase ${phase} — ${title} (${elapsedSeconds}s)`);
+    progressReport?.(`Phase ${phase} — ${title}`);
+  });
 
-    logPhases(result.phases ?? []);
+  try {
+    const result = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: 'Ignite: scanning workspace',
+        cancellable: false,
+      },
+      async (progress) => {
+        progressReport = (message: string) => progress.report({ message });
+        poller.start();
+        try {
+          return await validateAll(workspaceRoot, {
+            runLocalCi,
+            org: org || undefined,
+            repo: repo || undefined,
+            overrides,
+            actor: actor ?? undefined,
+          });
+        } finally {
+          poller.stop();
+          progressReport = undefined;
+        }
+      }
+    );
+
+    // Final reconciliation pass: authoritative and complete, but the printer
+    // only emits what the poller hasn't already shown, so nothing duplicates.
+    for (const p of result.phases ?? []) {
+      printer.appendPhase(p.phase, p.title, p.state, p.logs ?? []);
+    }
 
     const issues = result.issues ?? [];
     lastResultIssues = issues;

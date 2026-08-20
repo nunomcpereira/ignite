@@ -113,6 +113,48 @@ export async function validateAll(projectPath: string, opts: ValidateAllOptions)
   return (await res.json()) as ValidateAllResult;
 }
 
+export interface ProjectSummary {
+  id: number;
+  job_id: string;
+  org: string;
+  repo: string;
+  status: string;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface ProjectStep {
+  phase: number;
+  title: string;
+  state: string;
+  logs: string;
+}
+
+export interface ProjectDetails extends ProjectSummary {
+  steps: ProjectStep[];
+}
+
+/**
+ * validate-all is a single synchronous request with no NDJSON streaming
+ * (unlike POST /api/pipeline) — but store.upsertStep persists each phase's
+ * state/logs to the DB live as the run progresses (see routes/pipeline-
+ * validate.js's persistPhase), so polling these two existing history
+ * endpoints (already used by the web UI's project history panel) is how
+ * the extension gets real progress out of a request it can't stream.
+ */
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const res = await fetch(`${baseUrl()}/api/projects`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`GET /api/projects returned HTTP ${res.status}`);
+  return (await res.json()) as ProjectSummary[];
+}
+
+export async function getProjectDetails(id: number): Promise<ProjectDetails | null> {
+  const res = await fetch(`${baseUrl()}/api/projects/${id}`, { signal: AbortSignal.timeout(5000) });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GET /api/projects/${id} returned HTTP ${res.status}`);
+  return (await res.json()) as ProjectDetails;
+}
+
 export async function toolsStatus(): Promise<ToolStatus[]> {
   const url = baseUrl();
   let res: Response;
