@@ -211,8 +211,16 @@ function mountValidateAllRoute(app, {
       const issuesRequiringOverride =
         warningDecision === 'continue' ? errorIssues : issues;
 
+      // Surfaced on the success response below too (not just the 400/failure
+      // path) so a non-browser caller that wants the *whole* issue list —
+      // warnings included, even ones nobody had to override — doesn't need
+      // to force warningDecision=fail just to get data back. Overridden ids
+      // get tagged after validateOverrides runs.
+      const overriddenIds = new Set();
+
       if (issuesRequiringOverride.length > 0) {
         const { ok, unresolvedErrors, applied } = validateOverrides(issuesRequiringOverride, requestedOverrides);
+        applied.forEach(({ issue }) => overriddenIds.add(issue.id));
         if (applied.length > 0) {
           const actor = resolveActor(req);
           if (!actor) {
@@ -276,6 +284,7 @@ function mountValidateAllRoute(app, {
         mode: 'validate-all',
         jobId,
         projectPath,
+        issues: issues.map((i) => (overriddenIds.has(i.id) ? { ...i, status: 'overridden' } : i)),
         phases: phaseSummary(),
         events,
       });

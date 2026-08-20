@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# Ignite pre-push hook - runs Ignite's checks against this repo before a
+# push leaves the machine, instead of onboarding-time-only via the web UI.
+# Blocking findings can be acknowledged (justified + overridden) entirely
+# from the terminal - see "CLI acknowledgment" below - no browser required.
+#
+# Install (either works):
+#   1. One repo:      cp hooks/pre-push /path/to/other-repo/.git/hooks/pre-push
+#                      chmod +x /path/to/other-repo/.git/hooks/pre-push
+#   2. Every repo on this machine: point git at a shared hooks dir instead of
+#      copy-pasting into each .git/hooks/ (which isn't itself tracked by git):
+#        mkdir -p ~/.git-hooks && cp hooks/pre-push ~/.git-hooks/
+#        git config --global core.hooksPath ~/.git-hooks
+#
+# Requires: a running Ignite server (`npm start` in the ignite repo) reachable
+# at IGNITE_BASE_URL (default http://localhost:51337), and `node` on PATH.
+#
+# CLI acknowledgment: on a blocking finding, this hook writes/appends to a
+# .ignite-review.md file (repo root) listing each one with a blank
+# "Acknowledge:" line - the same justify-and-override step the web UI's
+# review gate does, but as a file you edit in your own editor. Fill in a
+# justification, `git push` again: the hook resubmits every filled-in entry
+# as a real, attributed override (git config user.name/user.email). Meant
+# to be committed - it's an append-only audit trail, not scratch state: an
+# id (<category>::<file>::<line>) that's already justified stays in the
+# file (and keeps getting resubmitted as an override) on every future push,
+# whether or not that run reported it, until you delete the entry yourself
+# or the code around it changes enough to produce a different id.
+#
+# Line-drift carry-forward: the id embeds a line number, so any edit above a
+# flagged line (even one totally unrelated to it) changes the id and would
+# otherwise turn an already-justified finding back into a fresh blank one.
+# When a finding's language check reports a `# Code:` snippet (the flagged
+# line's own source text), a "new" id is matched against existing entries by
+# same category + file + byte-identical `# Code:` text; on a match the old
+# entry's justification is reused (annotated "auto-carried-forward from
+# <old id>") and the old entry is dropped rather than duplicated. This only
+# fires when the flagged line's actual text is unchanged - if the line
+# itself was edited, the code text differs, no match is found, and it's
+# treated as a genuinely new finding needing real review, same as always.
+#
+# Delta check: a full run records the pushed commit in the local (untracked)
+# .git/ignite-last-validated-ok. The next push skips the check entirely if
+# the working tree at HEAD is byte-identical to that commit's tree (ignoring
+# .ignite-review.md) - i.e. re-pushing code that already fully passed, with
+# at most an override justification edited. Any real source change makes the
+# diff non-empty, so it always falls through to a full, whole-project run -
+# this never trades away coverage, it only skips redundant re-scans of code
+# Ignite has already scanned and passed. A fresh clone has no state file, so
+# a new repo's first push always gets the full run.
+#
+# Env overrides:
+#   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
+#   IGNITE_RUN_LOCAL_CI   "false" to skip Phase 5 (act/Docker governance CI)
+#                         for a faster pre-push - on by default so a push
+#                         gets the same gate a real PR would
+#   IGNITE_WARNING_MODE   "fail" to also block on unoverridden warnings,
+#                         default "continue" (only blocking errors gate)
+#   IGNITE_REVIEW_FILE    path to the acknowledgment file (default
+#                         <repo-root>/.ignite-review.md)
+#   IGNITE_FORCE_FULL_CHECK  "true" to always run the full pipeline, ignoring
+#                         the delta check above
+#   IGNITE_PREPUSH_SKIP   "true" to skip this hook entirely for one push
+#                         (prefer this over --no-verify so it's logged)
+set -euo pipefail
+
+if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
+  echo "⚠ Ignite pre-push check skipped (IGNITE_PREPUSH_SKIP=true)."
+  exit 0
+fi
+
+IGNITE_URL="${IGNITE_BASE_URL:-http://localhost:51337}"
+REPO_PATH="$(git rev-parse --show-toplevel)"
+REVIEW_FILE="${IGNITE_REVIEW_FILE:-$REPO_PATH/.ignite-review.md}"
+ORIGIN_URL="$(git config --get remote.origin.url || echo '')"
+ORG="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\1#')"
+REPO="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\2#')"
+RUN_LOCAL_CI="${IGNITE_RUN_LOCAL_CI:-true}"
+WARNING_DECISION="${IGNITE_WARNING_MODE:-continue}"
+ACTOR_EMAIL="$(git config --get user.email || echo '')"
+ACTOR_NAME="$(git config --get user.name || echo '')"
+
+if ! curl -sf -m 3 "$IGNITE_URL/api/config" > /dev/null 2>&1; then
+  echo "✗ Ignite isn't reachable at $IGNITE_URL." >&2
+  echo "  Start it with 'npm start' in the ignite repo, set IGNITE_BASE_URL to" >&2
+  echo "  point elsewhere, or set IGNITE_PREPUSH_SKIP=true to skip this push." >&2
+  exit 1
+fi
+
+STATE_FILE="$REPO_PATH/.git/ignite-last-validated-ok"
+CURRENT_SHA="$(git rev-parse HEAD)"
+if [ "${IGNITE_FORCE_FULL_CHECK:-}" != "true" ] && [ -f "$STATE_FILE" ]; then
+  LAST_OK_SHA="$(cat "$STATE_FILE")"
+  if git cat-file -e "${LAST_OK_SHA}^{commit}" 2>/dev/null \
+    && git merge-base --is-ancestor "$LAST_OK_SHA" "$CURRENT_SHA" 2>/dev/null; then
+    CHANGED="$(git diff --name-only "$LAST_OK_SHA" "$CURRENT_SHA" -- . ':(exclude)'"$(basename "$REVIEW_FILE")")"
+    if [ -z "$CHANGED" ]; then
+      echo "✓ No source changes since the last fully-validated push ($LAST_OK_SHA) - skipping Ignite checks."
+      echo "  (set IGNITE_FORCE_FULL_CHECK=true to always run the full pipeline)"
+      exit 0
+    fi
+  fi
+fi
+
+# Turn any already-justified entries in the local review file into the
+# overrides array validate-all expects. Prints "[]" if the file doesn't
+# exist or has nothing filled in yet.
+OVERRIDES_JSON="$(node -e '
+  const fs = require("fs");
+  const path = process.argv[1];
+  let text = "";
+  try { text = fs.readFileSync(path, "utf8"); } catch { console.log("[]"); process.exit(0); }
+  const overrides = [];
+  const blocks = text.split(/\n(?=ID: )/);
+  for (const block of blocks) {
+    const idMatch = block.match(/^ID:\s*(.+)$/m);
+    const ackMatch = block.match(/^Acknowledge:\s*(.*)$/m);
+    if (!idMatch) continue;
+    const justification = (ackMatch ? ackMatch[1] : "").trim();
+    if (justification) overrides.push({ issueId: idMatch[1].trim(), justification });
+  }
+  console.log(JSON.stringify(overrides));
+' "$REVIEW_FILE")"
+
+echo "→ Running Ignite checks against $REPO_PATH ..."
+if [ "$OVERRIDES_JSON" != "[]" ]; then
+  COUNT="$(node -e "console.log(JSON.parse(process.argv[1]).length)" "$OVERRIDES_JSON")"
+  echo "  (resubmitting $COUNT justification(s) from $REVIEW_FILE)"
+fi
+
+REQUEST_BODY="$(node -e '
+  const [projectPath, org, repo, runLocalCi, warningDecision, overridesJson, actorEmail, actorName] = process.argv.slice(1);
+  const body = {
+    projectPath, org, repo,
+    gxp: false,
+    runLocalCi: runLocalCi === "true",
+    warningDecision,
+    overrides: JSON.parse(overridesJson),
+  };
+  if (actorEmail) body.actor = { email: actorEmail, name: actorName || actorEmail };
+  console.log(JSON.stringify(body));
+' "$REPO_PATH" "$ORG" "$REPO" "$RUN_LOCAL_CI" "$WARNING_DECISION" "$OVERRIDES_JSON" "$ACTOR_EMAIL" "$ACTOR_NAME")"
+
+RESPONSE="$(curl -sS -X POST "$IGNITE_URL/api/pipeline/validate-all" \
+  -H 'Content-Type: application/json' \
+  -d "$REQUEST_BODY")"
+
+node -e '
+  const fs = require("fs");
+  const reviewFile = process.argv[1];
+  let d = "";
+  process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    let r;
+    try { r = JSON.parse(d); } catch {
+      console.error("✗ Ignite returned a non-JSON response:", d.slice(0, 500));
+      process.exit(1);
+    }
+    if (r.ok) {
+      console.log("✓ Ignite checks passed.");
+      process.exit(0);
+    }
+    console.error("✗ Ignite checks failed - push blocked.");
+    for (const p of r.phases || []) {
+      if (p.state === "failed") {
+        console.error(`  Phase ${p.phase} - ${p.title}`);
+        (p.logs || []).slice(-10).forEach((l) => console.error("    " + l));
+      }
+    }
+    const issues = Array.isArray(r.issues) ? r.issues : [];
+    if (issues.length === 0) {
+      // Not the overridable Phase 4 issue-list case (e.g. raw .env files,
+      // a failing unit test) - nothing to acknowledge from the CLI.
+      console.error("");
+      console.error("This failure isn'\''t something a justification can override - fix it in the source and push again.");
+      process.exit(1);
+    }
+    // Append-only: this file is meant to be committed, so each entry block
+    // (comment lines + whatever Acknowledge text was written) is preserved
+    // exactly as last written, forever - including ones already resolved
+    // this run (their override just got resubmitted successfully; dropping
+    // them here would silently un-acknowledge them on the next push, since
+    // only what remains physically in the file gets resubmitted). Only ids
+    // not already present get a fresh blank entry appended.
+    let existing = "";
+    try { existing = fs.readFileSync(reviewFile, "utf8"); } catch { /* first run */ }
+    const existingIds = new Set();
+    // Parsed alongside the raw block text so a pure line-number drift (an
+    // unrelated edit elsewhere in the file shifting every line below it)
+    // can be told apart from a genuinely new finding: same category+file,
+    // and the flagged line own source text (# Code:) unchanged, even
+    // though the id (which embeds the line number) is now different.
+    const existingParsed = [];
+    for (const block of existing.split(/\n(?=ID: )/)) {
+      const idMatch = block.match(/^ID:\s*(.+)$/m);
+      if (!idMatch) continue;
+      const id = idMatch[1].trim();
+      existingIds.add(id);
+      const locMatch = block.match(/^#\s+(\S+?)(?::(\d+))?$/m);
+      const codeMatch = block.match(/^# Code:\s*(.*)$/m);
+      const ackMatch = block.match(/^Acknowledge:\s*(.*)$/m);
+      existingParsed.push({
+        id,
+        category: id.split("::")[0],
+        file: locMatch ? locMatch[1] : null,
+        code: codeMatch ? codeMatch[1].trim() : null,
+        justification: (ackMatch ? ackMatch[1] : "").trim(),
+        raw: block.replace(/\n+$/, ""),
+        superseded: false,
+      });
+    }
+    const codeForIssue = (issue) => {
+      const s = issue.snippet;
+      if (!s || !Array.isArray(s.lines)) return null;
+      const hit = s.lines.find((l) => l.number === s.highlightLine);
+      return hit ? hit.text.trim() : null;
+    };
+    const newBlocks = [];
+    for (const issue of issues) {
+      if (existingIds.has(issue.id)) continue;
+      const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
+      const code = codeForIssue(issue);
+      // Carry-forward: an already-justified entry, same category+file, whose
+      // recorded flagged-line text is byte-identical to this "new" issue -
+      // the id only changed because something above it in the file shifted
+      // line numbers. Reuse its justification instead of asking for the
+      // same review again; the old entry is dropped (superseded) so the
+      // file does not accumulate a duplicate for every edit that touches it.
+      const match = code
+        ? existingParsed.find((e) => !e.superseded && e.justification && e.category === issue.category && e.file === issue.file && e.code === code)
+        : null;
+      if (match) match.superseded = true;
+      const ackLine = match
+        ? `Acknowledge: ${match.justification} (auto-carried-forward from ${match.id} - pure line-number drift, flagged code unchanged)`
+        : "Acknowledge: ";
+      newBlocks.push([
+        `ID: ${issue.id}`,
+        `# [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`,
+        `#   ${loc}`,
+        ...(code ? [`# Code: ${code}`] : []),
+        ackLine,
+      ].join("\n"));
+    }
+    const existingBlocks = existingParsed.filter((e) => !e.superseded).map((e) => e.raw);
+    const header = [
+      "# Ignite pre-push acknowledgments - meant to be committed: a filled-in",
+      "# justification is a real audit record, reviewable like code.",
+      "#",
+      "# Fill in a justification after \"Acknowledge:\" for any issue below you want",
+      "# to override, save, then `git push` again. Blank = stays blocking.",
+      "# Append-only: once written, an entry (and its justification) stays here",
+      "# permanently, resubmitted as an override on every future push, even",
+      "# after the id it names stops being reported - delete an entry yourself",
+      "# if you want to stop carrying it forward.",
+      "# A `# Code:` line, when present, is the flagged source line own text -",
+      "# used to auto-carry-forward this justification if an unrelated edit",
+      "# elsewhere in the file later shifts its line number. Do not hand-edit it.",
+      "",
+    ].join("\n");
+    fs.writeFileSync(reviewFile, header + [...existingBlocks, ...newBlocks].join("\n\n") + "\n");
+    console.error("");
+    console.error(`✗ ${issues.length} blocking finding(s) need a justification or a source fix.`);
+    console.error(`  Edit ${reviewFile}, fill in "Acknowledge:" for whichever you want to`);
+    console.error("  override, then push again - or fix them in the source instead.");
+    process.exit(1);
+  });
+' "$REVIEW_FILE" <<< "$RESPONSE"
+
+echo -n "$CURRENT_SHA" > "$STATE_FILE"

@@ -1,0 +1,75 @@
+{
+  "name": "ignite-vscode",
+  "displayName": "Ignite",
+  "description": "Run Ignite's compliance/security pipeline against the open workspace folder — findings in the Problems panel, no separate web UI required.",
+  "version": "0.1.0",
+  "publisher": "ignite",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Linters", "Other"],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "ignite.scanWorkspace", "title": "Ignite: Scan Workspace", "icon": "$(shield)" },
+      { "command": "ignite.showOutput", "title": "Ignite: Show Output" },
+      { "command": "ignite.openReviewFile", "title": "Ignite: Open Review File" },
+      { "command": "ignite.acknowledgeIssue", "title": "Ignite: Acknowledge in .ignite-review.md" },
+      { "command": "ignite.installPrePushHook", "title": "Ignite: Install Pre-Push Hook" },
+      { "command": "ignite.refreshToolsStatus", "title": "Ignite: Refresh Tools Status", "icon": "$(refresh)" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "ignite.acknowledgeIssue", "when": "false" }
+      ],
+      "view/title": [
+        { "command": "ignite.scanWorkspace", "when": "view == igniteFindings", "group": "navigation" },
+        { "command": "ignite.refreshToolsStatus", "when": "view == igniteToolsStatus", "group": "navigation" }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "ignite", "title": "Ignite", "icon": "resources/ignite.svg" }
+      ]
+    },
+    "views": {
+      "ignite": [
+        { "id": "igniteFindings", "name": "Findings" },
+        { "id": "igniteToolsStatus", "name": "Tools Status" }
+      ]
+    },
+    "configuration": {
+      "title": "Ignite",
+      "properties": {
+        "ignite.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:51337",
+          "description": "Base URL of a running Ignite server (npm start in the ignite repo). Matches IGNITE_BASE_URL."
+        },
+        "ignite.runLocalCi": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run Phase 5 org governance CI (act + Docker) as part of a scan. Off by default in the extension — it's the slowest phase and needs Docker."
+        },
+        "ignite.showOverriddenIssues": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show issues already acknowledged in .ignite-review.md as dimmed diagnostics instead of hiding them."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
