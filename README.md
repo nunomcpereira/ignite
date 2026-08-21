@@ -776,7 +776,7 @@ ship. API keys close that gap:
 pick this up automatically from an `IGNITE_API_KEY` env var:
 
 ```bash
-export IGNITE_API_KEY=ignite_...
+export IGNITE_API_KEY="<the key scripts/create-api-key.js printed>"
 ```
 
 There's no revoke endpoint yet - `store.revokeApiKey(id)` in `db-store.js`
