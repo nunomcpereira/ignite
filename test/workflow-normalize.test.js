@@ -44,3 +44,19 @@ test('normalizeWorkflowText: relaxes --max-warnings 0 to avoid failing on pre-ex
     assert.match(normalized, /--max-warnings 1000/);
   })();
 });
+
+test('normalizeWorkflowText: injects a docs-site/ ignore so a JSX subproject does not hard-fail eslint-plugin-security\'s parser', async () => {
+  await withServerEnv({}, async (mod) => {
+    const workflowText =
+      'echo \'import security from "eslint-plugin-security"; export default [ security.configs.recommended ];\' > eslint.config.js';
+
+    const normalized = mod.normalizeWorkflowText(workflowText);
+
+    assert.match(normalized, /\{\s*ignores:\s*\["docs-site\/\*\*"\]\s*\}/, 'must add a global-ignore entry for docs-site/');
+    // The ignores entry must come before security.configs.recommended in the array —
+    // ESLint's flat config only treats a lone-`ignores` object as global if present.
+    const ignoresIdx = normalized.indexOf('ignores');
+    const recommendedIdx = normalized.indexOf('security.configs.recommended');
+    assert.ok(ignoresIdx > -1 && recommendedIdx > -1 && ignoresIdx < recommendedIdx);
+  })();
+});

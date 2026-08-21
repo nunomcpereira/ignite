@@ -848,13 +848,24 @@ function normalizeWorkflowText(text) {
   // destination filename in the same match. Reversing the order lets the
   // generic replace consume the ESM text first, leaving nothing for these
   // to match — silently keeping the broken .js destination.
+  //
+  // Each rewritten config also gets a leading `{ ignores: [...] }` entry
+  // (ESLint flat-config's global-ignore form) for docs-site/ and other
+  // known non-Node subprojects this repo carries — a plain
+  // security.configs.recommended has no JSX/TSX parser, so any subproject
+  // source using JSX (e.g. docs-site's Docusaurus theme components) is a
+  // hard parse error, not a suppressible warning; `--max-warnings` can't
+  // help. This profile is meant to check the Node backend, not lint
+  // every subproject's own toolchain.
+  const IGNORED_SUBPROJECTS = ['docs-site/**'];
+  const ignoresConfig = `{ ignores: ${JSON.stringify(IGNORED_SUBPROJECTS)} }`;
   return String(text)
     .replace(/echo\s+'import\s+security\s+from\s+"eslint-plugin-security";\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];'\s*>\s*eslint\.config\.js/g,
-      'echo \'const security = require("eslint-plugin-security"); module.exports = [security.configs.recommended];\' > eslint.config.cjs')
+      `echo 'const security = require("eslint-plugin-security"); module.exports = [${ignoresConfig}, security.configs.recommended];' > eslint.config.cjs`)
     .replace(/echo\s+"import\s+security\s+from\s+'eslint-plugin-security';\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];"\s*>\s*eslint\.config\.js/g,
-      'echo "const security = require(\"eslint-plugin-security\"); module.exports = [security.configs.recommended];" > eslint.config.cjs')
+      `echo "const security = require(\\"eslint-plugin-security\\"); module.exports = [${ignoresConfig}, security.configs.recommended];" > eslint.config.cjs`)
     .replace(/import\s+security\s+from\s+["']eslint-plugin-security["'];?\s*export\s+default\s+\[\s*security\.configs\.recommended\s*\];?/g,
-      'const security = require("eslint-plugin-security"); module.exports = [security.configs.recommended];')
+      `const security = require("eslint-plugin-security"); module.exports = [${ignoresConfig}, security.configs.recommended];`)
     .replace(/npx\s+eslint\s+\.\s+--max-warnings(?:\s+|=)0\b/g, 'npx eslint . --max-warnings 1000');
 }
 
