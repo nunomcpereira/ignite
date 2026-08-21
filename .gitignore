@@ -10,3 +10,4 @@ test-results/
 playwright-report/
 docs/ux/
 docs/_site/
+.ignite/scans/
