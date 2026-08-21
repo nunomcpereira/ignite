@@ -49,6 +49,7 @@ function parseCookies(header) {
       if (idx === -1) return;
       const key = pair.slice(0, idx).trim();
       const val = pair.slice(idx + 1).trim();
+      // eslint-disable-next-line security/detect-object-injection -- key is guarded above (UNSAFE_COOKIE_KEYS), see codeql-sast::auth.js::52 in .ignite/acknowledgments.md
       if (key && !UNSAFE_COOKIE_KEYS.has(key)) out[key] = decodeURIComponent(val);
     });
   return out;
@@ -158,6 +159,7 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
      Never blocks. */
   function attachUser(req, res, next) {
     const cookies = parseCookies(req.headers.cookie);
+    // eslint-disable-next-line security/detect-object-injection -- SESSION_COOKIE is a fixed constant, not user input
     const sessionId = cookies[SESSION_COOKIE];
     req.user = null;
     if (sessionId) {
@@ -198,6 +200,7 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
 
   router.post('/api/auth/logout', (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
+    // eslint-disable-next-line security/detect-object-injection -- SESSION_COOKIE is a fixed constant, not user input
     const sessionId = cookies[SESSION_COOKIE];
     if (sessionId) store.deleteSession(sessionId);
     clearSessionCookie(res);

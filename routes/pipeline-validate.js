@@ -75,11 +75,13 @@ function mountValidateAllRoute(app, {
 
     const events = [];
     const record = {};
+    // eslint-disable-next-line security/detect-object-injection -- phase is always a small fixed phase-number literal (1-6) from PHASE_TITLES, never user input
     const rec = (phase) => (record[phase] ??= { state: 'pending', logs: [] });
     const persistPhase = (phase) => {
       if (projectId === null) return;
       const ph = rec(phase);
       try {
+        // eslint-disable-next-line security/detect-object-injection -- same fixed phase-number domain as above
         store.upsertStep(projectId, phase, phaseTitles[phase], ph.state, ph.logs.join('\n'));
       } catch {
         // Live history persistence is best-effort.
@@ -101,9 +103,11 @@ function mountValidateAllRoute(app, {
 
     const phaseSummary = () => Object.keys(phaseTitles)
       .map((id) => {
+        // eslint-disable-next-line security/detect-object-injection -- id comes from Object.keys(phaseTitles) itself, always a fixed known phase number
         const ph = record[id] || { state: 'pending', logs: [] };
         return {
           phase: Number(id),
+          // eslint-disable-next-line security/detect-object-injection -- same fixed phaseTitles-key domain as above
           title: phaseTitles[id],
           state: ph.state,
           logs: ph.logs,

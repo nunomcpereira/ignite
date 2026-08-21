@@ -25,6 +25,7 @@ function parseArgs(argv) {
   const args = { command: null, projectPath: null, changedFiles: null, json: false, baseUrl: null };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
+    // eslint-disable-next-line security/detect-object-injection -- i is a bounded numeric loop index, not user-controlled
     const a = argv[i];
     if (a === '--json') args.json = true;
     else if (a === '--changed-files') args.changedFiles = String(argv[++i] || '').split(',').map((s) => s.trim()).filter(Boolean);
