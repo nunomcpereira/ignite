@@ -1927,3 +1927,37 @@ ID: codeql-sast::guidelines/checks.js::318::js/file-system-race
 #   guidelines/checks.js:318
 # Code: const buffer = await fsp.readFile(file);
 Acknowledge: TOCTOU between stat() and readFile() here is inherent to any size-then-read scan and is intentional, not a vulnerability: the flagged file lives inside a per-job staging directory that only this scan process writes to or reads from during the run (see server.js's per-job UUID staging dir + finally-block cleanup) - there's no other actor able to swap the file mid-scan the way the query assumes for e.g. a shared /tmp path.
+
+ID: secret::README.md::779
+# [ERROR] secret - Hardcoded api_key
+#   README.md:779
+# Code: export IGNITE_API_KEY=ignite_...
+Acknowledge: Documentation example showing the shape of a minted key (`ignite_...`), not a real credential - the literal value is a truncated ellipsis placeholder, matched only because it starts with the `ignite_` prefix scripts/create-api-key.js actually generates.
+
+ID: pii-dataflow::auth.js::437
+# [ERROR] pii-dataflow - Usage of manual HTML sanitization (XSS)
+#   auth.js:437
+# Code: return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+Acknowledge: escapeHtml() escapes &, <, >, ", and ' and both call sites place its output only in a plain-text error-message body, never inside an HTML attribute or unescaped context - so there's no injection vector, just a manual implementation instead of a library. (Previously tracked as auth.js::407 - this API-key-auth batch added lines above it in the same file, shifting the line number again.)
+
+ID: codeql-sast::auth.js::29::js/insufficient-password-hash
+# [ERROR] codeql-sast - Password from an access to API_KEY_PREFIX is hashed insecurely.
+Password from a call to generateApiKey is hashed insecurely.
+Password from a call to generateApiKey is hashed insecurely.
+Password from a call to generateApiKey is hashed insecurely.
+#   auth.js:29
+# Code: return crypto.createHash('sha256').update(rawKey, 'utf8').digest('hex');
+Acknowledge: CodeQL's password-hash query is over-eager here: `rawKey` is not a user-chosen password, it's 32 bytes of crypto.randomBytes output from generateApiKey() - already maximal entropy, so there's nothing for a slow KDF (scrypt/bcrypt) to protect against offline guessing the way there is for hashPassword() a few lines above in this same file. A plain SHA-256 lookup hash for a high-entropy bearer token is standard practice (same approach GitHub/Stripe use for PATs), not a weakened password hash.
+
+ID: codeql-sast::auth.js::52::js/remote-property-injection
+# [ERROR] codeql-sast - A property name to write to depends on a user-provided value.
+A property name to write to depends on a user-provided value.
+#   auth.js:52
+# Code: if (key && !UNSAFE_COOKIE_KEYS.has(key)) out[key] = decodeURIComponent(val);
+Acknowledge: `out[key] = decodeURIComponent(val)` in parseCookies() - key is guarded two lines above by `!UNSAFE_COOKIE_KEYS.has(key)` (rejects '__proto__'/'constructor'/'prototype'), added specifically in response to this finding. CodeQL's taint tracking doesn't recognize a Set-membership check against literal strings as closing this flow, so it keeps reporting the (now-guarded) property write - the actual write can no longer reach Object.prototype through this code path regardless of what a client sends as a cookie name. (Previously tracked as auth.js::37 - this API-key-auth batch added lines above it in the same file, shifting the line number again.)
+
+ID: secret::.ignite/acknowledgments.md::1934
+# [ERROR] secret - Hardcoded api_key
+#   .ignite/acknowledgments.md:1934
+# Code: # Code: export IGNITE_API_KEY=ignite_...
+Acknowledge: Self-referential match: this file's own quoted snippet of README.md's `ignite_...` placeholder example (see the README.md::779 override above, same reasoning) - not a real credential, just this ledger echoing the finding it's justifying.
