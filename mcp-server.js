@@ -20,6 +20,11 @@ const { checkContent, checkProject } = require('./guidelines/checks');
 // to reach POST /api/pipeline/onboard.
 const IGNITE_BASE_URL = (process.env.IGNITE_BASE_URL || 'http://localhost:51337').replace(/\/+$/, '');
 
+// Headless auth for endpoints that need req.user (real pushes, overrides
+// attribution) — a key minted via `node scripts/create-api-key.js <email>`.
+// Optional: tools that only need dryRun/read-only behavior work without it.
+const IGNITE_API_KEY = process.env.IGNITE_API_KEY || null;
+
 // Factory so each HTTP session can get its own McpServer instance: a single
 // McpServer can only be bound to one transport at a time, but stateful
 // Streamable HTTP opens one transport per session.
@@ -131,7 +136,11 @@ async function proxyToIgnite(endpoint, body) {
       // Lets Ignite's onboarded-projects history annotate this run as
       // having come through MCP, distinct from a direct API call hitting
       // the same endpoint.
-      headers: { 'Content-Type': 'application/json', 'X-Ignite-Client': 'mcp' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Ignite-Client': 'mcp',
+        ...(IGNITE_API_KEY ? { Authorization: `Bearer ${IGNITE_API_KEY}` } : {}),
+      },
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -227,6 +236,59 @@ server.registerTool(
   }
 );
 
+server.registerTool(
+  'resolve_review_decision',
+  {
+    title: 'Resolve a paused interactive onboarding run',
+    description:
+      'Continue or stop a pipeline run that paused waiting for review (POST /api/pipeline/:jobId/review-decision) — a run started via the browser-driven /api/pipeline endpoint that hit an overridable issue. ' +
+      'Not needed for onboard_project calls, which resolve overrides inline in the same request. Use this only to resume a run someone else (or a prior agent turn) already started interactively. ' +
+      'Requires a running Ignite server reachable at IGNITE_BASE_URL.',
+    inputSchema: {
+      jobId: z.string().describe('The paused job id (from the SSE stream\'s review_required event).'),
+      proceed: z.boolean().describe('true to continue past the pause (after justifying any overrides below), false to stop the run.'),
+      overrides: z
+        .array(z.object({ issueId: z.string(), justification: z.string() }))
+        .optional()
+        .describe('Overrides to apply for blocking issues raised at the pause, keyed by issue id.'),
+      actor: z
+        .object({ email: z.string(), name: z.string().optional() })
+        .optional()
+        .describe('Required if overrides are submitted and the Ignite server has no logged-in session or API key.'),
+    },
+  },
+  async ({ jobId, proceed, overrides, actor }) => {
+    console.error('[mcp] resolve_review_decision called', { jobId, proceed });
+    return proxyToIgnite(`/api/pipeline/${encodeURIComponent(jobId)}/review-decision`, { proceed, overrides, actor });
+  }
+);
+
+server.registerTool(
+  'effectivate_project',
+  {
+    title: 'Turn a completed dry-run simulation into a real push',
+    description:
+      'Provision + push the exact snapshot already validated by a prior onboard_project(dryRun: true) call (POST /api/projects/:projectId/effectivate), without re-running phases 1-5. ' +
+      'Use this for the "check first, ship later" agent loop: run onboard_project with dryRun=true, inspect the returned issues, then call this once satisfied (with overrides for anything still open). ' +
+      'Requires a running Ignite server with `gh` authenticated, and the caller\'s GitHub account connected (session or API key mapped to a user with a connected GitHub token).',
+    inputSchema: {
+      projectId: z.number().int().describe('The numeric project id returned by the earlier onboard_project(dryRun: true) call.'),
+      overrides: z
+        .array(z.object({ issueId: z.string(), justification: z.string() }))
+        .optional()
+        .describe('Overrides for any blocking issue still open since the simulation, keyed by issue id.'),
+      actor: z
+        .object({ email: z.string(), name: z.string().optional() })
+        .optional()
+        .describe('Required if overrides are submitted and the Ignite server has no logged-in session or API key.'),
+    },
+  },
+  async ({ projectId, overrides, actor }) => {
+    console.error('[mcp] effectivate_project called', { projectId });
+    return proxyToIgnite(`/api/projects/${encodeURIComponent(projectId)}/effectivate`, { overrides, actor });
+  }
+);
+
 return server;
 }
 
@@ -297,7 +359,13 @@ async function main() {
   throw new Error(`Unknown MCP_TRANSPORT "${mode}". Use "stdio" or "http".`);
 }
 
-main().catch((err) => {
-  console.error('Fatal error starting MCP server:', err);
-  process.exit(1);
-});
+// Guarded so tests can `require('../mcp-server')` for buildServer() alone
+// without also starting a stdio/HTTP transport as a side effect.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Fatal error starting MCP server:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { buildServer };

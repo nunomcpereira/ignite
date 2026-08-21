@@ -1595,6 +1595,9 @@ mountHistoryRoutes(app, {
   store, auth, runningRuns, scheduleIntervals: SCHEDULE_INTERVALS, computeNextRunAt,
 });
 
+const { mountSarifRoute } = require('./routes/sarif');
+mountSarifRoute(app, { store, runningRuns });
+
 
 /* ------------------------------------------------------------------ */
 /* Dependency license compliance — Black Duck-style red/warning/green   */

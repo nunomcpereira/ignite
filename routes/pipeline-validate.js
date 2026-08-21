@@ -31,6 +31,8 @@
  * @param {Function} deps.fetchGovernanceWorkflow
  * @param {Function} deps.runActionsLocally
  */
+const { filterIssuesByChangedFiles } = require('../lib/issue-filter');
+
 function mountValidateAllRoute(app, {
   store, phaseEnabled, phaseTitles, repoNameRegex, githubNameRegex, actEvent,
   sanitizeAbsoluteProjectPath, resolveRequestSource, stageExistingProject, resolveProjectRoot,
@@ -56,6 +58,15 @@ function mountValidateAllRoute(app, {
     const projectPath = sanitizeAbsoluteProjectPath(body.projectPath || process.cwd());
     const gxpLinks = Array.isArray(body.gxpLinks) ? body.gxpLinks : [];
     const requestedOverrides = Array.isArray(body.overrides) ? body.overrides : [];
+    // Agent fix-verify loops (rerun after editing a few files) want to see
+    // "did the files I touched get flagged", not re-triage every issue in
+    // the whole project on every iteration. This only narrows what's
+    // *returned* — every issue in the project still has to be resolved or
+    // overridden for the run to pass; changedFiles is a view, not a gate.
+    const changedFiles = Array.isArray(body.changedFiles)
+      ? new Set(body.changedFiles.map((f) => String(f).trim()).filter(Boolean))
+      : null;
+    const filterByChangedFiles = (list) => filterIssuesByChangedFiles(list, changedFiles);
 
     const jobId = crypto.randomUUID();
     const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `${jobId}-api-validation`);
@@ -279,12 +290,14 @@ function mountValidateAllRoute(app, {
         store.finishProject('success', null, null, null, projectId);
       }
 
+      const taggedIssues = issues.map((i) => (overriddenIds.has(i.id) ? { ...i, status: 'overridden' } : i));
       return res.json({
         ok: true,
         mode: 'validate-all',
         jobId,
         projectPath,
-        issues: issues.map((i) => (overriddenIds.has(i.id) ? { ...i, status: 'overridden' } : i)),
+        issues: filterByChangedFiles(taggedIssues),
+        ...(changedFiles ? { totalIssueCount: taggedIssues.length, filteredByChangedFiles: true } : {}),
         phases: phaseSummary(),
         events,
       });
@@ -295,6 +308,7 @@ function mountValidateAllRoute(app, {
       if (projectId !== null) {
         try { store.finishProject('failed', err.message, null, null, projectId); } catch { /* best-effort */ }
       }
+      const failureIssues = Array.isArray(err.issues) ? err.issues : undefined;
       return res.status(400).json({
         ok: false,
         mode: 'validate-all',
@@ -305,7 +319,8 @@ function mountValidateAllRoute(app, {
         // Unresolved Phase 4 issues (see the throw above), when this is that
         // kind of failure — lets a non-browser caller (the CLI/pre-push hook)
         // list and override them without the web UI's review gate.
-        issues: Array.isArray(err.issues) ? err.issues : undefined,
+        issues: failureIssues ? filterByChangedFiles(failureIssues) : failureIssues,
+        ...(changedFiles && failureIssues ? { totalIssueCount: failureIssues.length, filteredByChangedFiles: true } : {}),
         phases: phaseSummary(),
         events,
       });

@@ -60,6 +60,16 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key_hash      TEXT UNIQUE NOT NULL,
+      label         TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      last_used_at  TEXT,
+      revoked_at    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
     CREATE TABLE IF NOT EXISTS overrides (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -325,6 +335,24 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
        ON CONFLICT(hash) DO UPDATE SET explanation = excluded.explanation`
     ),
     getProjectByJobId: db.prepare('SELECT id FROM projects WHERE job_id = ?'),
+
+    insertApiKey: db.prepare(
+      `INSERT INTO api_keys (user_id, key_hash, label) VALUES (?, ?, ?)`
+    ),
+    getActiveApiKeyByHash: db.prepare(
+      `SELECT ak.id, ak.user_id, u.email, u.name, u.provider
+       FROM api_keys ak JOIN users u ON u.id = ak.user_id
+       WHERE ak.key_hash = ? AND ak.revoked_at IS NULL`
+    ),
+    touchApiKeyLastUsed: db.prepare(
+      `UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?`
+    ),
+    listApiKeysForUser: db.prepare(
+      `SELECT id, label, created_at, last_used_at, revoked_at FROM api_keys WHERE user_id = ? ORDER BY id`
+    ),
+    revokeApiKey: db.prepare(
+      `UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL`
+    ),
 
     getFileScanCache: db.prepare(
       'SELECT rel_path, hash, findings_json FROM file_scan_cache WHERE org = ? AND repo = ? AND check_name = ?'
@@ -776,6 +804,28 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     getProjectIdByJobId(jobId) {
       return stmt.getProjectByJobId.get(jobId)?.id ?? null;
+    },
+
+    /* ---------------- API keys (headless/agent auth) ---------------- */
+
+    createApiKey(userId, keyHash, label) {
+      return Number(stmt.insertApiKey.run(userId, keyHash, label || null).lastInsertRowid);
+    },
+
+    getActiveApiKeyByHash(keyHash) {
+      return stmt.getActiveApiKeyByHash.get(keyHash) || null;
+    },
+
+    touchApiKeyLastUsed(id) {
+      stmt.touchApiKeyLastUsed.run(id);
+    },
+
+    listApiKeysForUser(userId) {
+      return stmt.listApiKeysForUser.all(userId);
+    },
+
+    revokeApiKey(id) {
+      return stmt.revokeApiKey.run(id).changes > 0;
     },
 
     /* Cached AI explanations for a specific finding, keyed by a stable hash

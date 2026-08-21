@@ -473,6 +473,49 @@ Response shape:
 - `phases`: array of `{ phase, title, state, logs[] }`
 - `events`: full event list (`status` + `log`) for machine-driven loops
 
+**`changedFiles` (agent fix-verify loops):** pass an optional `changedFiles:
+["src/app.js", "src/util.py"]` (project-relative paths) to narrow the
+returned `issues` array to just those files, plus `totalIssueCount` and
+`filteredByChangedFiles: true` for context. This is a *view* only - every
+blocking issue in the whole project still has to be resolved or overridden
+for `ok: true`; `changedFiles` just saves an agent from re-reading the full
+issue list on every "edit a couple files, re-scan" iteration.
+
+## SARIF export
+
+`GET /api/pipeline/:jobId/sarif` returns the same flagged-issue list `GET
+/api/pipeline/:jobId/issues` does (secrets, AI-governance, LLM deep-scan,
+license/vulnerability, every Phase 4 external-tool check, and CodeQL),
+reshaped into [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) - so
+GitHub code scanning, most SAST dashboards, or any agent that already
+speaks SARIF can ingest a run's output with no Ignite-specific parsing.
+Works for both a still-running job and a completed one (job id from either
+`validate-all`/`onboard_project`'s response, or the browser UI's URL).
+`error`-severity issues map to SARIF `level: "error"`, `warning` maps to
+`warning`; an issue a human already overrode downgrades to `note` rather
+than disappearing. Excludes non-issue artifacts (SBOM, LOC metrics, posture
+report) - those stay on their own Studio document endpoints.
+
+```bash
+curl -sS http://localhost:51337/api/pipeline/<jobId>/sarif | jq
+```
+
+## CLI (`ignite scan`)
+
+```bash
+npx ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL]
+```
+
+A thin wrapper around `validate-all` (`bin/ignite.js`) for agents/CI that
+want a plain command + exit code instead of the raw HTTP API. Always
+dry-run - `validate-all` never ships, so this needs no auth for its own
+sake. Exit codes: `0` passed, `1` blocking issues/validation failure, `2`
+couldn't reach the server or bad usage. `--json` prints the raw
+`validate-all` response; without it, prints a human-readable pass/fail
+summary with each issue's location. Requires a running Ignite server
+reachable at `IGNITE_BASE_URL` (default `http://localhost:51337`) - same
+requirement as the pre-push hook and VS Code extension below.
+
 ## Pre-push hook
 
 `hooks/pre-push` wraps `validate-all` in a git hook, for repos that would
@@ -602,6 +645,20 @@ which findings are still blocking, call it again with `overrides:
 - only what's genuinely unresolved keeps blocking. No browser involved at
 any point in the loop.
 
+Two more tools cover flows that one-shot `onboard_project` call doesn't:
+
+- `resolve_review_decision({ jobId, proceed, overrides?, actor? })` - resume
+  a run paused mid-flight on the *interactive* `POST /api/pipeline` endpoint
+  (e.g. one a human started in the browser and handed off to an agent, or
+  the reverse). Thin proxy to `POST /api/pipeline/:jobId/review-decision`.
+- `effectivate_project({ projectId, overrides?, actor? })` - the "check
+  first, ship later" loop: call `onboard_project` with `dryRun: true`,
+  inspect the returned issues over one or more turns, then call this once
+  satisfied - it provisions + pushes the exact already-validated snapshot
+  without re-running phases 1-5. Thin proxy to
+  `POST /api/projects/:projectId/effectivate`. Needs the caller's GitHub
+  account connected same as a real (non-dryRun) `onboard_project` call.
+
 ### REST API
 
 ```bash
@@ -692,6 +749,39 @@ enforced where attribution matters: submitting an override without a
 session must include an explicit `actor {email, name}` in the request body,
 or the server responds `401`.
 
+### API keys (headless/agent auth)
+
+Every mode above requires a browser to complete a login/OAuth redirect -
+something no unattended agent or CI job can do. A real (non-`dryRun`) push
+also hard-requires a connected GitHub account tied to a logged-in user, so
+without a session an agent can run dry-run checks but can never actually
+ship. API keys close that gap:
+
+1. Sign up / log in once via the web UI (whichever `AUTH_MODE` is
+   configured) and connect GitHub if you'll need real pushes.
+2. Mint a key for that account:
+   ```bash
+   node scripts/create-api-key.js you@example.com "ci-agent"
+   ```
+   Prints the raw key exactly once (`ignite_<64 hex chars>`) - only its
+   SHA-256 hash is stored, so save it now; it can't be recovered later.
+3. Send it as `Authorization: Bearer ignite_<key>` on any request. It
+   resolves to the same `req.user` a session cookie would, so it works
+   everywhere attribution or `resolveGithubToken` is needed - `onboard_project`
+   with `dryRun: false`, `effectivate_project`, submitting overrides without
+   an explicit `actor`, etc. A session cookie takes priority if both are
+   present.
+
+`mcp-server.js` (all its tools) and `bin/ignite.js` (`ignite scan`) both
+pick this up automatically from an `IGNITE_API_KEY` env var:
+
+```bash
+export IGNITE_API_KEY=ignite_...
+```
+
+There's no revoke endpoint yet - `store.revokeApiKey(id)` in `db-store.js`
+works from a Node REPL/script against `ignite.db` in the meantime.
+
 ## Testing
 
 ```bash
@@ -732,6 +822,15 @@ than failing the suite):
 - `test/guarddog-scan.test.js` - GuardDog malicious-dependency scan
 - `test/codeql-scan.test.js` - CodeQL cross-file static analysis (real end-to-end case self-skips if `codeql` isn't installed)
 - `test/deps-version-resolution.test.js` - regression test (hits the real deps.dev API, self-skips if unreachable) for the range-floor-was-never-published false positive: proves `typescript@^5.6.0` and `@tanstack/react-table@^8.20.0` resolve to a real published version instead of a blocking "license unknown" finding, and that a genuinely nonexistent package is still correctly flagged.
+
+Agent-facing surfaces added on top of the above each have their own test file too:
+
+- `test/api-key-store.test.js` - `db-store.js`'s `api_keys` table (create/lookup/revoke/touch-last-used/list-per-user).
+- `test/api-key-auth.test.js` - `auth.js`'s `attachUser` Bearer-key branch (resolves `req.user`, ignores malformed/missing headers, rejects revoked keys).
+- `test/issue-filter.test.js` - `lib/issue-filter.js`'s `filterIssuesByChangedFiles`, backing `validate-all`'s `changedFiles` param.
+- `test/sarif-export.test.js` - `lib/sarif.js`'s issue→SARIF mapping and the `GET /api/pipeline/:jobId/sarif` route (live job, completed job, unknown job id).
+- `test/mcp-override-tools.test.js` - the `resolve_review_decision`/`effectivate_project` MCP tools and `proxyToIgnite`'s `IGNITE_API_KEY` header, against a fake HTTP server standing in for Ignite.
+- `test/cli-scan.test.js` - `bin/ignite.js` (`ignite scan`) end to end as a real child process: exit codes, `--json`, `--changed-files`, `IGNITE_API_KEY`, unreachable-server handling.
 
 ### End-to-end (Playwright)
 

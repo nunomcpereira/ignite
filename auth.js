@@ -18,6 +18,21 @@ const scrypt = promisify(crypto.scrypt);
 const SESSION_COOKIE = 'ignite_sid';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 
+const API_KEY_PREFIX = 'ignite_';
+
+// API keys are high-entropy random secrets (not user-chosen passwords), so
+// there's no offline-guessing risk to slow down with scrypt — a plain
+// SHA-256 lookup hash is standard practice for this class of token (same
+// approach GitHub/Stripe use for PATs) and keeps every authenticated
+// request from paying scrypt's ~100ms cost.
+function hashApiKey(rawKey) {
+  return crypto.createHash('sha256').update(rawKey, 'utf8').digest('hex');
+}
+
+function generateApiKey() {
+  return `${API_KEY_PREFIX}${crypto.randomBytes(32).toString('hex')}`;
+}
+
 // __proto__/constructor/prototype can never be real cookie names we care
 // about (SESSION_COOKIE is 'ignite_sid') - rejecting them outright means
 // `out[key] = val` below is never a property-name-from-user-input write
@@ -136,7 +151,11 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
     setSessionCookie(res, sessionId);
   }
 
-  /* Attaches req.user (or null) from the session cookie. Never blocks. */
+  /* Attaches req.user (or null) from the session cookie, or — for headless
+     agent/CLI callers with no browser to hold a cookie jar — from an
+     `Authorization: Bearer ignite_<key>` API key minted by
+     scripts/create-api-key.js. Session cookie wins if both are present.
+     Never blocks. */
   function attachUser(req, res, next) {
     const cookies = parseCookies(req.headers.cookie);
     const sessionId = cookies[SESSION_COOKIE];
@@ -145,6 +164,17 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
       const session = store.getSession(sessionId);
       if (session && new Date(session.expires_at).getTime() > Date.now()) {
         req.user = { id: session.user_id, email: session.email, name: session.name, provider: session.provider };
+      }
+    }
+    if (!req.user) {
+      const authHeader = String(req.headers.authorization || '');
+      const [scheme, token] = authHeader.split(' ');
+      if (scheme === 'Bearer' && token && token.startsWith(API_KEY_PREFIX)) {
+        const row = store.getActiveApiKeyByHash(hashApiKey(token));
+        if (row) {
+          req.user = { id: row.user_id, email: row.email, name: row.name, provider: row.provider };
+          store.touchApiKeyLastUsed(row.id);
+        }
       }
     }
     next();
@@ -400,11 +430,11 @@ function createAuth(store, authConfig = {}, githubConfig = {}) {
     return store.getGithubConnection(req.user.id)?.access_token || null;
   }
 
-  return { router, attachUser, requireAuth, resolveGithubToken, mode };
+  return { router, attachUser, requireAuth, resolveGithubToken, mode, generateApiKey, hashApiKey };
 }
 
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-module.exports = { createAuth, hashPassword, verifyPassword, isValidEmail };
+module.exports = { createAuth, hashPassword, verifyPassword, isValidEmail, generateApiKey, hashApiKey };
