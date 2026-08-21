@@ -66,6 +66,8 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       key_hash      TEXT UNIQUE NOT NULL,
       label         TEXT,
       created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by    TEXT,
+      created_via   TEXT NOT NULL DEFAULT 'cli',
       last_used_at  TEXT,
       revoked_at    TEXT
     );
@@ -235,6 +237,21 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     }
   }
 
+  // Migration for DBs created before api_keys.created_by/created_via
+  // existed — without these, there was no record of who minted a key or
+  // how, making an impersonation-by-key-creation incident unattributable
+  // after the fact.
+  for (const ddl of [
+    `ALTER TABLE api_keys ADD COLUMN created_by TEXT`,
+    `ALTER TABLE api_keys ADD COLUMN created_via TEXT NOT NULL DEFAULT 'cli'`,
+  ]) {
+    try {
+      db.exec(ddl);
+    } catch (e) {
+      if (!/duplicate column/i.test(e.message)) throw e;
+    }
+  }
+
   const stmt = {
     insertProject: db.prepare('INSERT INTO projects (job_id, org, repo, gxp, source, scan_location) VALUES (?, ?, ?, ?, ?, ?)'),
     finishProject: db.prepare(
@@ -337,7 +354,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
     getProjectByJobId: db.prepare('SELECT id FROM projects WHERE job_id = ?'),
 
     insertApiKey: db.prepare(
-      `INSERT INTO api_keys (user_id, key_hash, label) VALUES (?, ?, ?)`
+      `INSERT INTO api_keys (user_id, key_hash, label, created_by, created_via) VALUES (?, ?, ?, ?, ?)`
     ),
     getActiveApiKeyByHash: db.prepare(
       `SELECT ak.id, ak.user_id, u.email, u.name, u.provider
@@ -348,7 +365,7 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       `UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?`
     ),
     listApiKeysForUser: db.prepare(
-      `SELECT id, label, created_at, last_used_at, revoked_at FROM api_keys WHERE user_id = ? ORDER BY id`
+      `SELECT id, label, created_at, created_by, created_via, last_used_at, revoked_at FROM api_keys WHERE user_id = ? ORDER BY id`
     ),
     revokeApiKey: db.prepare(
       `UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL`
@@ -808,8 +825,11 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
 
     /* ---------------- API keys (headless/agent auth) ---------------- */
 
-    createApiKey(userId, keyHash, label) {
-      return Number(stmt.insertApiKey.run(userId, keyHash, label || null).lastInsertRowid);
+    createApiKey(userId, keyHash, label, createdBy, createdVia) {
+      return Number(
+        stmt.insertApiKey.run(userId, keyHash, label || null, createdBy || null, createdVia || 'cli')
+          .lastInsertRowid
+      );
     },
 
     getActiveApiKeyByHash(keyHash) {
