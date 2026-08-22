@@ -1941,37 +1941,31 @@ ID: pii-dataflow::lib/tool-runner.js::186
 # [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
 #   lib/tool-runner.js:186
 # Code: child = spawn('git', safeArgs, { cwd: safeCwd, env: safeEnv });
-Acknowledge: 
+Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::184 (spawn('git', safeArgs, {...})) - line drifted 184 -> 186, same reasoning: literal command name, array args with no shell, sanitizeCliArgs validation.
 
 ID: pii-dataflow::lib/tool-runner.js::190
 # [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
 #   lib/tool-runner.js:190
 # Code: child = spawn('gh', safeArgs, { cwd: safeCwd, env: safeEnv });
-Acknowledge: 
+Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::188 (spawn('gh', safeArgs, {...})) - line drifted 188 -> 190, same reasoning.
 
 ID: pii-dataflow::lib/tool-runner.js::194
 # [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
 #   lib/tool-runner.js:194
 # Code: child = spawn('act', safeArgs, { cwd: safeCwd, env: safeEnv });
-Acknowledge: 
+Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::192 (spawn('act', safeArgs, {...})) - line drifted 192 -> 194, same reasoning.
 
 ID: pii-dataflow::lib/tool-runner.js::198
 # [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
 #   lib/tool-runner.js:198
 # Code: child = spawn('docker', safeArgs, { cwd: safeCwd, env: safeEnv });
-Acknowledge: 
+Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::196 (spawn('docker', safeArgs, {...})) - line drifted 196 -> 198, same reasoning.
 
 ID: pii-dataflow::lib/tool-runner.js::210
 # [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
 #   lib/tool-runner.js:210
 # Code: child = spawn(binaries.codeql, safeArgs, { cwd: safeCwd, env: safeEnv }); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
 Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::203 - line drifted 203 -> 208 after adding a trailing nosemgrep suppression comment to this line (which is why Phase 4's own semantic-sast/Semgrep check no longer flags it here, unlike Bearer's pii-dataflow check, which doesn't understand nosemgrep syntax). Same code, same reasoning: binaries.codeql comes from CONFIG.security.codeql.binary (operator config/env, set once at process startup), never from a request; safeArgs is an array (no shell:true), already validated by sanitizeCliArgs. (auto-carried-forward from pii-dataflow::lib/tool-runner.js::208 - pure line-number drift, flagged code unchanged)
-
-ID: codeql-sast::server.js::711::js/polynomial-redos
-# [ERROR] codeql-sast - This regular expression that depends on library input may run slow on strings with many repetitions of ')'.
-#   server.js:711
-# Code: const relPath = m[1].replace(/^\.\//, '').replace(/[),.:;]+$/, '');
-Acknowledge: `[),.:;]+$` is a single bounded character class with a trailing anchor - no nested/overlapping quantifiers for backtracking to blow up on, so this isn't exploitable polynomial-time behavior despite the query's generic warning; the input itself (governance CI's own `matched in: ./path` line) is also process-local tool output, not user-controlled. (auto-carried-forward from codeql-sast::server.js::677::js/polynomial-redos - pure line-number drift, flagged code unchanged)
 
 ID: codeql-sast::checks/secrets.js::237::js/file-system-race
 # [ERROR] codeql-sast - The file may have changed since it was checked.
@@ -1989,4 +1983,22 @@ ID: codeql-sast::lib/runtime-coverage.js::50::js/remote-property-injection
 # [ERROR] codeql-sast - A property name to write to depends on a user-provided value.
 #   lib/runtime-coverage.js:50
 # Code: out[relPath] = { hitCount, coveredPct: hitCount > 0 ? 100 : 0 };
+Acknowledge: 
+
+ID: pii-dataflow::vscode-extension/src/panels/reportPanel.ts::4
+# [ERROR] pii-dataflow - Usage of manual HTML sanitization (XSS)
+#   vscode-extension/src/panels/reportPanel.ts:4
+# Code: return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+Acknowledge: escapeHtml() escapes &, <, >, ", and ' and is the only thing interpolated into the webview's <pre> body (a JSON.stringify of report data); the panel is also created with `enableScripts: false`, so even an unescaped payload couldn't execute script in this webview. Same reasoning already accepted for auth.js::407's escapeHtml() - manual implementation instead of a library, not a missing sanitization step.
+
+ID: codeql-sast::server.js::716::js/polynomial-redos
+# [ERROR] codeql-sast - This regular expression that depends on library input may run slow on strings with many repetitions of ')'.
+#   server.js:716
+# Code: const relPath = m[1].replace(/^\.\//, '').replace(/[),.:;]+$/, '');
+Acknowledge: `[),.:;]+$` is a single bounded character class with a trailing anchor - no nested/overlapping quantifiers for backtracking to blow up on, so this isn't exploitable polynomial-time behavior despite the query's generic warning; the input itself (governance CI's own `matched in: ./path` line) is also process-local tool output, not user-controlled. (auto-carried-forward from codeql-sast::server.js::677::js/polynomial-redos - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::server.js::711::js/polynomial-redos - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::checks/feature-posture.js::134::js/file-system-race
+# [ERROR] codeql-sast - The file may have changed since it was checked.
+#   checks/feature-posture.js:134
+# Code: const buffer = await fsp.readFile(file);
 Acknowledge: 

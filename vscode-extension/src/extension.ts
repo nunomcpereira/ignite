@@ -62,23 +62,34 @@ async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
   }
   const workspaceRoot = folder.uri.fsPath;
 
-  outputChannel.appendLine(`Checking reachability of the Ignite server...`);
-  const reachable = await checkReachable((line) => outputChannel.appendLine(line));
-  if (!reachable) {
-    const baseUrl = vscode.workspace.getConfiguration('ignite').get<string>('baseUrl');
-    outputChannel.appendLine(`✗ Ignite isn't reachable at ${baseUrl} after 3 probes — see the lines above for the actual cause per attempt.`);
-    outputChannel.show(true);
-    const choice = await vscode.window.showErrorMessage(
-      `Ignite isn't reachable at ${baseUrl}. Start it with 'npm start' in the ignite repo, or set "ignite.baseUrl". See Output › Ignite for per-attempt detail.`,
-      'Show Output',
-      'Open Settings'
-    );
-    if (choice === 'Show Output') outputChannel.show();
-    if (choice === 'Open Settings') vscode.commands.executeCommand('workbench.action.openSettings', 'ignite.baseUrl');
-    return;
-  }
-
+  // Set before any await — checkReachable() below is the first suspension
+  // point, and two near-simultaneous invocations (e.g. double-click on the
+  // status bar item) would otherwise both pass the scanInProgress check
+  // above before either one flips the flag.
   scanInProgress = true;
+  try {
+    outputChannel.appendLine(`Checking reachability of the Ignite server...`);
+    const reachable = await checkReachable((line) => outputChannel.appendLine(line));
+    if (!reachable) {
+      const baseUrl = vscode.workspace.getConfiguration('ignite').get<string>('baseUrl');
+      outputChannel.appendLine(`✗ Ignite isn't reachable at ${baseUrl} after 3 probes — see the lines above for the actual cause per attempt.`);
+      outputChannel.show(true);
+      const choice = await vscode.window.showErrorMessage(
+        `Ignite isn't reachable at ${baseUrl}. Start it with 'npm start' in the ignite repo, or set "ignite.baseUrl". See Output › Ignite for per-attempt detail.`,
+        'Show Output',
+        'Open Settings'
+      );
+      if (choice === 'Show Output') outputChannel.show();
+      if (choice === 'Open Settings') vscode.commands.executeCommand('workbench.action.openSettings', 'ignite.baseUrl');
+      return;
+    }
+    await runScan(context, workspaceRoot);
+  } finally {
+    scanInProgress = false;
+  }
+}
+
+async function runScan(context: vscode.ExtensionContext, workspaceRoot: string): Promise<void> {
   outputChannel.clear();
   outputChannel.show(true);
   setStatusBar('running');
@@ -176,8 +187,6 @@ async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
     const message = e instanceof IgniteUnreachableError || e instanceof Error ? e.message : String(e);
     outputChannel.appendLine(`\n✗ ${message}`);
     vscode.window.showErrorMessage(`Ignite: ${message}`);
-  } finally {
-    scanInProgress = false;
   }
 }
 

@@ -129,9 +129,19 @@ function createFeaturePostureCheck({ runTool, semgrepTooling, fsUtils, config })
     for await (const file of walkFiles(root)) {
       const ext = path.extname(file).toLowerCase();
       if (BINARY_EXTENSIONS.has(ext)) continue;
-      const stat = await fsp.stat(file).catch(() => null);
-      if (!stat || stat.size > MAX_SCAN_FILE_BYTES) continue;
-      const buffer = await fsp.readFile(file);
+      // Stat and read against the same open fd (not two path-based
+      // syscalls) so the file can't be swapped out between the size check
+      // and the read.
+      const handle = await fsp.open(file, 'r').catch(() => null);
+      if (!handle) continue;
+      let buffer;
+      try {
+        const stat = await handle.stat();
+        if (stat.size > MAX_SCAN_FILE_BYTES) continue;
+        buffer = await handle.readFile();
+      } finally {
+        await handle.close();
+      }
       if (looksBinary(buffer)) continue;
       const content = buffer.toString('utf8');
       const rel = path.relative(root, file);
