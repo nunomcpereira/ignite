@@ -174,6 +174,45 @@ export async function writeScanSnapshot(repoRoot: string, issues: IgniteIssue[],
   return filePath;
 }
 
+/**
+ * Bulk-acknowledges a batch of issues with one shared justification —
+ * backs the findings tree's multi-select "Acknowledge Selected" command,
+ * so grouping several occurrences of the same finding no longer means
+ * opening the review file and typing the same justification N times.
+ * An issue already present gets its Acknowledge: line overwritten
+ * in place (same one-justification-per-id invariant appendUnresolvedIssues
+ * relies on); a new one gets a fresh, already-filled-in stanza appended.
+ */
+export async function acknowledgeIssues(repoRoot: string, issues: IgniteIssue[], justification: string): Promise<void> {
+  const filePath = reviewFilePath(repoRoot);
+  const existing = parseBlocks(await readFileSafe(filePath));
+  const byId = new Map(existing.map((e) => [e.id, e]));
+
+  const newBlocks: string[] = [];
+  for (const issue of issues) {
+    const match = byId.get(issue.id);
+    if (match) {
+      match.raw = match.raw.replace(/^Acknowledge:.*$/m, `Acknowledge: ${justification}`);
+      if (!/^Acknowledge:/m.test(match.raw)) match.raw += `\nAcknowledge: ${justification}`;
+      continue;
+    }
+    const loc = issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : '(no file)';
+    const code = codeForIssue(issue);
+    newBlocks.push(
+      [
+        `ID: ${issue.id}`,
+        `# [${(issue.severity || '').toUpperCase()}] ${issue.category} - ${issue.summary}`,
+        `#   ${loc}`,
+        ...(code ? [`# Code: ${code}`] : []),
+        `Acknowledge: ${justification}`,
+      ].join('\n')
+    );
+  }
+  const all = [...existing.filter((e) => !e.superseded).map((e) => e.raw), ...newBlocks];
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, HEADER + all.join('\n\n') + '\n');
+}
+
 /** Byte offset of a given issue id's `Acknowledge:` line, for jumping the editor there. */
 export async function findAcknowledgeLineNumber(repoRoot: string, issueId: string): Promise<number | null> {
   const text = await readFileSafe(reviewFilePath(repoRoot));

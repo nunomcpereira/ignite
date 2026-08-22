@@ -44,3 +44,24 @@ test('collectPhase4Issues: missing groups (undefined) are tolerated, no crash', 
   const issues = collectPhase4Issues({ secrets: empty, governance: empty });
   assert.deepEqual(issues, []);
 });
+
+test('collectPhase4Issues: euAiAct findings map to their own ai-act-* categories, severity "warning"', () => {
+  const issues = collectPhase4Issues({
+    secrets: empty, governance: empty,
+    euAiAct: {
+      findings: [
+        { file: 'app.js', line: 4, kind: 'ai-act-prohibited-practice', message: 'emotion inference call site', code: null },
+        { file: null, line: null, kind: 'ai-act-compliance-documents', discriminator: 'fria', message: 'FRIA not found' },
+        { file: null, line: null, kind: 'ai-act-compliance-documents', discriminator: 'risk-management-system', message: 'RMS not found' },
+      ],
+    },
+  });
+  assert.equal(issues.length, 3);
+  for (const issue of issues) assert.equal(issue.severity, 'warning');
+  assert.equal(issues[0].category, 'ai-act-prohibited-practice');
+  const docIssues = issues.filter((i) => i.category === 'ai-act-compliance-documents');
+  assert.equal(docIssues.length, 2);
+  // distinct discriminator per document category keeps ids from colliding
+  // despite sharing file:null/line:null
+  assert.notEqual(docIssues[0].id, docIssues[1].id);
+});

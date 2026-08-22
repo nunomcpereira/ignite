@@ -234,6 +234,22 @@ function loadConfig() {
       // model, narrower coverage) when Semgrep is disabled or missing —
       // this scan never fails a run or blocks the pipeline either way.
       posture: { enabled: true, ruleset: path.join(__dirname, 'ignite-posture-rules.yaml') },
+      // Optional: EU AI Act document-presence scan (see
+      // checks/compliance-documents.js) — flags whether a risk-management
+      // system doc, Annex IV technical documentation, an FRIA, a GPAI
+      // training-data summary, or a post-market monitoring plan exists
+      // anywhere in the repo by filename/path pattern.
+      euAiActDocuments: { enabled: true },
+      // Whether the EU AI Act signals above — the three ai-act-* posture
+      // categories (ignite-posture-rules.yaml) plus checkComplianceDocuments'
+      // MISSING document categories — surface as addressable, overridable
+      // issues (collectPhase4Issues) or stay purely advisory context in
+      // posture-report.json/ai-act-documents-report.json. false by default:
+      // these are heuristic (regex/filename matching, no legal judgment),
+      // so promoting them to findings is an explicit opt-in. Always
+      // severity: 'warning' when on — heuristic AI Act signals never block
+      // a run outright, only a human-reviewable override.
+      euAiAct: { reportAsFindings: false },
     },
     sbom: {
       // Optional: generates a CycloneDX SBOM for the staged project via
@@ -502,6 +518,12 @@ function loadConfig() {
     merged.compliance.posture.enabled = String(process.env.POSTURE_ENABLED) === 'true';
   }
   if (process.env.POSTURE_RULESET) merged.compliance.posture.ruleset = process.env.POSTURE_RULESET;
+  if (process.env.EU_AI_ACT_DOCS_ENABLED !== undefined) {
+    merged.compliance.euAiActDocuments.enabled = String(process.env.EU_AI_ACT_DOCS_ENABLED) === 'true';
+  }
+  if (process.env.EU_AI_ACT_REPORT_AS_FINDINGS !== undefined) {
+    merged.compliance.euAiAct.reportAsFindings = String(process.env.EU_AI_ACT_REPORT_AS_FINDINGS) === 'true';
+  }
   if (process.env.JSCPD_ENABLED !== undefined) {
     merged.metrics.jscpd.enabled = String(process.env.JSCPD_ENABLED) === 'true';
   }

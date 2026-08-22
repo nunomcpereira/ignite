@@ -71,6 +71,10 @@ const CATEGORY_SCORES = {
   'dependency-vulnerability': 8,
   'malicious-dependency': 9,
   'codeql-sast': 8,
+  'ai-act-prohibited-practice': 6,
+  'ai-act-transparency-disclosure': 4,
+  'ai-act-ai-logging': 4,
+  'ai-act-compliance-documents': 3,
 };
 
 /**
@@ -225,7 +229,7 @@ function collectCodeqlIssues(codeql) {
   });
 }
 
-function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies, codeql, deadCode, health, cssDeadCode, boundaries }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies, codeql, deadCode, health, cssDeadCode, boundaries, euAiAct }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -473,22 +477,26 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
   }
 
   // Built-in codebase-intelligence checks (checks/dead-code.js,
-  // complexity-health.js, css-dead-code.js, boundaries.js) — closes the
-  // fallow.tools gap set (see project memory). All four are heuristic/
-  // regex-AST-lite, so every finding here is always advisory
-  // ('warning'), never 'error' — a human confirms before deleting/
+  // complexity-health.js, css-dead-code.js, boundaries.js), plus the
+  // opt-in EU AI Act findings group (server.js only builds `euAiAct` when
+  // CONFIG.compliance.euAiAct.reportAsFindings is true — otherwise those
+  // signals stay advisory-only in posture-report.json/
+  // ai-act-documents-report.json and never reach this function at all).
+  // Every group here is heuristic/regex-based, so every finding is always
+  // advisory ('warning'), never 'error' — a human confirms before deleting/
   // restructuring, never blocked by a false positive from a check with no
   // full type-checker or build graph behind it.
-  for (const group of [deadCode, health, cssDeadCode, boundaries]) {
+  for (const group of [deadCode, health, cssDeadCode, boundaries, euAiAct]) {
     if (!group) continue;
     for (const f of group.findings) {
       const category = f.kind === 'unused-file' || f.kind === 'unused-export' || f.kind === 'unused-dependency' ? 'dead-code'
         : f.kind === 'high-complexity' || f.kind === 'low-maintainability' ? 'complexity-health'
         : f.kind === 'unused-css-class' ? 'css-dead-code'
         : f.kind === 'boundary-violation' ? 'architecture-boundary'
+        : f.kind && f.kind.startsWith('ai-act-') ? f.kind
         : 'codebase-intelligence';
       issues.push({
-        id: buildIssueId({ category, file: f.file, line: f.line, discriminator: f.kind }),
+        id: buildIssueId({ category, file: f.file, line: f.line, discriminator: f.discriminator || f.kind }),
         category,
         severity: 'warning',
         score: scoreForIssue({ category, severity: 'warning' }),

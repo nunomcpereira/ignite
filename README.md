@@ -15,29 +15,48 @@ A single-page web app that acts as a compliance gate for onboarding code into a 
 ## System Architecture
 
 ```
-┌──────────────┐  multipart POST   ┌─────────────────────────────────────────┐
-│   Browser    │ ───────────────▶  │  Express server (server.js)             │
-│  (index.html)│                   │                                         │
-│              │ ◀───────────────  │  1. multer buffers ZIP →                │
-│  NDJSON      │  streamed events  │     $TMPDIR/gatekeeper-uploads/<rand>   │
-│  pipeline UI │  (log / status /  │  2. safe-extract (zip-slip + bomb       │
-└──────────────┘   done)           │     guards) →                           │
-                                   │     $TMPDIR/gatekeeper-staging/<uuid>/  │
-                                   │  3. Check 1: deny .env* files           │
-                                   │  4. Check 2: secret regex scan          │
-                                   │  5. Check 4: AI governance audit        │
-                                   │  6. Phase 4 (only if all green):        │
-                                   │     git init/add/commit,                │
-                                   │     gh repo create --private,           │
-                                   │     git remote add + push               │
-                                   │  7. finally: rm -rf staging dir AND     │
-                                   │     uploaded ZIP - success or failure   │
-                                   └─────────────────────────────────────────┘
+┌───────────────┐  multipart POST (dryRun?)   ┌──────────────────────────────────────────────┐
+│    Browser    │ ──────────────────────────▶ │  Express server (server.js)                    │
+│  (index.html) │                              │                                                │
+│  NDJSON       │ ◀────────────────────────── │  1. multer buffers ZIP/folder →                │
+│  pipeline UI  │  streamed events (log /      │     $TMPDIR/gatekeeper-uploads/<rand>          │
+└───────────────┘  status / review_required /  │  2. safe-extract (zip-slip + zip-bomb guards,  │
+                    done)                      │     symlinks skipped) →                        │
+┌───────────────┐  POST /validate-all          │     $TMPDIR/gatekeeper-staging/<uuid>/         │
+│ pre-push hook │ ──────────────────────────▶ │  3. sequential phase checks, in place:         │
+│ / CLI         │  (sync JSON, phases 1-5,     │     Phase 1  Input & metadata                  │
+│ (ignite scan) │   never ships)               │     Phase 2  GxP validation docs (off default) │
+└───────────────┘                              │     Phase 3  Structure audit · license · unit  │
+┌───────────────┐  POST /onboard,               │              tests (Docker, per-language)      │
+│ MCP client    │  /pipeline/:id/review-        │     Phase 4  Security & compliance (secrets,   │
+│ (Claude Code, │  decision, /projects/:id/     │              AI-governance, LLM deep-scan,      │
+│  Desktop, …)  │  effectivate                  │              IaC/SAST/supply-chain/PII/API-     │
+└───────┬───────┘ ──────────────────────────▶ │              schema/posture/codebase-intel/     │
+        │ stdio or                              │              EU AI Act - 20+ checks, mostly     │
+        │ HTTP :51338/mcp                       │              soft-dependency external tools)    │
+        ▼                                       │     Phase 5  Org governance CI (act + Docker)  │
+┌───────────────┐                               │     Phase 6  (only if all green, not dryRun):  │
+│ mcp-server.js │  proxies every call over       │              git init/add/commit,               │
+│ (child proc,  │  plain HTTP - never touches    │              gh repo create --private,          │
+│  auto-started)│  git/gh itself                 │              git remote add + push              │
+└───────────────┘                               │  4. finally: rm -rf staging dir AND uploaded   │
+                                                 │     ZIP - success or failure                    │
+                                                 └──────────────────────┬──────────────────────────┘
+                                                                        │ users, sessions, api_keys,
+                                                                        │ projects, overrides,
+                                                                        │ file/codeql scan caches,
+                                                                        ▼ issue baselines, runtime coverage
+                                                                 ┌─────────────┐
+                                                                 │  ignite.db  │
+                                                                 │  (SQLite)   │
+                                                                 └─────────────┘
 ```
+
+Three request paths, one pipeline: the interactive browser upload (`POST /api/pipeline`, streaming NDJSON), the synchronous headless path used by the pre-push hook/CLI/CI (`POST /api/pipeline/validate-all`, phases 1-5 only, never ships), and the MCP path (`onboard_project`/`resolve_review_decision`/`effectivate_project`), which is a thin proxy from `mcp-server.js` to the same HTTP API - the MCP process itself never runs `git`/`gh`. All three share the exact same phase-check functions and the same issue/override model, so there's no "lighter" path for one caller versus another.
 
 **File lifecycle:** upload → temp ZIP (multer) → extracted staging directory (per-job UUID, isolated under the OS temp dir) → scanned in place → pushed from staging → **forcefully deleted in a `finally` block**, so no user code lingers on disk regardless of outcome.
 
-**Progress transport:** the pipeline endpoint keeps the POST response open and streams newline-delimited JSON events (`log`, `status`, `done`). The frontend consumes the stream with `fetch` + `ReadableStream` and re-renders the stepper in real time - no WebSocket or polling needed.
+**Progress transport:** the interactive pipeline endpoint keeps the POST response open and streams newline-delimited JSON events (`log`, `status`, `review_required`, `done`). The frontend consumes the stream with `fetch` + `ReadableStream` and re-renders the stepper in real time - no WebSocket or polling needed. `validate-all` and the MCP tools instead return a single synchronous JSON response once phases 1-5 finish.
 
 ## Pipeline Checks
 
@@ -64,6 +83,13 @@ Phase 4's displayed name drops to **"Security & Compliance Scan"** (from "Securi
 | 4 | File size / encapsulation | Built-in (no external tool) - flags any single source file over `metrics.fileSize.maxLines` (default 1000) as a "low encapsulation" advisory. Always advisory, never blocking. **On by default.** | On/off (`FILE_SIZE_ENABLED`) |
 | 4 | API schema lint | Spectral lints every discovered OpenAPI/AsyncAPI file (found by content, not filename) against its bundled ruleset (`spectral:oas` + `spectral:asyncapi` by default). | On/off |
 | 4 | Malicious dependency | GuardDog flags a supply-chain-attack pattern (install-script exfiltration, obfuscated payload, silent network call, typosquatting) in an npm/PyPI dependency, independent of whether a CVE has been published. **On by default** (downloads and inspects every dependency's real package contents - slower/heavier than the rest of Phase 4; set `GUARDDOG_ENABLED=false` to opt out). | On/off |
+| 4 | Cross-file static analysis (CodeQL) | CodeQL's `security-extended` query suite flags a vulnerability whose tainted data crosses file/function boundaries - the gap Semgrep OSS's intraprocedural engine structurally can't cover. **On by default.** | On/off (`CODEQL_ENABLED`) |
+| 4 | Dead code / unused exports / unused deps | Built-in module-graph BFS from `package.json` entry points flags an unreached file, a named export never imported anywhere, or a manifest dependency never required/scripted. Always advisory - never blocking. See [Codebase intelligence](#codebase-intelligence---closing-the-fallowtools-gap) below. | On/off (`CONFIG.codeIntelligence.deadCode`) |
+| 4 | Complexity / maintainability health | Built-in per-file cyclomatic/cognitive complexity, a calibrated Maintainability Index, and a CRAP score (pulls real coverage when [ingested](#runtime-coverage-ingestion)). Flags `high-complexity`/`low-maintainability` by decision *density*, not raw file length. Always advisory. | On/off (`CONFIG.codeIntelligence.health`) |
+| 4 | Architecture / import-boundary enforcement | Built-in zone-based import-graph check (`bulletproof`/`layered`/`hexagonal`/`feature-sliced` presets, or custom `zones`) flags an import that crosses a declared boundary. Always advisory. **Off by default** - a default zone layout on a project that doesn't follow one is pure noise. | On/off (`CONFIG.architecture.boundaries`) |
+| 4 | CSS/Tailwind dead-class scan | Built-in scan flags a `.css`/`.scss`/`.less` class selector never referenced in any scanned `class`/`className` attribute. One-directional only (can't flag unused Tailwind utilities). Always advisory. | On/off (`CONFIG.codeIntelligence.cssDeadCode`) |
+| 4 | EU AI Act code-detectable signals | `ignite-posture-rules.yaml`'s three `ai-act-*` categories (prohibited-practice, transparency-disclosure, ai-logging) via the Posture Engine. Advisory-only by default; see [EU AI Act coverage](#eu-ai-act-coverage) below. | On/off (rolled into `compliance.posture`); findings mode via `EU_AI_ACT_REPORT_AS_FINDINGS` |
+| 4 | EU AI Act document-presence scan | Built-in filename/path scan for risk-management-system, Annex IV technical documentation, FRIA, GPAI training-data summary, and post-market monitoring plan documents. DETECTED/MISSING, never PARTIAL. Advisory-only by default. | On/off (`EU_AI_ACT_DOCS_ENABLED`); findings mode via `EU_AI_ACT_REPORT_AS_FINDINGS` |
 | 5 | Org governance CI (act) | Any job of the central `ai-guardrails-orchestrator.yml` fails when executed locally in Docker. Soft-skipped if `act`/Docker are unavailable. | On/off |
 | 6 | Shipping | Any `git`/`gh` command exits non-zero | Always on (`dryRun` is the "don't ship" switch, not a phase toggle) |
 
@@ -190,6 +216,47 @@ Every pipeline run (interactive, `validate-all`, and `onboard`) scans dependency
 - On demand, the same scan is also available standalone: `POST /api/dependencies/check` with `{ "projectPath": "..." }` (agent/CI use), or via the "Dependencies" button in Ignite Studio (useful for a byte-for-byte look at every manifest's raw compliance table, independent of the issue list).
 - **Range-floor resolution:** the fallback scanner's naive version pick from a manifest range (`^5.6.0` → look up `5.6.0`) 404s on deps.dev whenever that exact patch was never actually published - common, since plenty of packages skip an exact `.0` release or only ever pre-released it (real example: `typescript@^5.6.0` - npm's history goes `5.6.0-beta` → `5.6.0-dev.*` → `5.6.1-rc` → `5.6.2`, no plain `5.6.0`). Rather than reporting that as a blocking "license unknown" finding, it re-resolves against the package's real published version list and retries with the highest version the range actually matches - a package that's really missing from the registry is still correctly flagged.
 
+## Codebase intelligence - closing the fallow.tools gap
+
+Four built-in, zero-external-tool checks (`checks/dead-code.js`, `checks/complexity-health.js`, `checks/boundaries.js`, `checks/css-dead-code.js`) close a JS/TS codebase-quality gap that Ignite's original secrets/governance/SAST focus didn't cover - the kind of signal tools like [fallow.tools](https://fallow.tools) surface. All four are heuristic (regex/bracket-depth parsing over `lib/module-graph.js`'s lightweight import graph, not a real type-checker or build system), so every finding is always advisory (`severity: 'warning'`) - a human confirms before deleting/restructuring, never a hard gate.
+
+| Gap (what a tool like fallow.tools flags) | Ignite's check | How it works | Default |
+|---|---|---|---|
+| Dead files never reached from any entry point | `checkDeadCode` - `unused-file` | BFS over the module graph from `package.json`'s `main`/`module`/`exports`/`bin` plus test/config files as entry points; anything unreached is flagged | On |
+| Exported symbols nobody imports | `checkDeadCode` - `unused-export` | Any named export never imported anywhere by name; upgraded to an AST-based check (`ts.createSourceFile`) when the scanned project itself has `typescript` installed, to filter out matches that were really inside a comment/string | On |
+| Dependencies declared but never used | `checkDeadCode` - `unused-dependency` | Any `package.json` dependency never `require`/`import`-ed and not mentioned in an npm script | On |
+| Cyclomatic/cognitive complexity hotspots | `checkComplexityHealth` - `high-complexity` | Per-file branch-keyword counting (cyclomatic) and nesting-weighted counting (cognitive); flags by decision *density* (per line), not raw file size, to avoid flagging every file over ~65 lines | On |
+| Maintainability scoring | `checkComplexityHealth` - `low-maintainability` | A calibrated Maintainability Index (0-100), tuned against Ignite's own codebase rather than the textbook Halstead-based SEI formula (no real parser to compute Halstead Volume from) | On |
+| Risk-weighted refactor targets | `checkComplexityHealth` (descriptive only) | CRAP score (`CC² × (1-coverage/100)³ + CC`), pulling real per-file coverage from [ingested runtime data](#runtime-coverage-ingestion) when available, git-churn-weighted hotspots, and a ranked refactor-target list - not issues, same precedent as LOC metrics/posture | On |
+| Layered/hexagonal architecture boundary violations | `checkBoundaries` - `boundary-violation` | Opt-in `preset` (`bulletproof` \| `layered` \| `hexagonal` \| `feature-sliced`) and/or custom `zones: [{ name, pattern, allow }]`; first-match-wins zone assignment, with single-`*` glob segments captured so sibling zone instances (e.g. `src/features/auth` vs `src/features/billing`) stay isolated from each other | **Off** - a default zone layout on a project that doesn't follow one is pure noise |
+| Dead CSS/Tailwind classes | `checkCssDeadCode` - `unused-css-class` | Flags a `.css`/`.scss`/`.less` class selector never referenced in any scanned `class`/`className` attribute; `is-`/`has-`/`js-`-prefixed classes excluded (commonly toggled via `classList`, never appearing as a literal string) | On |
+
+All four feed the same issue/override model as the external-tool checks (`collectPhase4Issues` in `override-engine.js`, categories `dead-code`/`complexity-health`/`architecture-boundary`/`css-dead-code`) - findings are addressable and overridable exactly like a secret or SAST finding, just always `severity: 'warning'`. Test file: `test/collect-phase4-codebase-intelligence.test.js`.
+
+## EU AI Act coverage
+
+Ignite can only speak to the code-detectable slice of the EU AI Act - most of it (risk-management-system documentation, conformity assessment, FRIA, human-oversight procedure) is an org-process artifact, not something a static scan sees. Two pieces cover what's actually detectable, both **advisory-only by default** (never block a run, never feed `collectPhase4Issues` unless explicitly opted in):
+
+- **Three code-detectable posture categories** (`checkFeaturePosture`/`ignite-posture-rules.yaml`), reusing the same `DETECTED`/`PARTIAL`/`MISSING` weak/strong model as the other eight posture categories:
+  - `ai-act-prohibited-practice` (Art. 5) - biometric-categorization/emotion-inference/social-scoring libraries and call sites. Unlike every other posture category, `DETECTED` here flags a **risk to review**, not a safeguard.
+  - `ai-act-transparency-disclosure` (Art. 13/50) - user-facing "AI-generated"/"you're talking to an AI" disclosure strings.
+  - `ai-act-ai-logging` (Art. 12) - MLflow/W&B/LangSmith-style model input/output/decision logging, distinct from the general-purpose `audit-logging` category.
+- **Document-presence scan** (`checkComplianceDocuments`, `checks/compliance-documents.js`, `CONFIG.compliance.euAiActDocuments`, `EU_AI_ACT_DOCS_ENABLED`) - a built-in, no-external-tool filename/path scan for the process-obligation documents the posture engine can't detect by code signature: risk-management-system doc (Art. 9), Annex IV technical documentation (Art. 11), an FRIA (Art. 27), a GPAI training-data summary/model card (Art. 53), a post-market monitoring plan (Art. 72). `DETECTED`/`MISSING` per category (no `PARTIAL` tier - there's no weak/strong distinction for "does this file exist"), attached as a downloadable `ai-act-documents-report.json` document. On by default; absence in this one repo's tree is not evidence the document doesn't exist org-wide (a GRC tool, a wiki, a separate compliance repo), so this is context for a human, never a gate.
+
+**Advisory vs. enforced mode** (`CONFIG.compliance.euAiAct.reportAsFindings`, `EU_AI_ACT_REPORT_AS_FINDINGS`, **`false` by default**): controls whether the signals above stay purely descriptive in the two report documents, or actually surface as addressable/overridable issues in `collectPhase4Issues`:
+
+```jsonc
+"compliance": {
+  "euAiActDocuments": { "enabled": true },   // env: EU_AI_ACT_DOCS_ENABLED
+  "euAiAct": { "reportAsFindings": false }   // env: EU_AI_ACT_REPORT_AS_FINDINGS
+}
+```
+
+- **Advisory (default, `false`)**: the three `ai-act-*` posture categories and the document scan stay in `posture-report.json`/`ai-act-documents-report.json` only - visible in Ignite Studio and the downloadable reports, never blocking, never in the issues list.
+- **Enforced (`true`)**: `runPhase4Checks` (server.js) calls `deriveEuAiActFindings(posture, documents)`, turning the three `ai-act-*` posture matches and any `MISSING` document category into a `euAiAct` findings group fed through the same generic loop `deadCode`/`health`/`cssDeadCode`/`boundaries` use (category `ai-act-prohibited-practice`/`ai-act-transparency-disclosure`/`ai-act-ai-logging`/`ai-act-compliance-documents` in the issues list). Always `severity: 'warning'` regardless of the toggle - these are heuristic regex/filename signals, never promoted to a hard blocker, and still go through the normal justify-and-override flow like any other advisory finding.
+
+Test file: `test/eu-ai-act-documents.test.js`.
+
 ## CWE/OWASP tagging - audit-trail identifiers per finding
 
 Every Phase 3/4 issue (`collectPhase4Issues`/`collectDependencyVulnerabilityIssues` in `override-engine.js`) carries a `cwe` and `owasp` field alongside its own category label, for SOC2/ISO27001-style compliance reporting that expects a standard identifier rather than an Ignite-specific name. Three-tier precedence (`deriveCweOwasp`):
@@ -235,6 +302,13 @@ team *why* a given gate is blocking their push.
 | The project's own automated test suite silently regressing | Auto-detects Node/Go/Rust/Python/Java and runs that ecosystem's native test runner (`npm test`, `go test`, `cargo test`, `pytest`, `mvn test`) inside an isolated Docker container | Built-in detection + Docker | 3 | Skipped if no recognized test setup is found, or if Docker isn't available - logged, never silently assumed to pass |
 | A repo drifting out of compliance *after* onboarding - a new vulnerable/malicious dependency merged later, with no one notified | Effectivated repos can opt into a scheduled (daily/weekly/monthly) re-check of the default branch (phases 1/3/4/5, no push); on failure, emails the repo's CODEOWNERS contact or files a GitHub issue if none can be resolved | Scheduled re-check + CODEOWNERS check | 3 (ongoing) | N/A for the schedule/notify logic itself - the re-check still depends on whichever Phase 4 tools are installed on the server at the time it runs |
 | A `CODEOWNERS`-less repo silently having no one accountable for findings | Advisory check for a `CODEOWNERS` file (root/`.github`/`docs`) and any email-address owner listed in it, surfaced in the pipeline log and used to route scheduled-check failures | Built-in CODEOWNERS check | 3 | N/A - built-in, no external tool involved |
+| A vulnerability whose tainted data crosses file/function boundaries (a stored-XSS/IDOR chain spanning a controller, service layer, and template) - beyond what an intraprocedural SAST engine can trace | Builds a real per-language CodeQL database and runs the `security-extended` query suite; `crossFile: true` only when the finding's SARIF `codeFlows` actually span more than one file | [CodeQL](https://github.com/github/codeql-cli-binaries) | 4 | Check skipped entirely - no fallback (a cross-file taint engine can't be meaningfully approximated) |
+| Dead files, unused exports, and unused dependencies accumulating unnoticed - larger attack surface and audit burden with no functional purpose | Module-graph BFS from real entry points flags unreached files, name-level unused exports, and manifest dependencies never required/scripted | Built-in (`checkDeadCode`) - see [Codebase intelligence](#codebase-intelligence---closing-the-fallowtools-gap) | 4 | N/A - built-in, no external tool involved |
+| Unmaintainable, high-risk hotspots accumulating silently - complex, poorly-covered code that's expensive and dangerous to change | Per-file cyclomatic/cognitive complexity, a calibrated Maintainability Index, and a CRAP score weighted by real ingested coverage when available | Built-in (`checkComplexityHealth`) | 4 | N/A - built-in, no external tool involved |
+| Architecture/layering erosion - a lower layer reaching into a higher one, or sibling feature modules importing each other directly, defeating an intended isolation boundary | Zone-based import-graph check against a preset or custom `zones` config; first-match-wins, single-`*` glob captures for sibling isolation | Built-in (`checkBoundaries`) - **off by default** | 4 | N/A - built-in, no external tool involved |
+| Dead CSS/Tailwind classes bloating the shipped stylesheet with rules nobody's markup ever selects | Flags a class selector never referenced in any scanned `class`/`className` attribute; `is-`/`has-`/`js-`-prefixed classes excluded (toggled via `classList`) | Built-in (`checkCssDeadCode`) | 4 | N/A - built-in, no external tool involved |
+| EU AI Act Art. 5/12/13 code-detectable risk (prohibited biometric/emotion/social-scoring practices, missing AI-interaction disclosure, missing model-decision logging) going unreviewed | Three dedicated posture categories (`ai-act-prohibited-practice`/`ai-act-transparency-disclosure`/`ai-act-ai-logging`) via the same Semgrep-backed weak/strong posture model | Compliance & Feature Posture Engine (reuses Semgrep) - see [EU AI Act coverage](#eu-ai-act-coverage) | 4 | Falls back to the built-in regex posture scanner if Semgrep is missing; advisory-only by default either way (`EU_AI_ACT_REPORT_AS_FINDINGS=true` to enforce) |
+| EU AI Act process-obligation documentation (risk-management system, Annex IV technical docs, FRIA, GPAI training-data summary, post-market monitoring plan) missing with no one flagged to produce it | Filename/path scan across the repo tree per document category | Built-in (`checkComplianceDocuments`) | 4 | N/A - built-in, no external tool involved. Absence in one repo isn't proof the document doesn't exist org-wide - see [EU AI Act coverage](#eu-ai-act-coverage) |
 
 ## Checks report - every check that ran, split by area
 
@@ -576,10 +650,13 @@ Requires a running Ignite server (`npm start` in the repo root, default `http://
 
 Commands (Command Palette):
 
-- **Ignite: Scan Workspace** - runs phases 1-5 (phase 5 only if `ignite.runLocalCi` is on) against the open folder; findings land in the Problems panel, a Findings tree, and an Output channel.
+- **Ignite: Scan Workspace** - runs phases 1-5 (phase 5 only if `ignite.runLocalCi` is on) against the open folder; findings land in the Problems panel, a Findings tree, and an Output channel. Guarded against double-firing while a scan is already running, and the reachability probe now logs a per-attempt reason (timeout, `ECONNREFUSED`, 5xx body, ...) to the Output channel instead of a flat "isn't reachable".
+- **Ignite: Toggle Findings Grouping (Finding / Phase)** - switches the Findings tree between the original per-phase layout and a per-finding layout that groups every occurrence of the same (category + summary) finding under one collapsible row, unresolved findings sorted first. A toolbar icon in the Findings view title bar toggles it without opening the Command Palette.
+- **Ignite: Acknowledge Selected** - available on a finding group or a multi-selection in the Findings tree (`Cmd`/`Ctrl`-click to select several); prompts once for a justification and writes an `Acknowledge:`-filled stanza for every unresolved occurrence in the selection to `.ignite/acknowledgments.md` in one shot, instead of acknowledging one occurrence at a time.
 - **Ignite: Install Pre-Push Hook** - installs `hooks/pre-push` (above) into this repo's git hooks.
 - **Ignite: Open Review File** - opens `.ignite/acknowledgments.md` for filling in `Acknowledge:` justifications on blocking findings, same file/flow the pre-push hook uses.
 - **Ignite: Refresh Tools Status** - re-probes the optional external tools in a Tools Status tree.
+- **Ignite: Show License Compliance** / **Show SBOM** / **Show LOC Metrics** / **Show Compliance & Feature Posture** - on-demand report panels for the four non-issue Phase 4 artifacts, opened beside the editor. Backed by the same `projectPath` convention as `validate-all`: license compliance calls the existing `POST /api/dependencies/check`; SBOM/LOC/posture call the new standalone `POST /api/reports/{sbom,loc-metrics,posture}` endpoints (`routes/reports.js`) added specifically for the extension, since it only ever calls `validate-all` and has no `jobId`/review-gate state to hang a Studio request off of. Each renders as pretty-printed JSON in a reused webview panel (one per report kind) - the same data the web UI's Studio buttons show in full table form.
 
 Settings: `ignite.baseUrl` (default `http://localhost:51337`), `ignite.runLocalCi` (default `false`), `ignite.showOverriddenIssues` (default `false`). Full detail, dev/debug instructions, and building the `.vsix` for someone else without installing it: [`vscode-extension/README.md`](vscode-extension/README.md).
 

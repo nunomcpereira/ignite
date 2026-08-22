@@ -27,6 +27,14 @@ function createFeaturePostureCheck({ runTool, semgrepTooling, fsUtils, config })
     'sso-saml-oidc', 'rbac-abac', 'audit-logging', 'siem-log-forwarding',
     'https-tls', 'backups-dr', 'encryption-at-rest', 'rate-limiting',
     'mfa-2fa', 'secrets-management',
+    // EU AI Act code-detectable signals (advisory only, same DETECTED/
+    // PARTIAL/MISSING model — see CLAUDE.md's EU AI Act section). These
+    // three are the only Act obligations with a real code-level signature;
+    // everything else in the Act (risk-management docs, FRIA, conformity
+    // assessment, human-oversight procedure) is a process/document
+    // artifact, not something a static scan can see — see
+    // checks/compliance-documents.js for the doc-presence half.
+    'ai-act-prohibited-practice', 'ai-act-transparency-disclosure', 'ai-act-ai-logging',
   ];
 
   // Mirrors ignite-posture-rules.yaml's pattern-regex bodies, narrower in
@@ -75,6 +83,27 @@ function createFeaturePostureCheck({ runTool, semgrepTooling, fsUtils, config })
     'secrets-management': {
       weak: /hashicorp\/vault|node-vault|@aws-sdk\/client-secrets-manager|azure-keyvault-secrets|com\.google\.cloud\.secretmanager|com\.bettercloud\.vault|doppler|python-dotenv-vault/,
       strong: /vault\.read\(|vaultClient\.read\(|secretsManagerClient\.getSecretValue\(|new\s+SecretClient\(|secretmanager\.accessSecretVersion\(|SecretsManagerClient\(\)\.getSecretValue\(/,
+    },
+    // Unlike every category above, DETECTED here flags a *risk* (an EU AI
+    // Act Art. 5 prohibited or restricted practice), not a safeguard —
+    // biometric-categorization/emotion-inference/social-scoring libraries
+    // or call sites in scope.
+    'ai-act-prohibited-practice': {
+      weak: /face-api\.js|face_recognition|deepface|@vladmandic\/face-api|com\.microsoft\.cognitiveservices\.vision\.face|azure-cognitiveservices-vision-face|aws-sdk.*rekognition|@aws-sdk\/client-rekognition|google-cloud\/vision.*faceDetection|emotion-recognition|py-feat|affectiva/,
+      strong: /recognizeEmotion\(|detectEmotion\(|FaceClient\(.*\)\.face\.detect|rekognition\.detectFaces\(|compareFaces\(|socialScore|social_score|creditworthiness_score.*biometric/,
+    },
+    // EU AI Act Art. 13/50 transparency — user-facing AI disclosure.
+    'ai-act-transparency-disclosure': {
+      weak: /ai-disclosure|aiDisclosure|chatbotDisclosure|synthetic-content-label|c2pa/,
+      strong: /you'?re (chatting|talking) with an ai|this (response|content) (is|was) (ai|automatically)[- ]generated|ai[- ]generated content|you are interacting with an ai system/i,
+    },
+    // EU AI Act Art. 12 — automatic event/decision logging for traceability
+    // (distinct from the general-purpose 'audit-logging' category above:
+    // this looks for logging of *model inputs/outputs/decisions*, not just
+    // app-level audit trails).
+    'ai-act-ai-logging': {
+      weak: /mlflow|wandb|weights_and_biases|langsmith|langfuse|helicone|arize-phoenix|whylogs/,
+      strong: /mlflow\.log_(param|metric|artifact|prediction)\(|wandb\.log\(|langsmith\.(trace|log_run)\(|logDecision\(|logPrediction\(|logModelInput(Output)?\(/,
     },
   };
 

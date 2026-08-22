@@ -228,3 +228,76 @@ rules:
       category: secrets-management
       tier: strong
     pattern-regex: (vault\.read\(|vaultClient\.read\(|secretsManagerClient\.getSecretValue\(|new\s+SecretClient\(|secretmanager\.accessSecretVersion\(|SecretsManagerClient\(\)\.getSecretValue\()
+
+  # ---------------------------------------------------------------------
+  # EU AI Act code-detectable signals (advisory only — see CLAUDE.md's EU
+  # AI Act section for the full obligation-to-check mapping; most of the
+  # Act is a process/document control this scan can't see at all).
+  # ---------------------------------------------------------------------
+  - id: posture-ai-act-prohibited-practice-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Biometric-categorization/emotion-inference/social-scoring library
+      referenced (import/dependency only) — Art. 5 prohibited/restricted
+      practice risk if this classifies people rather than content. DETECTED
+      here flags a risk to review, not a safeguard.
+    metadata:
+      category: ai-act-prohibited-practice
+      tier: weak
+    pattern-regex: (face-api\.js|face_recognition|deepface|@vladmandic/face-api|com\.microsoft\.cognitiveservices\.vision\.face|azure-cognitiveservices-vision-face|aws-sdk.*rekognition|@aws-sdk/client-rekognition|emotion-recognition|py-feat|affectiva)
+
+  - id: posture-ai-act-prohibited-practice-strong
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Biometric-categorization/emotion-inference/social-scoring call site
+      found — confirm this isn't an Art. 5 prohibited practice (real-time
+      remote biometric ID, emotion inference in workplace/education,
+      social scoring) or a high-risk use requiring conformity assessment.
+    metadata:
+      category: ai-act-prohibited-practice
+      tier: strong
+    pattern-regex: (recognizeEmotion\(|detectEmotion\(|FaceClient\(.*\)\.face\.detect|rekognition\.detectFaces\(|compareFaces\(|socialScore|social_score)
+
+  - id: posture-ai-act-transparency-disclosure-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      AI-disclosure/content-provenance library referenced (import/
+      dependency only — no confirmed user-facing disclosure string found
+      by the -strong rule).
+    metadata:
+      category: ai-act-transparency-disclosure
+      tier: weak
+    pattern-regex: (ai-disclosure|aiDisclosure|chatbotDisclosure|synthetic-content-label|c2pa)
+
+  - id: posture-ai-act-transparency-disclosure-strong
+    languages: [generic]
+    severity: INFO
+    message: "User-facing AI-interaction/AI-generated-content disclosure string found (Art. 13/50)."
+    metadata:
+      category: ai-act-transparency-disclosure
+      tier: strong
+    pattern-regex: (?i)(you'?re (chatting|talking) with an ai|this (response|content) (is|was) (ai|automatically)[- ]generated|ai[- ]generated content|you are interacting with an ai system)
+
+  - id: posture-ai-act-ai-logging-weak
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Model-observability/ML-logging library referenced (import/dependency
+      only — no confirmed prediction/decision logging call found by the
+      -strong rule).
+    metadata:
+      category: ai-act-ai-logging
+      tier: weak
+    pattern-regex: (mlflow|wandb|weights_and_biases|langsmith|langfuse|helicone|arize-phoenix|whylogs)
+
+  - id: posture-ai-act-ai-logging-strong
+    languages: [generic]
+    severity: INFO
+    message: "Model input/output/decision logged at a call site (Art. 12 traceability)."
+    metadata:
+      category: ai-act-ai-logging
+      tier: strong
+    pattern-regex: (mlflow\.log_(param|metric|artifact|prediction)\(|wandb\.log\(|langsmith\.(trace|log_run)\(|logDecision\(|logPrediction\(|logModelInput(Output)?\()

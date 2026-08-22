@@ -353,6 +353,11 @@ const CODEQL_TIMEOUT_MS = Number(CONFIG.security.codeql.timeoutMs) || (20 * 60_0
 const POSTURE_ENABLED = Boolean(CONFIG.compliance.posture.enabled);
 const POSTURE_RULESET = String(CONFIG.compliance.posture.ruleset || path.join(__dirname, 'ignite-posture-rules.yaml'));
 
+/* Optional EU AI Act document-presence scan (see CONFIG.compliance.euAiActDocuments) */
+const EU_AI_ACT_DOCS_ENABLED = Boolean(CONFIG.compliance.euAiActDocuments.enabled);
+/* Whether EU AI Act signals (posture + doc-presence) surface as issues vs. advisory-only reports (see CONFIG.compliance.euAiAct) */
+const EU_AI_ACT_REPORT_AS_FINDINGS = Boolean(CONFIG.compliance.euAiAct.reportAsFindings);
+
 /* Optional jscpd-powered code-duplication scan (see CONFIG.metrics.jscpd) */
 const JSCPD_ENABLED = Boolean(CONFIG.metrics.jscpd.enabled);
 const JSCPD_BINARY = String(CONFIG.metrics.jscpd.binary || 'jscpd');
@@ -1009,6 +1014,12 @@ const { checkFeaturePosture, checkFeaturePostureFallback, POSTURE_CATEGORIES } =
   config: { enabled: POSTURE_ENABLED, ruleset: POSTURE_RULESET, maxScanFileBytes: MAX_SCAN_FILE_BYTES },
 });
 
+const { createComplianceDocumentsCheck } = require('./checks/compliance-documents');
+const { checkComplianceDocuments, DOCUMENT_CATEGORIES } = createComplianceDocumentsCheck({
+  fsUtils: { walkFiles, relativeToRoot },
+  config: { enabled: EU_AI_ACT_DOCS_ENABLED },
+});
+
 // Built-in codebase-intelligence checks (dead code, complexity/health, CSS
 // dead-class scan, architecture boundaries) — closes the fallow.tools gap
 // set (see project memory). No external tool for any of these.
@@ -1327,6 +1338,22 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
       },
     },
     {
+      name: 'euAiActDocuments',
+      run: async (blog) => {
+        blog('Check 20 — EU AI Act document-presence scan (built-in, advisory only)...');
+        const { engine: docsEngine, documents } = await checkComplianceDocuments(projectRoot, blog);
+        for (const category of DOCUMENT_CATEGORIES) {
+          const { status, matches } = documents[category];
+          blog(`    ${status === 'DETECTED' ? '✓' : '·'} ${category}: ${status}${matches.length > 0 ? ` (${matches.length} file(s))` : ''}`);
+        }
+        if (projectId !== null) {
+          const docsBuffer = Buffer.from(JSON.stringify({ engine: docsEngine, documents }, null, 2));
+          store.addUploadDocument(projectId, 'ai-act-documents-report.json', 'application/json', docsBuffer.length, docsBuffer);
+        }
+        return { docsEngine, documents };
+      },
+    },
+    {
       name: 'deadCode',
       run: async (blog) => {
         blog('Check 16 — dead-code / unused-export / unused-dependency scan (built-in)...');
@@ -1418,6 +1445,10 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
   }));
   const byName = Object.fromEntries(settled.map((r) => [r.name, r.value]));
 
+  const euAiAct = EU_AI_ACT_REPORT_AS_FINDINGS
+    ? deriveEuAiActFindings(byName.posture?.posture, byName.euAiActDocuments?.documents)
+    : null;
+
   const issues = collectPhase4Issues({
     secrets: byName.secrets,
     governance: byName.governance,
@@ -1436,8 +1467,44 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     health: byName.health,
     cssDeadCode: byName.cssDeadCode,
     boundaries: byName.boundaries,
+    euAiAct,
   }).filter((issue) => !isExcludedSecurityFinding(issue));
   return { issues };
+}
+
+// Only called when CONFIG.compliance.euAiAct.reportAsFindings is true (see
+// runPhase4Checks above) — turns the three ai-act-* posture categories'
+// matches and the doc-presence scan's MISSING categories into the same
+// {kind,file,line,message,code} shape collectPhase4Issues' codebase-
+// intelligence loop already consumes for deadCode/health/cssDeadCode/
+// boundaries. `posture`/`documents` are the raw per-category reports from
+// checkFeaturePosture/checkComplianceDocuments; either can be undefined if
+// that check itself is disabled.
+function deriveEuAiActFindings(posture, documents) {
+  const findings = [];
+  const POSTURE_KIND = {
+    'ai-act-prohibited-practice': 'ai-act-prohibited-practice',
+    'ai-act-transparency-disclosure': 'ai-act-transparency-disclosure',
+    'ai-act-ai-logging': 'ai-act-ai-logging',
+  };
+  for (const [category, kind] of Object.entries(POSTURE_KIND)) {
+    for (const m of posture?.[category]?.matches || []) {
+      findings.push({ kind, file: m.file, line: m.line, message: m.message, code: m.code });
+    }
+  }
+  const DOCUMENT_LABELS = {
+    'risk-management-system': 'Risk-management system documentation (Art. 9) not found in this repo.',
+    'technical-documentation': 'Annex IV technical documentation (Art. 11) not found in this repo.',
+    'fria': 'Fundamental rights impact assessment (Art. 27) not found in this repo.',
+    'training-data-summary': 'GPAI training-data summary / model card (Art. 53) not found in this repo.',
+    'post-market-monitoring': 'Post-market monitoring plan (Art. 72) not found in this repo.',
+  };
+  for (const [category, message] of Object.entries(DOCUMENT_LABELS)) {
+    if (documents?.[category]?.status === 'MISSING') {
+      findings.push({ kind: 'ai-act-compliance-documents', discriminator: category, file: null, line: null, message });
+    }
+  }
+  return { findings };
 }
 
 async function actTooling() {
@@ -2626,6 +2693,9 @@ async function runDependencyVulnerabilityCheck(projectRoot, log) {
 const { mountDependenciesRoutes } = require('./routes/dependencies');
 mountDependenciesRoutes(app, { sanitizeAbsoluteProjectPath, scanDependencyLicenses, scanDependencyVulnerabilities });
 
+const { mountReportsRoutes } = require('./routes/reports');
+mountReportsRoutes(app, { sanitizeAbsoluteProjectPath, generateSbom, generateLocMetrics, checkFeaturePosture });
+
 const { mountAutoFixRoute } = require('./routes/auto-fix');
 mountAutoFixRoute(app, { sanitizeAbsoluteProjectPath, checkDeadCode });
 
@@ -2820,6 +2890,8 @@ module.exports = {
   generateLocMetrics,
   checkApiSchemas,
   checkFeaturePosture,
+  checkComplianceDocuments,
+  DOCUMENT_CATEGORIES,
   checkMaliciousDependencies,
   checkCodeqlCrossFile,
   discoverCodeqlLanguages,

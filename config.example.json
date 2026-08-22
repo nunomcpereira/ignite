@@ -108,6 +108,12 @@
     "posture": {
       "enabled": true,
       "ruleset": ""
+    },
+    "euAiActDocuments": {
+      "enabled": true
+    },
+    "euAiAct": {
+      "reportAsFindings": false
     }
   },
   "metrics": {

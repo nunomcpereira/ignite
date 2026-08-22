@@ -69,15 +69,28 @@ function sleep(ms: number): Promise<void> {
  * that is a live, busy process, not an unreachable one. Three attempts
  * with a generous per-attempt timeout and a short backoff between them
  * gives a transient stall room to clear before this reports "unreachable".
+ *
+ * `onAttempt`, when passed, is called after every attempt with a one-line
+ * summary (timing + the concrete reason it failed: timeout, ECONNREFUSED,
+ * a 5xx body, etc.) — surfaced in the Output channel so a spurious
+ * "Ignite isn't reachable" report is diagnosable instead of a dead end.
  */
-export async function checkReachable(): Promise<boolean> {
+export async function checkReachable(onAttempt?: (line: string) => void): Promise<boolean> {
   const url = baseUrl();
   for (let attempt = 1; attempt <= 3; attempt++) {
+    const startedAt = Date.now();
     try {
       const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
-      if (res.ok || res.status < 500) return true;
-    } catch {
-      // falls through to retry below
+      const elapsed = Date.now() - startedAt;
+      if (res.ok || res.status < 500) {
+        onAttempt?.(`  probe ${attempt}/3 → HTTP ${res.status} in ${elapsed}ms — reachable`);
+        return true;
+      }
+      onAttempt?.(`  probe ${attempt}/3 → HTTP ${res.status} in ${elapsed}ms — treated as down (5xx)`);
+    } catch (e) {
+      const elapsed = Date.now() - startedAt;
+      const reason = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      onAttempt?.(`  probe ${attempt}/3 → failed after ${elapsed}ms — ${reason}`);
     }
     if (attempt < 3) await sleep(1500);
   }
@@ -186,6 +199,90 @@ export async function getProjectDetails(id: number): Promise<ProjectDetails | nu
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`GET /api/projects/${id} returned HTTP ${res.status}`);
   return (await res.json()) as ProjectDetails;
+}
+
+export interface LicenseManifestDependency {
+  name: string;
+  version?: string;
+  license?: string | null;
+  classification?: string;
+  [key: string]: unknown;
+}
+
+export interface LicenseManifest {
+  file: string;
+  ecosystem?: string;
+  dependencies: LicenseManifestDependency[];
+  [key: string]: unknown;
+}
+
+export interface LicenseComplianceResult {
+  ok: boolean;
+  projectPath: string;
+  manifests: LicenseManifest[];
+  [key: string]: unknown;
+}
+
+export interface SbomResult {
+  ok: boolean;
+  projectPath: string;
+  engine?: string;
+  sbom?: unknown;
+  [key: string]: unknown;
+}
+
+export interface LocMetricsResult {
+  ok: boolean;
+  projectPath: string;
+  engine?: string;
+  metrics?: unknown;
+  [key: string]: unknown;
+}
+
+export interface PostureResult {
+  ok: boolean;
+  projectPath: string;
+  engine?: string;
+  posture?: unknown;
+  [key: string]: unknown;
+}
+
+async function postReport<T>(path: string, projectPath: string): Promise<T> {
+  const url = baseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${url}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectPath }),
+      // These reuse the same tool binaries (syft/gocloc/semgrep) validate-all's
+      // Phase 4 runs, so a cold run on a large project can take a while.
+      signal: AbortSignal.timeout(5 * 60 * 1000),
+    });
+  } catch (e) {
+    throw new IgniteUnreachableError(url, e);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`${path} returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return (await res.json()) as T;
+}
+
+export function getLicenseCompliance(projectPath: string): Promise<LicenseComplianceResult> {
+  return postReport<LicenseComplianceResult>('/api/dependencies/check', projectPath);
+}
+
+export function getSbom(projectPath: string): Promise<SbomResult> {
+  return postReport<SbomResult>('/api/reports/sbom', projectPath);
+}
+
+export function getLocMetrics(projectPath: string): Promise<LocMetricsResult> {
+  return postReport<LocMetricsResult>('/api/reports/loc-metrics', projectPath);
+}
+
+export function getPosture(projectPath: string): Promise<PostureResult> {
+  return postReport<PostureResult>('/api/reports/posture', projectPath);
 }
 
 export async function toolsStatus(): Promise<ToolStatus[]> {

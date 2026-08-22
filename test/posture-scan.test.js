@@ -96,6 +96,24 @@ test('checkFeaturePosture: parses fake semgrep output via extra.metadata.categor
   })();
 });
 
+test('checkFeaturePosture: fallback scanner detects EU AI Act signals (prohibited-practice, transparency, ai-logging)', withServerEnv(
+  { POSTURE_ENABLED: 'false' },
+  async (mod) => {
+    const dir = await makeTempProject({
+      'app.js': [
+        'const rekognition = require("@aws-sdk/client-rekognition");', // weak prohibited-practice
+        'rekognition.compareFaces({});', // strong prohibited-practice
+        'const msg = "You are interacting with an AI system.";', // strong transparency
+        'import mlflow from "mlflow";', // weak ai-logging
+      ].join('\n'),
+    });
+    const { posture } = await mod.checkFeaturePosture(dir, noopLog);
+    assert.equal(posture['ai-act-prohibited-practice'].status, 'DETECTED');
+    assert.equal(posture['ai-act-transparency-disclosure'].status, 'DETECTED');
+    assert.equal(posture['ai-act-ai-logging'].status, 'PARTIAL');
+  }
+));
+
 test('checkFeaturePosture: real semgrep binary end-to-end against ignite-posture-rules.yaml (skipped if semgrep is not installed)', async (t) => {
   if (!(await hasRealSemgrep())) {
     t.skip('semgrep not installed on PATH — install with `brew install semgrep` to run this test');

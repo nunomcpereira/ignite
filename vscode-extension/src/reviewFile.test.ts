@@ -11,6 +11,7 @@ import {
   writeScanSnapshot,
   loadOverrides,
   loadAcknowledgedIds,
+  acknowledgeIssues,
 } from './reviewFile';
 import type { IgniteIssue } from './api';
 
@@ -71,6 +72,41 @@ test('a filled-in justification is picked up by loadOverrides/loadAcknowledgedId
 
     const acknowledged = await loadAcknowledgedIds(repoRoot);
     assert.ok(acknowledged.has('secret::a.py::3'));
+  } finally {
+    await fs.rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('acknowledgeIssues appends a filled-in stanza per new issue, all sharing one justification', async () => {
+  const repoRoot = await makeRepoRoot();
+  try {
+    const second: IgniteIssue = { ...sampleIssue, id: 'secret::b.py::9', file: 'b.py', line: 9 };
+    await acknowledgeIssues(repoRoot, [sampleIssue, second], 'reviewed, both false positives');
+
+    const overrides = await loadOverrides(repoRoot);
+    assert.deepEqual(
+      overrides.sort((a, b) => a.issueId.localeCompare(b.issueId)),
+      [
+        { issueId: 'secret::a.py::3', justification: 'reviewed, both false positives' },
+        { issueId: 'secret::b.py::9', justification: 'reviewed, both false positives' },
+      ]
+    );
+  } finally {
+    await fs.rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('acknowledgeIssues overwrites an existing blank Acknowledge: line in place rather than duplicating the entry', async () => {
+  const repoRoot = await makeRepoRoot();
+  try {
+    await appendUnresolvedIssues(repoRoot, [sampleIssue]);
+    await acknowledgeIssues(repoRoot, [sampleIssue], 'reviewed, false positive');
+
+    const contents = await fs.readFile(reviewFilePath(repoRoot), 'utf8');
+    assert.equal((contents.match(/ID: secret::a\.py::3/g) ?? []).length, 1);
+
+    const overrides = await loadOverrides(repoRoot);
+    assert.deepEqual(overrides, [{ issueId: 'secret::a.py::3', justification: 'reviewed, false positive' }]);
   } finally {
     await fs.rm(repoRoot, { recursive: true, force: true });
   }

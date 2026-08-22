@@ -86,6 +86,50 @@ onboarded it, wasn't a person.
 
 [View the full technical README on GitHub »](https://github.com/nunomcpereira/ignite#readme)
 
+## Architecture
+
+Three request paths converge on the same Express server and the same six-phase pipeline - there's no "lighter" mode for one caller versus another:
+
+```
+┌───────────────┐  multipart POST (dryRun?)   ┌──────────────────────────────────────────────┐
+│    Browser    │ ──────────────────────────▶ │  Express server (server.js)                    │
+│  (index.html) │                              │                                                │
+│  NDJSON       │ ◀────────────────────────── │  1. multer buffers ZIP/folder →                │
+│  pipeline UI  │  streamed events (log /      │     $TMPDIR/gatekeeper-uploads/<rand>          │
+└───────────────┘  status / review_required /  │  2. safe-extract (zip-slip + zip-bomb guards,  │
+                    done)                      │     symlinks skipped) →                        │
+┌───────────────┐  POST /validate-all          │     $TMPDIR/gatekeeper-staging/<uuid>/         │
+│ pre-push hook │ ──────────────────────────▶ │  3. sequential phase checks, in place:         │
+│ / CLI         │  (sync JSON, phases 1-5,     │     Phase 1  Input & metadata                  │
+│ (ignite scan) │   never ships)               │     Phase 2  GxP validation docs (off default) │
+└───────────────┘                              │     Phase 3  Structure audit · license · unit  │
+┌───────────────┐  POST /onboard,               │              tests (Docker, per-language)      │
+│ MCP client    │  /pipeline/:id/review-        │     Phase 4  Security & compliance (secrets,   │
+│ (Claude Code, │  decision, /projects/:id/     │              AI-governance, LLM deep-scan,      │
+│  Desktop, …)  │  effectivate                  │              IaC/SAST/supply-chain/PII/API-     │
+└───────┬───────┘ ──────────────────────────▶ │              schema/posture/codebase-intel/     │
+        │ stdio or                              │              EU AI Act - 20+ checks, mostly     │
+        │ HTTP :51338/mcp                       │              soft-dependency external tools)    │
+        ▼                                       │     Phase 5  Org governance CI (act + Docker)  │
+┌───────────────┐                               │     Phase 6  (only if all green, not dryRun):  │
+│ mcp-server.js │  proxies every call over       │              git init/add/commit,               │
+│ (child proc,  │  plain HTTP - never touches    │              gh repo create --private,          │
+│  auto-started)│  git/gh itself                 │              git remote add + push              │
+└───────────────┘                               │  4. finally: rm -rf staging dir AND uploaded   │
+                                                 │     ZIP - success or failure                    │
+                                                 └──────────────────────┬──────────────────────────┘
+                                                                        │ users, sessions, api_keys,
+                                                                        │ projects, overrides,
+                                                                        │ file/codeql scan caches,
+                                                                        ▼ issue baselines, runtime coverage
+                                                                 ┌─────────────┐
+                                                                 │  ignite.db  │
+                                                                 │  (SQLite)   │
+                                                                 └─────────────┘
+```
+
+The interactive browser upload (`POST /api/pipeline`) streams NDJSON progress and pauses at a review gate; the headless path the [pre-push hook](#pre-push-hook) and `ignite scan` CLI use (`POST /api/pipeline/validate-all`) is synchronous, phases 1-5 only, and never ships; the [MCP server](#mcp-server) is a thin proxy - `mcp-server.js` never runs `git`/`gh` itself, it just calls the same HTTP API. Every user-facing project file is staged under a per-job UUID directory and force-deleted in a `finally` block regardless of outcome, so nothing lingers on disk after a run.
+
 ## Walkthrough
 
 ### 1. Upload a project - checks run locally, streamed live
@@ -159,6 +203,10 @@ Run **Ignite: Scan Workspace** from the Command Palette; a blocking finding also
 
 **Ignite: Install Pre-Push Hook** wires the same [pre-push hook](#pre-push-hook) into the open repo's git hooks from inside the editor, and **Ignite: Open Review File** opens `.ignite/acknowledgments.md` for filling in `Acknowledge:` justifications on blocking findings - the identical override flow the terminal-based hook uses, just without leaving VS Code. Works with VS Code, Cursor, or VS Code Insiders; full install/settings reference in the [extension's own README](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension#readme).
 
+**Findings can be grouped and acknowledged in bulk.** The Findings tree's title-bar icon (**Ignite: Toggle Findings Grouping**) switches between the original per-phase layout and a per-finding layout - every occurrence of the same (category + summary) finding collapsed under one row, unresolved findings sorted first. Select a group, or multi-select rows with `Cmd`/`Ctrl`-click, and **Ignite: Acknowledge Selected** writes one shared justification to `.ignite/acknowledgments.md` for every unresolved occurrence at once, instead of acknowledging them one at a time.
+
+**The same non-issue reports Studio shows - SBOM, LOC metrics, posture, license compliance - now open right in the editor too**, via **Ignite: Show SBOM** / **Show LOC Metrics** / **Show Compliance & Feature Posture** / **Show License Compliance**: each opens a read-only panel beside the editor with that report's data, backed by new standalone `/api/reports/{sbom,loc-metrics,posture}` endpoints (license compliance reuses the existing dependencies endpoint) - no jobId or web-UI review-gate state required, since the extension only ever drives `validate-all`.
+
 ## What gets checked
 
 Six phases and twelve+ optional external-tool integrations (all soft
@@ -176,6 +224,9 @@ by a dedicated tool, no LLM involved**:
 - Missing security/compliance posture (SSO, RBAC, audit logging, rate limiting, ...) - Semgrep-backed pattern matching (static)
 - Your org's own governance CI, run locally via `act` before it ever reaches a real PR (static, runs your actual workflows)
 - Ungoverned AI/LangChain invocations - regex/AST check (static)
+- Cross-file vulnerabilities a single-file SAST engine can't trace - CodeQL's `security-extended` query suite (static)
+- Dead code, unused exports/dependencies, complexity/maintainability hotspots, dead CSS classes, architecture-boundary violations - four built-in checks closing a code-quality gap tools like [fallow.tools](https://fallow.tools) cover (static, advisory)
+- EU AI Act code-detectable signals - prohibited-practice/transparency-disclosure/AI-logging posture categories plus a document-presence scan for Art. 9/11/27/53/72 process documentation (static, advisory by default - see [What gets checked](https://github.com/nunomcpereira/ignite#eu-ai-act-coverage))
 
 The **one** LLM-driven check is the local deep-scan pass: injection, path
 traversal, SSRF, insecure deserialization, XSS, weak crypto, and similar
@@ -214,6 +265,9 @@ installed* (Ignite still runs, and falls back where it can, if it isn't).
 | The project's own automated test suite silently regressing | Auto-detects Node/Go/Rust/Python/Java and runs that ecosystem's native test runner (`npm test`, `go test`, `cargo test`, `pytest`, `mvn test`) inside an isolated Docker container | Built-in detection + Docker | Skipped if no recognized test setup is found, or if Docker isn't available - logged, never silently assumed to pass |
 | A repo drifting out of compliance *after* onboarding - a new vulnerable/malicious dependency merged later, with no one notified | Effectivated repos can opt into a scheduled (daily/weekly/monthly) re-check of the default branch; on failure, emails the repo's CODEOWNERS contact or files a GitHub issue if none can be resolved | Scheduled re-check + CODEOWNERS check | N/A for the schedule/notify logic itself - the re-check still depends on whichever Phase 4 tools are installed on the server at the time it runs |
 | A `CODEOWNERS`-less repo silently having no one accountable for findings | Advisory check for a `CODEOWNERS` file and any email-address owner listed in it | Built-in CODEOWNERS check | N/A - built-in, no external tool involved |
+| A vulnerability whose tainted data crosses file/function boundaries, beyond what an intraprocedural SAST engine can trace | Builds a real per-language CodeQL database and runs the `security-extended` query suite | CodeQL | Check skipped entirely - no fallback |
+| Dead code, unused exports/dependencies, complexity/maintainability hotspots, dead CSS classes, and architecture-boundary erosion accumulating unnoticed | Four built-in module-graph/import-graph/regex checks, all advisory-only - closes the gap tools like fallow.tools cover | Built-in (`checkDeadCode`/`checkComplexityHealth`/`checkBoundaries`/`checkCssDeadCode`) | N/A - built-in, no external tool involved |
+| EU AI Act Art. 5/12/13 code-detectable risk (prohibited biometric/emotion/social-scoring practices, missing AI-disclosure, missing model-decision logging) and Art. 9/11/27/53/72 process documentation going unreviewed | Three dedicated posture categories plus a filename/path document-presence scan, advisory-only by default (opt-in to enforced findings mode) | Compliance & Feature Posture Engine + built-in document scan | Falls back to the built-in regex posture scanner if Semgrep is missing |
 
 Full details, install instructions, and the on/off default for every tool: see the [README's tool table](https://github.com/nunomcpereira/ignite#external-tools).
 

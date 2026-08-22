@@ -1806,12 +1806,6 @@ ID: container-image-cve::Dockerfile::1::cve-2026-17106@github.com/moby/go-archiv
 #   Dockerfile:1
 Acknowledge: Confirmed via `go version -m` against both binaries: the Docker CLI's own copy of this dependency is already gone as of the 29.7.2 bump in this same commit (27.x vendored github.com/moby/go-archive@v0.1.0, 29.7.2 links zero "archive"-named modules) - what remains is act's copy, still v0.1.0 in act's latest release (v0.2.89) and its unreleased master branch go.mod, so there's no upstream fix to pin to yet. The only tar/archive extraction act does inside this image is unpacking build contexts/layers it constructs itself from (a) the devops-governance org's own workflow definitions, fetched via `gh api` from a trusted org repo, and (b) the already zip-slip-guarded staging directory of the project being onboarded (see server.js's archive-extraction guard). Both run inside a container that's already executing that same untrusted project's arbitrary CI steps for Phase 5 - a path-traversal write during archive extraction doesn't grant an attacker anything they don't already have by virtue of controlling the workflow being run. Revisit once nektos/act ships a release on go-archive >=0.3.0.
 
-ID: pii-dataflow::lib/tool-runner.js::208
-# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
-#   lib/tool-runner.js:208
-# Code: child = spawn(binaries.codeql, safeArgs, { cwd: safeCwd, env: safeEnv }); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::203 - line drifted 203 -> 208 after adding a trailing nosemgrep suppression comment to this line (which is why Phase 4's own semantic-sast/Semgrep check no longer flags it here, unlike Bearer's pii-dataflow check, which doesn't understand nosemgrep syntax). Same code, same reasoning: binaries.codeql comes from CONFIG.security.codeql.binary (operator config/env, set once at process startup), never from a request; safeArgs is an array (no shell:true), already validated by sanitizeCliArgs.
-
 ID: container-image-cve::Dockerfile::1::cve-2026-53613@bsdutils
 # [ERROR] container-image-cve - bsdutils@1:2.38.1-5+deb12u3: util-linux: util-linux: TOCTOU in the mount program via ancestor directory swap on target path
 #   Dockerfile:1
@@ -1910,18 +1904,6 @@ ID: codeql-sast::guidelines/checks.js::318::js/path-injection
 # Code: const buffer = await fsp.readFile(file);
 Acknowledge: root/file here is the local filesystem path this scan was invoked against (CLI arg or REST body), never remote/attacker input - see the identical, already-accepted reasoning for pii-dataflow::guidelines-api.js::74 two entries above: guidelines-api.js's /check-project endpoint is loopback-only by the middleware above its route, so the caller is already the local machine/user.
 
-ID: codeql-sast::server.js::677::js/polynomial-redos
-# [ERROR] codeql-sast - This regular expression that depends on library input may run slow on strings with many repetitions of ')'.
-#   server.js:677
-# Code: const relPath = m[1].replace(/^\.\//, '').replace(/[),.:;]+$/, '');
-Acknowledge: `[),.:;]+$` is a single bounded character class with a trailing anchor - no nested/overlapping quantifiers for backtracking to blow up on, so this isn't exploitable polynomial-time behavior despite the query's generic warning; the input itself (governance CI's own `matched in: ./path` line) is also process-local tool output, not user-controlled.
-
-ID: codeql-sast::checks/secrets.js::192::js/file-system-race
-# [ERROR] codeql-sast - The file may have changed since it was checked.
-#   checks/secrets.js:192
-# Code: const buffer = await fsp.readFile(file);
-Acknowledge: TOCTOU between stat() and readFile() here is inherent to any size-then-read scan and is intentional, not a vulnerability: the flagged file lives inside a per-job staging directory that only this scan process writes to or reads from during the run (see server.js's per-job UUID staging dir + finally-block cleanup) - there's no other actor able to swap the file mid-scan the way the query assumes for e.g. a shared /tmp path.
-
 ID: codeql-sast::guidelines/checks.js::318::js/file-system-race
 # [ERROR] codeql-sast - The file may have changed since it was checked.
 #   guidelines/checks.js:318
@@ -1954,3 +1936,57 @@ ID: container-image-cve::Dockerfile::1::cve-2026-73566@tar
 # [ERROR] container-image-cve - tar@7.5.19: tar: node-tar: Denial of Service via crafted long-path tar archive (fixed in 7.5.21)
 #   Dockerfile:1
 Acknowledge: `tar@7.5.19` here is npm's own vendored dependency inside the global npm CLI installed by `RUN npm install -g npm@latest` - not a package this project (or any tool it shells out to) depends on directly, and it's never invoked against attacker-supplied archives at runtime: it's only exercised during `docker build` (npm's own package installs) and by the Dockerfile's several `curl | tar xz` steps pulling pinned, HTTPS-fetched release tarballs from trusted upstream repos (trivy/syft/gitleaks/gocloc/JRE/Docker CLI), none of which are user-controlled input. The DoS is a crafted-long-path archive attack surface that requires feeding npm's tar an adversarial tarball, which doesn't happen anywhere in this image's build or runtime path. Will drop off automatically once upstream npm bumps its vendored tar past 7.5.21 and a subsequent `npm install -g npm@latest` picks it up on the next image rebuild.
+
+ID: pii-dataflow::lib/tool-runner.js::186
+# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
+#   lib/tool-runner.js:186
+# Code: child = spawn('git', safeArgs, { cwd: safeCwd, env: safeEnv });
+Acknowledge: 
+
+ID: pii-dataflow::lib/tool-runner.js::190
+# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
+#   lib/tool-runner.js:190
+# Code: child = spawn('gh', safeArgs, { cwd: safeCwd, env: safeEnv });
+Acknowledge: 
+
+ID: pii-dataflow::lib/tool-runner.js::194
+# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
+#   lib/tool-runner.js:194
+# Code: child = spawn('act', safeArgs, { cwd: safeCwd, env: safeEnv });
+Acknowledge: 
+
+ID: pii-dataflow::lib/tool-runner.js::198
+# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
+#   lib/tool-runner.js:198
+# Code: child = spawn('docker', safeArgs, { cwd: safeCwd, env: safeEnv });
+Acknowledge: 
+
+ID: pii-dataflow::lib/tool-runner.js::210
+# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
+#   lib/tool-runner.js:210
+# Code: child = spawn(binaries.codeql, safeArgs, { cwd: safeCwd, env: safeEnv }); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::203 - line drifted 203 -> 208 after adding a trailing nosemgrep suppression comment to this line (which is why Phase 4's own semantic-sast/Semgrep check no longer flags it here, unlike Bearer's pii-dataflow check, which doesn't understand nosemgrep syntax). Same code, same reasoning: binaries.codeql comes from CONFIG.security.codeql.binary (operator config/env, set once at process startup), never from a request; safeArgs is an array (no shell:true), already validated by sanitizeCliArgs. (auto-carried-forward from pii-dataflow::lib/tool-runner.js::208 - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::server.js::711::js/polynomial-redos
+# [ERROR] codeql-sast - This regular expression that depends on library input may run slow on strings with many repetitions of ')'.
+#   server.js:711
+# Code: const relPath = m[1].replace(/^\.\//, '').replace(/[),.:;]+$/, '');
+Acknowledge: `[),.:;]+$` is a single bounded character class with a trailing anchor - no nested/overlapping quantifiers for backtracking to blow up on, so this isn't exploitable polynomial-time behavior despite the query's generic warning; the input itself (governance CI's own `matched in: ./path` line) is also process-local tool output, not user-controlled. (auto-carried-forward from codeql-sast::server.js::677::js/polynomial-redos - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::checks/secrets.js::237::js/file-system-race
+# [ERROR] codeql-sast - The file may have changed since it was checked.
+#   checks/secrets.js:237
+# Code: const buffer = await fsp.readFile(file);
+Acknowledge: TOCTOU between stat() and readFile() here is inherent to any size-then-read scan and is intentional, not a vulnerability: the flagged file lives inside a per-job staging directory that only this scan process writes to or reads from during the run (see server.js's per-job UUID staging dir + finally-block cleanup) - there's no other actor able to swap the file mid-scan the way the query assumes for e.g. a shared /tmp path. (auto-carried-forward from codeql-sast::checks/secrets.js::192::js/file-system-race - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::lib/runtime-coverage.js::41::js/remote-property-injection
+# [ERROR] codeql-sast - A property name to write to depends on a user-provided value.
+#   lib/runtime-coverage.js:41
+# Code: out[relPath] = { hitCount, coveredPct };
+Acknowledge: 
+
+ID: codeql-sast::lib/runtime-coverage.js::50::js/remote-property-injection
+# [ERROR] codeql-sast - A property name to write to depends on a user-provided value.
+#   lib/runtime-coverage.js:50
+# Code: out[relPath] = { hitCount, coveredPct: hitCount > 0 ? 100 : 0 };
+Acknowledge: 

@@ -1,12 +1,19 @@
 import * as vscode from 'vscode';
-import { validateAll, checkReachable, IgniteUnreachableError, type IgniteIssue } from './api';
+import {
+  validateAll, checkReachable, IgniteUnreachableError, type IgniteIssue,
+  getLicenseCompliance, getSbom, getLocMetrics, getPosture,
+} from './api';
 import { publishDiagnostics, DIAGNOSTIC_SOURCE } from './diagnostics';
 import { getActor, getOriginOrgRepo, getRepoRoot } from './git';
-import { loadOverrides, appendUnresolvedIssues, reviewFilePath, findAcknowledgeLineNumber, writeScanSnapshot } from './reviewFile';
+import {
+  loadOverrides, appendUnresolvedIssues, reviewFilePath, findAcknowledgeLineNumber,
+  writeScanSnapshot, acknowledgeIssues,
+} from './reviewFile';
 import { installPrePushHook } from './prePushHook';
-import { FindingsTreeProvider } from './panels/findingsTree';
+import { FindingsTreeProvider, unresolvedIssuesFromSelection, type Node as FindingsNode } from './panels/findingsTree';
 import { ToolsStatusTreeProvider } from './panels/toolsStatusTree';
 import { LiveLogPrinter, ScanProgressPoller } from './progress';
+import { showReport } from './panels/reportPanel';
 
 let outputChannel: vscode.OutputChannel;
 let diagnostics: vscode.DiagnosticCollection;
@@ -14,6 +21,8 @@ let findingsTree: FindingsTreeProvider;
 let toolsStatusTree: ToolsStatusTreeProvider;
 let statusBarItem: vscode.StatusBarItem;
 let lastResultIssues: IgniteIssue[] = [];
+/** Guards against a second "Ignite: Scan Workspace" firing while one is already in flight. */
+let scanInProgress = false;
 
 function activeWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const folders = vscode.workspace.workspaceFolders;
@@ -41,6 +50,11 @@ function setStatusBar(state: 'idle' | 'running' | 'ok' | 'errors', detail?: stri
 }
 
 async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
+  if (scanInProgress) {
+    vscode.window.showWarningMessage('Ignite: a scan is already running — wait for it to finish before starting another.');
+    outputChannel.show(true);
+    return;
+  }
   const folder = activeWorkspaceFolder();
   if (!folder) {
     vscode.window.showWarningMessage('Ignite: open a folder first — there is no workspace to scan.');
@@ -48,16 +62,23 @@ async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
   }
   const workspaceRoot = folder.uri.fsPath;
 
-  if (!(await checkReachable())) {
+  outputChannel.appendLine(`Checking reachability of the Ignite server...`);
+  const reachable = await checkReachable((line) => outputChannel.appendLine(line));
+  if (!reachable) {
     const baseUrl = vscode.workspace.getConfiguration('ignite').get<string>('baseUrl');
+    outputChannel.appendLine(`✗ Ignite isn't reachable at ${baseUrl} after 3 probes — see the lines above for the actual cause per attempt.`);
+    outputChannel.show(true);
     const choice = await vscode.window.showErrorMessage(
-      `Ignite isn't reachable at ${baseUrl}. Start it with 'npm start' in the ignite repo, or set "ignite.baseUrl".`,
+      `Ignite isn't reachable at ${baseUrl}. Start it with 'npm start' in the ignite repo, or set "ignite.baseUrl". See Output › Ignite for per-attempt detail.`,
+      'Show Output',
       'Open Settings'
     );
+    if (choice === 'Show Output') outputChannel.show();
     if (choice === 'Open Settings') vscode.commands.executeCommand('workbench.action.openSettings', 'ignite.baseUrl');
     return;
   }
 
+  scanInProgress = true;
   outputChannel.clear();
   outputChannel.show(true);
   setStatusBar('running');
@@ -155,6 +176,33 @@ async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
     const message = e instanceof IgniteUnreachableError || e instanceof Error ? e.message : String(e);
     outputChannel.appendLine(`\n✗ ${message}`);
     vscode.window.showErrorMessage(`Ignite: ${message}`);
+  } finally {
+    scanInProgress = false;
+  }
+}
+
+/**
+ * Shared driver for the four on-demand report commands (license/SBOM/LOC/
+ * posture) — each just supplies its fetch function and a panel title; this
+ * handles the "no workspace open" guard, a progress notification (these
+ * reuse Phase 4's own tool binaries and can take a while on a cold run),
+ * and routing failures through the same message the scan path uses.
+ */
+async function runReport<T>(id: string, title: string, fetchReport: (projectPath: string) => Promise<T>): Promise<void> {
+  const folder = activeWorkspaceFolder();
+  if (!folder) {
+    vscode.window.showWarningMessage('Ignite: open a folder first — there is no workspace to report on.');
+    return;
+  }
+  try {
+    const data = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `${title} — generating…`, cancellable: false },
+      () => fetchReport(folder.uri.fsPath)
+    );
+    showReport(id, title, data);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`${title}: ${message}`);
   }
 }
 
@@ -170,7 +218,7 @@ export function activate(context: vscode.ExtensionContext): void {
     outputChannel,
     diagnostics,
     statusBarItem,
-    vscode.window.registerTreeDataProvider('igniteFindings', findingsTree),
+    vscode.window.createTreeView('igniteFindings', { treeDataProvider: findingsTree, canSelectMany: true }),
     vscode.window.registerTreeDataProvider('igniteToolsStatus', toolsStatusTree),
     vscode.commands.registerCommand('ignite.scanWorkspace', () => scanWorkspace(context)),
     vscode.commands.registerCommand('ignite.showOutput', () => outputChannel.show()),
@@ -203,6 +251,40 @@ export function activate(context: vscode.ExtensionContext): void {
         doc.selection = new vscode.Selection(pos, pos);
         doc.revealRange(new vscode.Range(pos, pos));
       }
+    }),
+    vscode.commands.registerCommand('ignite.acknowledgeSelected', async (_node: FindingsNode, allSelected?: FindingsNode[]) => {
+      const folder = activeWorkspaceFolder();
+      if (!folder) return;
+      const nodes = allSelected && allSelected.length > 0 ? allSelected : _node ? [_node] : [];
+      const issues = unresolvedIssuesFromSelection(nodes);
+      if (issues.length === 0) {
+        vscode.window.showInformationMessage('Ignite: nothing unresolved in that selection to acknowledge.');
+        return;
+      }
+      const justification = await vscode.window.showInputBox({
+        prompt: `Justification for overriding ${issues.length} finding(s) — applied to all of them`,
+        placeHolder: 'e.g. reviewed, false positive in test fixture data',
+        ignoreFocusOut: true,
+      });
+      if (!justification) return;
+      const repoRoot = (await getRepoRoot(folder.uri.fsPath)) ?? folder.uri.fsPath;
+      await acknowledgeIssues(repoRoot, issues, justification);
+      vscode.window.showInformationMessage(`Ignite: acknowledged ${issues.length} finding(s) in ${reviewFilePath(repoRoot)}. Rescan to apply.`);
+    }),
+    vscode.commands.registerCommand('ignite.toggleFindingGrouping', () => {
+      findingsTree.setGroupBy(findingsTree.getGroupBy() === 'finding' ? 'phase' : 'finding');
+    }),
+    vscode.commands.registerCommand('ignite.showLicenseCompliance', async () => {
+      await runReport('license', 'Ignite: License Compliance', getLicenseCompliance);
+    }),
+    vscode.commands.registerCommand('ignite.showSbom', async () => {
+      await runReport('sbom', 'Ignite: SBOM', getSbom);
+    }),
+    vscode.commands.registerCommand('ignite.showLocMetrics', async () => {
+      await runReport('loc-metrics', 'Ignite: LOC Metrics', getLocMetrics);
+    }),
+    vscode.commands.registerCommand('ignite.showPosture', async () => {
+      await runReport('posture', 'Ignite: Compliance & Feature Posture', getPosture);
     }),
     vscode.commands.registerCommand('ignite.installPrePushHook', async () => {
       const folder = activeWorkspaceFolder();
