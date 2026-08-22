@@ -61,6 +61,25 @@ function loadConfig() {
       // (falls back to regex-only results) if disabled or the binary is
       // missing, so this is safe to leave off in environments without it.
       gitleaks: { enabled: false, binary: 'gitleaks', configPath: '' },
+      // Opt-in, project-declared regex patterns for secret VALUES that are
+      // public by design (e.g. a Firebase Web apiKey — access is controlled
+      // by Firebase Security Rules/App Check, not by hiding the key; same
+      // pattern for Algolia search-only keys, Sentry DSNs, etc.). Deliberately
+      // NOT a blanket allowlist by finding *kind* (a "gcp-api-key" match can
+      // just as easily be a real server-side key that must stay secret) —
+      // matched against the exact flagged value, and only after the project
+      // opts in, so this can't silently start hiding real leaks. Empty by
+      // default.
+      secrets: { knownPublicKeyPatterns: [] },
+      // Opt-in, project-declared paths (gitignore-style glob patterns) to
+      // exclude wholesale from iac-security/container-image-cve findings —
+      // e.g. a retired .devcontainer/ that nothing actually deploys from.
+      // Scoped to just those two categories (not every Phase 4 check):
+      // they're the ones that flag a whole scaffold/image rather than a
+      // specific line, so a "not a runtime, don't chase these" project
+      // decision is a path-level call, not a per-finding one. Empty by
+      // default.
+      excludePaths: [],
       // Optional: IaC/container misconfiguration scan (Dockerfiles,
       // Terraform, Kubernetes manifests, Helm charts) via Trivy's config
       // scanner (https://github.com/aquasecurity/trivy). Unlike gitleaks,
@@ -347,6 +366,15 @@ function loadConfig() {
   // useless for an empty-by-default array like `phases`, since there are no
   // default keys to walk. Arrays are a replace, not a merge.
   merged.phases = Array.isArray(fileConfig.phases) ? fileConfig.phases : [];
+  // Same array-vs-plain-object merge gap as `phases` above — the default
+  // `[]` recurses through `merge` as an empty object instead of being
+  // replaced, so this needs the same explicit override.
+  merged.security.secrets.knownPublicKeyPatterns =
+    Array.isArray(fileConfig?.security?.secrets?.knownPublicKeyPatterns)
+      ? fileConfig.security.secrets.knownPublicKeyPatterns
+      : [];
+  merged.security.excludePaths =
+    Array.isArray(fileConfig?.security?.excludePaths) ? fileConfig.security.excludePaths : [];
   const smtpPass =
     process.env.NOTIFICATIONS_SMTP_PASS ||
     process.env.SMTP_PASS ||
@@ -362,6 +390,18 @@ function loadConfig() {
   }
   if (process.env.GITLEAKS_BINARY) merged.security.gitleaks.binary = process.env.GITLEAKS_BINARY;
   if (process.env.GITLEAKS_CONFIG_PATH) merged.security.gitleaks.configPath = process.env.GITLEAKS_CONFIG_PATH;
+  // Comma-separated list of regex patterns (JS regex syntax, no delimiters)
+  // matched against a flagged secret's exact VALUE — see config.json's
+  // security.secrets.knownPublicKeyPatterns comment for why this stays
+  // value-matched, not kind-matched.
+  if (process.env.SECRETS_KNOWN_PUBLIC_KEY_PATTERNS !== undefined) {
+    merged.security.secrets.knownPublicKeyPatterns = process.env.SECRETS_KNOWN_PUBLIC_KEY_PATTERNS
+      .split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  if (process.env.SECURITY_EXCLUDE_PATHS !== undefined) {
+    merged.security.excludePaths = process.env.SECURITY_EXCLUDE_PATHS
+      .split(',').map((s) => s.trim()).filter(Boolean);
+  }
   if (process.env.TRIVY_ENABLED !== undefined) {
     merged.security.trivy.enabled = String(process.env.TRIVY_ENABLED) === 'true';
   }

@@ -24,6 +24,7 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
 
   const GITLEAKS_ENABLED = Boolean(config.gitleaksEnabled);
   const GITLEAKS_CONFIG_PATH = String(config.gitleaksConfigPath || '');
+  const KNOWN_PUBLIC_KEY_PATTERNS = Array.isArray(config.knownPublicKeyPatterns) ? config.knownPublicKeyPatterns : [];
   const MAX_SCAN_FILE_BYTES = Number(config.maxScanFileBytes) || 5 * 1024 * 1024;
   // How many files' worth of stat+readFile are ever in flight at once —
   // high enough to hide I/O latency behind concurrency, low enough not to
@@ -43,7 +44,7 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
   // contain credential-shaped sample code (or previous finding snippets)
   // that are not actionable leaks in the scanned project itself.
   const SECRET_SCAN_PATH_SKIP_RE = /^(?:\.ignite-review\.md|(?:\.claude|\.github)\/skills\/.*\.md)$/i;
-  const PLACEHOLDER_SECRET_RE = /\b(?:ghp_x{6,}|secret-key-here|fcm-token-[a-z0-9-]*\.\.\.)\b/i;
+  const PLACEHOLDER_SECRET_RE = /\bghp_x{6,}\b|\bsecret-key-here\b|fcm-token-[a-z0-9-]*\.\.\./i;
   const IDENTIFIER_CHAIN_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 
   function normalizeRelPath(relPath) {
@@ -58,6 +59,10 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
     return IDENTIFIER_CHAIN_RE.test(String(value || ''));
   }
 
+  function matchesKnownPublicKeyPattern(value, lineText) {
+    return KNOWN_PUBLIC_KEY_PATTERNS.some((re) => re.test(String(value || '')) || re.test(String(lineText || '')));
+  }
+
   function shouldIgnoreSecretLine(relPath, lineText, { quote = '', value = '' } = {}) {
     const line = String(lineText || '');
     // .ignite-review.md repeats previous findings in "# Code:" lines.
@@ -66,6 +71,9 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
     // A dotted identifier chain (`request.headers.get`, `environment.fb.appCheck`)
     // is a reference, not an inline literal.
     if (!quote && looksLikeReferenceValue(value)) return true;
+    // Project-declared "this exact value is public by design" patterns —
+    // see config.js's security.secrets.knownPublicKeyPatterns comment.
+    if (matchesKnownPublicKeyPattern(value, line)) return true;
     return shouldSkipSecretFile(relPath);
   }
 

@@ -37,7 +37,7 @@ const {
 } = require('./override-engine');
 const {
   SKIP_DIRS, SKIP_DIRS_REGEX, BINARY_EXTENSIONS, DOCKERFILE_NAME_RE, SECRET_SCAN_CODE_EXTS, looksBinary, buildSnippet, walkFiles, mapWithConcurrency, hashBuffer, relativeToRoot,
-  isEnvTemplateFile, isGitignored, loadGitignorePatterns,
+  isEnvTemplateFile, isGitignored, loadGitignorePatterns, gitignorePatternToRegex,
 } = require('./lib/fs-utils');
 
 /* ------------------------------------------------------------------ */
@@ -277,6 +277,27 @@ const LLM_SOURCE_EXTS = Object.freeze(new Set([
 const GITLEAKS_ENABLED = Boolean(CONFIG.security.gitleaks.enabled);
 const GITLEAKS_BINARY = String(CONFIG.security.gitleaks.binary || 'gitleaks');
 const GITLEAKS_CONFIG_PATH = String(CONFIG.security.gitleaks.configPath || '');
+
+// Opt-in, project-declared regex patterns for secret VALUES known to be
+// public by design (see config.js's security.secrets comment). Invalid
+// entries are dropped with a startup warning rather than crashing config
+// load over one bad regex.
+const KNOWN_PUBLIC_KEY_PATTERNS = (CONFIG.security.secrets?.knownPublicKeyPatterns || [])
+  .map((raw) => {
+    try { return new RegExp(raw); } catch { console.error(`Ignoring invalid security.secrets.knownPublicKeyPatterns entry: ${raw}`); return null; }
+  })
+  .filter(Boolean);
+
+// Opt-in, project-declared path excludes for the iac-security/
+// container-image-cve categories only (see config.js's security.excludePaths
+// comment for why it's scoped to just those two).
+const SECURITY_EXCLUDE_PATTERNS = (CONFIG.security.excludePaths || []).map(gitignorePatternToRegex);
+const PATH_EXCLUDABLE_CATEGORIES = new Set(['iac-security', 'container-image-cve']);
+function isExcludedSecurityFinding(issue) {
+  return PATH_EXCLUDABLE_CATEGORIES.has(issue.category)
+    && SECURITY_EXCLUDE_PATTERNS.length > 0
+    && isGitignored(SECURITY_EXCLUDE_PATTERNS, String(issue.file || ''));
+}
 
 /* Optional trivy-powered IaC/container misconfig scan (see CONFIG.security.trivy) */
 const TRIVY_ENABLED = Boolean(CONFIG.security.trivy.enabled);
@@ -661,6 +682,7 @@ const {
   config: {
     gitleaksEnabled: GITLEAKS_ENABLED, gitleaksConfigPath: GITLEAKS_CONFIG_PATH,
     maxScanFileBytes: MAX_SCAN_FILE_BYTES, concurrency: FILE_SCAN_CONCURRENCY,
+    knownPublicKeyPatterns: KNOWN_PUBLIC_KEY_PATTERNS,
   },
 });
 
@@ -1299,7 +1321,7 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     apiSchema: byName.apiSchema,
     maliciousDependencies: byName.maliciousDependencies,
     codeql: byName.codeql,
-  });
+  }).filter((issue) => !isExcludedSecurityFinding(issue));
   return { issues };
 }
 
@@ -1923,6 +1945,57 @@ async function fetchNpmRegistryLicense(name, version) {
   }
 }
 
+// npm allows (and many packages use) a `license: "SEE LICENSE IN <file>"`
+// declaration — a legitimate SPDX pattern for a license that isn't a
+// standard identifier, not a red flag in itself. classifyLicenseTier still
+// can't map that string to a tier, so it falls into the generic
+// "unrecognized" red bucket unless something actually reads the file it
+// points at. This fetches that exact file from the published tarball (via
+// unpkg, which serves individual files without downloading the whole
+// tarball) and pattern-matches its boilerplate against the handful of
+// permissive license texts that account for the overwhelming majority of
+// real "SEE LICENSE IN" usage in practice.
+const SEE_LICENSE_IN_RE = /^SEE LICENSE IN\s+(.+)$/i;
+
+function detectLicenseTextSpdxId(content) {
+  const text = String(content || '');
+  if (/permission is hereby granted, free of charge/i.test(text)) return 'MIT';
+  if (/apache license/i.test(text) && /version 2\.0/i.test(text)) return 'Apache-2.0';
+  if (/redistribution and use in source and binary forms/i.test(text)) {
+    return /neither the name/i.test(text) ? 'BSD-3-Clause' : 'BSD-2-Clause';
+  }
+  return null;
+}
+
+async function fetchUnpkgFileText(name, version, filename) {
+  try {
+    const url = `https://unpkg.com/${encodeURIComponent(name).replace(/%40/g, '@')}@${encodeURIComponent(version)}/${filename.replace(/^\.?\//, '')}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    return res.ok ? await res.text() : null;
+  } catch {
+    return null;
+  }
+}
+
+// Resolves a `SEE LICENSE IN <file>` declaration to a real SPDX id/tier by
+// reading the referenced file's actual text, instead of leaving it in the
+// unresolved "treat as risk until reviewed" bucket forever. Returns null
+// (caller keeps the original unresolved classification) when the license
+// string isn't this pattern, the file can't be fetched, or its text doesn't
+// match a known permissive boilerplate — an unmatched result is still a
+// real compliance question for a human, not something to guess green.
+async function resolveSeeLicenseInFile(name, version, licenseString) {
+  const m = SEE_LICENSE_IN_RE.exec(String(licenseString || '').trim());
+  if (!m) return null;
+  const filename = m[1].trim();
+  const text = await fetchUnpkgFileText(name, version, filename);
+  if (!text) return null;
+  const spdxId = detectLicenseTextSpdxId(text);
+  if (!spdxId) return null;
+  const { tier } = classifyLicenseTier(spdxId);
+  return { tier, reason: `${spdxId} (declared "SEE LICENSE IN ${filename}", verified by matching that file's text)` };
+}
+
 // bestEffortVersion (below) extracts the numeric floor of a manifest's
 // version *range* (e.g. "^5.6.0" -> "5.6.0") and looks that up directly —
 // which 404s on deps.dev whenever that exact patch was never actually
@@ -2073,7 +2146,11 @@ async function scanDependencyLicensesFallback(root, { skipEcosystems = new Set()
         const npmLicense = await fetchNpmRegistryLicense(dep.name, resolvedVersion);
         if (npmLicense) licenses = npmLicense;
       }
-      const { tier, reason } = classifyLicenseTier(licenses);
+      let { tier, reason } = classifyLicenseTier(licenses);
+      if (spec.system === 'NPM' && tier !== 'green' && Array.isArray(licenses) && licenses.length === 1) {
+        const resolved = await resolveSeeLicenseInFile(dep.name, resolvedVersion, licenses[0]);
+        if (resolved) ({ tier, reason } = resolved);
+      }
       return { name: dep.name, versionRange: dep.versionRange, version: resolvedVersion, line, licenses, tier, reason };
     }));
     manifests.push({ file: path.relative(root, file), ecosystem: spec.ecosystem, dependencies });

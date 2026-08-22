@@ -26,12 +26,12 @@ function buildIssueId({ category, file, line, discriminator }) {
 // worth a look, but not worth blocking the pipeline over. Demoted to a
 // warning rather than dropped entirely, since an occasional real secret
 // does end up copy-pasted into a test fixture.
-const TEST_PATH_RE = /(^|\/)(tests?|__tests__|specs?)(\/|$)|[._-](test|spec)s?\.[^/.]+$/i;
+const TEST_PATH_RE = /(^|\/)(tests?|__tests__|specs?|test-support|test-fixtures|fixtures)(\/|$)|[._-](test|spec|fixtures?)s?\.[^/.]+$/i;
 function isLikelyTestFile(file) {
   return TEST_PATH_RE.test(String(file || '').replace(/\\/g, '/'));
 }
 
-const DEV_ONLY_PATH_RE = /(^|\/)(scripts|e2e|\.devcontainer)(\/|$)|(?:^|\/)(?:serve-dev|serve-spa)\.mjs$/i;
+const DEV_ONLY_PATH_RE = /(^|\/)(scripts|e2e|\.devcontainer|tools|tooling|infra|ops|deploy|deployment)(\/|$)|(?:^|\/)(?:serve-dev|serve-spa|deploy(?:-[\w-]+)?)\.(?:m?js|ts)$/i;
 function isLikelyDevOnlyFile(file) {
   return DEV_ONLY_PATH_RE.test(String(file || '').replace(/\\/g, '/'));
 }
@@ -187,7 +187,7 @@ function collectCodeqlIssues(codeql) {
     const category = 'codeql-sast';
     const summary = f.message || f.kind;
     const devOrTestFile = isLikelyTestFile(f.file) || isLikelyDevOnlyFile(f.file);
-    const lowConfidenceKind = /^(js\/(?:tainted-format-string|log-injection|path-injection|file-system-race|incomplete-hostname-regexp))$/i.test(String(f.kind || ''));
+    const lowConfidenceKind = /^(js\/(?:tainted-format-string|log-injection|path-injection|file-system-race|incomplete-hostname-regexp|bad-tag-filter|incomplete-multi-character-sanitization|regex\/missing-regexp-anchor))$/i.test(String(f.kind || ''));
     const projectIdOnlyContext = /project\.id/.test(snippetText(f.snippet));
     const demoteAsLikelyFalsePositive =
       (devOrTestFile && lowConfidenceKind)
@@ -317,13 +317,22 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
   if (semanticSast) {
     for (const f of semanticSast.findings) {
       const category = 'semantic-sast';
-      const severity = f.severity === 'error' ? 'error' : 'warning';
+      const summary = f.message || f.kind;
+      const devOrTestFile = isLikelyTestFile(f.file) || isLikelyDevOnlyFile(f.file);
+      // Command-injection/SSRF-shaped rules fire on `spawn`/`fetch` call
+      // shape alone, with no taint tracing — inside internal deploy/build
+      // tooling (scripts/**, e2e/**) that's routinely all-literal args, not
+      // an actual injection path. Demoted, not dropped, since an occasional
+      // real one does get introduced there.
+      const noTaintRuleOnDevTooling = devOrTestFile
+        && /command injection|unencrypted request over http/i.test(summary);
+      const severity = f.severity === 'error' && !noTaintRuleOnDevTooling ? 'error' : 'warning';
       issues.push({
         id: buildIssueId({ category, file: f.file, line: f.line }),
         category,
         severity,
         score: scoreForIssue({ category, severity }),
-        summary: f.message || f.kind,
+        summary,
         file: f.file,
         line: f.line,
         snippet: f.code || null,
@@ -343,7 +352,15 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
       const devOrTestFile = isLikelyTestFile(f.file) || isLikelyDevOnlyFile(f.file);
       const insecureDevHttp = devOrTestFile && /missing secure http server configuration|usage of insecure http connection/i.test(summary);
       const testFixtureSecret = devOrTestFile && /hard-coded secret/i.test(summary);
-      const severity = f.severity === 'error' && !insecureDevHttp && !testFixtureSecret ? 'error' : 'warning';
+      // Same no-taint-tracing gap as the semantic-sast block above — an
+      // "unsanitized dynamic input in OS command" hit on a spawn() call
+      // whose args are all literals in internal deploy tooling, and a
+      // "manual HTML sanitization" hit on a docs/build-script escaper (not
+      // user-facing app code), are both shape-only matches.
+      const noTaintOsCommand = devOrTestFile && /unsanitized dynamic input in os command/i.test(summary);
+      const devToolingManualSanitizer = devOrTestFile && /manual html sanitization/i.test(summary);
+      const severity = f.severity === 'error' && !insecureDevHttp && !testFixtureSecret
+        && !noTaintOsCommand && !devToolingManualSanitizer ? 'error' : 'warning';
       issues.push({
         id: buildIssueId({ category, file: f.file, line: f.line }),
         category,
