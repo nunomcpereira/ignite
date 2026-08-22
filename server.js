@@ -61,8 +61,8 @@ store.sweepExpiredSessions();
 setInterval(() => store.sweepExpiredSessions(), 10 * 60_000).unref();
 
 const PORT = process.env.PORT || CONFIG.port;
-const MAX_ZIP_BYTES = 250 * 1024 * 1024; // 250 MB upload cap
-const MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024; // zip-bomb guard
+const MAX_ZIP_BYTES = 1024 * 1024 * 1024; // 1 GB upload cap
+const MAX_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024; // zip-bomb guard
 const MAX_SCAN_FILE_BYTES = 5 * 1024 * 1024; // skip huge files in text scans
 
 const app = express();
@@ -160,7 +160,7 @@ function resolveActor(req) {
 
 const upload = multer({
   dest: path.join(os.tmpdir(), 'gatekeeper-uploads'),
-  limits: { fileSize: MAX_ZIP_BYTES, files: 5000 },
+  limits: { fileSize: MAX_ZIP_BYTES, files: 20000 },
 });
 
 /* ------------------------------------------------------------------ */

@@ -93,6 +93,6 @@ Settings live in `config.json` next to `server.js` (`config.example.json` is the
 ## Hardening invariants (don't relax without a strong reason)
 
 - Every archive entry's resolved path must stay inside the staging root (zip-slip); symlink entries are skipped and never followed.
-- Extracted size capped at 1 GB, upload capped at 250 MB (zip-bomb guard).
+- Extracted size capped at 4 GB, upload capped at 1 GB (zip-bomb guard).
 - All `git`/`gh` invocations use `execFile` with argument arrays (no shell); org/repo names are validated against GitHub's naming rules before use in any command.
 - Staging directories and uploaded ZIPs are always removed in a `finally` block, success or failure.

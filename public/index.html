@@ -221,7 +221,7 @@
             </button>
             <button type="button" id="pickDirBtn" class="text-sm font-semibold text-brand-600 hover:text-brand-800">or choose a folder</button>
           </div>
-          <p class="text-xs text-slate-400 mt-4">Up to 250 MB · node_modules, .git and build output are skipped automatically</p>
+          <p class="text-xs text-slate-400 mt-4">Up to 1 GB · node_modules, .git and build output are skipped automatically</p>
         </div>
         <div id="dropReady" class="hidden">
           <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-600 flex items-center justify-center shadow-md shadow-brand-600/25">
@@ -573,7 +573,7 @@
     /* ------------------------------------------------------------ */
     /* Pipeline model                                                */
     /* ------------------------------------------------------------ */
-    const MAX_ZIP_MB = 250;
+    const MAX_ZIP_MB = 1024;
     // Fallback used only until /api/config answers (or if it fails) —
     // mirrors server.js's DEFAULT_PHASE_META exactly, phase 2 excluded to
     // match its default-disabled state. applyServerConfig() replaces this
@@ -4012,7 +4012,7 @@
     function setDir(entries, rootName) {
       const kept = entries.filter((e) => !pathIsSkipped(e.rel));
       if (kept.length === 0) return showDropError('Folder contains no uploadable files.');
-      if (kept.length > 5000) return showDropError(`Folder has ${kept.length} files — the limit is 5000. Zip it instead, or trim build artifacts.`);
+      if (kept.length > 20000) return showDropError(`Folder has ${kept.length} files — the limit is 20000. Zip it instead, or trim build artifacts.`);
       const size = kept.reduce((sum, e) => sum + e.file.size, 0);
       if (size > MAX_ZIP_MB * 1024 * 1024) {
         return showDropError(`Folder is ${(size / 1048576).toFixed(1)} MB after skipping artifacts — the limit is ${MAX_ZIP_MB} MB.`);

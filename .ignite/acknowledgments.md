@@ -1949,3 +1949,8 @@ A property name to write to depends on a user-provided value.
 #   auth.js:53
 # Code: if (key && !UNSAFE_COOKIE_KEYS.has(key)) out[key] = decodeURIComponent(val);
 Acknowledge: `out[key] = decodeURIComponent(val)` in parseCookies() - key is guarded two lines above by `!UNSAFE_COOKIE_KEYS.has(key)` (rejects '__proto__'/'constructor'/'prototype'), added specifically in response to this finding. CodeQL's taint tracking doesn't recognize a Set-membership check against literal strings as closing this flow, so it keeps reporting the (now-guarded) property write - the actual write can no longer reach Object.prototype through this code path regardless of what a client sends as a cookie name. (Previously tracked as auth.js::37 - this API-key-auth batch added lines above it in the same file, shifting the line number again.) (auto-carried-forward from codeql-sast::auth.js::52::js/remote-property-injection - pure line-number drift, flagged code unchanged)
+
+ID: container-image-cve::Dockerfile::1::cve-2026-73566@tar
+# [ERROR] container-image-cve - tar@7.5.19: tar: node-tar: Denial of Service via crafted long-path tar archive (fixed in 7.5.21)
+#   Dockerfile:1
+Acknowledge: 
