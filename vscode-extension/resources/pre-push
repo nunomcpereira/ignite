@@ -88,7 +88,19 @@ WARNING_DECISION="${IGNITE_WARNING_MODE:-continue}"
 ACTOR_EMAIL="$(git config --get user.email || echo '')"
 ACTOR_NAME="$(git config --get user.name || echo '')"
 
-if ! curl -sf -m 3 "$IGNITE_URL/api/config" > /dev/null 2>&1; then
+# A single quick probe can read as "down" purely because the server's
+# event loop is momentarily busy with another in-flight scan - three
+# attempts with a generous per-attempt timeout give that room to clear
+# before this reports "unreachable".
+REACHABLE=false
+for attempt in 1 2 3; do
+  if curl -sf -m 8 "$IGNITE_URL/api/config" > /dev/null 2>&1; then
+    REACHABLE=true
+    break
+  fi
+  [ "$attempt" -lt 3 ] && sleep 1.5
+done
+if [ "$REACHABLE" != true ]; then
   echo "✗ Ignite isn't reachable at $IGNITE_URL." >&2
   echo "  Start it with 'npm start' in the ignite repo, set IGNITE_BASE_URL to" >&2
   echo "  point elsewhere, or set IGNITE_PREPUSH_SKIP=true to skip this push." >&2

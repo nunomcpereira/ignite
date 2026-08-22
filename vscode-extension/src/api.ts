@@ -58,14 +58,30 @@ export class IgniteUnreachableError extends Error {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A single quick probe can read as "down" purely because the server's
+ * event loop is momentarily saturated by CPU-bound work from an in-flight
+ * scan (large JSON.parse of a tool's output, a big regex sweep, etc.) —
+ * that is a live, busy process, not an unreachable one. Three attempts
+ * with a generous per-attempt timeout and a short backoff between them
+ * gives a transient stall room to clear before this reports "unreachable".
+ */
 export async function checkReachable(): Promise<boolean> {
   const url = baseUrl();
-  try {
-    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(3000) });
-    return res.ok || res.status < 500;
-  } catch {
-    return false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
+      if (res.ok || res.status < 500) return true;
+    } catch {
+      // falls through to retry below
+    }
+    if (attempt < 3) await sleep(1500);
   }
+  return false;
 }
 
 export interface OverrideSubmission {
