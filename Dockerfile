@@ -25,6 +25,7 @@ ARG INSTALL_JSCPD=true
 ARG INSTALL_GOCLOC=true
 ARG INSTALL_SPECTRAL=true
 ARG INSTALL_LICENSEE=true
+ARG INSTALL_COCOAPODS=true
 ARG INSTALL_ORT=true
 ARG INSTALL_ACT=true
 ARG INSTALL_GH=true
@@ -158,6 +159,7 @@ RUN if [ "$INSTALL_GOCLOC" = "true" ]; then \
 
 # --- License compliance ---------------------------------------------------
 RUN if [ "$INSTALL_LICENSEE" = "true" ]; then gem install licensee; fi
+RUN if [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then gem install cocoapods; fi
 RUN if [ "$INSTALL_ORT" = "true" ]; then \
       curl -fsSL -o /tmp/ort.tgz \
         "https://github.com/oss-review-toolkit/ort/releases/download/${ORT_VERSION}/ort-${ORT_VERSION}.tgz" \

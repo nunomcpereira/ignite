@@ -39,6 +39,42 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
   const SECRET_REGEX =
     /(password|aws_secret|api_key|token|private_key)\s*[:=]\s*(['"]?)([a-zA-Z0-9_\-.~]{10,})/i;
 
+  // Generated review artifacts and bundled skill-reference docs routinely
+  // contain credential-shaped sample code (or previous finding snippets)
+  // that are not actionable leaks in the scanned project itself.
+  const SECRET_SCAN_PATH_SKIP_RE = /^(?:\.ignite-review\.md|(?:\.claude|\.github)\/skills\/.*\.md)$/i;
+  const PLACEHOLDER_SECRET_RE = /\b(?:ghp_x{6,}|secret-key-here|fcm-token-[a-z0-9-]*\.\.\.)\b/i;
+  const IDENTIFIER_CHAIN_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
+
+  function normalizeRelPath(relPath) {
+    return String(relPath || '').replace(/\\/g, '/');
+  }
+
+  function shouldSkipSecretFile(relPath) {
+    return SECRET_SCAN_PATH_SKIP_RE.test(normalizeRelPath(relPath));
+  }
+
+  function looksLikeReferenceValue(value) {
+    return IDENTIFIER_CHAIN_RE.test(String(value || ''));
+  }
+
+  function shouldIgnoreSecretLine(relPath, lineText, { quote = '', value = '' } = {}) {
+    const line = String(lineText || '');
+    // .ignite-review.md repeats previous findings in "# Code:" lines.
+    if (/^\s*#\s*Code:\s*/i.test(line)) return true;
+    if (PLACEHOLDER_SECRET_RE.test(line) || PLACEHOLDER_SECRET_RE.test(String(value || ''))) return true;
+    // A dotted identifier chain (`request.headers.get`, `environment.fb.appCheck`)
+    // is a reference, not an inline literal.
+    if (!quote && looksLikeReferenceValue(value)) return true;
+    return shouldSkipSecretFile(relPath);
+  }
+
+  function getHighlightedLineText(snippet) {
+    const lines = Array.isArray(snippet?.lines) ? snippet.lines : [];
+    const hit = lines.find((l) => l.number === snippet?.highlightLine);
+    return hit?.text || '';
+  }
+
   function isLikelySecretValue(quote, ext) {
     return Boolean(quote) || !SECRET_SCAN_CODE_EXTS.has(ext);
   }
@@ -121,7 +157,7 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
       const args = ['detect', '--source', root, '--no-git', '--report-format', 'json',
         '--report-path', reportPath, '--exit-code', '0'];
       if (GITLEAKS_CONFIG_PATH) args.push('--config', GITLEAKS_CONFIG_PATH);
-      await runTool('gitleaks', args, root);
+      await runTool('gitleaks', args, root, { timeoutMs: 10 * 60_000 });
 
       let raw;
       try {
@@ -178,6 +214,7 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
       const ext = path.extname(file).toLowerCase();
       if (BINARY_EXTENSIONS.has(ext)) continue;
       const rel = path.relative(root, file);
+      if (shouldSkipSecretFile(rel)) continue;
       if (gitignorePatterns.length > 0 && isGitignored(gitignorePatterns, rel)) {
         gitignoredSkipped++;
         continue;
@@ -201,7 +238,12 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
       const lines = content.split(/\r?\n/);
       lines.forEach((line, i) => {
         const match = line.match(SECRET_REGEX);
-        if (match && isLikelySecretValue(match[2], ext) && !isAllowlisted(allowlist, rel, line)) {
+        if (
+          match
+          && isLikelySecretValue(match[2], ext)
+          && !isAllowlisted(allowlist, rel, line)
+          && !shouldIgnoreSecretLine(rel, line, { quote: match[2], value: match[3] })
+        ) {
           fileFindings.push({
             file: rel,
             line: i + 1,
@@ -236,9 +278,12 @@ function createSecretsCheck({ runTool, fsUtils, fileScanCache, config }) {
       // gitignore awareness of its own — filter its findings the same way the
       // regex scan above was filtered.
       const gitleaksFindings = (await runGitleaksScan(root, log)).filter((f) => {
+        if (shouldSkipSecretFile(f.file)) return false;
         const ignored = gitignorePatterns.length > 0 && isGitignored(gitignorePatterns, f.file);
         if (ignored) gitignoredSkipped++;
-        return !ignored;
+        if (ignored) return false;
+        const lineText = getHighlightedLineText(f.code);
+        return !shouldIgnoreSecretLine(f.file, lineText);
       });
       const seen = new Set(findings.map((f) => `${f.file}:${f.line}`));
       let added = 0;

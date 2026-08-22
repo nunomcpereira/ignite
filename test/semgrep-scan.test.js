@@ -19,7 +19,7 @@ test('checkSemanticSast: semgrep is enabled by default', withServerEnv({}, async
   const cfg = mod.loadConfig();
   assert.equal(cfg.security.semgrep.enabled, true);
   assert.equal(cfg.security.semgrep.binary, 'semgrep');
-  assert.equal(cfg.security.semgrep.config, `p/security-audit,p/owasp-top-ten,${path.join(__dirname, '..', 'ignite-auth-correctness-rules.yaml')}`);
+  assert.equal(cfg.security.semgrep.config, 'p/security-audit,p/owasp-top-ten');
 }));
 
 test('checkSemanticSast: SEMGREP_* env vars are wired into CONFIG.security.semgrep', withServerEnv(
@@ -68,6 +68,20 @@ test('checkSemanticSast: parses fake semgrep JSON output, maps ERROR/WARNING sev
     assert.equal(bySeverity['js.weak-crypto'], 'warning');
     assert.ok(findings.every((f) => f.tool === 'semgrep'));
     assert.ok(findings.every((f) => f.file === 'app.js'));
+  })();
+});
+
+test('checkSemanticSast: downgrades observable timing discrepancy to warning', async () => {
+  const semgrepBinary = await makeFakeSemgrep([
+    { check_id: 'js.observable-timing-discrepancy', path: 'app.js', start: { line: 4 }, extra: { message: 'Observable Timing Discrepancy', severity: 'ERROR' } },
+  ]);
+  await withServerEnv({ SEMGREP_ENABLED: 'true', SEMGREP_BINARY: semgrepBinary }, async (mod) => {
+    const dir = await makeTempProject({ 'app.js': 'const a = "x";\nconst b = "y";\nconsole.log(a === b);\n' });
+    const { findings, engine } = await mod.checkSemanticSast(dir, noopLog);
+    assert.equal(engine, 'semgrep');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].severity, 'warning');
+    assert.equal(findings[0].kind, 'js.observable-timing-discrepancy');
   })();
 });
 

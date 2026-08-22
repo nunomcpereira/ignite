@@ -122,6 +122,26 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
   }
 
   const BEARER_SEVERITY_TO_ISSUE = { critical: 'error', high: 'error', medium: 'warning', low: 'warning', warning: 'warning' };
+  const TEST_PATH_RE = /(^|\/)(tests?|__tests__|specs?|e2e|test-support)(\/|$)|[._-](test|spec)s?\.[^/.]+$/i;
+  const DEV_SERVER_FILE_RE = /(?:^|\/)(?:serve-dev|serve-spa)\.mjs$/i;
+  const FIREBASE_WEB_API_KEY_RE = /AIza[0-9A-Za-z_-]{20,}/;
+
+  function isLikelyTestOrFixturePath(file) {
+    return TEST_PATH_RE.test(String(file || '').replace(/\\/g, '/'));
+  }
+
+  function lineAt(content, line) {
+    if (typeof content !== 'string') return '';
+    const lines = content.split(/\r?\n/);
+    return lines[line - 1] || '';
+  }
+
+  function isFirebasePublicApiKeyFinding(title, sourceLine, content) {
+    if (!/usage of hard-coded secret/i.test(String(title || ''))) return false;
+    const line = String(sourceLine || '');
+    if (/apiKey/i.test(line) && FIREBASE_WEB_API_KEY_RE.test(line)) return true;
+    return /apiKey/i.test(String(content || '')) && FIREBASE_WEB_API_KEY_RE.test(String(content || ''));
+  }
 
   // Bearer buckets "Unsanitized external input in code generation" and
   // "Unsanitized dynamic input in file path" under high/critical by default,
@@ -182,7 +202,13 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
           let content = null;
           try { content = await fsp.readFile(path.join(root, relFile), 'utf8'); } catch { /* best-effort */ }
           const title = e.title || 'Sensitive data-flow finding';
-          const forcedWarning = BEARER_FORCE_WARNING_TITLES.some((re) => re.test(title));
+          const sourceLine = lineAt(content, line);
+          // Firebase web apiKey values are public identifiers, not auth secrets.
+          if (isFirebasePublicApiKeyFinding(title, sourceLine, content)) continue;
+          const forcedWarning =
+            BEARER_FORCE_WARNING_TITLES.some((re) => re.test(title))
+            || (isLikelyTestOrFixturePath(relFile) && /hard-coded secret/i.test(title))
+            || (DEV_SERVER_FILE_RE.test(relFile) && /missing secure http server configuration|usage of insecure http connection/i.test(title));
           // Bearer's own rules tag findings with cwe_ids (numeric CWE ids,
           // e.g. [359] for CWE-359 exposure of private info) — pass the
           // first through the same way Semgrep's rule metadata is above.

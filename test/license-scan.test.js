@@ -125,6 +125,57 @@ test('scanDependencyLicenses: soft-skips to the built-in fallback when both tool
   }
 });
 
+test('scanDependencyLicenses: pnpm/bun-style workspace/catalog protocol refs are tier "internal", not flagged red as an unresolvable version', async () => {
+  const binDir = await makeFakeLicenseTools({});
+  try {
+    await withPath(binDir, () => withServerEnv({}, async (mod) => {
+      const dir = await makeTempProject({
+        'package.json': JSON.stringify({
+          name: 'x',
+          dependencies: {
+            'firebase-admin': 'catalog:firebase',
+            'some-internal-pkg': 'workspace:*',
+          },
+          devDependencies: {
+            typescript: 'catalog:',
+          },
+        }),
+      });
+      const result = await mod.scanDependencyLicenses(dir, () => {});
+      const deps = result.manifests[0].dependencies;
+      const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+      assert.equal(byName['firebase-admin'].tier, 'internal');
+      assert.equal(byName['some-internal-pkg'].tier, 'internal');
+      assert.equal(byName['typescript'].tier, 'internal');
+      await fs.rm(dir, { recursive: true, force: true });
+    })());
+  } finally {
+    await fs.rm(binDir, { recursive: true, force: true });
+  }
+});
+
+test('runLicenseComplianceCheck: workspace/catalog protocol refs never become a blocking issue', async () => {
+  await withServerEnv({}, async (mod) => {
+    const dir = await makeTempProject({
+      'package.json': JSON.stringify({ dependencies: { 'some-internal-pkg': 'catalog:dev' } }),
+    });
+    const issues = await mod.runLicenseComplianceCheck(dir, () => {});
+    assert.equal(issues.length, 0, 'an internal workspace/catalog reference should never surface as an issue');
+    await fs.rm(dir, { recursive: true, force: true });
+  })();
+});
+
+test('runLicenseComplianceCheck: commercial LICENSE files inside bundled skill docs are excluded from project-license findings', async () => {
+  await withServerEnv({}, async (mod) => {
+    const dir = await makeTempProject({
+      '.github/skills/security-review/LICENSE': 'Commercial License Agreement\nLicensee: Example Co\n',
+    });
+    const issues = await mod.runLicenseComplianceCheck(dir, () => {});
+    assert.equal(issues.length, 0, 'tooling reference docs should not gate onboarding via project LICENSE scanning');
+    await fs.rm(dir, { recursive: true, force: true });
+  })();
+});
+
 test('runLicenseComplianceCheck: tags returned issues with phase 3 — this is what makes license findings gate a pipeline run (validate-all/onboard/interactive) instead of only showing in the on-demand Dependencies view', async () => {
   // No fake tools on PATH → falls through to the built-in deps.dev
   // fallback; a git-ref version range is unresolvable, so this stays

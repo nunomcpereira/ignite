@@ -37,6 +37,17 @@ test('checkSecrets: files excluded by the project\'s own .gitignore are not scan
   assert.equal(findings[0].file, 'config.js');
 }));
 
+test('checkSecrets: generated review artifacts and bundled skill docs are ignored to prevent recursive false positives', withServerEnv({}, async (mod) => {
+  const dir = await makeTempProject({
+    '.ignite-review.md': '# Code: api_key = request.headers.get(\'X-API-Key\')\n',
+    '.github/skills/gh-cli/SKILL.md': 'export GH_TOKEN=ghp_xxxxxxxxxxxx\n',
+    'config.js': 'module.exports = { token: "tok_1234567890abcdef" };\n',
+  });
+  const { findings } = await mod.checkSecrets(dir, noopLog);
+  assert.equal(findings.length, 1, 'only the real project source finding should remain');
+  assert.equal(findings[0].file, 'config.js');
+}));
+
 test('checkSecrets: env-var references (process.env.X, os.environ, getenv) are not flagged as hardcoded', withServerEnv({}, async (mod) => {
   const dir = await makeTempProject({
     'llmService.js': [
@@ -72,6 +83,14 @@ test('checkSecrets: unquoted literals in config/env-style files are still flagge
   });
   const { findings } = await mod.checkSecrets(dir, noopLog);
   assert.equal(findings.length, 1, 'config formats have no quoting rule, so unquoted long values can still be real secrets');
+}));
+
+test('checkSecrets: unquoted dotted identifier chains in config-like files are treated as references, not literals', withServerEnv({}, async (mod) => {
+  const dir = await makeTempProject({
+    'scripts/dev.sh': 'FIREBASE_APPCHECK_DEBUG_TOKEN=environment.fb.appCheck\n',
+  });
+  const { findings } = await mod.checkSecrets(dir, noopLog);
+  assert.deepEqual(findings, [], 'dotted identifier chains are code/config references rather than inline secret values');
 }));
 
 test('checkSecrets: gitleaks disabled by default — old regex-only behavior, even if a gitleaks binary is configured', withServerEnv(

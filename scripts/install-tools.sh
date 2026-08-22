@@ -70,6 +70,16 @@ install INSTALL_COSIGN   "command -v cosign"   "cosign"   'brew_install() { brew
 install INSTALL_SEMGREP  "command -v semgrep"  "Semgrep"  'brew_install() { brew install semgrep; }; brew_install'
 install INSTALL_BEARER   "command -v bearer"   "Bearer"   'bearer_install() { if ! $HAS_BREW; then return 1; fi; brew tap bearer/tap && brew install bearer/tap/bearer; }; bearer_install'
 
+# ORT resolves CocoaPods projects using the `pod` CLI, and it also requires a
+# modern JDK on PATH. Install these before ORT itself, otherwise the analyzer
+# will fail exactly the way the logs showed: `Cannot run program "pod"`.
+cocoapods_install() {
+  if ! $HAS_BREW; then return 1; fi
+  brew install cocoapods || return 1
+  command -v pod >/dev/null 2>&1
+}
+install INSTALL_COCOAPODS "command -v pod" "CocoaPods" cocoapods_install
+
 # --- GuardDog needs libgit2 (pygit2's build dependency) first ---
 guarddog_install() {
   if $HAS_BREW; then
@@ -136,6 +146,21 @@ install INSTALL_LICENSEE "command -v licensee" "licensee" licensee_install
 ort_install() {
   if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then return 1; fi
   command -v gh >/dev/null 2>&1 || { log_warn "ORT needs the gh CLI to download its release archive."; return 1; }
+
+  if [ "$OS" = "Darwin" ]; then
+    if ! command -v pod >/dev/null 2>&1; then
+      log_warn "ORT requires CocoaPods for CocoaPods-based projects; installing it now."
+      brew install cocoapods || return 1
+    fi
+    if ! command -v java >/dev/null 2>&1; then
+      log_warn "ORT requires a JDK; installing OpenJDK now."
+      brew install openjdk || return 1
+      # Homebrew puts Java under a versioned path; the shim is usually enough
+      # once the shell sees the new Keg in PATH, but we still keep the install
+      # non-brittle by relying on `java` itself rather than assuming a path.
+    fi
+  fi
+
   local version="91.1.0" dest="$HOME/tools"
   mkdir -p "$dest" && cd "$dest" || return 1
   gh release download "$version" -R oss-review-toolkit/ort -p "ort-${version}.tgz" --clobber || return 1

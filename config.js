@@ -112,16 +112,6 @@ function loadConfig() {
       // p/owasp-top-ten is included alongside p/security-audit by default
       // for explicit OWASP Top 10 category coverage on top of
       // security-audit's broader (and overlapping) rule set.
-      // ignite-auth-correctness-rules.yaml is a small bundled local
-      // ruleset covering JWT algorithm-confusion (jwt.verify()/
-      // jwt.decode() with no explicit `algorithms` allowlist) — real
-      // vulnerabilities p/security-audit doesn't catch (verified against a
-      // fixture, not assumed), distinct from the Compliance & Feature
-      // Posture Engine's presence-only SSO/MFA classification below. On by
-      // default; soft-skips (no native fallback — there isn't a
-      // meaningful built-in substitute for a semantic rule engine) when
-      // disabled or not installed.
-      //
       // IMPORTANT LIMITATION: Semgrep OSS's pattern/taint engine is
       // intraprocedural (single-file) — it cannot trace taint across
       // function/file boundaries the way Semgrep Pro or CodeQL can. A
@@ -134,7 +124,7 @@ function loadConfig() {
       // deterministic guarantee. Real cross-file taint analysis needs a
       // paid Semgrep Pro subscription or a CodeQL setup — see
       // security.codeql below, which is exactly that gap-filler.
-      semgrep: { enabled: true, binary: 'semgrep', config: `p/security-audit,p/owasp-top-ten,${path.join(__dirname, 'ignite-auth-correctness-rules.yaml')}` },
+      semgrep: { enabled: true, binary: 'semgrep', config: 'p/security-audit,p/owasp-top-ten' },
       // Optional: sensitive data-flow (PII/GDPR) tracking via Bearer CLI
       // (https://github.com/Bearer/bearer) — traces personal data from
       // source (request params, user objects) to sinks (logs, DB writes,

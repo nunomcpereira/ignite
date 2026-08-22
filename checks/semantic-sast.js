@@ -23,10 +23,27 @@ function createSemanticSastCheck({ runTool, fsUtils, config }) {
   const SEMGREP_ENABLED = Boolean(config.enabled);
   const SEMGREP_BINARY = String(config.binary || 'semgrep');
   const SEMGREP_CONFIG = String(config.semgrepConfig || 'p/security-audit');
+  const SEMGREP_TIMEOUT_MS = 10 * 60_000;
+
+  async function buildSemgrepEnv() {
+    const semgrepHome = path.join(os.tmpdir(), 'ignite-semgrep-home');
+    const semgrepCache = path.join(semgrepHome, 'cache');
+    await Promise.all([
+      fsp.mkdir(semgrepHome, { recursive: true }).catch(() => {}),
+      fsp.mkdir(semgrepCache, { recursive: true }).catch(() => {}),
+    ]);
+    return {
+      HOME: semgrepHome,
+      XDG_CONFIG_HOME: semgrepHome,
+      XDG_CACHE_HOME: semgrepCache,
+      SEMGREP_SEND_METRICS: 'off',
+    };
+  }
 
   async function semgrepTooling() {
     try {
-      const { stdout } = await runTool('semgrep', ['--version'], os.tmpdir());
+      const env = await buildSemgrepEnv();
+      const { stdout } = await runTool('semgrep', ['--version'], os.tmpdir(), { env });
       return { ok: true, version: stdout.trim() || null, path: SEMGREP_BINARY };
     } catch {
       return { ok: false, reason: '`semgrep` is not installed (brew install semgrep / pip install semgrep) — semantic SAST and posture findings are simply omitted.' };
@@ -35,14 +52,16 @@ function createSemanticSastCheck({ runTool, fsUtils, config }) {
 
   const SEMGREP_SEVERITY_TO_ISSUE = { ERROR: 'error', WARNING: 'warning', INFO: 'warning' };
 
-  // "Unsanitized dynamic input in file path" fires from several distinct
-  // path-traversal rules across p/security-audit's per-language rule packs,
-  // each carrying its own hand-set severity metadata — so the same message
-  // text lands as ERROR from one rule/file and WARNING from another with no
-  // difference in actual confidence. Forced to warning regardless of which
-  // rule matched or which file it fired in, same rationale (and pattern) as
-  // BEARER_FORCE_WARNING_TITLES in checks/pii-dataflow.js.
-  const SEMGREP_FORCE_WARNING_TITLES = [/unsanitized dynamic input in file path/i];
+  // These rule messages are known noisy/low-confidence findings that can be
+  // reported as ERROR by individual rule metadata despite not materially
+  // changing the real risk level. Keep them as warnings to avoid false
+  // blockers while preserving the raw finding details for review.
+  // Same rationale as BEARER_FORCE_WARNING_TITLES in checks/pii-dataflow.js.
+  const SEMGREP_FORCE_WARNING_TITLES = [
+    /unsanitized dynamic input in file path/i,
+    /observable timing discrepancy/i,
+    /timing discrepancy/i,
+  ];
 
   // Semantic pattern-matching SAST via Semgrep OSS, run over the whole staged
   // project in one pass (semgrep does its own multi-language file discovery).
@@ -59,9 +78,10 @@ function createSemanticSastCheck({ runTool, fsUtils, config }) {
     const semgrepConfigPacks = SEMGREP_CONFIG.split(',').map((c) => c.trim()).filter(Boolean);
     log?.(`Engine: Semgrep CLI (External) — running semantic SAST rules (config: ${semgrepConfigPacks.join(', ')})...`);
     try {
+      const env = await buildSemgrepEnv();
       const { stdout } = await runTool('semgrep', [
         'scan', ...semgrepConfigPacks.flatMap((c) => ['--config', c]), '--json', '--quiet', '--metrics', 'off', root,
-      ], root);
+      ], root, { allowedExitCodes: [0, 1], env, timeoutMs: SEMGREP_TIMEOUT_MS });
       const data = stdout.trim() ? JSON.parse(stdout) : { results: [] };
       const results = Array.isArray(data.results) ? data.results : [];
       const findings = [];
@@ -98,7 +118,7 @@ function createSemanticSastCheck({ runTool, fsUtils, config }) {
       return { findings, engine: 'semgrep' };
     } catch (e) {
       log?.(`⚠ Semgrep semantic SAST scan failed: ${e.message}`);
-      return { findings: [], engine: 'disabled' };
+      return { findings: [], engine: 'failed' };
     }
   }
 

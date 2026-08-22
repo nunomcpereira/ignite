@@ -2301,9 +2301,10 @@
        ---------------- copyleft/"community edition", green = permissive ---
        ---------------- open source). See server.js's scanDependencyLicenses. */
     const STUDIO_TIER_META = {
-      green:   { label: 'OPEN SOURCE', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-      warning: { label: 'COPYLEFT',    chip: 'bg-amber-50 text-amber-700 border-amber-200' },
-      red:     { label: 'COMMERCIAL/RISK', chip: 'bg-rose-50 text-rose-700 border-rose-200' },
+      green:    { label: 'OPEN SOURCE', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+      warning:  { label: 'COPYLEFT',    chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+      red:      { label: 'COMMERCIAL/RISK', chip: 'bg-rose-50 text-rose-700 border-rose-200' },
+      internal: { label: 'INTERNAL REF', chip: 'bg-slate-100 text-slate-500 border-slate-200' },
     };
 
     async function openStudioDependencies() {
@@ -2342,7 +2343,7 @@
 
     function renderStudioDependencies(data) {
       const allDeps = (data.manifests || []).flatMap((m) => m.dependencies.map((d) => ({ ...d, manifest: m.file })));
-      const counts = { green: 0, warning: 0, red: 0 };
+      const counts = { green: 0, warning: 0, red: 0, internal: 0 };
       allDeps.forEach((d) => { counts[d.tier] = (counts[d.tier] || 0) + 1; });
 
       const projectLicenseHtml = data.projectLicense
@@ -4200,39 +4201,65 @@
     const uploadStatusSpinner = $('uploadStatusSpinner');
     const uploadStatusPct = $('uploadStatusPct');
     const uploadStatusFill = $('uploadStatusFill');
+    let uploadStage = null; // 'uploading' | 'waiting' | null
+    let uploadStartedAt = null;
     let uploadWaitStartedAt = null;
-    let uploadWaitTimer = null;
+    let uploadLoaded = 0;
+    let uploadTotal = 0;
+    let uploadTicker = null;
 
-    function showUploadProgress(loaded, total) {
-      if (uploadWaitTimer) { clearInterval(uploadWaitTimer); uploadWaitTimer = null; }
+    // `xhr.upload.onprogress`'s own `e.total` is frequently 0/non-computable
+    // for a multipart body built from tens of thousands of small files (many
+    // browsers can't precompute a Content-Length for that shape of body) —
+    // so `totalBytes`, summed client-side from the already-known payload
+    // size, is the fallback of last resort, not `e.total`. A one-second
+    // ticker keeps a moving elapsed-time counter on screen the whole time so
+    // a slow multi-minute transfer with few/no progress events still reads
+    // as "working", not "frozen".
+    function beginUploadStatus(totalBytes) {
+      uploadStage = 'uploading';
+      uploadStartedAt = Date.now();
+      uploadLoaded = 0;
+      uploadTotal = totalBytes;
       uploadStatusBar.classList.remove('hidden');
-      uploadStatusSpinner.classList.add('hidden');
-      const pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
-      uploadStatusFill.style.width = pct + '%';
-      uploadStatusText.textContent = 'Uploading project…';
-      uploadStatusPct.textContent = total
-        ? `${pct}% (${(loaded / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB)`
-        : '';
+      renderUploadStatus();
+      if (!uploadTicker) uploadTicker = setInterval(renderUploadStatus, 1000);
     }
 
-    function showUploadWaiting() {
-      uploadStatusBar.classList.remove('hidden');
-      uploadStatusFill.style.width = '100%';
-      uploadStatusSpinner.classList.remove('hidden');
+    function reportUploadProgress(loaded, total) {
+      uploadLoaded = loaded;
+      if (total) uploadTotal = total;
+      renderUploadStatus();
+    }
+
+    function markUploadWaiting() {
+      uploadStage = 'waiting';
       uploadWaitStartedAt = Date.now();
-      updateUploadWaitingLabel();
-      if (!uploadWaitTimer) uploadWaitTimer = setInterval(updateUploadWaitingLabel, 1000);
+      renderUploadStatus();
     }
 
-    function updateUploadWaitingLabel() {
-      uploadStatusText.textContent = 'Upload received — server is unpacking & starting checks…';
-      uploadStatusPct.textContent = uploadWaitStartedAt ? formatDuration(Date.now() - uploadWaitStartedAt) : '';
+    function renderUploadStatus() {
+      if (uploadStage === 'uploading') {
+        uploadStatusSpinner.classList.add('hidden');
+        const pct = uploadTotal ? Math.min(100, Math.round((uploadLoaded / uploadTotal) * 100)) : 0;
+        uploadStatusFill.style.width = pct + '%';
+        uploadStatusText.textContent = 'Uploading project…';
+        const elapsed = formatDuration(Date.now() - uploadStartedAt);
+        uploadStatusPct.textContent = uploadTotal
+          ? `${pct}% (${(uploadLoaded / 1048576).toFixed(1)} / ${(uploadTotal / 1048576).toFixed(1)} MB) · ${elapsed} elapsed`
+          : `${elapsed} elapsed`;
+      } else if (uploadStage === 'waiting') {
+        uploadStatusFill.style.width = '100%';
+        uploadStatusSpinner.classList.remove('hidden');
+        uploadStatusText.textContent = 'Upload received — server is unpacking & starting checks…';
+        uploadStatusPct.textContent = `${formatDuration(Date.now() - uploadWaitStartedAt)} elapsed`;
+      }
     }
 
     function hideUploadStatus() {
+      uploadStage = null;
       uploadStatusBar.classList.add('hidden');
-      if (uploadWaitTimer) { clearInterval(uploadWaitTimer); uploadWaitTimer = null; }
-      uploadWaitStartedAt = null;
+      if (uploadTicker) { clearInterval(uploadTicker); uploadTicker = null; }
     }
 
     /* ------------------------------------------------------------ */
@@ -4262,7 +4289,10 @@
         form.append('gxpLinks', JSON.stringify(state.gxpLinks));
       }
 
-      showUploadProgress(0, 1);
+      const totalBytes = state.payload.kind === 'zip'
+        ? state.payload.file.size
+        : state.payload.entries.reduce((sum, e) => sum + e.file.size, 0);
+      beginUploadStatus(totalBytes);
 
       try {
         await new Promise((resolve, reject) => {
@@ -4274,9 +4304,9 @@
           let sawAnyEvent = false;
 
           xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) showUploadProgress(e.loaded, e.total);
+            reportUploadProgress(e.loaded, e.lengthComputable ? e.total : 0);
           };
-          xhr.upload.onload = () => showUploadWaiting();
+          xhr.upload.onload = () => markUploadWaiting();
 
           // xhr.responseText grows as the server streams NDJSON — diff
           // against what's already been processed rather than re-parsing

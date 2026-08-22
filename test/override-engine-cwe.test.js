@@ -102,3 +102,38 @@ test('collectPhase4Issues: code-duplication issues stay unmapped (not a security
   assert.equal(issue.cwe, null);
   assert.equal(issue.owasp, null);
 });
+
+test('collectPhase4Issues: likely-false-positive CodeQL findings in dev/test paths or project.id log formatting are demoted to warning', () => {
+  const issues = collectPhase4Issues({
+    secrets: { findings: [] },
+    governance: { findings: [] },
+    llm: { available: false, findings: [] },
+    codeql: {
+      findings: [
+        {
+          file: 'tadone/app/e2e/verify/serve-spa.mjs',
+          line: 116,
+          kind: 'js/path-injection',
+          severity: 'error',
+          message: 'This path depends on a user-provided value.',
+          snippet: null,
+        },
+        {
+          file: 'parla/ai-handler/index.js',
+          line: 156,
+          kind: 'js/log-injection',
+          severity: 'error',
+          message: 'Log entry depends on a user-provided value.',
+          snippet: {
+            startLine: 156,
+            highlightLine: 156,
+            lines: [{ number: 156, text: 'console.error(`[${project.id}] Firestore connectivity test failed:`);' }],
+          },
+        },
+      ],
+    },
+  });
+  const byLine = Object.fromEntries(issues.filter((i) => i.category === 'codeql-sast').map((i) => [i.line, i]));
+  assert.equal(byLine[116].severity, 'warning');
+  assert.equal(byLine[156].severity, 'warning');
+});

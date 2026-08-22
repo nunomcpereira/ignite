@@ -1141,6 +1141,8 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
           semanticSast.findings.forEach((f) => blog(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file}:${f.line} — ${f.message}`));
         } else if (semanticSast.engine === 'semgrep') {
           blog('✓ Check 7 passed — no semantic SAST findings.');
+        } else if (semanticSast.engine === 'failed') {
+          blog('⚠ Check 7 degraded — semgrep execution failed; no semantic SAST findings were produced.');
         } else {
           blog('✓ Check 7 skipped — semgrep disabled or not installed.');
         }
@@ -1706,6 +1708,21 @@ function bestEffortVersion(raw) {
   return m ? m[1] : null;
 }
 
+// pnpm/bun/yarn-workspaces alias protocols: "catalog:dev", "catalog:",
+// "workspace:*", "link:../foo", "file:../foo", "portal:../foo", "patch:...".
+// None of these name a real published package+version — they're resolved by
+// the package manager itself from local workspace/catalog config that isn't
+// present in a single manifest file, so there is no license or CVE to look
+// up. Without this check every one of them fell through to
+// bestEffortVersion's "no digits found" branch and got flagged identically
+// to a genuinely-unresolvable git-ref/tag dependency (tier: 'red', a
+// blocking issue) - on a pnpm/bun catalog-heavy monorepo that's a false
+// positive for every single catalog: entry in every manifest.
+const INTERNAL_DEP_REF_RE = /^(workspace|catalog|link|file|portal|patch):/i;
+function isInternalDependencyRef(versionRange) {
+  return INTERNAL_DEP_REF_RE.test(String(versionRange || '').trim());
+}
+
 function parsePackageJsonDeps(content) {
   try {
     const json = JSON.parse(content);
@@ -2030,6 +2047,9 @@ async function scanDependencyLicensesFallback(root, { skipEcosystems = new Set()
     const rawDeps = spec.parse(content).slice(0, STUDIO_MAX_DEPS_PER_MANIFEST);
     const dependencies = await Promise.all(rawDeps.map(async (dep) => {
       const line = findManifestDepLine(content, dep.name, spec.ecosystem);
+      if (isInternalDependencyRef(dep.versionRange)) {
+        return { name: dep.name, versionRange: dep.versionRange, version: null, line, licenses: [], tier: 'internal', reason: 'Internal workspace/catalog reference, not an external package — nothing to license-check.' };
+      }
       const version = bestEffortVersion(dep.versionRange);
       if (!version) {
         return { name: dep.name, versionRange: dep.versionRange, version: null, line, licenses: [], tier: 'red', reason: 'Could not resolve an exact version to check (range/tag/git ref).' };
@@ -2075,6 +2095,9 @@ async function scanDependencyVulnerabilities(root) {
     const rawDeps = spec.parse(content).slice(0, STUDIO_MAX_DEPS_PER_MANIFEST);
     const dependencies = await Promise.all(rawDeps.map(async (dep) => {
       const line = findManifestDepLine(content, dep.name, spec.ecosystem);
+      if (isInternalDependencyRef(dep.versionRange)) {
+        return { name: dep.name, versionRange: dep.versionRange, version: null, line, vulnerabilities: [], note: 'Internal workspace/catalog reference, not an external package — nothing to check.' };
+      }
       const version = bestEffortVersion(dep.versionRange);
       if (!version) {
         return { name: dep.name, versionRange: dep.versionRange, version: null, line, vulnerabilities: [], note: 'Could not resolve an exact version to check (range/tag/git ref).' };
@@ -2311,6 +2334,7 @@ async function scanDependencyLicenses(root, log) {
 }
 
 const LICENSE_FILENAME_RE = /^LICEN[CS]E(\.(txt|md))?$/i;
+const LICENSE_SCAN_PATH_SKIP_RE = /^(?:\.claude|\.github)\/skills\//i;
 
 // Dependency-free classification of a LICENSE file's raw text. `licensee`
 // (runLicenseeDetect) only ever inspects the project root and needs the gem
@@ -2339,10 +2363,12 @@ async function scanProjectLicenseFiles(root) {
   const findings = [];
   for await (const file of walkFiles(root)) {
     if (!LICENSE_FILENAME_RE.test(path.basename(file))) continue;
+    const relFile = path.relative(root, file);
+    if (LICENSE_SCAN_PATH_SKIP_RE.test(relFile.replace(/\\/g, '/'))) continue;
     const content = await fsp.readFile(file, 'utf8').catch(() => null);
     if (content == null) continue;
     const classified = classifyLicenseText(content);
-    if (classified) findings.push({ file: path.relative(root, file), ...classified });
+    if (classified) findings.push({ file: relFile, ...classified });
   }
   return findings;
 }

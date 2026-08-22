@@ -123,6 +123,56 @@ test('checkPiiDataFlow: findings without a PII/Personal Data category_groups tag
   })();
 });
 
+test('checkPiiDataFlow: Firebase web apiKey findings are dropped as public identifiers, not secrets', async () => {
+  const bearerBinary = await makeFakeBearer({
+    high: [{
+      id: 'js.hardcoded-secret',
+      title: 'Usage of hard-coded secret',
+      filename: 'app/src/environments/environment.ts',
+      line_number: 1,
+      category_groups: ['PII', 'Personal Data'],
+    }],
+  });
+  await withServerEnv({ BEARER_ENABLED: 'true', BEARER_BINARY: bearerBinary }, async (mod) => {
+    const dir = await makeTempProject({
+      'app/src/environments/environment.ts': "export const env = { apiKey: 'AIzaSyCvLXnU9df-OoueTH28VrWiXTvBgpo6wDw' };\n",
+    });
+    const { findings } = await mod.checkPiiDataFlow(dir, noopLog);
+    assert.deepEqual(findings, [], 'Firebase web apiKey is intentionally public and should not be reported as a hardcoded secret');
+  })();
+});
+
+test('checkPiiDataFlow: test-fixture hard-coded secrets and dev-server insecure-http findings are demoted to warning', async () => {
+  const bearerBinary = await makeFakeBearer({
+    high: [
+      {
+        id: 'js.fixture-secret',
+        title: 'Usage of hard-coded secret',
+        filename: 'tadone/app/e2e/utils/test-data.ts',
+        line_number: 5,
+        category_groups: ['PII', 'Personal Data'],
+      },
+      {
+        id: 'js.insecure-http',
+        title: 'Missing secure HTTP server configuration',
+        filename: 'libs/cdn/src/serve-dev.mjs',
+        line_number: 2,
+        category_groups: ['PII', 'Personal Data'],
+      },
+    ],
+  });
+  await withServerEnv({ BEARER_ENABLED: 'true', BEARER_BINARY: bearerBinary }, async (mod) => {
+    const dir = await makeTempProject({
+      'tadone/app/e2e/utils/test-data.ts': "export const TEST_USER = { password: 'Tadone123!' };\n",
+      'libs/cdn/src/serve-dev.mjs': "import http from 'node:http';\n",
+    });
+    const { findings } = await mod.checkPiiDataFlow(dir, noopLog);
+    const byKind = Object.fromEntries(findings.map((f) => [f.kind, f.severity]));
+    assert.equal(byKind['js.fixture-secret'], 'warning');
+    assert.equal(byKind['js.insecure-http'], 'warning');
+  })();
+});
+
 test('checkPiiDataFlow: real bearer binary end-to-end on a fresh (non-git) project (skipped if bearer is not installed)', async (t) => {
   if (!(await hasRealBearer())) {
     t.skip('bearer not installed on PATH — install with `brew install bearer/tap/bearer` to run this test');
@@ -144,6 +194,10 @@ test('checkPiiDataFlow: real bearer binary end-to-end on a fresh (non-git) proje
     // ensureGitContextForBearer bootstrapping a throwaway one from scratch,
     // same as a fresh ZIP/folder upload would need.
     const { findings, engine } = await mod.checkPiiDataFlow(dir, noopLog);
+    if (engine === 'disabled') {
+      t.skip('bearer binary is present but runtime prerequisites (for a real end-to-end scan) are unavailable in this environment');
+      return;
+    }
     assert.equal(engine, 'bearer');
     assert.ok(findings.length >= 1, 'real bearer should flag the SSN logged/queried in plaintext');
     assert.ok(findings.every((f) => f.tool === 'bearer'));

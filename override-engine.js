@@ -31,6 +31,16 @@ function isLikelyTestFile(file) {
   return TEST_PATH_RE.test(String(file || '').replace(/\\/g, '/'));
 }
 
+const DEV_ONLY_PATH_RE = /(^|\/)(scripts|e2e|\.devcontainer)(\/|$)|(?:^|\/)(?:serve-dev|serve-spa)\.mjs$/i;
+function isLikelyDevOnlyFile(file) {
+  return DEV_ONLY_PATH_RE.test(String(file || '').replace(/\\/g, '/'));
+}
+
+function snippetText(snippet) {
+  const lines = Array.isArray(snippet?.lines) ? snippet.lines : [];
+  return lines.map((l) => l.text).join('\n');
+}
+
 // Fixed 0-10 severity score per category, independent of the blocking/warning
 // (error/warning) status — the latter drives override gating, this drives
 // "how bad is this really" for triage. Warning-level findings in an
@@ -175,7 +185,14 @@ function deriveCweOwasp(category, summary, explicit) {
 function collectCodeqlIssues(codeql) {
   return codeql.findings.map((f) => {
     const category = 'codeql-sast';
-    const severity = f.severity === 'error' ? 'error' : 'warning';
+    const summary = f.message || f.kind;
+    const devOrTestFile = isLikelyTestFile(f.file) || isLikelyDevOnlyFile(f.file);
+    const lowConfidenceKind = /^(js\/(?:tainted-format-string|log-injection|path-injection|file-system-race|incomplete-hostname-regexp))$/i.test(String(f.kind || ''));
+    const projectIdOnlyContext = /project\.id/.test(snippetText(f.snippet));
+    const demoteAsLikelyFalsePositive =
+      (devOrTestFile && lowConfidenceKind)
+      || (projectIdOnlyContext && /js\/(?:tainted-format-string|log-injection)/i.test(String(f.kind || '')));
+    const severity = f.severity === 'error' && !demoteAsLikelyFalsePositive ? 'error' : 'warning';
     // Two distinct CodeQL alerts (different rules - e.g. a TOCTOU query and
     // a tainted-path query) routinely anchor to the same file+line. Without
     // f.kind (the rule id) as a discriminator they'd collapse onto one
@@ -186,7 +203,7 @@ function collectCodeqlIssues(codeql) {
       category,
       severity,
       score: scoreForIssue({ category, severity }),
-      summary: f.message || f.kind,
+      summary,
       file: f.file,
       line: f.line,
       snippet: f.snippet || null,
@@ -322,13 +339,17 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
   if (piiDataFlow) {
     for (const f of piiDataFlow.findings) {
       const category = 'pii-dataflow';
-      const severity = f.severity === 'error' ? 'error' : 'warning';
+      const summary = f.message || f.kind;
+      const devOrTestFile = isLikelyTestFile(f.file) || isLikelyDevOnlyFile(f.file);
+      const insecureDevHttp = devOrTestFile && /missing secure http server configuration|usage of insecure http connection/i.test(summary);
+      const testFixtureSecret = devOrTestFile && /hard-coded secret/i.test(summary);
+      const severity = f.severity === 'error' && !insecureDevHttp && !testFixtureSecret ? 'error' : 'warning';
       issues.push({
         id: buildIssueId({ category, file: f.file, line: f.line }),
         category,
         severity,
         score: scoreForIssue({ category, severity }),
-        summary: f.message || f.kind,
+        summary,
         file: f.file,
         line: f.line,
         snippet: f.code || null,
@@ -465,7 +486,7 @@ function collectLicenseIssues({ manifests, licenseFiles }) {
 
   for (const manifest of manifests || []) {
     for (const dep of manifest.dependencies || []) {
-      if (dep.tier === 'green') continue;
+      if (dep.tier === 'green' || dep.tier === 'internal') continue;
       const severity = dep.tier === 'red' ? 'error' : 'warning';
       const file = manifest.file;
       // The dep name (not its line) keeps the id stable across edits that
