@@ -160,7 +160,7 @@ function resolveActor(req) {
 
 const upload = multer({
   dest: path.join(os.tmpdir(), 'gatekeeper-uploads'),
-  limits: { fileSize: MAX_ZIP_BYTES, files: 20000 },
+  limits: { fileSize: MAX_ZIP_BYTES, files: 100000 },
 });
 
 /* ------------------------------------------------------------------ */

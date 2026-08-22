@@ -4012,7 +4012,7 @@
     function setDir(entries, rootName) {
       const kept = entries.filter((e) => !pathIsSkipped(e.rel));
       if (kept.length === 0) return showDropError('Folder contains no uploadable files.');
-      if (kept.length > 20000) return showDropError(`Folder has ${kept.length} files — the limit is 20000. Zip it instead, or trim build artifacts.`);
+      if (kept.length > 100000) return showDropError(`Folder has ${kept.length} files — the limit is 100000. Zip it instead, or trim build artifacts.`);
       const size = kept.reduce((sum, e) => sum + e.file.size, 0);
       if (size > MAX_ZIP_MB * 1024 * 1024) {
         return showDropError(`Folder is ${(size / 1048576).toFixed(1)} MB after skipping artifacts — the limit is ${MAX_ZIP_MB} MB.`);
