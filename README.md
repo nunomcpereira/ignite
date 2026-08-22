@@ -530,14 +530,17 @@ entry per finding, each with a blank `Acknowledge:` line, same shape as the id
 exactly this purpose (`issues` on a failed response). Fill in a
 justification, `git push` again: the hook resubmits every filled-in line as
 a real override (`{issueId, justification}`), attributed via `git config
-user.name`/`user.email`, and rewrites the file down to whatever's still
-unresolved. It's a durable local ledger, not a one-shot prompt - an id
-already justified stays overridden on future pushes until the line it's
-attached to changes (a new line number is a new id).
+user.name`/`user.email`, and rewrites the file from scratch to match the
+current scan: a justified entry survives as long as its finding is still
+reported - including across a pure line-number shift, carried forward
+automatically to the new id - but once the underlying issue is actually
+fixed, its entry is dropped rather than kept forever. Each surviving entry
+is also numbered (`# Issue #1`, `#2`, ...) as a running count, recomputed
+every push.
 
 Every run (pass or fail) also drops a point-in-time snapshot of every
 reported finding at `.ignite/scans/<timestamp>/findings.md` - a per-scan
-history folder, unlike the append-only, carried-forward acknowledgments file.
+history folder, unlike the refreshed-every-run acknowledgments file.
 
 ```bash
 # Install into one repo:

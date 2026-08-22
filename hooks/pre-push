@@ -21,16 +21,19 @@
 # review gate does, but as a file you edit in your own editor. Fill in a
 # justification, `git push` again: the hook resubmits every filled-in entry
 # as a real, attributed override (git config user.name/user.email). Meant
-# to be committed - it's an append-only audit trail, not scratch state: an
-# id (<category>::<file>::<line>) that's already justified stays in the
-# file (and keeps getting resubmitted as an override) on every future push,
-# whether or not that run reported it, until you delete the entry yourself
-# or the code around it changes enough to produce a different id.
+# to be committed - it's a real audit record, but a refreshed one, not
+# scratch state: the file is rewritten from scratch on every run to match
+# the CURRENT scan. An id (<category>::<file>::<line>) that's already
+# justified stays in the file (and keeps getting resubmitted as an
+# override) for as long as that finding keeps being reported - but once
+# it's actually resolved, its entry is dropped rather than kept forever.
+# Each surviving entry also carries a running "# Issue #N" count,
+# recomputed every run.
 #
 # Every run (pass or fail) also drops a point-in-time snapshot of every
-# reported finding at .ignite/scans/<timestamp>/findings.md - unlike
-# acknowledgments.md, this is per-scan history, not append-only/carried
-# forward.
+# reported finding at .ignite/scans/<timestamp>/findings.md - a full,
+# unfiltered per-scan history, unlike acknowledgments.md which only ever
+# shows currently-open findings.
 #
 # Line-drift carry-forward: the id embeds a line number, so any edit above a
 # flagged line (even one totally unrelated to it) changes the id and would
@@ -164,7 +167,7 @@ node -e '
       process.exit(1);
     }
     // Point-in-time snapshot of every reported finding, separate from the
-    // append-only acknowledgments.md - one folder per run, never edited.
+    // refreshed-every-run acknowledgments.md - one folder per run, never edited.
     const now = new Date();
     const ts = now.toISOString().replace(/:/g, "-").replace(/\.\d+Z$/, "Z");
     const snapshotFile = path.join(repoPath, ".ignite", "scans", ts, "findings.md");
@@ -203,13 +206,12 @@ node -e '
       console.error("This failure isn'\''t something a justification can override - fix it in the source and push again.");
       process.exit(1);
     }
-    // Append-only: this file is meant to be committed, so each entry block
-    // (comment lines + whatever Acknowledge text was written) is preserved
-    // exactly as last written, forever - including ones already resolved
-    // this run (their override just got resubmitted successfully; dropping
-    // them here would silently un-acknowledge them on the next push, since
-    // only what remains physically in the file gets resubmitted). Only ids
-    // not already present get a fresh blank entry appended.
+    // Refreshed every run: this file always reflects the CURRENT scan
+    // findings, not a permanent ledger - an id whose finding is no longer
+    // reported (fixed in source, or genuinely resolved) is dropped instead
+    // of lingering forever. A justification already written for an id
+    // still being reported is preserved as-is (see existingBlocks below);
+    // only ids not already present get a fresh blank entry appended.
     let existing = "";
     try { existing = fs.readFileSync(reviewFile, "utf8"); } catch { /* first run */ }
     const existingIds = new Set();
@@ -269,24 +271,43 @@ node -e '
         ackLine,
       ].join("\n"));
     }
-    const existingBlocks = existingParsed.filter((e) => !e.superseded).map((e) => e.raw);
+    // Existing blocks may already carry a "# Issue #N" line from the last
+    // write - stripped here and re-added fresh below so numbers always
+    // reflect the current order/count instead of accumulating duplicates.
+    const stripIssueNumberLine = (raw) => raw.replace(/^(ID: [^\n]*)\n# Issue #\d+\n/, "$1\n");
+    // Only keep an existing block if its id is still among the current
+    // findings - a match.superseded=true entry got folded into a newBlocks
+    // carry-forward above and is dropped here either way, but an id that is
+    // simply gone (fixed, or the finding no longer applies) is dropped too,
+    // rather than kept forever.
+    const currentIssueIds = new Set(issues.map((i) => i.id));
+    const existingBlocks = existingParsed
+      .filter((e) => !e.superseded && currentIssueIds.has(e.id))
+      .map((e) => stripIssueNumberLine(e.raw));
+    const combinedBlocks = [...existingBlocks, ...newBlocks].map((block, i) =>
+      block.replace(/^(ID: [^\n]*)\n/, `$1\n# Issue #${i + 1}\n`)
+    );
     const header = [
       "# Ignite pre-push acknowledgments - meant to be committed: a filled-in",
       "# justification is a real audit record, reviewable like code.",
       "#",
       "# Fill in a justification after \"Acknowledge:\" for any issue below you want",
       "# to override, save, then `git push` again. Blank = stays blocking.",
-      "# Append-only: once written, an entry (and its justification) stays here",
-      "# permanently, resubmitted as an override on every future push, even",
-      "# after the id it names stops being reported - delete an entry yourself",
-      "# if you want to stop carrying it forward.",
+      "# Refreshed every run: only entries for findings still reported by the",
+      "# current scan are kept - a filled-in justification survives as long",
+      "# as its finding does, but once the underlying issue is fixed (or a",
+      "# pure line-number shift carries its justification to a new id), the",
+      "# stale entry is dropped rather than kept forever.",
       "# A `# Code:` line, when present, is the flagged source line own text -",
       "# used to auto-carry-forward this justification if an unrelated edit",
       "# elsewhere in the file later shifts its line number. Do not hand-edit it.",
+      "# The `# Issue #N` line is just a running count of entries in this file",
+      "# - recomputed on every push, not a stable id. Use the `ID:` line to",
+      "# refer to a specific finding.",
       "",
     ].join("\n");
     fs.mkdirSync(path.dirname(reviewFile), { recursive: true });
-    fs.writeFileSync(reviewFile, header + [...existingBlocks, ...newBlocks].join("\n\n") + "\n");
+    fs.writeFileSync(reviewFile, header + combinedBlocks.join("\n\n") + "\n");
     console.error("");
     console.error(`✗ ${issues.length} blocking finding(s) need a justification or a source fix.`);
     console.error(`  Edit ${reviewFile}, fill in "Acknowledge:" for whichever you want to`);

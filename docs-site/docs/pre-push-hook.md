@@ -64,10 +64,13 @@ Acknowledge:
 Fill in a justification, save, `git push` again — the hook resubmits every
 filled-in line as a real, attributed override (using your `git config
 user.name`/`user.email`), the same justify-and-override step the web UI's
-review gate does, just from your own editor. Only whatever's still
-unresolved remains in the file afterward, and it's a durable local ledger,
-not a one-shot prompt: an id you've already justified stays overridden on
-every future push until the line it's attached to changes.
+review gate does, just from your own editor. The file is rewritten from
+scratch every run to match the current scan: a justified entry survives as
+long as its finding is still reported (including across a pure line-number
+shift, carried forward automatically), but once the underlying issue is
+actually fixed, its entry is dropped rather than lingering forever. Each
+surviving entry is also numbered (`# Issue #1`, `#2`, …) as a running count,
+recomputed every push.
 
 Fast by default — `runLocalCi` is off (skips Phase 5's `act`/Docker
 governance CI, which is slow and typically belongs in real CI, not on
