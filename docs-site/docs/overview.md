@@ -8,7 +8,7 @@ slug: /
 
 <figure className="heroShot">
 
-<svg viewBox="0 0 1080 400" role="img" aria-label="Four entry points — web upload, git push, VS Code, and MCP agent calls — converge into one local staging directory, run through six deterministic phases plus an optional local LLM deep-scan, then a pass/fail gate. A pass, or a justified attributed override, is the only way to reach GitHub; a fail without either loops back to fix the source.">
+<svg viewBox="0 0 1080 400" role="img" aria-label="Four entry points, web upload, git push, VS Code, and MCP agent calls, converge into one local staging directory, run through six deterministic phases plus an optional local LLM deep-scan, then a pass/fail gate. A pass, or a justified attributed override, is the only way to reach GitHub; a fail without either loops back to fix the source. Each phase links to its own detailed diagram on the What gets checked page.">
   <defs>
     <marker id="arrowGray" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="var(--ifm-color-emphasis-500)"/>
@@ -55,12 +55,30 @@ slug: /
   <text x="615" y="70" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" letter-spacing="1" fill="var(--ifm-color-emphasis-600)">PIPELINE — ALL LOCAL</text>
   <line x1="505" y1="80" x2="725" y2="80" stroke="var(--ifm-color-emphasis-300)"/>
   <g font-family="system-ui, sans-serif" font-size="12.5" fill="var(--ifm-color-emphasis-900)">
-    <text x="505" y="106"><tspan fill="var(--ifm-color-primary)" font-weight="600">1</tspan>  Input &amp; metadata</text>
-    <text x="505" y="140"><tspan fill="var(--ifm-color-primary)" font-weight="600">2</tspan>  GxP docs (optional)</text>
-    <text x="505" y="174"><tspan fill="var(--ifm-color-primary)" font-weight="600">3</tspan>  Structure, license &amp; tests</text>
-    <text x="505" y="208"><tspan fill="var(--ifm-color-primary)" font-weight="600">4</tspan>  Security &amp; compliance scan</text>
-    <text x="505" y="242"><tspan fill="var(--ifm-color-primary)" font-weight="600">5</tspan>  Org governance CI</text>
-    <text x="505" y="276"><tspan fill="var(--ifm-color-primary)" font-weight="600">6</tspan>  Provisioning &amp; shipping</text>
+    <a class="phase-link" href="what-gets-checked#phase-1-input-and-metadata">
+      <rect x="498" y="92" width="234" height="20" rx="4"/>
+      <text x="505" y="106"><tspan fill="var(--ifm-color-primary)" font-weight="600">1</tspan>  Input &amp; metadata  <tspan font-size="11">🔍</tspan></text>
+    </a>
+    <a class="phase-link" href="what-gets-checked#phase-2-gxp-docs-optional">
+      <rect x="498" y="126" width="234" height="20" rx="4"/>
+      <text x="505" y="140"><tspan fill="var(--ifm-color-primary)" font-weight="600">2</tspan>  GxP docs (optional)  <tspan font-size="11">🔍</tspan></text>
+    </a>
+    <a class="phase-link" href="what-gets-checked#phase-3-structure-license-and-tests">
+      <rect x="498" y="160" width="234" height="20" rx="4"/>
+      <text x="505" y="174"><tspan fill="var(--ifm-color-primary)" font-weight="600">3</tspan>  Structure, license &amp; tests  <tspan font-size="11">🔍</tspan></text>
+    </a>
+    <a class="phase-link" href="what-gets-checked#phase-4-security-and-compliance-scan">
+      <rect x="498" y="194" width="234" height="20" rx="4"/>
+      <text x="505" y="208"><tspan fill="var(--ifm-color-primary)" font-weight="600">4</tspan>  Security &amp; compliance scan  <tspan font-size="11">🔍</tspan></text>
+    </a>
+    <a class="phase-link" href="what-gets-checked#phase-5-org-governance-ci">
+      <rect x="498" y="228" width="234" height="20" rx="4"/>
+      <text x="505" y="242"><tspan fill="var(--ifm-color-primary)" font-weight="600">5</tspan>  Org governance CI  <tspan font-size="11">🔍</tspan></text>
+    </a>
+    <a class="phase-link" href="what-gets-checked#phase-6-provisioning-and-shipping">
+      <rect x="498" y="262" width="234" height="20" rx="4"/>
+      <text x="505" y="276"><tspan fill="var(--ifm-color-primary)" font-weight="600">6</tspan>  Provisioning &amp; shipping  <tspan font-size="11">🔍</tspan></text>
+    </a>
   </g>
 
   <line x1="740" y1="186" x2="766" y2="186" stroke="var(--ifm-color-emphasis-500)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
@@ -96,7 +114,7 @@ slug: /
   <text x="965" y="338" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-primary)">justified, attributed override</text>
 </svg>
 
-<figcaption>Every path in — upload, <code>git push</code>, VS Code, or an MCP agent call — funnels through the same six local phases (plus an optional local LLM deep-scan) and the same gate. Nothing reaches GitHub without a pass or a justified, attributed override.</figcaption>
+<figcaption>Every path in (upload, <code>git push</code>, VS Code, or an MCP agent call) funnels through the same six local phases, plus an optional local LLM deep-scan, and the same gate. Nothing reaches GitHub without a pass or a justified, attributed override. Click any phase in the diagram to jump to its own detailed diagram on the <a href="what-gets-checked">What gets checked</a> page.</figcaption>
 
 </figure>
 

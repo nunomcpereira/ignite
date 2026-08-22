@@ -1,6 +1,6 @@
 ---
 title: MCP server
-sidebar_position: 4
+sidebar_position: 5
 ---
 
 # Also an MCP server — bring these checks into your editor

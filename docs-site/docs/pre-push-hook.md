@@ -1,6 +1,6 @@
 ---
 title: Pre-push hook
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 # Pre-push hook — check before you push, not after

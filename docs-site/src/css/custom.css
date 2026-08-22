@@ -186,3 +186,40 @@
   font-size: 0.92rem;
   font-style: italic;
 }
+
+/* Per-phase diagrams on the "What gets checked" page — same inline-SVG
+   approach as .heroShot, in a light card so each phase reads as its own
+   unit between headings. */
+.phaseDiagram {
+  margin: 1em 0 1.5em;
+  padding: 0.75em 1em;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.phaseDiagram svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Clickable phase rows in the overview page's hero diagram, linking into
+   their own detailed .phaseDiagram section below. */
+.phase-link {
+  cursor: pointer;
+}
+
+.phase-link rect {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.phase-link:hover rect {
+  opacity: 1;
+  fill: var(--ifm-color-emphasis-200);
+}
+
+.phase-link:hover text {
+  fill: var(--ifm-color-primary);
+}
