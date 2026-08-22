@@ -172,6 +172,37 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
       scope        TEXT,
       connected_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    -- Baseline/diff adoption mode (closes the "no baseline gating" gap
+    -- against fallow.tools' --save-baseline): one row per issue id a
+    -- project has explicitly accepted as pre-existing debt. A later run's
+    -- issue list is filtered against this set (lib/baseline-filter.js) so
+    -- CI only gates on *new* issues, letting a large codebase adopt Ignite
+    -- incrementally instead of needing every historical finding fixed or
+    -- overridden on day one.
+    CREATE TABLE IF NOT EXISTS issue_baselines (
+      org        TEXT NOT NULL,
+      repo       TEXT NOT NULL,
+      issue_id   TEXT NOT NULL,
+      saved_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (org, repo, issue_id)
+    );
+    -- Runtime execution signal (closes the "no runtime/production signal"
+    -- gap against fallow.tools' Beacon): per-file hit counts ingested from
+    -- a project's own coverage/instrumentation report (Istanbul
+    -- coverage-final.json or a simple { file: hitCount } map), used to (a)
+    -- raise/lower dead-code deletion confidence and (b) feed real coverage
+    -- into the CRAP score instead of the conservative 0% default. Static
+    -- only otherwise — this is the one place production truth enters
+    -- Ignite's otherwise-static pipeline.
+    CREATE TABLE IF NOT EXISTS runtime_coverage (
+      org         TEXT NOT NULL,
+      repo        TEXT NOT NULL,
+      rel_path    TEXT NOT NULL,
+      hit_count   INTEGER NOT NULL DEFAULT 0,
+      covered_pct REAL,
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (org, repo, rel_path)
+    );
   `);
 
   // Migration for DBs created before the issues.score column existed —
@@ -496,6 +527,22 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
        ON CONFLICT(repo, filename)
        DO UPDATE SET commit_sha = excluded.commit_sha, content = excluded.content, updated_at = excluded.updated_at`
     ),
+    insertBaselineIssue: db.prepare(
+      'INSERT OR IGNORE INTO issue_baselines (org, repo, issue_id) VALUES (?, ?, ?)'
+    ),
+    clearBaseline: db.prepare('DELETE FROM issue_baselines WHERE org = ? AND repo = ?'),
+    listBaselineIssueIds: db.prepare('SELECT issue_id FROM issue_baselines WHERE org = ? AND repo = ?'),
+    upsertRuntimeCoverage: db.prepare(
+      `INSERT INTO runtime_coverage (org, repo, rel_path, hit_count, covered_pct, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(org, repo, rel_path)
+       DO UPDATE SET hit_count = excluded.hit_count, covered_pct = excluded.covered_pct, updated_at = excluded.updated_at`
+    ),
+    getRuntimeCoverageForFile: db.prepare(
+      'SELECT hit_count, covered_pct FROM runtime_coverage WHERE org = ? AND repo = ? AND rel_path = ?'
+    ),
+    listRuntimeCoverage: db.prepare('SELECT rel_path, hit_count, covered_pct FROM runtime_coverage WHERE org = ? AND repo = ?'),
+    clearRuntimeCoverage: db.prepare('DELETE FROM runtime_coverage WHERE org = ? AND repo = ?'),
   };
 
   return {
@@ -880,6 +927,47 @@ function createDbStore(dbFile = path.join(__dirname, 'ignite.db')) {
         WHERE state = 'running'
           AND project_id IN (SELECT id FROM projects WHERE error = '${ABORTED_ERROR}');
       `);
+    },
+
+    /* ---------------- Baseline/diff adoption mode ---------------- */
+
+    saveBaseline(org, repo, issueIds) {
+      stmt.clearBaseline.run(org, repo);
+      for (const id of issueIds) stmt.insertBaselineIssue.run(org, repo, id);
+      return issueIds.length;
+    },
+
+    clearBaseline(org, repo) {
+      return stmt.clearBaseline.run(org, repo).changes;
+    },
+
+    getBaselineIssueIds(org, repo) {
+      return new Set(stmt.listBaselineIssueIds.all(org, repo).map((r) => r.issue_id));
+    },
+
+    /* ---------------- Runtime coverage ingestion (Beacon-equivalent) ---------------- */
+
+    ingestRuntimeCoverage(org, repo, fileStats) {
+      let count = 0;
+      for (const [relPath, { hitCount = 0, coveredPct = null }] of Object.entries(fileStats)) {
+        stmt.upsertRuntimeCoverage.run(org, repo, relPath, Number(hitCount) || 0, coveredPct === null ? null : Number(coveredPct));
+        count++;
+      }
+      return count;
+    },
+
+    getRuntimeCoverageForFile(org, repo, relPath) {
+      return stmt.getRuntimeCoverageForFile.get(org, repo, relPath) || null;
+    },
+
+    getRuntimeCoverageMap(org, repo) {
+      const map = new Map();
+      for (const row of stmt.listRuntimeCoverage.all(org, repo)) map.set(row.rel_path, row);
+      return map;
+    },
+
+    clearRuntimeCoverage(org, repo) {
+      return stmt.clearRuntimeCoverage.run(org, repo).changes;
     },
   };
 }

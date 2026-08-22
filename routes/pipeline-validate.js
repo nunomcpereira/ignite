@@ -32,6 +32,7 @@
  * @param {Function} deps.runActionsLocally
  */
 const { filterIssuesByChangedFiles } = require('../lib/issue-filter');
+const { filterIssuesByBaseline } = require('../lib/baseline-filter');
 
 function mountValidateAllRoute(app, {
   store, phaseEnabled, phaseTitles, repoNameRegex, githubNameRegex, actEvent,
@@ -67,6 +68,15 @@ function mountValidateAllRoute(app, {
       ? new Set(body.changedFiles.map((f) => String(f).trim()).filter(Boolean))
       : null;
     const filterByChangedFiles = (list) => filterIssuesByChangedFiles(list, changedFiles);
+    // Baseline/diff adoption mode (closes the fallow.tools --save-baseline
+    // gap): 'gate' narrows what *blocks the run* to issues not already
+    // accepted as pre-existing debt (store.saveBaseline, via
+    // routes/baseline.js); 'save' runs the pipeline normally and then
+    // snapshots whatever issues came out of it as the new baseline —
+    // typically called once on a main-branch run to adopt Ignite on an
+    // existing codebase without fixing everything on day one.
+    const baselineMode = ['gate', 'save'].includes(body.baselineMode) ? body.baselineMode : null;
+    const baselineIssueIds = baselineMode === 'gate' ? store.getBaselineIssueIds(org, repo) : null;
 
     const jobId = crypto.randomUUID();
     const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `${jobId}-api-validation`);
@@ -219,12 +229,13 @@ function mountValidateAllRoute(app, {
         ]);
         issues = [...phase4.issues, ...licenseIssues];
       }
-      const errorIssues = issues.filter((i) => i.severity === 'error');
+      const gatedIssues = baselineMode === 'gate' ? filterIssuesByBaseline(issues, baselineIssueIds) : issues;
+      const errorIssues = gatedIssues.filter((i) => i.severity === 'error');
 
       // Preserve the pre-override behavior of warningDecision=fail: treat
       // unoverridden warnings as blocking too, in that mode only.
       const issuesRequiringOverride =
-        warningDecision === 'continue' ? errorIssues : issues;
+        warningDecision === 'continue' ? errorIssues : gatedIssues;
 
       // Surfaced on the success response below too (not just the 400/failure
       // path) so a non-browser caller that wants the *whole* issue list —
@@ -294,7 +305,14 @@ function mountValidateAllRoute(app, {
         store.finishProject('success', null, null, null, projectId);
       }
 
-      const taggedIssues = issues.map((i) => (overriddenIds.has(i.id) ? { ...i, status: 'overridden' } : i));
+      const taggedIssues = issues.map((i) => {
+        if (overriddenIds.has(i.id)) return { ...i, status: 'overridden' };
+        if (baselineIssueIds && baselineIssueIds.has(i.id)) return { ...i, status: 'baselined' };
+        return i;
+      });
+      if (baselineMode === 'save') {
+        store.saveBaseline(org, repo, issues.map((i) => i.id));
+      }
       return res.json({
         ok: true,
         mode: 'validate-all',
@@ -302,6 +320,8 @@ function mountValidateAllRoute(app, {
         projectPath,
         issues: filterByChangedFiles(taggedIssues),
         ...(changedFiles ? { totalIssueCount: taggedIssues.length, filteredByChangedFiles: true } : {}),
+        ...(baselineMode === 'save' ? { baselineSaved: issues.length } : {}),
+        ...(baselineMode === 'gate' ? { baselineIssueCount: baselineIssueIds.size } : {}),
         phases: phaseSummary(),
         events,
       });

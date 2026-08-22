@@ -374,6 +374,18 @@ const FILE_SIZE_MAX_LINES = Number(CONFIG.metrics.fileSize.maxLines) || 1000;
 const SPECTRAL_ENABLED = Boolean(CONFIG.api.spectral.enabled);
 const SPECTRAL_BINARY = String(CONFIG.api.spectral.binary || 'spectral');
 
+/* Built-in codebase-intelligence checks (see CONFIG.codeIntelligence / CONFIG.architecture) — no external tool for any of these */
+const DEAD_CODE_ENABLED = Boolean(CONFIG.codeIntelligence.deadCode.enabled);
+const HEALTH_ENABLED = Boolean(CONFIG.codeIntelligence.health.enabled);
+const HEALTH_CYCLOMATIC_WARN = Number(CONFIG.codeIntelligence.health.cyclomaticWarnThreshold) || 20;
+const HEALTH_DENSITY_WARN = Number(CONFIG.codeIntelligence.health.complexityDensityWarnThreshold) || 0.3;
+const HEALTH_MI_WARN = Number(CONFIG.codeIntelligence.health.maintainabilityWarnThreshold) || 40;
+const HEALTH_TOP_HOTSPOTS = Number(CONFIG.codeIntelligence.health.topHotspots) || 10;
+const CSS_DEAD_CODE_ENABLED = Boolean(CONFIG.codeIntelligence.cssDeadCode.enabled);
+const BOUNDARIES_ENABLED = Boolean(CONFIG.architecture.boundaries.enabled);
+const BOUNDARIES_PRESET = String(CONFIG.architecture.boundaries.preset || '');
+const BOUNDARIES_ZONES = Array.isArray(CONFIG.architecture.boundaries.zones) ? CONFIG.architecture.boundaries.zones : [];
+
 // See lib/tool-runner.js — a factory, not a bare require, so the resolved
 // binary paths above are threaded in explicitly rather than the module
 // re-deriving them from CONFIG itself (keeps CONFIG-derived state living
@@ -997,6 +1009,38 @@ const { checkFeaturePosture, checkFeaturePostureFallback, POSTURE_CATEGORIES } =
   config: { enabled: POSTURE_ENABLED, ruleset: POSTURE_RULESET, maxScanFileBytes: MAX_SCAN_FILE_BYTES },
 });
 
+// Built-in codebase-intelligence checks (dead code, complexity/health, CSS
+// dead-class scan, architecture boundaries) — closes the fallow.tools gap
+// set (see project memory). No external tool for any of these.
+const { createDeadCodeCheck } = require('./checks/dead-code');
+const { checkDeadCode } = createDeadCodeCheck({
+  fsUtils: { walkFiles, looksBinary, buildSnippet },
+  config: { enabled: DEAD_CODE_ENABLED },
+});
+
+const { createComplexityHealthCheck } = require('./checks/complexity-health');
+const { checkComplexityHealth } = createComplexityHealthCheck({
+  runTool,
+  fsUtils: { walkFiles, looksBinary, buildSnippet },
+  config: {
+    enabled: HEALTH_ENABLED, cyclomaticWarnThreshold: HEALTH_CYCLOMATIC_WARN,
+    complexityDensityWarnThreshold: HEALTH_DENSITY_WARN, maintainabilityWarnThreshold: HEALTH_MI_WARN,
+    topHotspots: HEALTH_TOP_HOTSPOTS,
+  },
+});
+
+const { createCssDeadCodeCheck } = require('./checks/css-dead-code');
+const { checkCssDeadCode } = createCssDeadCodeCheck({
+  fsUtils: { walkFiles, looksBinary, buildSnippet },
+  config: { enabled: CSS_DEAD_CODE_ENABLED },
+});
+
+const { createBoundariesCheck } = require('./checks/boundaries');
+const { checkBoundaries } = createBoundariesCheck({
+  fsUtils: { walkFiles, looksBinary, buildSnippet },
+  config: { enabled: BOUNDARIES_ENABLED, preset: BOUNDARIES_PRESET, zones: BOUNDARIES_ZONES },
+});
+
 // Runs Phase 4's 11 external-tool checks (secrets, AI-governance, LLM deep-
 // scan, IaC, SBOM, image provenance, semantic SAST, PII/data-flow, code
 // duplication, LOC metrics, API-schema lint, feature posture) concurrently
@@ -1283,6 +1327,73 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
       },
     },
     {
+      name: 'deadCode',
+      run: async (blog) => {
+        blog('Check 16 — dead-code / unused-export / unused-dependency scan (built-in)...');
+        const deadCode = await checkDeadCode(projectRoot, blog);
+        if (deadCode.findings.length > 0) {
+          blog(`⚠ ${deadCode.findings.length} dead-code finding(s) [engine: ${deadCode.engine}]:`);
+          deadCode.findings.forEach((f) => blog(`    ⚠ ${f.file}${f.line ? ':' + f.line : ''} — ${f.kind}`));
+        } else if (deadCode.engine === 'built-in') {
+          blog('✓ Check 16 passed — no dead code/unused exports/unused dependencies detected.');
+        } else {
+          blog('✓ Check 16 skipped — disabled by config.');
+        }
+        return deadCode;
+      },
+    },
+    {
+      name: 'health',
+      run: async (blog) => {
+        blog('Check 17 — complexity/maintainability health scan (built-in)...');
+        const health = await checkComplexityHealth(projectRoot, blog, {
+          getCoverageForFile: async (relPath) => {
+            const row = store.getRuntimeCoverageForFile(org, repo, relPath.split(path.sep).join('/'));
+            return row?.covered_pct ?? null;
+          },
+        });
+        if (health.findings.length > 0) {
+          blog(`⚠ ${health.findings.length} file(s) over complexity/maintainability threshold.`);
+        } else if (health.engine === 'built-in') {
+          blog('✓ Check 17 passed — no file over the configured complexity/maintainability thresholds.');
+        } else {
+          blog('✓ Check 17 skipped — disabled by config.');
+        }
+        return health;
+      },
+    },
+    {
+      name: 'cssDeadCode',
+      run: async (blog) => {
+        blog('Check 18 — CSS/Tailwind dead-class scan (built-in)...');
+        const cssDeadCode = await checkCssDeadCode(projectRoot, blog);
+        if (cssDeadCode.findings.length > 0) {
+          blog(`⚠ ${cssDeadCode.findings.length} unused CSS class(es) found.`);
+        } else if (cssDeadCode.engine === 'built-in') {
+          blog('✓ Check 18 passed — no unused CSS classes detected (or no CSS files present).');
+        } else {
+          blog('✓ Check 18 skipped — disabled by config.');
+        }
+        return cssDeadCode;
+      },
+    },
+    {
+      name: 'boundaries',
+      run: async (blog) => {
+        blog('Check 19 — architecture/import boundary enforcement (built-in)...');
+        const boundaries = await checkBoundaries(projectRoot, blog);
+        if (boundaries.findings.length > 0) {
+          blog(`⚠ ${boundaries.findings.length} architecture boundary violation(s):`);
+          boundaries.findings.forEach((f) => blog(`    ⚠ ${f.file}:${f.line} — ${f.message}`));
+        } else if (boundaries.engine === 'built-in') {
+          blog('✓ Check 19 passed — no architecture boundary violations.');
+        } else {
+          blog('✓ Check 19 skipped — disabled by config or no zones configured.');
+        }
+        return boundaries;
+      },
+    },
+    {
       name: 'codeql',
       run: async (blog) => {
         blog('Check 15 — cross-file static analysis (CodeQL)...');
@@ -1321,6 +1432,10 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     apiSchema: byName.apiSchema,
     maliciousDependencies: byName.maliciousDependencies,
     codeql: byName.codeql,
+    deadCode: byName.deadCode,
+    health: byName.health,
+    cssDeadCode: byName.cssDeadCode,
+    boundaries: byName.boundaries,
   }).filter((issue) => !isExcludedSecurityFinding(issue));
   return { issues };
 }
@@ -2511,6 +2626,15 @@ async function runDependencyVulnerabilityCheck(projectRoot, log) {
 const { mountDependenciesRoutes } = require('./routes/dependencies');
 mountDependenciesRoutes(app, { sanitizeAbsoluteProjectPath, scanDependencyLicenses, scanDependencyVulnerabilities });
 
+const { mountAutoFixRoute } = require('./routes/auto-fix');
+mountAutoFixRoute(app, { sanitizeAbsoluteProjectPath, checkDeadCode });
+
+const { mountBaselineRoutes } = require('./routes/baseline');
+mountBaselineRoutes(app, { store });
+
+const { mountRuntimeCoverageRoutes } = require('./routes/runtime-coverage');
+mountRuntimeCoverageRoutes(app, { store });
+
 const { mountIssuesRoutes } = require('./routes/issues');
 mountIssuesRoutes(app, { store, llmAvailableCached, llmComplete });
 
@@ -2700,4 +2824,8 @@ module.exports = {
   checkCodeqlCrossFile,
   discoverCodeqlLanguages,
   normalizeWorkflowText,
+  checkDeadCode,
+  checkComplexityHealth,
+  checkCssDeadCode,
+  checkBoundaries,
 };

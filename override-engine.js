@@ -225,7 +225,7 @@ function collectCodeqlIssues(codeql) {
   });
 }
 
-function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies, codeql }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies, codeql, deadCode, health, cssDeadCode, boundaries }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -465,6 +465,34 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
         severity,
         score: scoreForIssue({ category, severity }),
         summary: f.issue + (f.recommendation ? ` | fix: ${f.recommendation}` : '') + (inTestFile ? ' (in a test file — likely a fixture, not a real credential)' : ''),
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  // Built-in codebase-intelligence checks (checks/dead-code.js,
+  // complexity-health.js, css-dead-code.js, boundaries.js) — closes the
+  // fallow.tools gap set (see project memory). All four are heuristic/
+  // regex-AST-lite, so every finding here is always advisory
+  // ('warning'), never 'error' — a human confirms before deleting/
+  // restructuring, never blocked by a false positive from a check with no
+  // full type-checker or build graph behind it.
+  for (const group of [deadCode, health, cssDeadCode, boundaries]) {
+    if (!group) continue;
+    for (const f of group.findings) {
+      const category = f.kind === 'unused-file' || f.kind === 'unused-export' || f.kind === 'unused-dependency' ? 'dead-code'
+        : f.kind === 'high-complexity' || f.kind === 'low-maintainability' ? 'complexity-health'
+        : f.kind === 'unused-css-class' ? 'css-dead-code'
+        : f.kind === 'boundary-violation' ? 'architecture-boundary'
+        : 'codebase-intelligence';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line, discriminator: f.kind }),
+        category,
+        severity: 'warning',
+        score: scoreForIssue({ category, severity: 'warning' }),
+        summary: f.message,
         file: f.file,
         line: f.line,
         snippet: f.code || null,

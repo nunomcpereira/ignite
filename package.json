@@ -14,7 +14,9 @@
     "guidelines:mcp:http": "MCP_TRANSPORT=http node mcp-server.js",
     "guidelines:api": "node guidelines-api.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "release:sign": "node scripts/sign-release.js",
+    "release:verify": "node scripts/verify-release.js"
   },
   "engines": {
     "node": ">=22"

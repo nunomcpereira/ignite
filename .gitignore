@@ -11,3 +11,5 @@ playwright-report/
 docs/ux/
 docs/_site/
 .ignite/scans/
+release-checksums.json
+release-checksums.json.sig

@@ -315,6 +315,46 @@ function loadConfig() {
       // nothing when disabled/missing, or when no matching files exist.
       spectral: { enabled: true, binary: 'spectral', ruleset: path.join(__dirname, 'spectral-default-ruleset.yaml') },
     },
+    // Built-in JS/TS codebase-intelligence checks (dead code, complexity/
+    // health, architecture boundaries, CSS dead-class scan) — closes the
+    // gap set against fallow.tools (see project memory). No external
+    // tool/install for any of these; each soft-skips to nothing when its
+    // own `enabled` is false. Findings feed the same issue/override model
+    // as every other Phase 4 check (see server.js's runPhase4Checks and
+    // override-engine.js's collectPhase4Issues) and are always advisory
+    // (`severity: 'warning'`) — heuristic, regex/AST-lite analysis without
+    // a full type-checker or build graph can produce false positives (see
+    // each check module's own doc comment for specifics), so a human
+    // confirms before deleting, never a hard gate.
+    codeIntelligence: {
+      // Dead-code / unused-export / unused-dependency scan
+      // (checks/dead-code.js). Upgrades to AST-based export confirmation
+      // automatically when the *scanned project* has `typescript` in its
+      // own node_modules — no Ignite-side dependency needed either way.
+      deadCode: { enabled: true },
+      // Complexity/maintainability health scan (checks/complexity-
+      // health.js): cyclomatic/cognitive complexity, Maintainability
+      // Index, CRAP score, git-churn-weighted hotspots.
+      health: {
+        enabled: true,
+        cyclomaticWarnThreshold: 20, // the classic "hard to test exhaustively" line
+        complexityDensityWarnThreshold: 0.3, // decision points per line of code; normalizes the (whole-file, not per-function) complexity total for file size
+        maintainabilityWarnThreshold: 40,
+        topHotspots: 10,
+      },
+      // CSS/Tailwind dead-class scan (checks/css-dead-code.js): declared-
+      // but-never-referenced CSS classes across the project's markup.
+      cssDeadCode: { enabled: true },
+    },
+    // Architecture/import-boundary enforcement (checks/boundaries.js) —
+    // off by default (unlike codeIntelligence above): a wrong/default zone
+    // layout on a project that doesn't follow one of the four presets
+    // (bulletproof/layered/hexagonal/feature-sliced — same as
+    // fallow.tools ships) would be pure noise, so this only activates on
+    // explicit project opt-in via `preset` and/or custom `zones`.
+    architecture: {
+      boundaries: { enabled: false, preset: '', zones: [] },
+    },
     // Optional per-phase title/description/enabled overrides, e.g.:
     //   "phases": [{ "id": 4, "enabled": false }]
     // Matched by id; any phase not listed (or the whole key omitted) keeps
@@ -449,6 +489,11 @@ function loadConfig() {
   if (process.env.CODEQL_THREADS !== undefined) merged.security.codeql.threads = Number(process.env.CODEQL_THREADS) || 0;
   if (process.env.CODEQL_RAM_MB !== undefined) merged.security.codeql.ramMB = Number(process.env.CODEQL_RAM_MB) || 0;
   if (process.env.CODEQL_TIMEOUT_MS !== undefined) merged.security.codeql.timeoutMs = Number(process.env.CODEQL_TIMEOUT_MS) || (20 * 60_000);
+  if (process.env.DEAD_CODE_ENABLED !== undefined) merged.codeIntelligence.deadCode.enabled = String(process.env.DEAD_CODE_ENABLED) === 'true';
+  if (process.env.HEALTH_ENABLED !== undefined) merged.codeIntelligence.health.enabled = String(process.env.HEALTH_ENABLED) === 'true';
+  if (process.env.CSS_DEAD_CODE_ENABLED !== undefined) merged.codeIntelligence.cssDeadCode.enabled = String(process.env.CSS_DEAD_CODE_ENABLED) === 'true';
+  if (process.env.ARCHITECTURE_BOUNDARIES_ENABLED !== undefined) merged.architecture.boundaries.enabled = String(process.env.ARCHITECTURE_BOUNDARIES_ENABLED) === 'true';
+  if (process.env.ARCHITECTURE_BOUNDARIES_PRESET) merged.architecture.boundaries.preset = process.env.ARCHITECTURE_BOUNDARIES_PRESET;
   if (process.env.TRIVY_IMAGE_ENABLED !== undefined) {
     merged.security.trivyImage.enabled = String(process.env.TRIVY_IMAGE_ENABLED) === 'true';
   }
