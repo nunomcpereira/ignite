@@ -305,6 +305,27 @@
                bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25">
         Initiate Onboarding Pipeline
       </button>
+
+      <!-- Shown from the moment the upload starts until the server's first
+           NDJSON event arrives — the gap where a large ZIP/folder upload
+           (or the server unpacking it) can leave the phase timeline below
+           showing nothing but "Pending" for a long stretch with no visible
+           sign of life. -->
+      <div id="uploadStatusBar" class="hidden mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <div class="flex items-center justify-between text-xs font-semibold text-slate-600 mb-1.5">
+          <span id="uploadStatusLabel" class="flex items-center gap-1.5">
+            <svg id="uploadStatusSpinner" class="hidden w-3.5 h-3.5 animate-spin text-brand-600" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            <span id="uploadStatusText">Uploading…</span>
+          </span>
+          <span id="uploadStatusPct" class="text-slate-500 font-normal"></span>
+        </div>
+        <div class="w-full h-1.5 rounded-full bg-slate-200 overflow-hidden">
+          <div id="uploadStatusFill" class="h-full bg-brand-600 transition-all duration-300" style="width:0%"></div>
+        </div>
+      </div>
     </section>
 
     <!-- Pipeline stepper -->
@@ -4164,6 +4185,57 @@
     gxpLinkUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('gxpAddLinkBtn').click(); } });
 
     /* ------------------------------------------------------------ */
+    /* Upload/pre-phase status bar                                   */
+    /*                                                                */
+    /* Covers the gap between clicking "Initiate" and the server's   */
+    /* first NDJSON event: for a large ZIP or a folder with tens of  */
+    /* thousands of files, that gap is the multipart body actually   */
+    /* being transferred (can take minutes on a slow link) followed  */
+    /* by the server unpacking/hashing it before Phase 1 even logs   */
+    /* anything — with nothing shown here, that looks indistinguish- */
+    /* able from a hung pipeline.                                    */
+    /* ------------------------------------------------------------ */
+    const uploadStatusBar = $('uploadStatusBar');
+    const uploadStatusText = $('uploadStatusText');
+    const uploadStatusSpinner = $('uploadStatusSpinner');
+    const uploadStatusPct = $('uploadStatusPct');
+    const uploadStatusFill = $('uploadStatusFill');
+    let uploadWaitStartedAt = null;
+    let uploadWaitTimer = null;
+
+    function showUploadProgress(loaded, total) {
+      if (uploadWaitTimer) { clearInterval(uploadWaitTimer); uploadWaitTimer = null; }
+      uploadStatusBar.classList.remove('hidden');
+      uploadStatusSpinner.classList.add('hidden');
+      const pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+      uploadStatusFill.style.width = pct + '%';
+      uploadStatusText.textContent = 'Uploading project…';
+      uploadStatusPct.textContent = total
+        ? `${pct}% (${(loaded / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB)`
+        : '';
+    }
+
+    function showUploadWaiting() {
+      uploadStatusBar.classList.remove('hidden');
+      uploadStatusFill.style.width = '100%';
+      uploadStatusSpinner.classList.remove('hidden');
+      uploadWaitStartedAt = Date.now();
+      updateUploadWaitingLabel();
+      if (!uploadWaitTimer) uploadWaitTimer = setInterval(updateUploadWaitingLabel, 1000);
+    }
+
+    function updateUploadWaitingLabel() {
+      uploadStatusText.textContent = 'Upload received — server is unpacking & starting checks…';
+      uploadStatusPct.textContent = uploadWaitStartedAt ? formatDuration(Date.now() - uploadWaitStartedAt) : '';
+    }
+
+    function hideUploadStatus() {
+      uploadStatusBar.classList.add('hidden');
+      if (uploadWaitTimer) { clearInterval(uploadWaitTimer); uploadWaitTimer = null; }
+      uploadWaitStartedAt = null;
+    }
+
+    /* ------------------------------------------------------------ */
     /* Pipeline execution — consume NDJSON stream                    */
     /* ------------------------------------------------------------ */
     startBtn.addEventListener('click', async () => {
@@ -4190,44 +4262,69 @@
         form.append('gxpLinks', JSON.stringify(state.gxpLinks));
       }
 
+      showUploadProgress(0, 1);
+
       try {
-        const res = await fetch('/api/pipeline', { method: 'POST', body: form });
+        await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/pipeline');
+          let buffer = '';
+          let processedLength = 0;
+          let sawDone = false;
+          let sawAnyEvent = false;
 
-        // Non-streaming error (e.g. multer rejected the upload before the
-        // pipeline started): surface it instead of failing silently.
-        if (!res.ok) {
-          let message = `Server error (HTTP ${res.status})`;
-          try {
-            const body = await res.json();
-            if (body.error) message = body.error;
-          } catch { /* body wasn't JSON — keep generic message */ }
-          state.phases[1].state = 'failed';
-          state.phases[1].logs.push(`✗ ${message}`);
-          PHASES.slice(1).forEach((p) => { state.phases[p.id].state = 'skipped'; });
-          renderPipeline();
-          showResult(false, { error: message, phase: 1 });
-          return;
-        }
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) showUploadProgress(e.loaded, e.total);
+          };
+          xhr.upload.onload = () => showUploadWaiting();
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let sawDone = false;
+          // xhr.responseText grows as the server streams NDJSON — diff
+          // against what's already been processed rather than re-parsing
+          // from scratch on every progress tick.
+          xhr.onprogress = () => {
+            if (xhr.status && xhr.status !== 200) return; // error body: handle whole in onload
+            const full = xhr.responseText;
+            const chunk = full.slice(processedLength);
+            processedLength = full.length;
+            if (!chunk) return;
+            if (!sawAnyEvent) { sawAnyEvent = true; hideUploadStatus(); }
+            buffer += chunk;
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+              if (line.trim()) { if (handleEvent(JSON.parse(line))) sawDone = true; }
+            }
+          };
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (line.trim()) { if (handleEvent(JSON.parse(line))) sawDone = true; }
-          }
-        }
-        if (!sawDone) showResult(false, { error: 'Connection to the server was interrupted mid-pipeline.' });
+          xhr.onload = () => {
+            hideUploadStatus();
+            // Non-streaming error (e.g. multer rejected the upload before
+            // the pipeline started): surface it instead of failing silently.
+            if (xhr.status !== 200) {
+              let message = `Server error (HTTP ${xhr.status})`;
+              try {
+                const body = JSON.parse(xhr.responseText);
+                if (body.error) message = body.error;
+              } catch { /* body wasn't JSON — keep generic message */ }
+              state.phases[1].state = 'failed';
+              state.phases[1].logs.push(`✗ ${message}`);
+              PHASES.slice(1).forEach((p) => { state.phases[p.id].state = 'skipped'; });
+              renderPipeline();
+              showResult(false, { error: message, phase: 1 });
+              resolve();
+              return;
+            }
+            if (!sawDone) showResult(false, { error: 'Connection to the server was interrupted mid-pipeline.' });
+            resolve();
+          };
+          xhr.onerror = () => reject(new Error('Network error'));
+          xhr.send(form);
+        });
       } catch (err) {
+        hideUploadStatus();
         showResult(false, { error: `Upload failed: ${err.message}. Check that the server is still running.` });
       } finally {
+        hideUploadStatus();
         state.running = false;
         stopPhaseDurationTicker();
         renderPipeline();
