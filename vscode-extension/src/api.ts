@@ -102,6 +102,23 @@ export async function validateAll(projectPath: string, opts: ValidateAllOptions)
       signal: AbortSignal.timeout(20 * 60 * 1000),
     });
   } catch (e) {
+    // A fetch failure here doesn't necessarily mean the server went down —
+    // this request runs for up to 20 minutes (Bearer/CodeQL/GuardDog can
+    // genuinely take that long), and a mid-scan connection drop (proxy/
+    // keep-alive idle timeout, this AbortSignal itself firing, a transient
+    // socket reset) throws the exact same way a real "server never
+    // started" failure would. Re-checking reachability at the moment of
+    // failure — instead of assuming the worst from the fetch error alone —
+    // is what tells apart "Ignite isn't running" from "that request died
+    // but the server the scan was queued to is still up".
+    if (await checkReachable()) {
+      const detail = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        `The request to ${url}/api/pipeline/validate-all failed (${detail}), but Ignite itself is still reachable — ` +
+        'the scan may still be running server-side. Check the server\'s own console/logs before assuming it crashed, ' +
+        'then retry once it settles.'
+      );
+    }
     throw new IgniteUnreachableError(url, e);
   }
   if (res.status >= 500) {
