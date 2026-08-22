@@ -2002,3 +2002,15 @@ ID: codeql-sast::checks/feature-posture.js::134::js/file-system-race
 #   checks/feature-posture.js:134
 # Code: const buffer = await fsp.readFile(file);
 Acknowledge: 
+
+ID: codeql-sast::lib/runtime-coverage.js::44::js/remote-property-injection
+# [ERROR] codeql-sast - A property name to write to depends on a user-provided value.
+#   lib/runtime-coverage.js:44
+# Code: out[relPath] = { hitCount, coveredPct };
+Acknowledge: `out` is created via `Object.create(null)` (added directly in response to this finding), not `{}` - it has no prototype to repoint, so a "__proto__" relPath key just becomes a normal own data property, not a prototype-pollution write. CodeQL's taint tracking doesn't special-case Object.create(null) as closing this flow, same as the already-acknowledged auth.js::53 parseCookies() finding for its own (Set-based) mitigation.
+
+ID: codeql-sast::lib/runtime-coverage.js::53::js/remote-property-injection
+# [ERROR] codeql-sast - A property name to write to depends on a user-provided value.
+#   lib/runtime-coverage.js:53
+# Code: out[relPath] = { hitCount, coveredPct: hitCount > 0 ? 100 : 0 };
+Acknowledge: Same as codeql-sast::lib/runtime-coverage.js::44 - `out` here is also `Object.create(null)`, so there's no prototype for a "__proto__" key to repoint.
