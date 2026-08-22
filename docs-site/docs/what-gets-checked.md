@@ -5,7 +5,7 @@ sidebar_position: 3
 
 # What gets checked
 
-Six phases and twelve+ optional external-tool integrations (all soft
+Six phases and fifteen+ optional external-tool integrations (all soft
 dependencies — Ignite works without any of them installed, falling back to
 a built-in check where one exists). Most of this list is **static analysis
 by a dedicated tool, no LLM involved**:
@@ -15,9 +15,12 @@ by a dedicated tool, no LLM involved**:
 - Newly-published, not-yet-disclosed malicious dependencies — GuardDog's supply-chain heuristics (static)
 - Dependency license risk (commercial/copyleft) — ORT/licensee + deps.dev (static)
 - Semantic vulnerabilities — Semgrep's `p/security-audit` SAST ruleset (static, real SAST — not the LLM)
+- **Cross-file** vulnerabilities — a stored-XSS/IDOR chain spanning a controller, service layer, and template — CodeQL's `security-extended` query suite, closing a gap Semgrep's single-file engine structurally can't reach (static)
 - IaC/container misconfiguration & supply-chain image provenance — Trivy, Checkov, hadolint, cosign (static)
+- Known-vulnerable OS/language packages baked into a built container image — `trivy image` against a real `docker build` (static, off by default)
 - PII/GDPR data-flow exposure — Bearer's source-to-sink tracing (static)
 - Missing security/compliance posture (SSO, RBAC, audit logging, rate limiting, ...) — Semgrep-backed pattern matching (static)
+- Low encapsulation — any single source file over a configurable line-count threshold — built-in, always advisory (static)
 - Your org's own governance CI, run locally via `act` before it ever reaches a real PR (static, runs your actual workflows)
 - Ungoverned AI/LangChain invocations — regex/AST check (static)
 
@@ -45,7 +48,9 @@ installed* (Ignite still runs, and falls back where it can, if it isn't).
 | Commercial/proprietary/unrecognized dependency licenses creating unreviewed IP/legal exposure; the project's own license terms | Resolves real per-dependency licenses (ORT, or the built-in manifest parser + deps.dev fallback) and classifies green/amber/red; scans every `LICENSE`/`LICENCE` file for commercial/proprietary language | ORT / licensee / deps.dev | Falls back to the built-in manifest parser + deps.dev lookup if ORT is missing; the project's-own-license row is simply omitted if licensee is missing |
 | IaC/container misconfiguration — privileged containers, missing resource limits, insecure Terraform/Kubernetes/Helm settings, unpinned base images, missing `USER` | Trivy's config scanner is primary, supplemented by Checkov's larger policy set and hadolint's Dockerfile-only rules, deduped by file/line/rule-id; falls back to a built-in unpinned-tag/missing-`USER` heuristic when none are installed | Trivy + Checkov + hadolint | Falls back to a built-in Dockerfile heuristic if Trivy is missing; Checkov/hadolint just stop supplementing (fewer findings, same baseline coverage) if they're missing |
 | Supply-chain base-image tampering — a Dockerfile `FROM` image with no verifiable provenance | Verifies Sigstore/cosign keyless signatures on every unique base image referenced; unsigned images are flagged (advisory) | cosign | Check skipped entirely — no fallback (signatures can't be verified without the tool) |
+| **Known-vulnerable OS/language packages baked into a built container image** — the misconfiguration check above only lints Dockerfile *source*, never image *contents* | Builds every discovered Dockerfile with `docker build`, then runs `trivy image` against the result | Trivy (`image` mode) | Check skipped entirely — off by default, and soft-skips if Docker/trivy aren't available |
 | Logical/semantic vulnerabilities beyond single-line pattern matching | Semgrep's registry rulesets (`p/security-audit` by default) | Semgrep | Check skipped entirely — no fallback |
+| **Cross-file** vulnerabilities — tainted data crossing file/function boundaries before reaching a sink, which Semgrep's single-file engine can't trace | Builds a real per-language CodeQL database and runs the `security-extended` query suite | CodeQL | Check skipped entirely — no fallback |
 | PII/GDPR data-flow exposure — personal data (request params, user objects) reaching logs, DB writes, or third-party calls without controls | Traces data flow from source to sink, filtered to Bearer's own PII/Personal-Data-tagged findings only | Bearer | Check skipped entirely — no fallback |
 | Copy-pasted vulnerable/stale logic drifting out of sync across a codebase | Flags duplicated code blocks above a configurable threshold (advisory) | jscpd (off by default) | Check skipped entirely — no fallback (off by default regardless) |
 | Insecure API design/contract violations in OpenAPI/AsyncAPI schemas | Lints every discovered schema file (found by content, not filename) against org REST/AsyncAPI conventions | Spectral | Check skipped entirely — no fallback |

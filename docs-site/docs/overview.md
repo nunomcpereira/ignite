@@ -55,12 +55,12 @@ slug: /
   <text x="615" y="70" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" letter-spacing="1" fill="var(--ifm-color-emphasis-600)">PIPELINE — ALL LOCAL</text>
   <line x1="505" y1="80" x2="725" y2="80" stroke="var(--ifm-color-emphasis-300)"/>
   <g font-family="system-ui, sans-serif" font-size="12.5" fill="var(--ifm-color-emphasis-900)">
-    <text x="505" y="106"><tspan fill="var(--ifm-color-primary)" font-weight="600">1</tspan>  Structure audit</text>
-    <text x="505" y="140"><tspan fill="var(--ifm-color-primary)" font-weight="600">2</tspan>  Secret scan</text>
-    <text x="505" y="174"><tspan fill="var(--ifm-color-primary)" font-weight="600">3</tspan>  License &amp; CVEs</text>
-    <text x="505" y="208"><tspan fill="var(--ifm-color-primary)" font-weight="600">4</tspan>  Security &amp; AI governance</text>
+    <text x="505" y="106"><tspan fill="var(--ifm-color-primary)" font-weight="600">1</tspan>  Input &amp; metadata</text>
+    <text x="505" y="140"><tspan fill="var(--ifm-color-primary)" font-weight="600">2</tspan>  GxP docs (optional)</text>
+    <text x="505" y="174"><tspan fill="var(--ifm-color-primary)" font-weight="600">3</tspan>  Structure, license &amp; tests</text>
+    <text x="505" y="208"><tspan fill="var(--ifm-color-primary)" font-weight="600">4</tspan>  Security &amp; compliance scan</text>
     <text x="505" y="242"><tspan fill="var(--ifm-color-primary)" font-weight="600">5</tspan>  Org governance CI</text>
-    <text x="505" y="276"><tspan fill="var(--ifm-color-primary)" font-weight="600">6</tspan>  Unit tests</text>
+    <text x="505" y="276"><tspan fill="var(--ifm-color-primary)" font-weight="600">6</tspan>  Provisioning &amp; shipping</text>
   </g>
 
   <line x1="740" y1="186" x2="766" y2="186" stroke="var(--ifm-color-emphasis-500)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
@@ -106,13 +106,18 @@ Ignite is a self-hosted compliance gate for code entering a GitHub org.
 Point it at a project — a ZIP, a folder, a `git push`, or a call from an
 MCP-connected coding agent — and it runs that project through a battery of
 deterministic, purpose-built static analysis tools: a real SAST engine
-(Semgrep), CVE/GHSA lookups (deps.dev), IaC/container scanners (Trivy,
-Checkov, hadolint), a supply-chain malicious-dependency scanner (GuardDog),
+(Semgrep) plus a **cross-file** SAST engine (CodeQL) for vulnerabilities
+that span multiple files, CVE/GHSA lookups (deps.dev), IaC/container
+scanners (Trivy, Checkov, hadolint) and known-CVE container-image scanning
+(`trivy image`), a supply-chain malicious-dependency scanner (GuardDog),
 secret scanning (regex + gitleaks), image signature verification (cosign),
-PII data-flow tracing (Bearer), API schema linting (Spectral), and your
-org's own governance CI (`act`) — entirely on your machine. A local LLM
-adds one *additional*, optional layer for logic-level review; it is not
-what does the SAST or CVE detection above.
+PII data-flow tracing (Bearer), API schema linting (Spectral), a
+compliance-posture engine, and your org's own governance CI (`act`) —
+entirely on your machine. A local LLM adds one *additional*, optional layer
+for logic-level review; it is not what does the SAST or CVE detection
+above. Every finding is exportable as
+[SARIF](https://github.com/nunomcpereira/ignite#sarif-export) for GitHub
+code scanning or any SARIF-speaking dashboard.
 
 **Nothing gets provisioned or pushed to GitHub until every check passes —
 or every blocking issue is explicitly justified and overridden**, with that

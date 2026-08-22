@@ -38,10 +38,10 @@ one check is skipped with a warning rather than failing the run.
 
 ## Want every check actually running, not falling back?
 
-One script installs all fourteen optional tools (ORT, licensee, gitleaks,
+One script installs all fifteen optional tools (ORT, licensee, gitleaks,
 Trivy, Checkov, hadolint, Syft, cosign, Semgrep, Bearer, GuardDog, jscpd,
-gocloc, Spectral) plus `act`, instead of copy-pasting `brew`/`npm`/`pip`/`gem`
-commands one at a time:
+gocloc, Spectral, CodeQL) plus `act`, instead of copy-pasting
+`brew`/`npm`/`pip`/`gem` commands one at a time:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nunomcpereira/ignite/main/scripts/install-tools.sh | bash
