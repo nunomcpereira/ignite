@@ -1,9 +1,10 @@
 'use strict';
 
 /**
- * Built-in dead-code / unused-export / unused-dependency scan for JS/TS
- * projects — closes the "no reachability analysis" gap against
- * fallow.tools (see project memory). No external tool required: builds a
+ * Built-in dead-code / unused-export / unused-dependency / circular-import
+ * scan for JS/TS projects — closes the "no reachability analysis" and "no
+ * circular-dependency detection" gaps against fallow.tools (see project
+ * memory). No external tool required: builds a
  * module graph (lib/module-graph.js) via regex-based import/export
  * parsing, walks it from a heuristic entry-point set, and flags anything
  * unreached. Optionally upgrades to a type-aware confirmation pass when the
@@ -24,7 +25,7 @@ const path = require('path');
 
 function createDeadCodeCheck({ fsUtils, config }) {
   const { walkFiles, looksBinary, buildSnippet } = fsUtils;
-  const { buildModuleGraph, JS_TS_EXT } = require('../lib/module-graph');
+  const { buildModuleGraph, findCycles, JS_TS_EXT } = require('../lib/module-graph');
 
   const ENABLED = config.enabled !== false;
   const TEST_FILE_RE = /(\.test\.|\.spec\.|[/\\]__tests__[/\\]|[/\\]__mocks__[/\\])/i;
@@ -157,6 +158,21 @@ function createDeadCodeCheck({ fsUtils, config }) {
     }
 
     const findings = [];
+
+    // --- Circular dependencies ------------------------------------------
+    for (const cycleFiles of findCycles(graph)) {
+      const rel = path.relative(root, cycleFiles[0]);
+      const chain = [...cycleFiles, cycleFiles[0]].map((f) => path.relative(root, f)).join(' -> ');
+      findings.push({
+        file: rel,
+        line: 1,
+        kind: 'circular-dependency',
+        tool: 'ignite-built-in',
+        severity: 'warning',
+        message: `Import cycle detected: ${chain}`,
+        code: buildSnippet(graph.get(cycleFiles[0])?.content || '', 1),
+      });
+    }
 
     // --- Unused files ---------------------------------------------------
     for (const f of files) {

@@ -1905,6 +1905,8 @@ mountHistoryRoutes(app, {
 
 const { mountSarifRoute } = require('./routes/sarif');
 mountSarifRoute(app, { store, runningRuns });
+const { mountGithubAnnotationsRoute } = require('./routes/github-annotations');
+mountGithubAnnotationsRoute(app, { store, runningRuns });
 
 const { mountGithubCheckRoute } = require('./routes/github-pr-status');
 mountGithubCheckRoute(app, {

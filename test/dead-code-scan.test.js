@@ -79,3 +79,47 @@ test('checkDeadCode: test files count as entry points', async () => {
   assert.equal(fooUnused, undefined, 'foo.js is reachable via its test file and must not be flagged');
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test('checkDeadCode: flags an import cycle between two reachable files', async () => {
+  const checkDeadCode = make();
+  const dir = await makeTempProject({
+    'package.json': JSON.stringify({ name: 'x', main: 'index.js' }),
+    'index.js': "require('./a');\n",
+    'a.js': "require('./b');\nmodule.exports = 1;\n",
+    'b.js': "require('./a');\nmodule.exports = 2;\n",
+  });
+  const { findings } = await checkDeadCode(dir, null);
+  const cycle = findings.find((f) => f.kind === 'circular-dependency');
+  assert.ok(cycle, 'a.js <-> b.js cycle should be flagged');
+  assert.match(cycle.message, /a\.js/);
+  assert.match(cycle.message, /b\.js/);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('checkDeadCode: reports a cycle once even when multiple files participate', async () => {
+  const checkDeadCode = make();
+  const dir = await makeTempProject({
+    'package.json': JSON.stringify({ name: 'x', main: 'index.js' }),
+    'index.js': "require('./a');\n",
+    'a.js': "require('./b');\nmodule.exports = 1;\n",
+    'b.js': "require('./c');\nmodule.exports = 2;\n",
+    'c.js': "require('./a');\nmodule.exports = 3;\n",
+  });
+  const { findings } = await checkDeadCode(dir, null);
+  const cycles = findings.filter((f) => f.kind === 'circular-dependency');
+  assert.equal(cycles.length, 1, 'a -> b -> c -> a should be reported as a single cycle');
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('checkDeadCode: no false-positive cycle for a plain acyclic dependency chain', async () => {
+  const checkDeadCode = make();
+  const dir = await makeTempProject({
+    'package.json': JSON.stringify({ name: 'x', main: 'index.js' }),
+    'index.js': "require('./a');\n",
+    'a.js': "require('./b');\nmodule.exports = 1;\n",
+    'b.js': 'module.exports = 2;\n',
+  });
+  const { findings } = await checkDeadCode(dir, null);
+  assert.equal(findings.filter((f) => f.kind === 'circular-dependency').length, 0);
+  await fs.rm(dir, { recursive: true, force: true });
+});

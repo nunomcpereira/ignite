@@ -113,5 +113,6 @@ into the open repo's git hooks from inside the editor, and **Ignite: Open
 Review File** opens `.ignite/acknowledgments.md` for filling in
 `Acknowledge:` justifications on blocking findings — the identical override
 flow the terminal-based hook uses, just without leaving VS Code. Works with
-VS Code, Cursor, or VS Code Insiders; full install/settings reference in
-the [extension's own README](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension#readme).
+VS Code, Cursor, or VS Code Insiders — see [Install](./vscode-extension) for
+setup steps, and the [extension's own README](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension#readme)
+for the full settings/commands reference.

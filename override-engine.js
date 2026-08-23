@@ -544,7 +544,7 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
   for (const group of [deadCode, health, cssDeadCode, boundaries, euAiAct]) {
     if (!group) continue;
     for (const f of group.findings) {
-      const category = f.kind === 'unused-file' || f.kind === 'unused-export' || f.kind === 'unused-dependency' ? 'dead-code'
+      const category = f.kind === 'unused-file' || f.kind === 'unused-export' || f.kind === 'unused-dependency' || f.kind === 'circular-dependency' ? 'dead-code'
         : f.kind === 'high-complexity' || f.kind === 'low-maintainability' ? 'complexity-health'
         : f.kind === 'unused-css-class' ? 'css-dead-code'
         : f.kind === 'boundary-violation' ? 'architecture-boundary'
