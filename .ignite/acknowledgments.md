@@ -1955,18 +1955,6 @@ ID: pii-dataflow::lib/tool-runner.js::194
 # Code: child = spawn('act', safeArgs, { cwd: safeCwd, env: safeEnv });
 Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::192 (spawn('act', safeArgs, {...})) - line drifted 192 -> 194, same reasoning.
 
-ID: pii-dataflow::lib/tool-runner.js::198
-# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
-#   lib/tool-runner.js:198
-# Code: child = spawn('docker', safeArgs, { cwd: safeCwd, env: safeEnv });
-Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::196 (spawn('docker', safeArgs, {...})) - line drifted 196 -> 198, same reasoning.
-
-ID: pii-dataflow::lib/tool-runner.js::210
-# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
-#   lib/tool-runner.js:210
-# Code: child = spawn(binaries.codeql, safeArgs, { cwd: safeCwd, env: safeEnv }); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::203 - line drifted 203 -> 208 after adding a trailing nosemgrep suppression comment to this line (which is why Phase 4's own semantic-sast/Semgrep check no longer flags it here, unlike Bearer's pii-dataflow check, which doesn't understand nosemgrep syntax). Same code, same reasoning: binaries.codeql comes from CONFIG.security.codeql.binary (operator config/env, set once at process startup), never from a request; safeArgs is an array (no shell:true), already validated by sanitizeCliArgs. (auto-carried-forward from pii-dataflow::lib/tool-runner.js::208 - pure line-number drift, flagged code unchanged)
-
 ID: codeql-sast::checks/secrets.js::237::js/file-system-race
 # [ERROR] codeql-sast - The file may have changed since it was checked.
 #   checks/secrets.js:237
@@ -1991,12 +1979,6 @@ ID: pii-dataflow::vscode-extension/src/panels/reportPanel.ts::4
 # Code: return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 Acknowledge: escapeHtml() escapes &, <, >, ", and ' and is the only thing interpolated into the webview's <pre> body (a JSON.stringify of report data); the panel is also created with `enableScripts: false`, so even an unescaped payload couldn't execute script in this webview. Same reasoning already accepted for auth.js::407's escapeHtml() - manual implementation instead of a library, not a missing sanitization step.
 
-ID: codeql-sast::server.js::716::js/polynomial-redos
-# [ERROR] codeql-sast - This regular expression that depends on library input may run slow on strings with many repetitions of ')'.
-#   server.js:716
-# Code: const relPath = m[1].replace(/^\.\//, '').replace(/[),.:;]+$/, '');
-Acknowledge: `[),.:;]+$` is a single bounded character class with a trailing anchor - no nested/overlapping quantifiers for backtracking to blow up on, so this isn't exploitable polynomial-time behavior despite the query's generic warning; the input itself (governance CI's own `matched in: ./path` line) is also process-local tool output, not user-controlled. (auto-carried-forward from codeql-sast::server.js::677::js/polynomial-redos - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::server.js::711::js/polynomial-redos - pure line-number drift, flagged code unchanged)
-
 ID: codeql-sast::checks/feature-posture.js::134::js/file-system-race
 # [ERROR] codeql-sast - The file may have changed since it was checked.
 #   checks/feature-posture.js:134
@@ -2014,3 +1996,63 @@ ID: codeql-sast::lib/runtime-coverage.js::53::js/remote-property-injection
 #   lib/runtime-coverage.js:53
 # Code: out[relPath] = { hitCount, coveredPct: hitCount > 0 ? 100 : 0 };
 Acknowledge: Same as codeql-sast::lib/runtime-coverage.js::44 - `out` here is also `Object.create(null)`, so there's no prototype for a "__proto__" key to repoint.
+
+ID: pii-dataflow::lib/tool-runner.js::200
+# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
+#   lib/tool-runner.js:200
+# Code: child = spawn('docker', safeArgs, { cwd: safeCwd, env: safeEnv });
+Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::196 (spawn('docker', safeArgs, {...})) - line drifted 196 -> 198, same reasoning. (auto-carried-forward from pii-dataflow::lib/tool-runner.js::198 - pure line-number drift, flagged code unchanged)
+
+ID: pii-dataflow::lib/tool-runner.js::212
+# [ERROR] pii-dataflow - Unsanitized dynamic input in OS command
+#   lib/tool-runner.js:212
+# Code: child = spawn(binaries.codeql, safeArgs, { cwd: safeCwd, env: safeEnv }); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+Acknowledge: Same finding as the already-acknowledged pii-dataflow::lib/tool-runner.js::203 - line drifted 203 -> 208 after adding a trailing nosemgrep suppression comment to this line (which is why Phase 4's own semantic-sast/Semgrep check no longer flags it here, unlike Bearer's pii-dataflow check, which doesn't understand nosemgrep syntax). Same code, same reasoning: binaries.codeql comes from CONFIG.security.codeql.binary (operator config/env, set once at process startup), never from a request; safeArgs is an array (no shell:true), already validated by sanitizeCliArgs. (auto-carried-forward from pii-dataflow::lib/tool-runner.js::208 - pure line-number drift, flagged code unchanged) (auto-carried-forward from pii-dataflow::lib/tool-runner.js::210 - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::checks/package-hallucination.js::49::js/incomplete-sanitization
+# [ERROR] codeql-sast - This replaces only the first occurrence of '%40'.
+#   checks/package-hallucination.js:49
+# Code: const res = await doFetch(`https://registry.npmjs.org/${encodeURIComponent(name).replace('%40', '@')}`, { signal: AbortSignal.timeout(5000) });
+Acknowledge: 
+
+ID: codeql-sast::lib/github-api.js::186::js/insecure-temporary-file
+# [ERROR] codeql-sast - Insecure creation of file in the os temp dir.
+#   lib/github-api.js:186
+# Code: await fs.writeFile(tmpFile, body, 'utf8');
+Acknowledge: 
+
+ID: codeql-sast::lib/github-api.js::189::js/insecure-temporary-file
+# [ERROR] codeql-sast - Insecure creation of file in the os temp dir.
+#   lib/github-api.js:189
+# Code: await fs.writeFile(tmpFile, body, { encoding: 'utf8', flag: 'wx' });
+Acknowledge: 
+
+ID: pii-dataflow::routes/pipeline-interactive.js::611
+# [ERROR] pii-dataflow - Unsanitized user input in file path
+#   routes/pipeline-interactive.js:611
+# Code: const retainedDir = path.join(retainedRoot, String(projectId));
+Acknowledge: `path.join(retainedRoot, String(projectId))` - projectId is `store.createProject(...)`'s own autoincrement return value (server-generated), not a value read from the request at any point in this flow. String() of an integer can't contain a path-traversal character. (auto-carried-forward from pii-dataflow::routes/pipeline-interactive.js::610 - pure line-number drift, flagged code unchanged)
+
+ID: pii-dataflow::routes/pipeline-interactive.js::625
+# [ERROR] pii-dataflow - Unsanitized user input in format string
+#   routes/pipeline-interactive.js:625
+# Code: console.error(`Could not retain source for project ${projectId}: ${e.message}`);
+Acknowledge: `console.error(\`Could not retain source for project ${projectId}: ${e.message}\`)` - a single already-interpolated string argument, not a printf-style format string with separate substitution args, so there's nothing here for e.message to inject into; worst case is confusing log text, not a format-string vulnerability. projectId is also server-generated (see pipeline-interactive.js::611 above). (auto-carried-forward from pii-dataflow::routes/pipeline-interactive.js::624 - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::routes/pipeline-interactive.js::641::js/path-injection
+# [ERROR] codeql-sast - This path depends on a user-provided value.
+#   routes/pipeline-interactive.js:641
+# Code: if (zipFile) await fsp.rm(zipFile.path, { force: true }).catch(() => {});
+Acknowledge: `fsp.rm(zipFile.path, { force: true })` - zipFile.path is generated by multer's own disk storage (server.js's `upload = multer({ dest: ... })` uses multer's default randomly-generated temp filename, not any user-supplied filename), so there's no attacker-controlled path segment here. (auto-carried-forward from codeql-sast::routes/pipeline-interactive.js::638::js/path-injection - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::server.js::729::js/polynomial-redos
+# [ERROR] codeql-sast - This regular expression that depends on library input may run slow on strings with many repetitions of ')'.
+#   server.js:729
+# Code: const relPath = m[1].replace(/^\.\//, '').replace(/[),.:;]+$/, '');
+Acknowledge: `[),.:;]+$` is a single bounded character class with a trailing anchor - no nested/overlapping quantifiers for backtracking to blow up on, so this isn't exploitable polynomial-time behavior despite the query's generic warning; the input itself (governance CI's own `matched in: ./path` line) is also process-local tool output, not user-controlled. (auto-carried-forward from codeql-sast::server.js::677::js/polynomial-redos - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::server.js::711::js/polynomial-redos - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::server.js::716::js/polynomial-redos - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::server.js::728::js/polynomial-redos - pure line-number drift, flagged code unchanged)
+
+ID: codeql-sast::checks/igniteignore.js::60::js/file-system-race
+# [ERROR] codeql-sast - The file may have changed since it was checked.
+#   checks/igniteignore.js:60
+# Code: const content = await fsp.readFile(igniteIgnorePath, 'utf8').catch(() => '');
+Acknowledge: TOCTOU between stat() (a few lines above) and this readFile() is inherent to any exists-then-read check and is intentional, not a vulnerability: `root` here is a per-job staging directory that only this scan process writes to or reads from during the run (see server.js's per-job UUID staging dir + finally-block cleanup) - there's no other actor able to swap the file mid-scan the way the query assumes for e.g. a shared /tmp path. Same reasoning as the already-acknowledged codeql-sast::checks/secrets.js::237::js/file-system-race.
