@@ -32,6 +32,7 @@ pub struct LocMetrics {
     pub files: Vec<FileLocEntry>,
 }
 
+#[derive(Debug, Clone, Serialize)]
 pub struct LocMetricsResult {
     pub engine: &'static str,
     pub metrics: Option<LocMetrics>,

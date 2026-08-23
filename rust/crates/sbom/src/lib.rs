@@ -59,11 +59,14 @@ pub async fn syft_tooling(runner: &ToolRunner) -> SbomToolingProbe {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum SbomOutcome {
     Syft(serde_json::Value),
     Fallback(FallbackSbom),
 }
 
+#[derive(Debug, Clone, Serialize)]
 pub struct SbomResult {
     pub engine: &'static str,
     pub sbom: SbomOutcome,

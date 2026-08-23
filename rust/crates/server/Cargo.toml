@@ -23,6 +23,8 @@ ignite-malicious-dependencies = { path = "../malicious-dependencies" }
 ignite-model-artifact-security = { path = "../model-artifact-security" }
 ignite-loc-metrics = { path = "../loc-metrics" }
 ignite-sbom = { path = "../sbom" }
+ignite-feature-posture = { path = "../feature-posture" }
+ignite-package-hallucination = { path = "../package-hallucination" }
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-db-store = { path = "../db-store" }
 ignite-sarif = { path = "../sarif" }

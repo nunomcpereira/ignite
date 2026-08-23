@@ -19,6 +19,7 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::runtime_coverage::router())
         .merge(routes::auto_fix::router())
         .merge(routes::dependencies::router())
+        .merge(routes::reports::router())
         .with_state(state)
 }
 
@@ -163,6 +164,35 @@ mod tests {
         let base = spawn_test_server().await;
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/dependencies/check")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn reports_loc_metrics_returns_ok_for_real_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.go"), "package main\nfunc main() {}\n").unwrap();
+
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/reports/loc-metrics")).json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy() })).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn reports_sbom_rejects_nonexistent_project_path() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/reports/sbom")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn reports_posture_rejects_nonexistent_project_path() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/reports/posture")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 }
