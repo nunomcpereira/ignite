@@ -38,6 +38,7 @@ pub struct ApiSchemaDriftResult {
     pub engine: &'static str,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct OasdiffToolingProbe {
     pub ok: bool,
     pub reason: Option<String>,

@@ -54,7 +54,7 @@ fn codeql_index_filters() -> String {
     skip_dirs().iter().map(|d| format!("exclude:{d}")).collect::<Vec<_>>().join("\n")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CodeqlToolingProbe {
     pub ok: bool,
     pub version: Option<String>,

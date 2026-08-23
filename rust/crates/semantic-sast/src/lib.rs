@@ -39,7 +39,7 @@ pub async fn build_semgrep_env() -> std::io::Result<HashMap<String, String>> {
     Ok(env)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SemgrepToolingProbe {
     pub ok: bool,
     pub version: Option<String>,

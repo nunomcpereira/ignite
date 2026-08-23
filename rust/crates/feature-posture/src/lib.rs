@@ -189,7 +189,7 @@ pub fn check_feature_posture_fallback(root: &Path, max_scan_file_bytes: u64) -> 
     Ok(posture)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SemgrepToolingProbe {
     pub ok: bool,
     pub version: Option<String>,

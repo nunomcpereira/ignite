@@ -43,7 +43,7 @@ pub fn generate_sbom_fallback(root: &Path, manifests: &[ManifestSpec], max_deps_
     Ok(FallbackSbom { bom_format: "ignite-fallback", spec_version: None, components })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SbomToolingProbe {
     pub ok: bool,
     pub reason: Option<String>,

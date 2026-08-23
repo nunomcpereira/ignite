@@ -42,6 +42,7 @@ pub struct ContainerImageVulnerabilitiesResult {
     pub engine: &'static str,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TrivyImageToolingProbe {
     pub ok: bool,
     pub reason: Option<String>,

@@ -54,6 +54,7 @@ pub struct GuarddogVerdict {
     pub issue_count: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GuarddogToolingProbe {
     pub ok: bool,
     pub version: Option<String>,

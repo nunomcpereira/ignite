@@ -1,0 +1,35 @@
+[package]
+name = "ignite-server"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "ignite-server"
+path = "src/main.rs"
+
+[dependencies]
+ignite-tool-runner = { path = "../tool-runner" }
+ignite-dependency-license-scan = { path = "../dependency-license-scan" }
+ignite-secrets = { path = "../secrets" }
+ignite-iac-security = { path = "../iac-security" }
+ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }
+ignite-image-provenance = { path = "../image-provenance" }
+ignite-semantic-sast = { path = "../semantic-sast" }
+ignite-pii-dataflow = { path = "../pii-dataflow" }
+ignite-code-duplication = { path = "../code-duplication" }
+ignite-api-schema = { path = "../api-schema" }
+ignite-api-schema-drift = { path = "../api-schema-drift" }
+ignite-malicious-dependencies = { path = "../malicious-dependencies" }
+ignite-model-artifact-security = { path = "../model-artifact-security" }
+ignite-loc-metrics = { path = "../loc-metrics" }
+ignite-sbom = { path = "../sbom" }
+ignite-codeql-cross-file = { path = "../codeql-cross-file" }
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
