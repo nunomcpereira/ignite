@@ -24,6 +24,7 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::issues::router())
         .merge(routes::history::router())
         .merge(routes::pipeline_validate::router())
+        .merge(routes::config::router())
         .with_state(state)
 }
 
@@ -206,6 +207,17 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/pipeline/nope/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
         assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn config_returns_six_phases_and_version() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/config")).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["phases"].as_array().unwrap().len(), 6);
+        assert!(body["version"].as_str().is_some());
     }
 
     #[tokio::test]

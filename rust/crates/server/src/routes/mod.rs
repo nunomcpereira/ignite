@@ -1,11 +1,13 @@
 pub mod auto_fix;
 pub mod baseline;
+pub mod config;
 pub mod dependencies;
 pub mod github_annotations;
 pub mod github_pr_status;
 pub mod history;
 pub mod issues;
 mod job_issues;
+mod phase_meta;
 pub mod pipeline_validate;
 pub mod reports;
 pub mod runtime_coverage;

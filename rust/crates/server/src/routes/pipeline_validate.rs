@@ -29,22 +29,7 @@ use std::time::Instant;
 static GITHUB_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$").unwrap());
 static REPO_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
 
-const PHASE_META: &[(i64, &str, bool)] = &[
-    (1, "Input & Metadata Configuration", true),
-    (2, "GxP Validation Documents", false),
-    (3, "Extraction, Structure Audit & Unit Tests", true),
-    (4, "Security & AI Compliance Scan", true),
-    (5, "Org Governance CI — GitHub Actions", true),
-    (6, "Provisioning & Shipping", true),
-];
-
-fn phase_title(phase: i64) -> &'static str {
-    PHASE_META.iter().find(|(id, _, _)| *id == phase).map(|(_, t, _)| *t).unwrap_or("Unknown")
-}
-
-fn phase_enabled(phase: i64) -> bool {
-    PHASE_META.iter().find(|(id, _, _)| *id == phase).map(|(_, _, e)| *e).unwrap_or(true)
-}
+use crate::routes::phase_meta::{phase_enabled, phase_title, PHASE_META};
 
 struct PhaseRecord {
     state: String,
@@ -107,7 +92,7 @@ impl Logger {
         let inner = self.inner.lock().unwrap();
         PHASE_META
             .iter()
-            .map(|(id, title, _)| {
+            .map(|(id, title, _, _)| {
                 let (state, logs) = inner.record.get(id).map(|r| (r.state.clone(), r.logs.clone())).unwrap_or(("pending".to_string(), vec![]));
                 json!({ "phase": id, "title": title, "state": state, "logs": logs })
             })
