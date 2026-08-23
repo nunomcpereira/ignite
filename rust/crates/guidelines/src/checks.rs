@@ -338,6 +338,7 @@ fn walk_files(root: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
 pub struct ProjectCheckResult {
     pub violations: Vec<Violation>,
     pub scanned: usize,
