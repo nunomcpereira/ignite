@@ -150,3 +150,53 @@ test('auto-fix route: dryRun by default, apply on request', async () => {
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test('auto-fix route: fixes an ungoverned AI invocation alongside dead code, both on by default', async () => {
+  const dir = await makeTempProject({
+    'orphan.js': 'module.exports = 1;\n',
+    'agent.ts': 'const result = await graph.invoke(input);\n',
+  });
+  const sanitizeAbsoluteProjectPath = (p) => path.resolve(p);
+  const checkDeadCode = async () => ({ findings: [{ kind: 'unused-file', file: 'orphan.js' }] });
+  const checkAiGovernance = async () => ({ findings: [{ file: 'agent.ts', line: 1, snippet: 'const result = await graph.invoke(input);' }] });
+  const { server, baseUrl } = await startApp((app) => mountAutoFixRoute(app, { sanitizeAbsoluteProjectPath, checkDeadCode, checkAiGovernance }));
+  try {
+    const res = await fetch(`${baseUrl}/api/pipeline/auto-fix`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: dir, dryRun: false }),
+    });
+    const body = await res.json();
+    assert.equal(body.actionCount, 2);
+    const governanceAction = body.actions.find((a) => a.type === 'add-recursion-limit-or-manual');
+    assert.equal(governanceAction.applied, true);
+    const content = await fs.readFile(path.join(dir, 'agent.ts'), 'utf8');
+    assert.match(content, /recursionLimit: 25/);
+  } finally {
+    server.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('auto-fix route: categories narrows to just ai-governance', async () => {
+  const dir = await makeTempProject({
+    'orphan.js': 'module.exports = 1;\n',
+    'agent.ts': 'const result = await graph.invoke(input);\n',
+  });
+  const sanitizeAbsoluteProjectPath = (p) => path.resolve(p);
+  const checkDeadCode = async () => ({ findings: [{ kind: 'unused-file', file: 'orphan.js' }] });
+  const checkAiGovernance = async () => ({ findings: [{ file: 'agent.ts', line: 1, snippet: 'const result = await graph.invoke(input);' }] });
+  const { server, baseUrl } = await startApp((app) => mountAutoFixRoute(app, { sanitizeAbsoluteProjectPath, checkDeadCode, checkAiGovernance }));
+  try {
+    const res = await fetch(`${baseUrl}/api/pipeline/auto-fix`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: dir, dryRun: false, categories: ['ai-governance'] }),
+    });
+    const body = await res.json();
+    assert.equal(body.actionCount, 1);
+    assert.equal(body.actions[0].type, 'add-recursion-limit-or-manual');
+    assert.ok(await fs.stat(path.join(dir, 'orphan.js')).then(() => true), 'dead-code fix must not run when narrowed to ai-governance only');
+  } finally {
+    server.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

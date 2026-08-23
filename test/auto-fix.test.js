@@ -78,3 +78,60 @@ test('applyAutoFixPlan: unused export not in an export list is left as a manual 
   assert.equal(results[0].manual, true);
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test('computeAutoFixPlan: maps an ungoverned AI invocation to a fix action', () => {
+  const findings = [{ file: 'agent.ts', line: 3, snippet: 'const result = await graph.invoke(input);' }].map((f) => ({ ...f, kind: 'ungoverned-ai-invocation' }));
+  const { actions } = computeAutoFixPlan(findings);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].type, 'add-recursion-limit-or-manual');
+  assert.equal(actions[0].file, 'agent.ts');
+  assert.equal(actions[0].line, 3);
+});
+
+test('applyAutoFixPlan: inserts an explicit recursionLimit into a simple single-argument JS/TS invoke() call', async () => {
+  const dir = await makeTempProject({
+    'agent.ts': 'export async function run(graph: any, input: any) {\n  const result = await graph.invoke(input);\n  return result;\n}\n',
+  });
+  const plan = computeAutoFixPlan([{ kind: 'ungoverned-ai-invocation', file: 'agent.ts', line: 2 }]);
+  const { results } = await applyAutoFixPlan(plan, dir, { dryRun: false });
+  assert.equal(results[0].applied, true);
+  const content = await fs.readFile(path.join(dir, 'agent.ts'), 'utf8');
+  assert.match(content, /graph\.invoke\(input, \{ recursionLimit: 25 \}\)/);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('applyAutoFixPlan: inserts an explicit recursion_limit config dict into a Python invoke() call', async () => {
+  const dir = await makeTempProject({
+    'agent.py': 'def run(graph, input):\n    result = graph.invoke(input)\n    return result\n',
+  });
+  const plan = computeAutoFixPlan([{ kind: 'ungoverned-ai-invocation', file: 'agent.py', line: 2 }]);
+  const { results } = await applyAutoFixPlan(plan, dir, { dryRun: false });
+  assert.equal(results[0].applied, true);
+  const content = await fs.readFile(path.join(dir, 'agent.py'), 'utf8');
+  assert.match(content, /graph\.invoke\(input, config=\{"recursion_limit": 25\}\)/);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('applyAutoFixPlan: invoke() call with an existing second argument is left as a manual action, not overwritten', async () => {
+  const dir = await makeTempProject({
+    'agent.ts': 'const result = await graph.invoke(input, { someOtherOption: true });\n',
+  });
+  const plan = computeAutoFixPlan([{ kind: 'ungoverned-ai-invocation', file: 'agent.ts', line: 1 }]);
+  const { results } = await applyAutoFixPlan(plan, dir, { dryRun: false });
+  assert.equal(results[0].applied, false);
+  assert.equal(results[0].manual, true);
+  const content = await fs.readFile(path.join(dir, 'agent.ts'), 'utf8');
+  assert.match(content, /someOtherOption: true/, 'the existing second argument must survive untouched');
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('applyAutoFixPlan: invoke() call spanning multiple lines is left as a manual action', async () => {
+  const dir = await makeTempProject({
+    'agent.ts': 'const result = await graph.invoke(\n  input\n);\n',
+  });
+  const plan = computeAutoFixPlan([{ kind: 'ungoverned-ai-invocation', file: 'agent.ts', line: 1 }]);
+  const { results } = await applyAutoFixPlan(plan, dir, { dryRun: false });
+  assert.equal(results[0].applied, false);
+  assert.equal(results[0].manual, true);
+  await fs.rm(dir, { recursive: true, force: true });
+});

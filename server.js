@@ -2831,7 +2831,7 @@ const { mountReportsRoutes } = require('./routes/reports');
 mountReportsRoutes(app, { sanitizeAbsoluteProjectPath, generateSbom, generateLocMetrics, checkFeaturePosture });
 
 const { mountAutoFixRoute } = require('./routes/auto-fix');
-mountAutoFixRoute(app, { sanitizeAbsoluteProjectPath, checkDeadCode });
+mountAutoFixRoute(app, { sanitizeAbsoluteProjectPath, checkDeadCode, checkAiGovernance });
 
 const { mountBaselineRoutes } = require('./routes/baseline');
 mountBaselineRoutes(app, { store });
