@@ -13,7 +13,7 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
   const fsp = require('fs/promises');
   const path = require('path');
   const os = require('os');
-  const { buildSnippet } = fsUtils;
+  const { buildSnippet, SKIP_DIRS } = fsUtils;
 
   const BEARER_ENABLED = Boolean(config.enabled);
 
@@ -169,7 +169,14 @@ function createPiiDataFlowCheck({ runTool, fsUtils, config }) {
 
     await ensureGitContextForBearer(root, log);
     const diffBase = await resolveBearerDiffBase(root);
-    const args = ['scan', root, '--format', 'json', '--quiet', '--disable-version-check', '--exit-code', '0'];
+    // Same directory exclusions as Ignite's own walkFiles (SKIP_DIRS) —
+    // Bearer does its own file discovery and, left alone, traces data flow
+    // through vendored/generated bundles (e.g. Angular/Vite's .angular
+    // cache) that are never part of the project's own code.
+    const args = [
+      'scan', root, '--format', 'json', '--quiet', '--disable-version-check', '--exit-code', '0',
+      '--skip-path', [...SKIP_DIRS].join(','),
+    ];
     if (diffBase) {
       args.push('--diff');
       log?.(`Engine: Bearer CLI (External) — incremental scan (--diff against ${diffBase}, only changed files re-analyzed)...`);

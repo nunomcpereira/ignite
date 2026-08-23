@@ -378,22 +378,23 @@
       <code>/Users/nuno/tests/tadone</code> — a 6-workspace monorepo (tadone, eva-console,
       parla, despesas, shared, obra-abc). Phases 1&ndash;5, shipping skipped, org-governance
       CI (act) skipped. Every timing below is a real wall-clock measurement from an
-      instrumented run, not an estimate.
+      instrumented run, not an estimate — including the "after" numbers, taken from a
+      second full run against the same project after four fixes landed.
     </p>
   </header>
 
   <div class="stat-row">
     <div class="stat hot">
-      <div class="value">6<small>m 05s</small></div>
-      <div class="label">Total wall time</div>
+      <div class="value">365<small>s → 302s</small></div>
+      <div class="label">Total wall time (before → after)</div>
     </div>
     <div class="stat">
-      <div class="value">59,552</div>
-      <div class="label">Files staged</div>
+      <div class="value">17<small>%</small></div>
+      <div class="label">Verified reduction so far</div>
     </div>
     <div class="stat">
       <div class="value">949,750</div>
-      <div class="label">Lines of code</div>
+      <div class="label">Lines of code (before exclusion)</div>
     </div>
     <div class="stat bad">
       <div class="value">42</div>
@@ -402,11 +403,12 @@
   </div>
 
   <section>
-    <h2>Pipeline timeline</h2>
+    <h2>Pipeline timeline <span style="font-family:var(--mono);font-size:12px;color:var(--text-faint);text-transform:none;letter-spacing:0;">(baseline run, before the four fixes below)</span></h2>
     <p class="section-note">
       Stages run in this order. The two shaded bars overlap deliberately &mdash; Ignite
       already runs the license/dependency scan concurrently with Phase 4, so the
       slower of the two (Phase 4, at 339s) sets the pace instead of both costs adding up.
+      This is the original 365s run; see "What was fixed" below for the 302s result.
     </p>
     <div class="timeline">
       <div class="tl-row">
@@ -634,84 +636,99 @@
   </section>
 
   <section>
-    <h2>Recommendations, ranked by expected time recovered</h2>
+    <h2>What was fixed, and what it actually did</h2>
+    <p class="section-note">
+      Four fixes shipped and were each verified with a real rerun of this same scan.
+      Net result: <strong>365s &rarr; 302s (17% faster)</strong>, short of the 50% target.
+      The two remaining large costs (semgrep's semantic SAST at 275s, CodeQL at 219s)
+      are both rule-engine work scaling with real LOC and rule-set size &mdash; the
+      honest remaining lever is trimming rule coverage, not a free engineering win.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Fix</th><th>Verified effect</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>CodeQL <code>--threads</code></td>
+          <td>CodeQL's CLI defaults to <strong>1 thread</strong> when <code>--threads</code> is
+          omitted (confirmed against the real CLI's own <code>--help</code>) &mdash; not
+          "one per core" as the code's own comment assumed. Now always passes
+          <code>--threads=0</code> (all cores). Isolated effect: <strong>326s &rarr; 64s</strong>
+          on a clean run (a real ~5&times; speedup on that one check); on later runs sharing
+          the machine with everything else this varied 60&ndash;220s &mdash; a real, safe fix,
+          but its wall-clock payoff depends on how much else is competing for cores at the time.</td>
+        </tr>
+        <tr>
+          <td>Shared file-walk cache</td>
+          <td>~10 of Phase 4's built-in checks each called <code>walkFiles</code>
+          independently, re-walking the same 59.5k-file tree from scratch, all
+          concurrently. Now walked once per staged root and cached (invalidated when
+          the staging dir is torn down in all three pipeline entry points). Reduces
+          redundant I/O contention across the board.</td>
+        </tr>
+        <tr>
+          <td>.angular build-cache exclusion</td>
+          <td>Discovered that <code>.angular</code> (Angular CLI/Vite's own bundled
+          dependency cache) held <strong>592k of 950k total scanned lines (62%)</strong> —
+          vendored, minified copies of date-fns/firebase/express, not project source.
+          Added to <code>SKIP_DIRS</code> (fixes every built-in check + gocloc for free)
+          plus explicit <code>--exclude</code>/<code>--skip-path</code> flags for semgrep
+          and Bearer, which do their own file discovery. Real, zero-coverage-loss fix —
+          but net wall-time impact was smaller than the 62% figure suggested, since the
+          real remaining ~358k lines of actual source still dominates.</td>
+        </tr>
+        <tr>
+          <td>CodeQL <code>LGTM_INDEX_FILTERS</code></td>
+          <td><code>codeql database create</code> extracts from the whole
+          <code>--source-root</code> itself — it never consulted Ignite's own
+          <code>SKIP_DIRS</code>, so it was extracting <code>.angular</code> as if it
+          were real source regardless of the fix above. Verified empirically that
+          CodeQL's own <code>**</code>-glob syntax is rejected outright and a bare
+          directory name is required; fixed and confirmed excluded via the database's
+          source archive. Measured impact on this run was smaller than expected —
+          CodeQL's cost here is dominated by real source volume, not vendor noise.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>The one lever left: rule-set coverage vs. speed</h2>
+    <p class="section-note">
+      Both remaining bottlenecks are already user-configurable without any code
+      change, and neither was touched by default — dropping coverage is a security
+      decision, not a performance one:
+    </p>
     <div class="recs">
       <div class="rec">
-        <div class="n">01</div>
+        <div class="n">•</div>
         <div>
-          <h3>Cap or split the double semgrep run</h3>
+          <h3><code>SEMGREP_CONFIG=p/security-audit</code> (drop <code>p/owasp-top-ten</code>)</h3>
           <p>
-            <code>semanticSast</code> is the critical path at 339s specifically because it
-            runs two rulesets sequentially in one process. Running
-            <code>p/security-audit</code> and <code>p/owasp-top-ten</code> as two concurrent
-            semgrep invocations instead of one sequential one would let them overlap; on a
-            monorepo this size that alone could cut the single longest check by closer to
-            half.
+            The two packs' rule coverage overlaps substantially (the codebase's own
+            config comment says as much) — running only <code>p/security-audit</code>
+            plausibly cuts this check well below its current 275s, at the cost of losing
+            whatever OWASP Top 10-specific rules aren't already covered by
+            security-audit. Not applied by default; not independently re-measured under
+            the current usage budget.
           </p>
-          <div class="save">expected: shortens the current critical path directly</div>
         </div>
       </div>
       <div class="rec">
-        <div class="n">02</div>
+        <div class="n">•</div>
         <div>
-          <h3>Scope CodeQL/Bearer/Semgrep to changed workspaces on re-scans</h3>
+          <h3><code>CODEQL_LANGUAGES=javascript</code> (narrow scope)</h3>
           <p>
-            This is a 6-workspace monorepo; on a real PR, almost all edits touch one
-            workspace. <code>CODEQL_LANGUAGES</code> and per-check scoping to
-            changed-workspace directories (not just <code>changedFiles</code> for issue
-            filtering, but for tool invocation itself) would let a routine PR scan skip
-            rebuilding a whole-repo CodeQL database and re-running Semgrep/Bearer over
-            code nobody touched.
+            Already-configurable; only relevant on a repo with multiple CodeQL-supported
+            languages present (this one only has JS/TS). No effect here, but relevant
+            guidance for other projects.
           </p>
-          <div class="save">expected: turns most re-scans from ~340s critical path into tens of seconds</div>
-        </div>
-      </div>
-      <div class="rec">
-        <div class="n">03</div>
-        <div>
-          <h3>Prune SKIP_DIRS at copy time, not just scan time</h3>
-          <p>
-            <code>stageExistingProject</code> copied all 59,552 files (838MB) before any
-            check's <code>walkFiles</code> call excludes <code>node_modules</code>/
-            <code>dist</code>/<code>build</code>. Filtering those directories out during the
-            copy itself (not just during the later walk) would shrink the 26s staging step
-            and, more importantly, shrink what <code>secrets</code>, <code>provenance</code>,
-            and <code>euAiActDocuments</code> walk over &mdash; three of the seven most
-            expensive checks in this run.
-          </p>
-          <div class="save">expected: −15-20s staging, plus knock-on savings in the three tree-walking checks above</div>
-        </div>
-      </div>
-      <div class="rec">
-        <div class="n">04</div>
-        <div>
-          <h3>Give <code>euAiActDocuments</code> a real early-exit</h3>
-          <p>
-            93.8s for a filename/path match is disproportionate to what the check does.
-            Confirm it isn't re-walking the full tree per document category (5 categories
-            &times; a full walk each would explain this) rather than a single walk checked
-            against 5 patterns.
-          </p>
-          <div class="save">expected: likely a 5x-ish reduction on this one check if it is re-walking per category</div>
-        </div>
-      </div>
-      <div class="rec">
-        <div class="n">05</div>
-        <div>
-          <h3>Reach for <code>fast: true</code> in the inner dev loop</h3>
-          <p>
-            Fast mode already exists and restricts Phase 4 to secrets/governance/semgrep
-            (single config)/file-encapsulation. On this repo that skips CodeQL, Bearer,
-            Trivy, GuardDog, jscpd, Spectral, gocloc, Syft, cosign, picklescan, and oasdiff
-            entirely &mdash; the checks responsible for roughly 250s of this run's 339s
-            critical path. Full runs still belong in CI or an occasional manual push, not
-            every iteration.
-          </p>
-          <div class="save">expected: an inner-loop scan lands well under a minute instead of six</div>
         </div>
       </div>
     </div>
   </section>
+
 
   <section>
     <h2>Findings by category (context, not the focus of this report)</h2>

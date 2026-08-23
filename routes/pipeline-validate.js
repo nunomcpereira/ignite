@@ -33,6 +33,7 @@
  */
 const { filterIssuesByChangedFiles } = require('../lib/issue-filter');
 const { filterIssuesByBaseline } = require('../lib/baseline-filter');
+const { invalidateWalkCache } = require('../lib/fs-utils');
 
 function mountValidateAllRoute(app, {
   store, phaseEnabled, phaseTitles, repoNameRegex, githubNameRegex, actEvent,
@@ -96,6 +97,7 @@ function mountValidateAllRoute(app, {
     const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `${jobId}-api-validation`);
     const workflowDir = stagingDir + '-workflows';
     let projectId = null;
+    let projectRoot = null;
 
     const events = [];
     const record = {};
@@ -183,7 +185,7 @@ function mountValidateAllRoute(app, {
       status(3, 'running');
       const log2 = phaseLog(3);
       await __time('stageExistingProject', () => stageExistingProject(projectPath, stagingDir, log2));
-      const projectRoot = await resolveProjectRoot(stagingDir);
+      projectRoot = await resolveProjectRoot(stagingDir);
 
       log2('Check 1 — scanning for raw environment files (.env*)...');
       const envCheck = await __time('checkEnvFiles', () => checkEnvFiles(projectRoot));
@@ -367,6 +369,8 @@ function mountValidateAllRoute(app, {
         events,
       });
     } finally {
+      invalidateWalkCache(stagingDir);
+      if (projectRoot) invalidateWalkCache(projectRoot);
       await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
       await fsp.rm(workflowDir, { recursive: true, force: true }).catch(() => {});
     }

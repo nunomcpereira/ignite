@@ -27,14 +27,35 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
   const path = require('path');
   const os = require('os');
   const crypto = require('crypto');
-  const { walkFiles, hashBuffer, relativeToRoot, buildSnippet } = fsUtils;
+  const { walkFiles, hashBuffer, relativeToRoot, buildSnippet, SKIP_DIRS } = fsUtils;
+
+  // `codeql database create` extracts from the whole --source-root itself —
+  // it doesn't consult Ignite's own walkFiles/SKIP_DIRS, so left alone it
+  // extracts vendored/generated bundles (a committed dist/build, Angular's
+  // .angular build cache) exactly like real source. LGTM_INDEX_FILTERS is
+  // the JS/Python extractor's own path-filter env var (the same mechanism
+  // github/codeql-action translates a paths-ignore config into) — one
+  // `exclude` line per SKIP_DIRS name, anywhere in the tree. Verified
+  // empirically: a `**`-style glob ("exclude:**/name/**") is rejected
+  // outright ("Illegal use of '**' in exclude path") — a bare directory
+  // name matches that name at any depth already.
+  const CODEQL_INDEX_FILTERS = [...SKIP_DIRS].map((d) => `exclude:${d}`).join('\n');
 
   const CODEQL_ENABLED = Boolean(config.enabled);
   const CODEQL_LANGUAGES = Array.isArray(config.languages) && config.languages.length
     ? config.languages
     : ['javascript', 'python', 'java', 'go'];
   const CODEQL_QUERY_SUITES = config.querySuites || {};
-  const CODEQL_THREADS = Number(config.threads) || 0; // 0 = codeql's own default (all cores)
+  // CodeQL's own CLI default for --threads, when the flag is omitted
+  // entirely, is 1 (single-threaded) — NOT "one thread per core" as an
+  // omitted flag might suggest. `0` is what actually means "one thread per
+  // core" to the CLI, but only if the flag is passed with that value. On a
+  // 14-core box, database create + analyze running single-threaded was
+  // measured taking ~5.5 minutes for one language on a large monorepo — the
+  // single biggest fixable cost in a Phase 4 run. Default to 0 (all cores)
+  // here and always pass the flag, rather than defaulting to "don't pass
+  // it" and silently inheriting the CLI's much slower single-thread default.
+  const CODEQL_THREADS = Number.isFinite(Number(config.threads)) ? Number(config.threads) : 0;
   const CODEQL_RAM_MB = Number(config.ramMB) || 0; // 0 = codeql's own default
   const CODEQL_TIMEOUT_MS = Number(config.timeoutMs) || 20 * 60_000;
 
@@ -244,9 +265,12 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
         await runToolStreaming('codeql', [
           'database', 'create', dbPath,
           `--language=${language}`, `--source-root=${root}`, '--overwrite',
-          ...(CODEQL_THREADS ? [`--threads=${CODEQL_THREADS}`] : []),
+          `--threads=${CODEQL_THREADS}`,
           ...(CODEQL_RAM_MB ? [`--ram=${CODEQL_RAM_MB}`] : []),
-        ], root, (line) => createLines.push(line), { timeoutMs: CODEQL_TIMEOUT_MS });
+        ], root, (line) => createLines.push(line), {
+          timeoutMs: CODEQL_TIMEOUT_MS,
+          env: { LGTM_INDEX_FILTERS: CODEQL_INDEX_FILTERS },
+        });
       } catch (e) {
         // lib/tool-runner.js's own failure-line heuristic (FAILURE_LINE_REGEX)
         // is tuned for `act`/CI-style output and misses CodeQL's own error
@@ -285,7 +309,7 @@ function createCodeqlCrossFileCheck({ runTool, runToolStreaming, store, fsUtils,
         await runToolStreaming('codeql', [
           'database', 'analyze', dbPath, suite, '--download',
           '--format=sarif-latest', `--output=${sarifPath}`,
-          ...(CODEQL_THREADS ? [`--threads=${CODEQL_THREADS}`] : []),
+          `--threads=${CODEQL_THREADS}`,
         ], root, (line) => analyzeLines.push(line), { timeoutMs: CODEQL_TIMEOUT_MS });
       } catch (e) {
         throw new Error(`${e.message} Last output: ${analyzeLines.slice(-2).join(' | ') || '(none captured)'}`);

@@ -18,7 +18,7 @@ function createSemanticSastCheck({ runTool, fsUtils, config }) {
   const fsp = require('fs/promises');
   const path = require('path');
   const os = require('os');
-  const { buildSnippet, relativeToRoot } = fsUtils;
+  const { buildSnippet, relativeToRoot, SKIP_DIRS } = fsUtils;
 
   const SEMGREP_ENABLED = Boolean(config.enabled);
   const SEMGREP_BINARY = String(config.binary || 'semgrep');
@@ -68,6 +68,15 @@ function createSemanticSastCheck({ runTool, fsUtils, config }) {
   // No built-in fallback when disabled/missing — there's no meaningful
   // heuristic substitute for a semantic rule engine, so this simply
   // contributes nothing rather than pretending to.
+  // NOTE: running each --config pack as its own concurrent semgrep process
+  // was tried here and measured *slower* in practice (343s vs. 264s on a
+  // 950k-LOC monorepo, both worse than doing nothing) — each process
+  // re-parses every file from scratch, and that duplicated parse/AST-build
+  // cost plus GC pressure from two full-size processes outweighed any
+  // parallelism gained, exactly the oversubscription cost semgrep's own
+  // docs warn about. Reverted to one process, multiple --config flags —
+  // semgrep parses each file once and matches every pack's rules against
+  // that single parse.
   async function checkSemanticSast(root, log) {
     const tooling = SEMGREP_ENABLED ? await semgrepTooling() : { ok: false, reason: 'semgrep is disabled (security.semgrep.enabled=false).' };
     if (!tooling.ok) {
@@ -80,7 +89,16 @@ function createSemanticSastCheck({ runTool, fsUtils, config }) {
     try {
       const env = await buildSemgrepEnv();
       const { stdout } = await runTool('semgrep', [
-        'scan', ...semgrepConfigPacks.flatMap((c) => ['--config', c]), '--json', '--quiet', '--metrics', 'off', root,
+        'scan', ...semgrepConfigPacks.flatMap((c) => ['--config', c]),
+        // Same directory exclusions as Ignite's own walkFiles (SKIP_DIRS) —
+        // semgrep does its own file discovery, so without these it happily
+        // pattern-matches vendored/generated bundles (Angular/Vite's
+        // .angular cache, a committed dist/build output, ...) that were
+        // never meant to be scanned in the first place. Real cost on a
+        // large monorepo: these directories can hold more lines than the
+        // project's actual source.
+        ...[...SKIP_DIRS].flatMap((d) => ['--exclude', d]),
+        '--json', '--quiet', '--metrics', 'off', root,
       ], root, { allowedExitCodes: [0, 1], env, timeoutMs: SEMGREP_TIMEOUT_MS });
       const data = stdout.trim() ? JSON.parse(stdout) : { results: [] };
       const results = Array.isArray(data.results) ? data.results : [];

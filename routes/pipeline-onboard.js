@@ -51,6 +51,7 @@ function mountOnboardRoute(app, {
   const path = require('path');
   const os = require('os');
   const crypto = require('crypto');
+  const { invalidateWalkCache } = require('../lib/fs-utils');
 
   app.post('/api/pipeline/onboard', async (req, res) => {
     const body = req.body || {};
@@ -85,6 +86,7 @@ function mountOnboardRoute(app, {
     const publishDir = stagingDir + '-publish';
     const workflowDir = stagingDir + '-workflows';
     let projectId = null;
+    let projectRoot = null;
 
     const events = [];
     const record = {};
@@ -172,7 +174,7 @@ function mountOnboardRoute(app, {
       status(3, 'running');
       const log2 = phaseLog(3);
       await stageExistingProject(projectPath, stagingDir, log2);
-      const projectRoot = await resolveProjectRoot(stagingDir);
+      projectRoot = await resolveProjectRoot(stagingDir);
 
       await cloneDirectoryWithoutSymlinks(projectRoot, sourceBackupDir);
       log2('Created immutable source snapshot for final publish phase.');
@@ -358,6 +360,8 @@ function mountOnboardRoute(app, {
         events,
       });
     } finally {
+      invalidateWalkCache(stagingDir);
+      if (projectRoot) invalidateWalkCache(projectRoot);
       await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
       await fsp.rm(sourceBackupDir, { recursive: true, force: true }).catch(() => {});
       await fsp.rm(publishDir, { recursive: true, force: true }).catch(() => {});

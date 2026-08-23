@@ -976,7 +976,7 @@ const { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages, runCustomC
   runTool,
   runToolStreaming,
   store,
-  fsUtils: { walkFiles, hashBuffer, relativeToRoot, buildSnippet },
+  fsUtils: { walkFiles, hashBuffer, relativeToRoot, buildSnippet, SKIP_DIRS },
   config: {
     enabled: CODEQL_ENABLED, binary: CODEQL_BINARY, languages: CODEQL_LANGUAGES,
     querySuites: CODEQL_QUERY_SUITES, threads: CODEQL_THREADS, ramMB: CODEQL_RAM_MB, timeoutMs: CODEQL_TIMEOUT_MS,
@@ -986,14 +986,14 @@ const { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages, runCustomC
 const { createSemanticSastCheck } = require('./checks/semantic-sast');
 const { checkSemanticSast, semgrepTooling } = createSemanticSastCheck({
   runTool,
-  fsUtils: { buildSnippet, relativeToRoot },
+  fsUtils: { buildSnippet, relativeToRoot, SKIP_DIRS },
   config: { enabled: SEMGREP_ENABLED, binary: SEMGREP_BINARY, semgrepConfig: SEMGREP_CONFIG },
 });
 
 const { createPiiDataFlowCheck } = require('./checks/pii-dataflow');
 const { checkPiiDataFlow, bearerTooling, ensureGitContextForBearer } = createPiiDataFlowCheck({
   runTool,
-  fsUtils: { buildSnippet },
+  fsUtils: { buildSnippet, SKIP_DIRS },
   config: { enabled: BEARER_ENABLED },
 });
 

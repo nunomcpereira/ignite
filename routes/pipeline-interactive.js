@@ -61,6 +61,7 @@ function mountInteractivePipelineRoute(app, {
   const path = require('path');
   const os = require('os');
   const crypto = require('crypto');
+  const { invalidateWalkCache } = require('../lib/fs-utils');
   // Outside the repo working tree on purpose — see the retained-source
   // comment below for why (a whole-repo scan of Ignite's own source, like
   // its own pre-push hook, must never sweep up another project's retained
@@ -629,6 +630,8 @@ function mountInteractivePipelineRoute(app, {
       // is the source snapshot of a run that didn't ship for real (dry run,
       // stopped at review, unresolved findings, CI failure) — kept for a later
       // "Effectivate" call — see pendingEffectivations.
+      invalidateWalkCache(stagingDir);
+      if (projectRoot) invalidateWalkCache(projectRoot);
       await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
       if (!keepSourceBackupDir) {
         await fsp.rm(sourceBackupDir, { recursive: true, force: true }).catch(() => {});
