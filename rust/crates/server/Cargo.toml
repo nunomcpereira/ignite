@@ -47,6 +47,7 @@ ignite-complexity-health = { path = "../complexity-health" }
 ignite-boundaries = { path = "../boundaries" }
 ignite-file-encapsulation = { path = "../file-encapsulation" }
 ignite-css-dead-code = { path = "../css-dead-code" }
+ignite-shipping = { path = "../shipping" }
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-db-store = { path = "../db-store" }
 ignite-sarif = { path = "../sarif" }

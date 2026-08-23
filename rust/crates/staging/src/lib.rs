@@ -229,6 +229,36 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<StageResult, Stag
     Ok(StageResult { file_count, total_bytes })
 }
 
+/// Copies a directory tree, skipping symlink entries entirely (never
+/// followed, never recreated). Used to snapshot a staged project into an
+/// immutable backup before Phase 4 mutates it further, and again to
+/// prepare a clean publish workspace from that snapshot right before
+/// Phase 6 pushes.
+pub fn clone_directory_without_symlinks(source_dir: &Path, dest_dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dest_dir)?;
+    let mut stack = vec![(source_dir.to_path_buf(), dest_dir.to_path_buf())];
+    while let Some((src, dst)) = stack.pop() {
+        for entry in fs::read_dir(&src)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let child_src = entry.path();
+            let child_dst = dst.join(entry.file_name());
+            if file_type.is_symlink() {
+                continue;
+            } else if file_type.is_dir() {
+                fs::create_dir_all(&child_dst)?;
+                stack.push((child_src, child_dst));
+            } else if file_type.is_file() {
+                if let Some(parent) = child_dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&child_src, &child_dst)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// If the archive contains a single top-level folder (the common
 /// "project-folder.zip" layout), descend into it so scans and git run at
 /// the real project root.
@@ -352,6 +382,25 @@ mod tests {
         let dest = tempdir().unwrap();
         let result = stage_existing_project(file.path().to_str().unwrap(), &dest.path().join("staged"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn clone_directory_without_symlinks_copies_files_and_skips_symlinks() {
+        let source = tempdir().unwrap();
+        fs::write(source.path().join("a.txt"), "hello").unwrap();
+        fs::create_dir_all(source.path().join("sub")).unwrap();
+        fs::write(source.path().join("sub/b.txt"), "world").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(source.path().join("a.txt"), source.path().join("link.txt")).unwrap();
+
+        let dest = tempdir().unwrap();
+        let dest_dir = dest.path().join("clone");
+        clone_directory_without_symlinks(source.path(), &dest_dir).unwrap();
+
+        assert_eq!(fs::read_to_string(dest_dir.join("a.txt")).unwrap(), "hello");
+        assert_eq!(fs::read_to_string(dest_dir.join("sub/b.txt")).unwrap(), "world");
+        #[cfg(unix)]
+        assert!(!dest_dir.join("link.txt").exists());
     }
 
     #[test]

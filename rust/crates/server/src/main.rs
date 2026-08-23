@@ -25,6 +25,7 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::history::router())
         .merge(routes::pipeline_validate::router())
         .merge(routes::config::router())
+        .merge(routes::pipeline_onboard::router())
         .with_state(state)
 }
 
@@ -207,6 +208,52 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/pipeline/nope/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
         assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn onboard_rejects_missing_gh_token_when_not_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        // No GH_TOKEN/GITHUB_TOKEN in this test process's env, and dryRun
+        // is omitted (defaults false) — must fail fast before touching
+        // the filesystem or making any GitHub API call.
+        let res = client.post(format!("{base}/api/pipeline/onboard")).json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": dir.path().to_string_lossy() })).send().await.unwrap();
+        assert_eq!(res.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn onboard_dry_run_completes_without_shipping() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke"}"#).unwrap();
+        std::fs::write(dir.path().join("app.js"), "console.log(1);\n").unwrap();
+
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(180)).build().unwrap();
+        let res = client
+            .post(format!("{base}/api/pipeline/onboard"))
+            .json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": dir.path().to_string_lossy(), "dryRun": true, "runLocalCi": false }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body: Value = res.json().await.unwrap();
+        assert!(status == 200 || status == 400, "unexpected status {status}: {body}");
+        assert_eq!(body["mode"], "onboard");
+        assert_eq!(body["dryRun"], true);
+        assert_eq!(body["repoUrl"], Value::Null);
+        let phase6 = body["phases"].as_array().unwrap().iter().find(|p| p["phase"] == 6).unwrap();
+        assert_eq!(phase6["state"], "skipped");
+    }
+
+    #[tokio::test]
+    async fn onboard_rejects_invalid_org_name() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/onboard")).json(&serde_json::json!({ "org": "-bad-", "repo": "widgets", "dryRun": true })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["failedPhase"], 1);
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@ pub mod history;
 pub mod issues;
 mod job_issues;
 mod phase_meta;
+pub mod pipeline_onboard;
 pub mod pipeline_validate;
 pub mod reports;
 pub mod runtime_coverage;
