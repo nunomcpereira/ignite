@@ -1,0 +1,8 @@
+[package]
+name = "ignite-runtime-coverage"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-db-store = { path = "../db-store" }
+serde_json = "1"
