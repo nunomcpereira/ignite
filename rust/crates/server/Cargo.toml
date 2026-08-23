@@ -24,12 +24,21 @@ ignite-model-artifact-security = { path = "../model-artifact-security" }
 ignite-loc-metrics = { path = "../loc-metrics" }
 ignite-sbom = { path = "../sbom" }
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
+ignite-db-store = { path = "../db-store" }
+ignite-sarif = { path = "../sarif" }
+ignite-github-annotations = { path = "../github-annotations" }
+ignite-runtime-coverage = { path = "../runtime-coverage" }
+ignite-auto-fix = { path = "../auto-fix" }
+ignite-dead-code = { path = "../dead-code" }
+ignite-ai-governance = { path = "../ai-governance" }
+ignite-deps-dev-client = { path = "../deps-dev-client" }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 tower-http = { version = "0.5", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tempfile = "3"

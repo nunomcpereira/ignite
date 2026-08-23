@@ -1,114 +1,35 @@
-//! Ignite's HTTP server — Rust port of `server.js`'s route layer. Starting
-//! point: `GET /api/tools/status`, the first real HTTP endpoint, wiring
-//! together every tooling probe ported across the check crates. Session
-//! auth, the pipeline endpoints, and everything else in `routes/*.js`
-//! aren't ported yet.
+//! Ignite's HTTP server — Rust port of `server.js`'s route layer.
+//! Session auth, the streaming pipeline endpoints, and upload handling
+//! aren't ported yet — see each `routes/*.rs` module's doc comment for
+//! what it covers.
 
-use axum::{routing::get, Json, Router};
-use ignite_tool_runner::ToolRunner;
-use serde_json::{json, Value};
+mod routes;
+mod state;
+
+use state::AppState;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-struct AppState {
-    runner: ToolRunner,
-}
-
-fn bin(name: &'static str) -> (&'static str, String) {
-    (name, name.to_string())
-}
-
-fn default_runner() -> ToolRunner {
-    let binaries: HashMap<&'static str, String> = [
-        bin("trivy"),
-        bin("checkov"),
-        bin("hadolint"),
-        bin("syft"),
-        bin("cosign"),
-        bin("semgrep"),
-        bin("bearer"),
-        bin("jscpd"),
-        bin("gocloc"),
-        bin("spectral"),
-        bin("guarddog"),
-        bin("codeql"),
-        bin("picklescan"),
-        bin("oasdiff"),
-        bin("gitleaks"),
-        bin("rm"),
-    ]
-    .into_iter()
-    .collect();
-    ToolRunner::new(binaries)
-}
-
-fn bool_probe(ok: bool) -> Value {
-    json!({ "ok": ok })
-}
-
-/// Faithful port of `routes/tools-status.js`'s handler — every probe run
-/// concurrently, each result annotated with its "on by default" enabled
-/// flag (see project CLAUDE.md: everything here defaults to `true` except
-/// jscpd and trivyImage). ORT/licensee/gitleaks are always-on (no
-/// disable toggle in the JS original either).
-async fn tools_status(state: Arc<AppState>) -> Json<Value> {
-    let r = &state.runner;
-    let (ort, licensee, gitleaks, trivy, trivy_image, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql, picklescan, oasdiff) = tokio::join!(
-        ignite_dependency_license_scan::ort_tooling(r),
-        ignite_dependency_license_scan::licensee_tooling(r),
-        ignite_secrets::gitleaks_tooling(r),
-        ignite_iac_security::trivy_tooling(r),
-        ignite_container_image_vulnerabilities::trivy_image_tooling(r),
-        ignite_iac_security::checkov_tooling(r),
-        ignite_iac_security::hadolint_tooling(r),
-        ignite_sbom::syft_tooling(r),
-        ignite_image_provenance::cosign_tooling(r),
-        ignite_semantic_sast::semgrep_tooling(r),
-        ignite_pii_dataflow::bearer_tooling(r),
-        ignite_code_duplication::jscpd_tooling(r),
-        ignite_loc_metrics::gocloc_tooling(r),
-        ignite_api_schema::spectral_tooling(r),
-        ignite_malicious_dependencies::guarddog_tooling(r),
-        ignite_codeql_cross_file::codeql_tooling(r),
-        ignite_model_artifact_security::picklescan_tooling(r),
-        ignite_api_schema_drift::oasdiff_tooling(r),
-    );
-
-    fn with_enabled(mut v: Value, enabled: bool) -> Value {
-        v["enabled"] = json!(enabled);
-        v
-    }
-
-    Json(json!({
-        "ort": with_enabled(bool_probe(ort), true),
-        "licensee": with_enabled(bool_probe(licensee), true),
-        "gitleaks": with_enabled(bool_probe(gitleaks), true),
-        "trivy": with_enabled(bool_probe(trivy), true),
-        "trivyImage": with_enabled(serde_json::to_value(&trivy_image).unwrap(), false),
-        "checkov": with_enabled(bool_probe(checkov), true),
-        "hadolint": with_enabled(bool_probe(hadolint), true),
-        "syft": with_enabled(serde_json::to_value(&syft).unwrap(), true),
-        "cosign": with_enabled(bool_probe(cosign), true),
-        "semgrep": with_enabled(serde_json::to_value(&semgrep).unwrap(), true),
-        "bearer": with_enabled(bool_probe(bearer), true),
-        "jscpd": with_enabled(bool_probe(jscpd), false),
-        "gocloc": with_enabled(bool_probe(gocloc), true),
-        "spectral": with_enabled(bool_probe(spectral), true),
-        "guarddog": with_enabled(serde_json::to_value(&guarddog).unwrap(), true),
-        "codeql": with_enabled(serde_json::to_value(&codeql).unwrap(), true),
-        "picklescan": with_enabled(bool_probe(picklescan), true),
-        "oasdiff": with_enabled(serde_json::to_value(&oasdiff).unwrap(), true),
-    }))
-}
-
-fn build_router(state: Arc<AppState>) -> Router {
-    Router::new().route("/api/tools/status", get(move || tools_status(state.clone())))
+fn build_router(state: Arc<AppState>) -> axum::Router {
+    axum::Router::new()
+        .merge(routes::tools_status::router())
+        .merge(routes::sarif::router())
+        .merge(routes::github_annotations::router())
+        .merge(routes::baseline::router())
+        .merge(routes::runtime_coverage::router())
+        .merge(routes::auto_fix::router())
+        .merge(routes::dependencies::router())
+        .with_state(state)
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    let state = Arc::new(AppState { runner: default_runner() });
+
+    let db_path = std::env::var("IGNITE_DB_PATH").unwrap_or_else(|_| "ignite.db".to_string());
+    let db = ignite_db_store::DbStore::open(std::path::Path::new(&db_path)).expect("failed to open db");
+
+    let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()) });
     let app = build_router(state);
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(51337);
@@ -120,10 +41,12 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
-    #[tokio::test]
-    async fn tools_status_returns_every_expected_key() {
-        let state = Arc::new(AppState { runner: default_runner() });
+    async fn spawn_test_server() -> String {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()) });
         let app = build_router(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -131,15 +54,115 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
+        // leak the tempdir so the db file survives for the life of the test process
+        std::mem::forget(db_dir);
+        format!("http://{addr}")
+    }
 
+    #[tokio::test]
+    async fn tools_status_returns_every_expected_key() {
+        let base = spawn_test_server().await;
         let client = reqwest::Client::new();
-        let res = client.get(format!("http://{addr}/api/tools/status")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/tools/status")).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         for key in ["ort", "licensee", "gitleaks", "trivy", "trivyImage", "checkov", "hadolint", "syft", "cosign", "semgrep", "bearer", "jscpd", "gocloc", "spectral", "guarddog", "codeql", "picklescan", "oasdiff"] {
             assert!(body.get(key).is_some(), "missing key: {key}");
-            assert!(body[key].get("ok").is_some(), "missing ok for: {key}");
-            assert!(body[key].get("enabled").is_some(), "missing enabled for: {key}");
         }
+    }
+
+    #[tokio::test]
+    async fn sarif_route_returns_404_for_unknown_job() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/pipeline/nope/sarif")).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn annotations_route_returns_404_for_unknown_job() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/pipeline/nope/annotations")).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn baseline_round_trip_save_get_delete() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let res = client.post(format!("{base}/api/baseline/acme/widgets")).json(&serde_json::json!({ "issueIds": ["a", "b"] })).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["savedCount"], 2);
+
+        let res = client.get(format!("{base}/api/baseline/acme/widgets")).send().await.unwrap();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["count"], 2);
+
+        let res = client.delete(format!("{base}/api/baseline/acme/widgets")).send().await.unwrap();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["removed"], 2);
+    }
+
+    #[tokio::test]
+    async fn baseline_save_rejects_missing_issue_ids() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/baseline/acme/widgets")).json(&serde_json::json!({})).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn runtime_coverage_round_trip() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let res = client.post(format!("{base}/api/runtime-coverage/acme/widgets")).json(&serde_json::json!({ "src/a.js": 5, "src/b.js": 0 })).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["format"], "simple");
+        assert_eq!(body["filesIngested"], 2);
+
+        let res = client.get(format!("{base}/api/runtime-coverage/acme/widgets")).send().await.unwrap();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["files"]["src/a.js"]["hitCount"], 5);
+
+        let res = client.delete(format!("{base}/api/runtime-coverage/acme/widgets")).send().await.unwrap();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["removed"], 2);
+    }
+
+    #[tokio::test]
+    async fn auto_fix_rejects_nonexistent_project_path() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/auto-fix")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn auto_fix_dry_run_reports_dead_code_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("orphan.js"), "module.exports = 1;\n").unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"x","main":"index.js"}"#).unwrap();
+        std::fs::write(dir.path().join("index.js"), "console.log(1);\n").unwrap();
+
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/auto-fix")).json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy(), "categories": ["dead-code"] })).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["dryRun"], true);
+        assert!(body["actionCount"].as_u64().unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn dependencies_check_rejects_nonexistent_project_path() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/dependencies/check")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
     }
 }
