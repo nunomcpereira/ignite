@@ -16,6 +16,15 @@ pub struct AppState {
     pub runner: ToolRunner,
     pub db: ignite_db_store::DbStore,
     pub running_runs: Mutex<HashMap<String, LiveRun>>,
+    pub llm_config: ignite_llm_client::LlmClientConfig,
+}
+
+/// Local-LLM provider pointed at `CONFIG.llm`'s defaults — OpenAI-provider
+/// config.json/env wiring isn't ported yet, so this always resolves to
+/// the local provider today.
+pub fn default_llm_config() -> ignite_llm_client::LlmClientConfig {
+    let llm = ignite_config::LlmConfig::default();
+    ignite_llm_client::LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), scan_url: llm.url, scan_model: llm.model }
 }
 
 pub fn default_runner() -> ToolRunner {

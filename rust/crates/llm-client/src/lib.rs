@@ -1,9 +1,8 @@
-//! Shared local-LLM/OpenAI chat-completions client. Faithful port of the
-//! `checks/llm-deep-scan.js`-facing subset of `lib/llm-client.js`:
-//! `llmTarget`/`llmChat`/`llmAvailable`. `llmComplete`/`llmAvailableCached`/
-//! `logLlmExchange` back Studio's unrelated AI-explain/AI-suggest-fix
-//! features, not yet built in this port — deferred to when those routes
-//! are ported, same as `auth.js`'s route-specific pieces.
+//! Shared local-LLM/OpenAI chat-completions client. Faithful port of
+//! `lib/llm-client.js`'s `llmTarget`/`llmChat`/`llmAvailable`/`llmComplete`.
+//! `llmAvailableCached`/`logLlmExchange` (a per-process cache + a debug
+//! trace log, both server-process-lifetime concerns) aren't ported —
+//! deferred to when the HTTP server's own process-lifetime state exists.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -147,6 +146,63 @@ pub async fn llm_chat(client: &reqwest::Client, config: &LlmClientConfig, source
 /// Health/availability probe: for OpenAI, just confirms the API key is
 /// configured (no cheap health probe worth spending a request on); for the
 /// local provider, hits `<scan_url>/health`.
+#[derive(Debug, Serialize)]
+struct ChatRequestPlain<'a> {
+    model: &'a str,
+    stream: bool,
+    temperature: f64,
+    messages: Vec<ChatMessage<'a>>,
+}
+
+/// Faithful port of `lib/llm-client.js`'s `llmComplete` — a free-text
+/// chat completion (no JSON response-format constraint), backing Studio's
+/// AI-explain/AI-suggest-fix features. Unlike `llm_chat`, the caller
+/// picks its own temperature/timeout per use case.
+pub async fn llm_complete(client: &reqwest::Client, config: &LlmClientConfig, system_prompt: &str, user_content: &str, temperature: f64, timeout_ms: u64, label: &str, mut log: impl FnMut(&str)) -> Result<String, LlmError> {
+    let target = llm_target(config);
+    let provider_label = format!("{} [{}]", label, if matches!(config.provider, Provider::OpenAi) { "openai" } else { "local" });
+    log(&format!("[llm] → {} POST {} model={} timeout={}ms chars={}", provider_label, target.url, target.model, timeout_ms, user_content.len()));
+    let started_at = std::time::Instant::now();
+
+    let mut req = client.post(&target.url).timeout(Duration::from_millis(timeout_ms)).json(&ChatRequestPlain {
+        model: &target.model,
+        stream: false,
+        temperature,
+        messages: vec![ChatMessage { role: "system", content: system_prompt }, ChatMessage { role: "user", content: user_content }],
+    });
+    if let Some(auth) = &target.auth_header {
+        req = req.header("Authorization", auth);
+    }
+
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let elapsed = started_at.elapsed().as_millis();
+            if e.is_timeout() {
+                log(&format!("[llm] ← {} TIMED OUT in {}ms", provider_label, elapsed));
+                return Err(LlmError::Timeout(timeout_ms));
+            }
+            log(&format!("[llm] ← {} FAILED in {}ms — {}", provider_label, elapsed, e));
+            return Err(LlmError::NetworkError(e.to_string()));
+        }
+    };
+
+    let elapsed = started_at.elapsed().as_millis();
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        log(&format!("[llm] ← {} HTTP ERROR in {}ms — {}", provider_label, elapsed, status));
+        return Err(LlmError::HttpError(status));
+    }
+
+    let data: serde_json::Value = response.json().await.map_err(|e| LlmError::NetworkError(e.to_string()))?;
+    let text = data.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or("").trim().to_string();
+    log(&format!("[llm] ← {} OK in {}ms — {} chars returned", provider_label, elapsed, text.len()));
+    if text.is_empty() {
+        return Err(LlmError::EmptyResponse);
+    }
+    Ok(text)
+}
+
 pub async fn llm_available(client: &reqwest::Client, config: &LlmClientConfig) -> bool {
     if matches!(config.provider, Provider::OpenAi) {
         return !config.openai_api_key.is_empty();
@@ -207,5 +263,14 @@ mod tests {
         let result = llm_chat(&client, &local_config(), "source", "system prompt", "chat", |l| logs.push(l.to_string())).await;
         assert!(matches!(result, Err(LlmError::NetworkError(_))));
         assert!(logs.iter().any(|l| l.contains("→ chat [local]")));
+    }
+
+    #[tokio::test]
+    async fn llm_complete_network_error_when_endpoint_unreachable() {
+        let client = reqwest::Client::new();
+        let mut logs = Vec::new();
+        let result = llm_complete(&client, &local_config(), "system prompt", "user content", 0.2, 5000, "complete", |l| logs.push(l.to_string())).await;
+        assert!(matches!(result, Err(LlmError::NetworkError(_))));
+        assert!(logs.iter().any(|l| l.contains("→ complete [local]")));
     }
 }

@@ -21,6 +21,7 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::dependencies::router())
         .merge(routes::reports::router())
         .merge(routes::github_pr_status::router())
+        .merge(routes::issues::router())
         .with_state(state)
 }
 
@@ -31,7 +32,7 @@ async fn main() {
     let db_path = std::env::var("IGNITE_DB_PATH").unwrap_or_else(|_| "ignite.db".to_string());
     let db = ignite_db_store::DbStore::open(std::path::Path::new(&db_path)).expect("failed to open db");
 
-    let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()) });
+    let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()), llm_config: state::default_llm_config() });
     let app = build_router(state);
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(51337);
@@ -48,7 +49,7 @@ mod tests {
     async fn spawn_test_server() -> String {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()) });
+        let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()), llm_config: state::default_llm_config() });
         let app = build_router(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -203,6 +204,33 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/pipeline/nope/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
         assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn issues_explain_rejects_missing_category() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/issues/explain")).json(&serde_json::json!({ "summary": "found a thing" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn issues_explain_reports_unavailable_when_no_llm_endpoint() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/issues/explain")).json(&serde_json::json!({ "category": "secret", "summary": "hardcoded key" })).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["explanation"], Value::Null);
+        assert!(body["reason"].as_str().unwrap().contains("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn issues_suggest_fix_requires_snippet() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/issues/suggest-fix")).json(&serde_json::json!({ "category": "secret", "summary": "hardcoded key" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
     }
 
     #[tokio::test]
