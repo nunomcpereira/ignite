@@ -386,11 +386,11 @@
   <div class="stat-row">
     <div class="stat hot">
       <div class="value">365<small>s → 302s</small></div>
-      <div class="label">Total wall time (before → after)</div>
+      <div class="label">Wall time, safe fixes only</div>
     </div>
-    <div class="stat">
-      <div class="value">17<small>%</small></div>
-      <div class="label">Verified reduction so far</div>
+    <div class="stat hot">
+      <div class="value">121<small>s</small></div>
+      <div class="label">With the coverage tradeoff (67% faster)</div>
     </div>
     <div class="stat">
       <div class="value">949,750</div>
@@ -639,10 +639,11 @@
     <h2>What was fixed, and what it actually did</h2>
     <p class="section-note">
       Four fixes shipped and were each verified with a real rerun of this same scan.
-      Net result: <strong>365s &rarr; 302s (17% faster)</strong>, short of the 50% target.
+      Net result with zero coverage tradeoff: <strong>365s &rarr; 302s (17% faster)</strong>.
       The two remaining large costs (semgrep's semantic SAST at 275s, CodeQL at 219s)
       are both rule-engine work scaling with real LOC and rule-set size &mdash; the
       honest remaining lever is trimming rule coverage, not a free engineering win.
+      See below for what that lever is actually worth, measured.
     </p>
     <table>
       <thead>
@@ -698,7 +699,7 @@
     <p class="section-note">
       Both remaining bottlenecks are already user-configurable without any code
       change, and neither was touched by default — dropping coverage is a security
-      decision, not a performance one:
+      decision, not a performance one. Measured, not estimated:
     </p>
     <div class="recs">
       <div class="rec">
@@ -706,12 +707,15 @@
         <div>
           <h3><code>SEMGREP_CONFIG=p/security-audit</code> (drop <code>p/owasp-top-ten</code>)</h3>
           <p>
-            The two packs' rule coverage overlaps substantially (the codebase's own
-            config comment says as much) — running only <code>p/security-audit</code>
-            plausibly cuts this check well below its current 275s, at the cost of losing
-            whatever OWASP Top 10-specific rules aren't already covered by
-            security-audit. Not applied by default; not independently re-measured under
-            the current usage budget.
+            Measured with a real rerun (same project, CodeQL cache warm from the prior
+            run so this isolates semgrep's own effect): total wall time
+            <strong>365s &rarr; 121s (67% faster)</strong> — semanticSast alone dropped
+            275s &rarr; 100s. The two packs' rule coverage overlaps substantially (the
+            codebase's own config comment says as much), so most of that time was spent
+            re-checking largely the same ground twice. Cost: losing whatever
+            OWASP Top 10-specific rules aren't already covered by security-audit.
+            Not applied by default — flip <code>SEMGREP_CONFIG</code> (env var or
+            <code>config.json</code>'s <code>security.semgrep.config</code>) to adopt it.
           </p>
         </div>
       </div>
