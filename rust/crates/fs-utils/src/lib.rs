@@ -48,6 +48,27 @@ pub fn skip_dirs() -> &'static HashSet<&'static str> {
     })
 }
 
+/// Same directory names as `skip_dirs()`, as a regex string for external
+/// tools that take their own exclude pattern (gocloc's `--not-match-d`)
+/// instead of doing the walk themselves. Must be anchored on `/` on both
+/// sides (not `^...$`) — gocloc matches `--not-match-d` against the full
+/// path, so an unanchored-at-both-ends alternation only ever matches a
+/// path consisting of nothing but that one directory name, never a real
+/// nested path.
+pub fn skip_dirs_regex() -> String {
+    let mut names: Vec<&str> = skip_dirs().iter().copied().collect();
+    names.sort();
+    let escaped: Vec<String> = names
+        .iter()
+        .map(|d| {
+            d.chars()
+                .map(|c| if ".*+?^${}()|[]\\".contains(c) { format!("\\{c}") } else { c.to_string() })
+                .collect()
+        })
+        .collect();
+    format!("(^|/)({})(/|$)", escaped.join("|"))
+}
+
 pub const BINARY_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "tiff", "pdf", "zip", "gz", "tar", "bz2",
     "7z", "rar", "woff", "woff2", "ttf", "otf", "eot", "mp3", "mp4", "mov", "avi", "mkv", "wav",
