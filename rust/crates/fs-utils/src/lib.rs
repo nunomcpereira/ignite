@@ -9,7 +9,7 @@
 //! I/O-bound in a way that benefits from it. A plain synchronous walk (this
 //! port) is the more direct translation of what the code is doing.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -66,14 +66,14 @@ pub fn looks_binary(buffer: &[u8]) -> bool {
     slice.contains(&0)
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnippetLine {
     pub number: usize,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snippet {
     pub start_line: usize,
