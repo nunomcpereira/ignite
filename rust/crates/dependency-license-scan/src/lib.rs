@@ -370,6 +370,10 @@ pub async fn licensee_tooling(runner: &ToolRunner) -> bool {
     runner.run_tool("licensee", &["version".to_string()], std::env::temp_dir().to_str().unwrap_or("."), RunToolOptions::default()).await.is_ok()
 }
 
+pub async fn ort_tooling(runner: &ToolRunner) -> bool {
+    runner.run_tool("ort", &["--version".to_string()], std::env::temp_dir().to_str().unwrap_or("."), RunToolOptions::default()).await.is_ok()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectLicenseDetection {
     pub spdx_id: String,

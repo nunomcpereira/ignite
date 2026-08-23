@@ -144,6 +144,10 @@ pub fn is_allowlisted(allowlist: &GitleaksAllowlist, rel_path: &str, line_text: 
     allowlist.paths.iter().any(|re| re.is_match(rel_path)) || allowlist.regexes.iter().any(|re| re.is_match(line_text))
 }
 
+pub async fn gitleaks_tooling(runner: &ignite_tool_runner::ToolRunner) -> bool {
+    runner.run_tool("gitleaks", &["version".to_string()], std::env::temp_dir().to_str().unwrap_or("."), ignite_tool_runner::RunToolOptions::default()).await.is_ok()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretFinding {
     pub file: String,
@@ -361,8 +365,17 @@ pub fn merge_gitleaks_findings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap as StdHashMap;
     use std::fs;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn gitleaks_tooling_reports_false_when_binary_unresolved() {
+        let runner = ignite_tool_runner::ToolRunner::new(StdHashMap::new());
+        // "gitleaks" isn't a FIXED_COMMANDS entry and no binary is registered here,
+        // so resolution fails regardless of whether gitleaks is actually installed.
+        assert!(!gitleaks_tooling(&runner).await);
+    }
 
     fn empty_cache() -> HashMap<String, CachedFileEntry> {
         HashMap::new()
