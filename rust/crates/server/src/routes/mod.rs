@@ -6,6 +6,7 @@ pub mod github_pr_status;
 pub mod history;
 pub mod issues;
 mod job_issues;
+pub mod pipeline_validate;
 pub mod reports;
 pub mod runtime_coverage;
 pub mod sarif;

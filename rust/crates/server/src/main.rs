@@ -23,6 +23,7 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::github_pr_status::router())
         .merge(routes::issues::router())
         .merge(routes::history::router())
+        .merge(routes::pipeline_validate::router())
         .with_state(state)
 }
 
@@ -205,6 +206,44 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/pipeline/nope/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
         assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn validate_all_runs_full_pipeline_against_a_real_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke","dependencies":{"lodash":"4.17.21"}}"#).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/app.js"), "console.log('hi');\n").unwrap();
+
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(180)).build().unwrap();
+        let res = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy(), "runLocalCi": false, "fast": true }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body: Value = res.json().await.unwrap();
+        // fast:true + runLocalCi:false keeps this well inside the test
+        // timeout; blocking findings (e.g. the known lodash CVEs) are a
+        // legitimate 400 here, so this checks the pipeline actually ran
+        // end to end rather than asserting a specific pass/fail outcome.
+        assert!(status == 200 || status == 400, "unexpected status {status}: {body}");
+        assert_eq!(body["mode"], "validate-all");
+        assert!(body["phases"].as_array().unwrap().len() == 6);
+        let phase3 = body["phases"].as_array().unwrap().iter().find(|p| p["phase"] == 3).unwrap();
+        assert_eq!(phase3["state"], "success");
+    }
+
+    #[tokio::test]
+    async fn validate_all_rejects_invalid_repo_name() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/validate-all")).json(&serde_json::json!({ "repo": "..", "projectPath": "/tmp" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["failedPhase"], 1);
     }
 
     #[tokio::test]

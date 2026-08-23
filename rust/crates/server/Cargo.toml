@@ -34,6 +34,19 @@ sha2 = "0.10"
 ignite-scheduled-rechecks = { path = "../scheduled-rechecks" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 urlencoding = "2"
+ignite-override-engine = { path = "../override-engine" }
+ignite-staging = { path = "../staging" }
+ignite-unit-test-runner = { path = "../unit-test-runner" }
+ignite-governance-ci = { path = "../governance-ci" }
+ignite-auth = { path = "../auth" }
+ignite-fs-utils = { path = "../fs-utils" }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+ignite-phase4-orchestrator = { path = "../phase4-orchestrator" }
+ignite-complexity-health = { path = "../complexity-health" }
+ignite-boundaries = { path = "../boundaries" }
+ignite-file-encapsulation = { path = "../file-encapsulation" }
+ignite-css-dead-code = { path = "../css-dead-code" }
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-db-store = { path = "../db-store" }
 ignite-sarif = { path = "../sarif" }
