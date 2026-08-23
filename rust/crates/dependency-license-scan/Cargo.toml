@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+ignite-override-engine = { path = "../override-engine" }
 ignite-fs-utils = { path = "../fs-utils" }
 ignite-tool-runner = { path = "../tool-runner" }
 ignite-studio-manifests = { path = "../studio-manifests" }

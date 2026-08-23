@@ -12,6 +12,7 @@
 use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry_license, find_manifest_dep_line, resolve_best_published_version, resolve_see_license_in_file, DepsDevClient};
 use ignite_fs_utils::walk_files;
 use ignite_license_classification::{classify_license_tier, is_internal_dependency_ref, best_effort_version, LicenseTier};
+use ignite_override_engine::{build_issue_id, derive_cwe_owasp, score_for_issue, BuildIssueIdArgs, CweOwaspHint, Issue, Severity};
 use ignite_studio_manifests::{studio_manifests, ManifestDep, STUDIO_MAX_DEPS_PER_MANIFEST};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use once_cell::sync::Lazy;
@@ -400,12 +401,174 @@ pub async fn run_licensee_detect(root: &Path, runner: &ToolRunner) -> Option<Pro
     Some(ProjectLicenseDetection { spdx_id, confidence, tier: tier_to_str(&classification.tier), reason: classification.reason })
 }
 
+/// Turns `scan_dependency_licenses_fallback`'s manifest findings and
+/// `scan_project_license_files`'s raw LICENSE-file findings into the same
+/// addressable-issue shape `collect_phase4_issues` uses, so commercial/
+/// copyleft/unrecognized licenses gate a run exactly like a hardcoded
+/// secret does, instead of only ever showing up in the Dependencies view.
+pub fn collect_license_issues(manifests: &[LicenseScanManifest], license_files: &[LicenseFileFinding]) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    let category = "license-compliance";
+
+    for manifest in manifests {
+        for dep in &manifest.dependencies {
+            if matches!(dep.tier, DependencyLicenseTier::Green | DependencyLicenseTier::Internal) {
+                continue;
+            }
+            let severity = if matches!(dep.tier, DependencyLicenseTier::Red) { Severity::Error } else { Severity::Warning };
+            // The dep name (not its line) keeps the id stable across edits
+            // that shift lines, so overrides survive unrelated manifest changes.
+            let id = format!("{}::{}", build_issue_id(BuildIssueIdArgs { category, file: Some(&manifest.file), line: None, discriminator: None }), dep.name);
+            let version = dep.version.clone().unwrap_or_else(|| if dep.version_range.is_empty() { "?".to_string() } else { dep.version_range.clone() });
+            issues.push(Issue {
+                id,
+                category: category.to_string(),
+                severity,
+                score: score_for_issue(category, severity),
+                summary: format!("{}@{} — {}", dep.name, version, dep.reason),
+                file: Some(manifest.file.clone()),
+                line: dep.line.map(|l| l as i64),
+                snippet: None,
+                cross_file: false,
+                chain: None,
+                duplicate_ref: None,
+                cwe: None,
+                owasp: None,
+            });
+        }
+    }
+
+    for lf in license_files {
+        let severity = if lf.tier == "red" { Severity::Error } else { Severity::Warning };
+        issues.push(Issue {
+            id: build_issue_id(BuildIssueIdArgs { category, file: Some(&lf.file), line: Some(lf.line as i64), discriminator: None }),
+            category: category.to_string(),
+            severity,
+            score: score_for_issue(category, severity),
+            summary: lf.reason.clone(),
+            file: Some(lf.file.clone()),
+            line: Some(lf.line as i64),
+            snippet: None,
+            cross_file: false,
+            chain: None,
+            duplicate_ref: None,
+            cwe: None,
+            owasp: None,
+        });
+    }
+
+    issues
+}
+
+static CWE_ALIAS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^CWE-\d+$").unwrap());
+
+/// Turns `scan_dependency_vulnerabilities`' per-dependency CVE/GHSA
+/// findings into the same addressable-issue shape `collect_license_issues`
+/// uses, so a known-critical dependency vulnerability gates a run exactly
+/// like a commercial license does.
+pub fn collect_dependency_vulnerability_issues(manifests: &[VulnScanManifest]) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    let category = "dependency-vulnerability";
+
+    for manifest in manifests {
+        for dep in &manifest.dependencies {
+            for vuln in &dep.vulnerabilities {
+                let severity = if vuln.severity == "error" { Severity::Error } else { Severity::Warning };
+                let advisory_id = vuln.id.clone().or_else(|| vuln.aliases.first().cloned()).unwrap_or_else(|| "unknown-advisory".to_string());
+                // OSV/GHSA advisories sometimes carry the underlying CWE as
+                // one of their aliases (e.g. "CWE-1321") alongside the
+                // CVE/GHSA id itself.
+                let cwe_alias = vuln.aliases.iter().find(|a| CWE_ALIAS_RE.is_match(a)).cloned();
+                let hint = derive_cwe_owasp(category, vuln.title.as_deref().unwrap_or(""), &CweOwaspHint { cwe: cwe_alias, owasp: None });
+
+                let mut summary = format!("{}@{} — {}", dep.name, dep.version.clone().unwrap_or_else(|| if dep.version_range.is_empty() { "?".to_string() } else { dep.version_range.clone() }), advisory_id);
+                if let Some(title) = &vuln.title {
+                    summary.push_str(&format!(": {title}"));
+                }
+                if let Some(score) = vuln.cvss3_score {
+                    summary.push_str(&format!(" (CVSS {score})"));
+                }
+
+                let id = format!("{}::{}::{}", build_issue_id(BuildIssueIdArgs { category, file: Some(&manifest.file), line: dep.line.map(|l| l as i64), discriminator: None }), dep.name, advisory_id);
+                issues.push(Issue {
+                    id,
+                    category: category.to_string(),
+                    severity,
+                    score: score_for_issue(category, severity),
+                    summary,
+                    file: Some(manifest.file.clone()),
+                    line: dep.line.map(|l| l as i64),
+                    snippet: None,
+                    cross_file: false,
+                    chain: None,
+                    duplicate_ref: None,
+                    cwe: hint.cwe,
+                    owasp: hint.owasp,
+                });
+            }
+        }
+    }
+
+    issues
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn collect_license_issues_skips_green_and_internal_deps() {
+        let manifest = LicenseScanManifest {
+            file: "package.json".to_string(),
+            ecosystem: "npm",
+            dependencies: vec![
+                LicenseScanDependency { name: "lodash".to_string(), version_range: "^4.0.0".to_string(), version: Some("4.17.21".to_string()), line: Some(5), licenses: vec!["MIT".to_string()], tier: DependencyLicenseTier::Green, reason: "MIT".to_string() },
+                LicenseScanDependency { name: "@acme/internal-lib".to_string(), version_range: "*".to_string(), version: None, line: Some(6), licenses: vec![], tier: DependencyLicenseTier::Internal, reason: "internal".to_string() },
+                LicenseScanDependency { name: "shady-pkg".to_string(), version_range: "^1.0.0".to_string(), version: Some("1.0.0".to_string()), line: Some(7), licenses: vec!["Commercial".to_string()], tier: DependencyLicenseTier::Red, reason: "Commercial license".to_string() },
+            ],
+        };
+        let issues = collect_license_issues(&[manifest], &[]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].category, "license-compliance");
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(issues[0].id.ends_with("shady-pkg"));
+        assert!(issues[0].summary.contains("shady-pkg@1.0.0"));
+    }
+
+    #[test]
+    fn collect_license_issues_includes_license_file_findings() {
+        let lf = LicenseFileFinding { file: "vendor/LICENSE".to_string(), tier: "red", line: 1, reason: "Commercial/proprietary license terms detected in LICENSE file.".to_string() };
+        let issues = collect_license_issues(&[], &[lf]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].file.as_deref(), Some("vendor/LICENSE"));
+        assert_eq!(issues[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_maps_severity_and_cvss() {
+        let manifest = VulnScanManifest {
+            file: "package.json".to_string(),
+            ecosystem: "npm",
+            dependencies: vec![VulnScanDependency {
+                name: "body-parser".to_string(),
+                version_range: "^1.20.0".to_string(),
+                version: Some("1.20.2".to_string()),
+                line: Some(12),
+                vulnerabilities: vec![VulnFinding { id: Some("GHSA-qwcr-r2fm-qrc7".to_string()), title: Some("body-parser vulnerable to denial of service".to_string()), aliases: vec!["CVE-2024-1234".to_string()], cvss3_score: Some(7.5), severity: "error", url: None }],
+                note: None,
+            }],
+        };
+        let issues = collect_dependency_vulnerability_issues(&[manifest]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].category, "dependency-vulnerability");
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(issues[0].summary.contains("GHSA-qwcr-r2fm-qrc7"));
+        assert!(issues[0].summary.contains("CVSS 7.5"));
+        assert!(issues[0].id.ends_with("body-parser::GHSA-qwcr-r2fm-qrc7"));
+    }
 
     #[test]
     fn classify_license_text_detects_commercial_terms_with_licensee_licensor() {
