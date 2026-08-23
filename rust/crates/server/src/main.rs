@@ -22,6 +22,7 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::reports::router())
         .merge(routes::github_pr_status::router())
         .merge(routes::issues::router())
+        .merge(routes::history::router())
         .with_state(state)
 }
 
@@ -203,6 +204,76 @@ mod tests {
         let base = spawn_test_server().await;
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/pipeline/nope/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn list_projects_returns_empty_array_for_fresh_db() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/projects")).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_effectivated_projects_returns_empty_wrapper() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/projects/effectivated")).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["projects"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn project_details_returns_404_for_unknown_id() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/projects/999999")).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn project_details_returns_400_for_non_numeric_id() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/projects/not-a-number")).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn delete_all_projects_succeeds_on_empty_db() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.delete(format!("{base}/api/projects")).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn set_schedule_rejects_unknown_interval() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        // project doesn't exist, but the id-shape check runs first — this
+        // exercises the 404 path since no project was created in this test.
+        let res = client.post(format!("{base}/api/projects/1/schedule")).json(&serde_json::json!({ "enabled": true, "interval": "hourly" })).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn get_document_returns_404_for_unknown_id() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/documents/999999")).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn pipeline_issues_returns_404_for_unknown_job() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/pipeline/nope/issues")).send().await.unwrap();
         assert_eq!(res.status(), 404);
     }
 

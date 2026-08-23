@@ -3,6 +3,7 @@ pub mod baseline;
 pub mod dependencies;
 pub mod github_annotations;
 pub mod github_pr_status;
+pub mod history;
 pub mod issues;
 mod job_issues;
 pub mod reports;
