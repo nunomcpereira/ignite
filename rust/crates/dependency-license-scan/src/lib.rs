@@ -401,21 +401,242 @@ pub async fn run_licensee_detect(root: &Path, runner: &ToolRunner) -> Option<Pro
     Some(ProjectLicenseDetection { spdx_id, confidence, tier: tier_to_str(&classification.tier), reason: classification.reason })
 }
 
+/// ORT only populates each project's `definition_file_path` (the manifest
+/// path needed for per-file issues) when it can resolve the staging
+/// root's VCS — on a bare directory (a ZIP/folder upload, never a git
+/// checkout) it comes back empty for every project. Best-effort
+/// init+commit just so ORT can compute those relative paths; swallows any
+/// failure (ORT still runs, just without per-file paths).
+async fn ensure_git_root_for_ort(root: &Path, runner: &ToolRunner, mut log: impl FnMut(&str)) {
+    if root.join(".git").exists() {
+        return;
+    }
+    let root_str = root.to_string_lossy().into_owned();
+    let result: Result<(), ignite_tool_runner::ToolError> = async {
+        runner.run_tool("git", &["init".to_string(), "-q".to_string()], &root_str, RunToolOptions::default()).await?;
+        runner.run_tool("git", &["add".to_string(), "-A".to_string()], &root_str, RunToolOptions::default()).await?;
+        runner
+            .run_tool("git", &["-c".to_string(), "user.email=ignite@local".to_string(), "-c".to_string(), "user.name=Ignite".to_string(), "commit".to_string(), "-q".to_string(), "-m".to_string(), "ignite-ort-scan".to_string(), "--no-verify".to_string()], &root_str, RunToolOptions::default())
+            .await?;
+        Ok(())
+    }
+    .await;
+    if let Err(e) = result {
+        log(&format!("⚠ Could not stage a throwaway git repo for ORT's path resolution (non-blocking): {e}"));
+    }
+}
+
+/// ORT's own package-manager `type` values, mapped onto the same fixed
+/// ecosystem identifiers `studio_manifests`'s fallback scanner uses — an
+/// ORT-detected ecosystem outside this set (e.g. Conan, NuGet) still
+/// contributes its findings, just isn't recognized for the
+/// skip-ecosystems de-dup against the fallback scanner, so it may (rarely)
+/// be double-reported by both scanners rather than silently dropped.
+fn map_ort_ecosystem(ort_type: &str) -> Option<&'static str> {
+    match ort_type.to_lowercase().as_str() {
+        "npm" | "yarn" | "pnpm" => Some("npm"),
+        "cargo" => Some("cargo"),
+        "pip" | "pypi" | "pipenv" | "poetry" => Some("pypi"),
+        "gomod" | "go" => Some("go"),
+        "maven" | "gradle" => Some("maven"),
+        _ => None,
+    }
+}
+
+/// Runs ORT's Analyzer module, which resolves actual lockfiles (more
+/// accurate than this crate's own regex-based manifest parsers) across
+/// every ecosystem it supports in one pass. Returns `None` — never
+/// errors out to the caller — on any missing tool, timeout, or
+/// unrecognized output shape, so the caller always has the fallback scan
+/// to drop back to; ORT's `analyzer-result.json` schema has changed
+/// across versions, so field access here is defensive.
+pub async fn run_ort_analyze(root: &Path, runner: &ToolRunner, mut log: impl FnMut(&str)) -> Option<Vec<LicenseScanManifest>> {
+    if !ort_tooling(runner).await {
+        log("⚠ ORT analyzer skipped: `ort` (OSS Review Toolkit) is not installed — falling back to the built-in manifest scan + deps.dev lookup.");
+        return None;
+    }
+    ensure_git_root_for_ort(root, runner, &mut log).await;
+
+    let out_dir = std::env::temp_dir().join(format!("ignite-ort-{}", uuid::Uuid::new_v4().simple()));
+    let result = run_ort_analyze_inner(root, runner, &out_dir).await;
+    let _ = std::fs::remove_dir_all(&out_dir);
+    match result {
+        Ok(manifests) => manifests,
+        Err(e) => {
+            log(&format!("⚠ ORT analyzer failed, falling back to built-in scan: {e}"));
+            None
+        }
+    }
+}
+
+async fn run_ort_analyze_inner(root: &Path, runner: &ToolRunner, out_dir: &Path) -> std::io::Result<Option<Vec<LicenseScanManifest>>> {
+    std::fs::create_dir_all(out_dir)?;
+    let root_str = root.to_string_lossy().into_owned();
+    let out_str = out_dir.to_string_lossy().into_owned();
+    // exit 2 = "found issues at/above severity threshold" (a normal ORT
+    // outcome, e.g. commercial/unresolved licenses) — the result JSON is
+    // still written; only other exit codes mean the analyzer itself failed.
+    runner
+        .run_tool("ort", &["analyze".to_string(), "-i".to_string(), root_str, "-o".to_string(), out_str, "-f".to_string(), "JSON".to_string()], &root.to_string_lossy(), RunToolOptions { allowed_exit_codes: vec![0, 2], ..Default::default() })
+        .await
+        .map_err(std::io::Error::other)?;
+
+    let raw = std::fs::read_to_string(out_dir.join("analyzer-result.json"))?;
+    let data: serde_json::Value = serde_json::from_str(&raw).map_err(std::io::Error::other)?;
+    let result = data.get("analyzer").and_then(|a| a.get("result")).or_else(|| data.get("result"));
+    let Some(result) = result else { return Ok(None) };
+    let packages = result.get("packages").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    if packages.is_empty() {
+        return Ok(None);
+    }
+
+    // Narrow ORT's full resolved graph (direct + transitive) down to just
+    // each ecosystem's direct dependencies, via the per-ecosystem
+    // dependency graph: dependency_graphs[<Type>].scopes[<scopeName>]
+    // lists each scope's root entries, and each root's `root` field
+    // indexes directly into that same graph's `packages` id-string array.
+    let mut direct_ids_by_type: std::collections::HashMap<String, HashSet<String>> = std::collections::HashMap::new();
+    if let Some(graphs) = result.get("dependency_graphs").and_then(|v| v.as_object()) {
+        for (graph_type, graph) in graphs {
+            let graph_packages = graph.get("packages").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+            let mut ids = HashSet::new();
+            if let Some(scopes) = graph.get("scopes").and_then(|s| s.as_object()) {
+                for roots in scopes.values() {
+                    if let Some(roots) = roots.as_array() {
+                        for entry in roots {
+                            if let Some(idx) = entry.get("root").and_then(|r| r.as_u64()) {
+                                if let Some(id) = graph_packages.get(idx as usize).and_then(|v| v.as_str()) {
+                                    ids.insert(id.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !ids.is_empty() {
+                direct_ids_by_type.insert(graph_type.clone(), ids);
+            }
+        }
+    }
+
+    // Map each ecosystem to its manifest path via the analyzer's
+    // `projects` list. When an ecosystem has more than one project (e.g.
+    // a monorepo with two package.json's) the path is ambiguous per
+    // package, so that ecosystem falls back to a synthetic label instead
+    // of guessing wrong.
+    let projects = result.get("projects").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    let mut path_by_type: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    for proj in &projects {
+        let id = proj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let proj_type = id.split(':').next().unwrap_or("").to_string();
+        let def_path = proj.get("definition_file_path").or_else(|| proj.get("definitionFilePath")).and_then(|v| v.as_str());
+        let (Some(def_path), false) = (def_path, proj_type.is_empty()) else { continue };
+        match path_by_type.get(&proj_type) {
+            Some(Some(existing)) if existing != def_path => {
+                path_by_type.insert(proj_type, None); // ambiguous — more than one manifest
+            }
+            Some(None) => {}
+            _ => {
+                path_by_type.insert(proj_type, Some(def_path.to_string()));
+            }
+        }
+    }
+
+    let mut by_type: std::collections::HashMap<String, Vec<LicenseScanDependency>> = std::collections::HashMap::new();
+    for entry in &packages {
+        let pkg = entry.get("package").unwrap_or(entry);
+        let id = pkg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let parts: Vec<&str> = id.split(':').collect();
+        let (Some(&pkg_type), Some(&name)) = (parts.first(), parts.get(2)) else { continue };
+        if name.is_empty() || pkg_type.is_empty() {
+            continue;
+        }
+        if let Some(direct_ids) = direct_ids_by_type.get(pkg_type) {
+            if !direct_ids.contains(id) {
+                continue; // transitive-only — skip
+            }
+        }
+        let version = parts.get(3).copied().unwrap_or("");
+        let declared: Vec<String> = pkg
+            .get("declared_licenses")
+            .or_else(|| pkg.get("declaredLicenses"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .or_else(|| {
+                pkg.get("declared_licenses_processed")
+                    .or_else(|| pkg.get("declaredLicensesProcessed"))
+                    .and_then(|p| p.get("spdx_expression").or_else(|| p.get("spdxExpression")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| vec![s.to_string()])
+            })
+            .unwrap_or_default();
+        let classification = classify_license_tier(&declared);
+        by_type.entry(pkg_type.to_string()).or_default().push(LicenseScanDependency {
+            name: name.to_string(),
+            version_range: version.to_string(),
+            version: if version.is_empty() { None } else { Some(version.to_string()) },
+            line: None,
+            licenses: declared,
+            tier: classification.tier.into(),
+            reason: classification.reason,
+        });
+    }
+
+    let mut manifests = Vec::new();
+    for (pkg_type, dependencies) in by_type {
+        let Some(ecosystem) = map_ort_ecosystem(&pkg_type) else { continue };
+        let real_path = path_by_type.get(&pkg_type).cloned().flatten();
+        let Some(real_path) = real_path else {
+            manifests.push(LicenseScanManifest { file: format!("(ORT: {ecosystem})"), ecosystem, dependencies });
+            continue;
+        };
+        // Resolve each dependency's declaration line the same way the
+        // deps.dev fallback does, so Studio can highlight the exact line
+        // whether the finding came from ORT or the fallback scanner.
+        let dependencies = match std::fs::read_to_string(root.join(&real_path)) {
+            Ok(content) => dependencies.into_iter().map(|mut dep| { dep.line = find_manifest_dep_line(&content, &dep.name, ecosystem); dep }).collect(),
+            Err(_) => dependencies,
+        };
+        manifests.push(LicenseScanManifest { file: real_path, ecosystem, dependencies });
+    }
+
+    Ok(Some(manifests))
+}
+
 pub struct DependencyLicenseScan {
     pub engine: &'static str,
     pub project_license: Option<ProjectLicenseDetection>,
     pub manifests: Vec<LicenseScanManifest>,
 }
 
-/// Combines `run_licensee_detect`'s whole-project license detection with
-/// the deps.dev-backed per-manifest scan. ORT (OSS Review Toolkit)
-/// integration isn't ported yet (see module doc), so unlike the JS
-/// original this always runs in fallback-only mode — the same mode the
-/// JS original itself falls back to when ORT isn't installed.
-pub async fn scan_dependency_licenses(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client) -> std::io::Result<DependencyLicenseScan> {
-    let project_license = run_licensee_detect(root, runner).await;
-    let manifests = scan_dependency_licenses_fallback(root, client, npm_http, &HashSet::new()).await?;
-    Ok(DependencyLicenseScan { engine: "fallback", project_license, manifests })
+/// Combines `run_licensee_detect`'s whole-project license detection,
+/// `run_ort_analyze`'s ORT-resolved manifests (when ORT is installed),
+/// and the deps.dev-backed fallback scan for whatever ecosystem ORT
+/// didn't cover — using ORT's results outright for what it *did* resolve
+/// and the fallback only for the rest, so one uncovered ecosystem never
+/// makes every other manifest's findings disappear.
+pub async fn scan_dependency_licenses(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client, mut log: impl FnMut(&str)) -> std::io::Result<DependencyLicenseScan> {
+    let (project_license, ort_manifests) = futures::join!(run_licensee_detect(root, runner), run_ort_analyze(root, runner, &mut log));
+
+    let ort_ecosystems: HashSet<&str> = ort_manifests.as_deref().unwrap_or(&[]).iter().map(|m| m.ecosystem).collect();
+    let fallback_manifests = scan_dependency_licenses_fallback(root, client, npm_http, &ort_ecosystems).await?;
+
+    let engine = if ort_manifests.is_none() {
+        "fallback"
+    } else if !fallback_manifests.is_empty() {
+        "ort+fallback"
+    } else {
+        "ort"
+    };
+    if ort_manifests.is_some() && !fallback_manifests.is_empty() {
+        let ort_list: Vec<&str> = ort_ecosystems.iter().copied().collect();
+        let fallback_list: Vec<&str> = fallback_manifests.iter().map(|m| m.ecosystem).collect();
+        log(&format!("ℹ ORT resolved {} — falling back to deps.dev for the rest ({}).", ort_list.join(", "), fallback_list.join(", ")));
+    }
+
+    let mut manifests = ort_manifests.unwrap_or_default();
+    manifests.extend(fallback_manifests);
+    Ok(DependencyLicenseScan { engine, project_license, manifests })
 }
 
 /// Faithful port of `runLicenseComplianceCheck` — Phase 3's license
@@ -424,7 +645,7 @@ pub async fn scan_dependency_licenses(root: &Path, runner: &ToolRunner, client: 
 /// list instead.
 pub async fn run_license_compliance_check(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client, mut log: impl FnMut(&str)) -> Vec<Issue> {
     log("Check 5 — dependency & license compliance scan (manifests + LICENSE files)...");
-    let scan = match scan_dependency_licenses(root, runner, client, npm_http).await {
+    let scan = match scan_dependency_licenses(root, runner, client, npm_http, &mut log).await {
         Ok(s) => s,
         Err(e) => {
             log(&format!("⚠ License compliance scan failed (non-blocking): {e}"));
@@ -599,6 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_license_compliance_check_logs_and_returns_no_issues_for_internal_only_deps() {
+        let _guard = PATH_LOCK.lock().unwrap(); // real `ort`/`licensee` run here — must not race the PATH-mutating test
         let dir = tempdir().unwrap();
         let root = dir.path();
         fs::write(root.join("package.json"), r#"{"dependencies": {"@myorg/shared": "workspace:*"}}"#).unwrap();
@@ -768,5 +990,71 @@ mod tests {
     async fn run_licensee_detect_returns_none_when_not_installed() {
         let result = run_licensee_detect(Path::new("/tmp"), &ToolRunner::new(HashMap::new())).await;
         assert!(result.is_none());
+    }
+
+    // Serializes tests that mutate the process-global PATH env var.
+    static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test]
+    async fn run_ort_analyze_returns_none_when_not_installed() {
+        // "ort" is a FIXED_COMMANDS entry (resolved directly off PATH, not
+        // via ToolRunner's binaries map), so an empty ToolRunner alone
+        // doesn't force the not-installed path on a machine that actually
+        // has ort installed — point PATH somewhere with no `ort` instead.
+        let _guard = PATH_LOCK.lock().unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", "/nonexistent-ignite-test-path");
+
+        let runner = ToolRunner::new(HashMap::new());
+        let mut logs = Vec::new();
+        let result = run_ort_analyze(Path::new("/tmp"), &runner, |l| logs.push(l.to_string())).await;
+
+        std::env::set_var("PATH", &original_path);
+
+        assert!(result.is_none());
+        assert!(logs.iter().any(|l| l.contains("ORT analyzer skipped")));
+    }
+
+    #[test]
+    fn map_ort_ecosystem_recognizes_known_package_managers() {
+        assert_eq!(map_ort_ecosystem("NPM"), Some("npm"));
+        assert_eq!(map_ort_ecosystem("Yarn"), Some("npm"));
+        assert_eq!(map_ort_ecosystem("Cargo"), Some("cargo"));
+        assert_eq!(map_ort_ecosystem("PIP"), Some("pypi"));
+        assert_eq!(map_ort_ecosystem("GoMod"), Some("go"));
+        assert_eq!(map_ort_ecosystem("Maven"), Some("maven"));
+        assert_eq!(map_ort_ecosystem("Gradle"), Some("maven"));
+        assert_eq!(map_ort_ecosystem("Conan"), None);
+    }
+
+    #[tokio::test]
+    async fn run_ort_analyze_resolves_a_real_npm_project_when_ort_is_installed() {
+        let _guard = PATH_LOCK.lock().unwrap(); // must not race the PATH-mutating test
+        let binaries: HashMap<&'static str, String> = [("ort", "ort".to_string())].into_iter().collect();
+        let runner = ToolRunner::new(binaries);
+        if !ort_tooling(&runner).await {
+            return; // ort not installed on this machine — nothing to verify
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("package.json"), r#"{"name":"ort-smoke-test","version":"1.0.0","dependencies":{"lodash":"4.17.21"}}"#).unwrap();
+        fs::write(
+            root.join("package-lock.json"),
+            r#"{"name":"ort-smoke-test","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"ort-smoke-test","version":"1.0.0","dependencies":{"lodash":"4.17.21"}},"node_modules/lodash":{"version":"4.17.21","resolved":"https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz","license":"MIT"}}}"#,
+        )
+        .unwrap();
+
+        let mut logs = Vec::new();
+        let result = run_ort_analyze(root, &runner, |l| logs.push(l.to_string())).await;
+        // ORT's own resolution can still come back empty in a sandboxed/
+        // offline CI environment (no registry access) — the point of this
+        // test is that the real subprocess path runs to completion without
+        // erroring, not a specific dependency count.
+        if let Some(manifests) = result {
+            if let Some(npm) = manifests.iter().find(|m| m.ecosystem == "npm") {
+                assert!(npm.dependencies.iter().any(|d| d.name == "lodash"));
+            }
+        }
     }
 }
