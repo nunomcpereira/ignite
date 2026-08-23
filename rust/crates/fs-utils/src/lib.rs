@@ -505,11 +505,35 @@ pub fn is_env_template_file(base: &str) -> bool {
     lower.starts_with(".env") && ENV_TEMPLATE_SUFFIXES.iter().any(|s| lower.ends_with(s))
 }
 
+/// Matches `/^Dockerfile(\.[A-Za-z0-9_-]+)?$/` (DOCKERFILE_NAME_RE in the JS
+/// original) without pulling in the `regex` crate for one pattern: exact
+/// "Dockerfile", or "Dockerfile." followed by 1+ chars all in
+/// [A-Za-z0-9_-].
+pub fn is_dockerfile_name(base: &str) -> bool {
+    let Some(rest) = base.strip_prefix("Dockerfile") else { return false };
+    if rest.is_empty() {
+        return true;
+    }
+    let Some(suffix) = rest.strip_prefix('.') else { return false };
+    !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn is_dockerfile_name_matches_bare_and_suffixed() {
+        assert!(is_dockerfile_name("Dockerfile"));
+        assert!(is_dockerfile_name("Dockerfile.prod"));
+        assert!(is_dockerfile_name("Dockerfile.dev-2"));
+        assert!(!is_dockerfile_name("dockerfile"));
+        assert!(!is_dockerfile_name("Dockerfile."));
+        assert!(!is_dockerfile_name("Dockerfile.foo/bar"));
+        assert!(!is_dockerfile_name("MyDockerfile"));
+    }
 
     #[test]
     fn looks_binary_detects_nul_byte() {
