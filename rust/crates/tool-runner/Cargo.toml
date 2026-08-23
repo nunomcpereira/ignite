@@ -1,0 +1,11 @@
+[package]
+name = "ignite-tool-runner"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["process", "time", "io-util", "macros", "rt-multi-thread"] }
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
