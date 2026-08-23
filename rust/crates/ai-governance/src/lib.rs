@@ -12,7 +12,7 @@
 use ignite_fs_utils::{build_snippet, hash_buffer, looks_binary, walk_files, Snippet, SnippetOptions};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -37,7 +37,7 @@ static GENERIC_CLIENT_RECEIVER_RE: Lazy<Regex> =
 static TEST_FILE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)(^|/)(tests?|__tests__|spec)/|(^|/)(test_[^/]+\.py|[^/]+_test\.py|[^/]+\.(test|spec)\.[jt]sx?)$").unwrap());
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GovernanceFinding {
     pub file: String,
     pub line: usize,
@@ -46,7 +46,7 @@ pub struct GovernanceFinding {
     pub code: Option<Snippet>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedFileEntry {
     pub hash: String,
     pub findings: Vec<GovernanceFinding>,

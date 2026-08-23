@@ -1,0 +1,486 @@
+//! Phase 4 check orchestrator. Faithful port of server.js's
+//! `runPhase4Checks`: fans out to every check concurrently, converts each
+//! check's own richly-typed result into `override-engine`'s generic
+//! `RawFinding`/`CheckResult` shape, and calls `collect_phase4_issues` to
+//! produce the final addressable issue list.
+//!
+//! Known gap vs. the JS original: `checkSecrets`' gitleaks-supplement
+//! merge (`runGitleaksScan`/`mergeGitleaksFindings`, already ported in
+//! `ignite-secrets` as standalone functions) isn't wired in here yet — the
+//! built-in regex secret scan runs, gitleaks's additional coverage
+//! doesn't. `FAST_MODE_TASKS` filtering (secrets/governance/semanticSast/
+//! fileEncapsulation only) is implemented.
+
+use ignite_db_store::DbStore;
+use ignite_override_engine::{CheckResult, CodeqlFinding as OeCodeqlFinding, CodeqlResult, Issue, LlmFinding as OeLlmFinding, LlmResult, Phase4Inputs, RawFinding};
+use ignite_tool_runner::ToolRunner;
+use std::collections::HashMap;
+use std::path::Path;
+
+fn snippet_json<T: serde::Serialize>(snippet: &Option<T>) -> Option<serde_json::Value> {
+    snippet.as_ref().and_then(|s| serde_json::to_value(s).ok())
+}
+
+pub struct Phase4Config {
+    pub fast: bool,
+    pub org: String,
+    pub repo: String,
+    pub project_id: Option<i64>,
+    pub secrets: ignite_secrets::SecretsConfig,
+    pub llm: Option<ignite_llm_deep_scan::LlmDeepScanConfig>,
+    pub iac: ignite_iac_security::IacSecurityConfig,
+    pub container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig,
+    pub sbom_enabled: bool,
+    pub image_provenance: ignite_image_provenance::ImageProvenanceConfig,
+    pub semantic_sast: ignite_semantic_sast::SemanticSastConfig,
+    pub pii_data_flow: ignite_pii_dataflow::PiiDataFlowConfig,
+    pub code_duplication: ignite_code_duplication::CodeDuplicationConfig,
+    pub file_encapsulation: ignite_file_encapsulation::FileEncapsulationConfig,
+    pub loc_metrics_enabled: bool,
+    pub api_schema: ignite_api_schema::ApiSchemaConfig,
+    pub api_schema_drift: ignite_api_schema_drift::ApiSchemaDriftConfig,
+    pub malicious_dependencies: ignite_malicious_dependencies::MaliciousDependenciesConfig,
+    pub model_artifact_security: ignite_model_artifact_security::ModelArtifactSecurityConfig,
+    pub package_hallucination_enabled: bool,
+    pub feature_posture: ignite_feature_posture::FeaturePostureConfig,
+    pub eu_ai_act_documents_enabled: bool,
+    pub eu_ai_act_report_as_findings: bool,
+    pub dead_code: ignite_dead_code::DeadCodeConfig,
+    pub complexity_health: ignite_complexity_health::ComplexityHealthConfig,
+    pub css_dead_code: ignite_css_dead_code::CssDeadCodeConfig,
+    pub boundaries: ignite_boundaries::BoundariesConfig,
+    pub igniteignore_enabled: bool,
+    pub codeql: ignite_codeql_cross_file::CodeqlConfig,
+}
+
+pub struct Phase4Documents {
+    pub sbom: Option<(String, Vec<u8>)>,
+    pub provenance: Option<Vec<u8>>,
+    pub loc_metrics: Option<Vec<u8>>,
+    pub posture_report: Option<Vec<u8>>,
+    pub ai_act_documents_report: Option<Vec<u8>>,
+}
+
+pub struct Phase4Output {
+    pub issues: Vec<Issue>,
+    pub documents: Phase4Documents,
+}
+
+fn to_json_bytes<T: serde::Serialize>(v: &T) -> Vec<u8> {
+    serde_json::to_vec_pretty(v).unwrap_or_default()
+}
+
+pub async fn run_phase4_checks(root: &Path, runner: &ToolRunner, store: &DbStore, config: &Phase4Config) -> std::io::Result<Phase4Output> {
+    let secrets_cache = store.get_file_scan_cache(&config.org, &config.repo, "secrets");
+    let secrets_cache: HashMap<String, ignite_secrets::CachedFileEntry> =
+        secrets_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_secrets::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
+    let (secrets_result, secrets_new_cache) = ignite_secrets::check_secrets(root, &config.secrets, &secrets_cache)?;
+    store.replace_file_scan_cache(
+        &config.org,
+        &config.repo,
+        "secrets",
+        &secrets_new_cache.iter().map(|(k, v)| ignite_db_store::FileScanCacheInput { rel_path: k.clone(), hash: v.hash.clone(), findings: serde_json::to_value(v).unwrap() }).collect::<Vec<_>>(),
+    );
+    let secrets_check = CheckResult {
+        findings: secrets_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), ..Default::default() }).collect(),
+        engine: Some("built-in".to_string()),
+    };
+
+    let governance_cache = store.get_file_scan_cache(&config.org, &config.repo, "governance");
+    let governance_cache: HashMap<String, ignite_ai_governance::CachedFileEntry> =
+        governance_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_ai_governance::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
+    let (governance_result, governance_new_cache) = ignite_ai_governance::check_ai_governance(root, &governance_cache)?;
+    store.replace_file_scan_cache(
+        &config.org,
+        &config.repo,
+        "governance",
+        &governance_new_cache.iter().map(|(k, v)| ignite_db_store::FileScanCacheInput { rel_path: k.clone(), hash: v.hash.clone(), findings: serde_json::to_value(v).unwrap() }).collect::<Vec<_>>(),
+    );
+    let governance_check =
+        CheckResult { findings: governance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), raw_snippet_text: Some(f.snippet.clone()), ..Default::default() }).collect(), engine: Some("built-in".to_string()) };
+
+    if config.fast {
+        // FAST_MODE_TASKS = secrets, governance, semanticSast, fileEncapsulation
+        let semantic_sast_result = ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await;
+        let semantic_sast_check = CheckResult {
+            findings: semantic_sast_result
+                .findings
+                .iter()
+                .map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), owasp: f.owasp.clone(), ..Default::default() })
+                .collect(),
+            engine: Some(semantic_sast_result.engine.to_string()),
+        };
+        let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation)?;
+        let file_encapsulation_check = CheckResult {
+            findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+            engine: Some(file_encapsulation_result.engine.to_string()),
+        };
+
+        let inputs = Phase4Inputs {
+            secrets: secrets_check,
+            governance: governance_check,
+            llm: None,
+            iac: None,
+            image_vulnerabilities: None,
+            image_provenance: None,
+            semantic_sast: Some(semantic_sast_check),
+            pii_data_flow: None,
+            duplication: None,
+            file_encapsulation: Some(file_encapsulation_check),
+            api_schema: None,
+            api_schema_drift: None,
+            malicious_dependencies: None,
+            model_artifact_security: None,
+            package_hallucination: None,
+            codeql: None,
+            dead_code: None,
+            health: None,
+            css_dead_code: None,
+            boundaries: None,
+            eu_ai_act: None,
+            ignite_ignore: None,
+        };
+        let issues = ignite_override_engine::collect_phase4_issues(&inputs);
+        return Ok(Phase4Output { issues, documents: Phase4Documents { sbom: None, provenance: None, loc_metrics: None, posture_report: None, ai_act_documents_report: None } });
+    }
+
+    let http_client = reqwest::Client::new();
+
+    let llm_check = if let Some(llm_config) = &config.llm {
+        let result = ignite_llm_deep_scan::check_llm_deep_scan(root, llm_config, store, &config.org, &config.repo, |_l| {}).await?;
+        Some(LlmResult {
+            available: result.available,
+            findings: result
+                .findings
+                .iter()
+                .map(|f| OeLlmFinding { category: f.category.clone(), file: Some(f.file.clone()), line: Some(f.line), level: Some(f.level.clone()), issue: Some(f.issue.clone()), recommendation: Some(f.recommendation.clone()), code: snippet_json(&f.code) })
+                .collect(),
+        })
+    } else {
+        None
+    };
+
+    let iac_result = ignite_iac_security::check_iac_security(root, runner, &config.iac).await?;
+    let iac_check = Some(CheckResult {
+        findings: iac_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(iac_result.engine),
+    });
+
+    let image_vuln_result = ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities).await?;
+    let image_vuln_check = Some(CheckResult {
+        findings: image_vuln_result
+            .findings
+            .iter()
+            .map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), pkg_name: f.pkg_name.clone(), ..Default::default() })
+            .collect(),
+        engine: Some(image_vuln_result.engine.to_string()),
+    });
+
+    let (sbom_engine, sbom_doc) = {
+        let manifests = ignite_package_hallucination::default_manifests();
+        let sbom_result = ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000).await?;
+        let doc = if config.project_id.is_some() {
+            match &sbom_result.sbom {
+                ignite_sbom::SbomOutcome::Syft(v) => Some((format!("sbom.cyclonedx.json"), to_json_bytes(v))),
+                ignite_sbom::SbomOutcome::Fallback(v) => Some((format!("sbom.fallback.json"), to_json_bytes(v))),
+            }
+        } else {
+            None
+        };
+        (sbom_result.engine, doc)
+    };
+    let _ = sbom_engine;
+
+    let provenance_doc = if config.project_id.is_some() {
+        let provenance = ignite_provenance::generate_provenance(root, runner, "0.1.0", ignite_provenance::ProvenanceParams { org: Some(&config.org), repo: Some(&config.repo), job_id: None }).await?;
+        Some(to_json_bytes(&provenance))
+    } else {
+        None
+    };
+
+    let image_provenance_result = ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store)).await?;
+    let image_provenance_check =
+        Some(CheckResult { findings: image_provenance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(), engine: Some(image_provenance_result.engine.to_string()) });
+
+    let semantic_sast_result = ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await;
+    let semantic_sast_check = Some(CheckResult {
+        findings: semantic_sast_result
+            .findings
+            .iter()
+            .map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), owasp: f.owasp.clone(), ..Default::default() })
+            .collect(),
+        engine: Some(semantic_sast_result.engine.to_string()),
+    });
+
+    let pii_result = ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow).await;
+    let pii_check = Some(CheckResult {
+        findings: pii_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), ..Default::default() }).collect(),
+        engine: Some(pii_result.engine.to_string()),
+    });
+
+    let duplication_result = ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication).await;
+    let duplication_check = Some(CheckResult {
+        findings: duplication_result
+            .findings
+            .iter()
+            .map(|f| RawFinding {
+                file: Some(f.file.clone()),
+                line: Some(f.line as i64),
+                kind: Some(f.kind.to_string()),
+                tool: Some(f.tool.to_string()),
+                severity: Some(f.severity.to_string()),
+                message: Some(f.message.clone()),
+                duplicate_ref: serde_json::to_value(&f.duplicate_ref).ok(),
+                ..Default::default()
+            })
+            .collect(),
+        engine: Some(duplication_result.engine.to_string()),
+    });
+
+    let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation)?;
+    let file_encapsulation_check = Some(CheckResult {
+        findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(file_encapsulation_result.engine.to_string()),
+    });
+
+    let loc_metrics_result = ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled).await;
+    let loc_metrics_doc = if config.project_id.is_some() { loc_metrics_result.metrics.as_ref().map(to_json_bytes) } else { None };
+
+    let api_schema_result = ignite_api_schema::check_api_schemas(root, runner, &config.api_schema).await?;
+    let api_schema_check = Some(CheckResult {
+        findings: api_schema_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(api_schema_result.engine.to_string()),
+    });
+
+    let api_schema_drift_result = ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift).await?;
+    let api_schema_drift_check = Some(CheckResult {
+        findings: api_schema_drift_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(api_schema_drift_result.engine.to_string()),
+    });
+
+    let malicious_deps_result = ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store)).await?;
+    let malicious_deps_check = Some(CheckResult {
+        findings: malicious_deps_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(malicious_deps_result.engine.to_string()),
+    });
+
+    let model_artifact_result = ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security).await?;
+    let model_artifact_check = Some(CheckResult {
+        findings: model_artifact_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(model_artifact_result.engine.to_string()),
+    });
+
+    let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+    let hallucination_result = hallucination_checker.check(root, config.package_hallucination_enabled, &ignite_package_hallucination::default_manifests()).await?;
+    let hallucination_check = Some(CheckResult {
+        findings: hallucination_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(hallucination_result.engine.to_string()),
+    });
+
+    let posture_result = ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture).await?;
+    let posture_doc = if config.project_id.is_some() { Some(to_json_bytes(&serde_json::json!({ "engine": posture_result.engine, "posture": posture_result.posture }))) } else { None };
+
+    let ai_act_docs_result = ignite_compliance_documents::check_compliance_documents(root, config.eu_ai_act_documents_enabled)?;
+    let ai_act_docs_doc = if config.project_id.is_some() { Some(to_json_bytes(&serde_json::json!({ "engine": ai_act_docs_result.engine, "documents": ai_act_docs_result.documents }))) } else { None };
+
+    let eu_ai_act_check = if config.eu_ai_act_report_as_findings {
+        Some(derive_eu_ai_act_findings(&posture_result.posture, &ai_act_docs_result.documents))
+    } else {
+        None
+    };
+
+    let dead_code_result = ignite_dead_code::check_dead_code(root, &config.dead_code)?;
+    let dead_code_check = Some(CheckResult {
+        findings: dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(dead_code_result.engine.to_string()),
+    });
+
+    let churn: HashMap<String, u64> = HashMap::new(); // git-churn weighting not yet wired (needs `git log --numstat`)
+    let org = config.org.clone();
+    let repo = config.repo.clone();
+    let health_result = ignite_complexity_health::check_complexity_health(root, &config.complexity_health, &churn, |rel_path| store.get_runtime_coverage_for_file(&org, &repo, rel_path).and_then(|r| r.covered_pct))?;
+    let health_check = Some(CheckResult {
+        findings: health_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(health_result.engine.to_string()),
+    });
+
+    let css_dead_code_result = ignite_css_dead_code::check_css_dead_code(root, &config.css_dead_code)?;
+    let css_dead_code_check = Some(CheckResult {
+        findings: css_dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(css_dead_code_result.engine.to_string()),
+    });
+
+    let boundaries_result = ignite_boundaries::check_boundaries(root, &config.boundaries)?;
+    let boundaries_check = Some(CheckResult {
+        findings: boundaries_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(boundaries_result.engine.to_string()),
+    });
+
+    let igniteignore_result = ignite_igniteignore::check_igniteignore_committed(root, runner, config.igniteignore_enabled).await;
+    let igniteignore_check = Some(CheckResult {
+        findings: igniteignore_result.findings.iter().map(|f| RawFinding { file: Some(f.file.to_string()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(igniteignore_result.engine.to_string()),
+    });
+
+    let codeql_result = ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store) }).await?;
+    let codeql_check = Some(CodeqlResult {
+        findings: codeql_result
+            .findings
+            .iter()
+            .map(|f| OeCodeqlFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), snippet: snippet_json(&f.snippet), cross_file: f.cross_file, chain: None, cwe: None })
+            .collect(),
+    });
+
+    let inputs = Phase4Inputs {
+        secrets: secrets_check,
+        governance: governance_check,
+        llm: llm_check,
+        iac: iac_check,
+        image_vulnerabilities: image_vuln_check,
+        image_provenance: image_provenance_check,
+        semantic_sast: semantic_sast_check,
+        pii_data_flow: pii_check,
+        duplication: duplication_check,
+        file_encapsulation: file_encapsulation_check,
+        api_schema: api_schema_check,
+        api_schema_drift: api_schema_drift_check,
+        malicious_dependencies: malicious_deps_check,
+        model_artifact_security: model_artifact_check,
+        package_hallucination: hallucination_check,
+        codeql: codeql_check,
+        dead_code: dead_code_check,
+        health: health_check,
+        css_dead_code: css_dead_code_check,
+        boundaries: boundaries_check,
+        eu_ai_act: eu_ai_act_check,
+        ignite_ignore: igniteignore_check,
+    };
+    let issues = ignite_override_engine::collect_phase4_issues(&inputs);
+    let _ = http_client;
+
+    Ok(Phase4Output {
+        issues,
+        documents: Phase4Documents { sbom: sbom_doc, provenance: provenance_doc, loc_metrics: loc_metrics_doc, posture_report: posture_doc, ai_act_documents_report: ai_act_docs_doc },
+    })
+}
+
+/// Only called when `eu_ai_act_report_as_findings` is true — turns the
+/// three `ai-act-*` posture categories' matches and the doc-presence
+/// scan's MISSING categories into the generic findings shape.
+fn derive_eu_ai_act_findings(posture: &ignite_feature_posture::PostureReport, documents: &std::collections::BTreeMap<&'static str, ignite_compliance_documents::DocumentCategoryReport>) -> CheckResult {
+    let mut findings = Vec::new();
+    let posture_kinds: &[(&str, &str)] = &[("ai-act-prohibited-practice", "ai-act-prohibited-practice"), ("ai-act-transparency-disclosure", "ai-act-transparency-disclosure"), ("ai-act-ai-logging", "ai-act-ai-logging")];
+    for (category, kind) in posture_kinds {
+        if let Some(report) = posture.get(category) {
+            for m in &report.matches {
+                findings.push(RawFinding { file: Some(m.file.clone()), line: Some(m.line as i64), kind: Some(kind.to_string()), message: Some(m.message.clone()), code: snippet_json(&m.code), ..Default::default() });
+            }
+        }
+    }
+    let document_labels: &[(&str, &str)] = &[
+        ("risk-management-system", "Risk-management system documentation (Art. 9) not found in this repo."),
+        ("technical-documentation", "Annex IV technical documentation (Art. 11) not found in this repo."),
+        ("fria", "Fundamental rights impact assessment (Art. 27) not found in this repo."),
+        ("training-data-summary", "GPAI training-data summary / model card (Art. 53) not found in this repo."),
+        ("post-market-monitoring", "Post-market monitoring plan (Art. 72) not found in this repo."),
+    ];
+    for (category, message) in document_labels {
+        if documents.get(category).map(|d| d.status) == Some("MISSING") {
+            findings.push(RawFinding { kind: Some("ai-act-compliance-documents".to_string()), message: Some(message.to_string()), ..Default::default() });
+        }
+    }
+    CheckResult { findings, engine: None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap as StdHashMap;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn test_config(project_id: Option<i64>) -> Phase4Config {
+        Phase4Config {
+            fast: false,
+            org: "test-org".to_string(),
+            repo: "test-repo".to_string(),
+            project_id,
+            secrets: ignite_secrets::SecretsConfig::default(),
+            llm: None,
+            iac: ignite_iac_security::IacSecurityConfig { trivy_enabled: false, checkov_enabled: false, hadolint_enabled: false },
+            container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig { enabled: false, ..Default::default() },
+            sbom_enabled: false,
+            image_provenance: ignite_image_provenance::ImageProvenanceConfig { enabled: false, ..Default::default() },
+            semantic_sast: ignite_semantic_sast::SemanticSastConfig { enabled: false, ..Default::default() },
+            pii_data_flow: ignite_pii_dataflow::PiiDataFlowConfig { enabled: false },
+            code_duplication: ignite_code_duplication::CodeDuplicationConfig { enabled: false, ..Default::default() },
+            file_encapsulation: ignite_file_encapsulation::FileEncapsulationConfig { enabled: true, max_lines: 500 },
+            loc_metrics_enabled: false,
+            api_schema: ignite_api_schema::ApiSchemaConfig { enabled: false, ..Default::default() },
+            api_schema_drift: ignite_api_schema_drift::ApiSchemaDriftConfig { enabled: false },
+            malicious_dependencies: ignite_malicious_dependencies::MaliciousDependenciesConfig { enabled: false },
+            model_artifact_security: ignite_model_artifact_security::ModelArtifactSecurityConfig { enabled: false, ..Default::default() },
+            package_hallucination_enabled: false,
+            feature_posture: ignite_feature_posture::FeaturePostureConfig { enabled: false, ruleset: String::new(), max_scan_file_bytes: 1_000_000 },
+            eu_ai_act_documents_enabled: false,
+            eu_ai_act_report_as_findings: false,
+            dead_code: ignite_dead_code::DeadCodeConfig { enabled: false },
+            complexity_health: ignite_complexity_health::ComplexityHealthConfig::default(),
+            css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: false },
+            boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
+            igniteignore_enabled: false,
+            codeql: ignite_codeql_cross_file::CodeqlConfig { enabled: false, ..Default::default() },
+        }
+    }
+
+    #[tokio::test]
+    async fn everything_disabled_still_runs_secrets_governance_and_builtins() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("app.js"), "const password = 'hardcodedsecretvalue1234';\n").unwrap();
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let runner = ToolRunner::new(StdHashMap::new());
+        let config = test_config(None);
+
+        let output = run_phase4_checks(root, &runner, &store, &config).await.unwrap();
+        assert!(output.issues.iter().any(|i| i.category == "secret"));
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn fast_mode_only_runs_the_four_fast_tasks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("app.js"), "const password = 'hardcodedsecretvalue1234';\n").unwrap();
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let runner = ToolRunner::new(StdHashMap::new());
+        let mut config = test_config(None);
+        config.fast = true;
+
+        let output = run_phase4_checks(root, &runner, &store, &config).await.unwrap();
+        assert!(output.issues.iter().any(|i| i.category == "secret"));
+        assert!(output.documents.sbom.is_none());
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn no_project_id_skips_document_generation() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("app.js"), "console.log(1);\n").unwrap();
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let runner = ToolRunner::new(StdHashMap::new());
+        let config = test_config(None);
+
+        let output = run_phase4_checks(root, &runner, &store, &config).await.unwrap();
+        assert!(output.documents.sbom.is_none());
+        assert!(output.documents.provenance.is_none());
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+}

@@ -15,7 +15,7 @@ use ignite_fs_utils::{
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -144,17 +144,17 @@ pub fn is_allowlisted(allowlist: &GitleaksAllowlist, rel_path: &str, line_text: 
     allowlist.paths.iter().any(|re| re.is_match(rel_path)) || allowlist.regexes.iter().any(|re| re.is_match(line_text))
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretFinding {
     pub file: String,
     pub line: usize,
     pub kind: String,
-    pub tool: &'static str,
+    pub tool: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<Snippet>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedFileEntry {
     pub hash: String,
     pub findings: Vec<SecretFinding>,
@@ -208,7 +208,7 @@ fn scan_file_for_secrets(
             file: rel.to_string(),
             line: line_no,
             kind: keyword.to_lowercase(),
-            tool: "built-in",
+            tool: "built-in".to_string(),
             code: build_snippet(content, line_no, SnippetOptions { col_start: Some(whole.start()), col_end: Some(whole.end()), ..Default::default() }),
         });
     }
@@ -353,7 +353,7 @@ pub fn merge_gitleaks_findings(
             continue;
         }
         seen.insert(key);
-        added.push(SecretFinding { file: f.file.clone(), line: f.line, kind: f.kind.clone(), tool: "gitleaks", code: f.code.clone() });
+        added.push(SecretFinding { file: f.file.clone(), line: f.line, kind: f.kind.clone(), tool: "gitleaks".to_string(), code: f.code.clone() });
     }
     added
 }
@@ -514,7 +514,7 @@ id = "generic-api-key"
 
     #[test]
     fn merge_gitleaks_findings_dedupes_against_existing_regex_findings() {
-        let existing = vec![SecretFinding { file: "a.js".into(), line: 3, kind: "api_key".into(), tool: "built-in", code: None }];
+        let existing = vec![SecretFinding { file: "a.js".into(), line: 3, kind: "api_key".into(), tool: "built-in".to_string(), code: None }];
         let gitleaks = vec![
             GitleaksRawResult { file: "a.js".into(), line: 3, kind: "generic-api-key".into(), code: None }, // dupe
             GitleaksRawResult { file: "b.js".into(), line: 7, kind: "aws-secret".into(), code: None },      // new
