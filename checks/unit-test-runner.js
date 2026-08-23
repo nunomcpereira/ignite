@@ -60,7 +60,12 @@ function createUnitTestRunnerCheck({ runTool, runToolStreaming }) {
         return {
           detail: `npm test script: "${testScript}"`,
           image: resolveTestNodeImage(pkg),
-          command: 'npm ci --no-audit --no-fund || npm install --no-audit --no-fund && npm test',
+          // node:*-alpine ships no `git` — some suites shell out to a real
+          // git binary (e.g. this repo's own resolveGovernanceCiLocation
+          // tests), which fails with a bare "spawn git ENOENT" inside the
+          // sandbox despite passing fine on the host. `--no-cache` avoids
+          // leaving an apk index behind in the throwaway container.
+          command: 'apk add --no-cache git >/dev/null 2>&1 || true; npm ci --no-audit --no-fund || npm install --no-audit --no-fund && npm test',
         };
       },
     },
