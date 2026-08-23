@@ -386,11 +386,11 @@
   <div class="stat-row">
     <div class="stat hot">
       <div class="value">365<small>s → 302s</small></div>
-      <div class="label">Wall time, safe fixes only</div>
+      <div class="label">Wall time, shipped default (17% faster)</div>
     </div>
-    <div class="stat hot">
+    <div class="stat">
       <div class="value">121<small>s</small></div>
-      <div class="label">With the coverage tradeoff (67% faster)</div>
+      <div class="label">Declined tradeoff (67% faster, less rule coverage)</div>
     </div>
     <div class="stat">
       <div class="value">949,750</div>
@@ -714,8 +714,11 @@
             codebase's own config comment says as much), so most of that time was spent
             re-checking largely the same ground twice. Cost: losing whatever
             OWASP Top 10-specific rules aren't already covered by security-audit.
-            Not applied by default — flip <code>SEMGREP_CONFIG</code> (env var or
-            <code>config.json</code>'s <code>security.semgrep.config</code>) to adopt it.
+            <strong>Decision: not adopted.</strong> Asked directly, keep both packs —
+            functionality (rule coverage) over raw wall-clock time. Still available via
+            <code>SEMGREP_CONFIG</code>/<code>security.semgrep.config</code> if that
+            calculus ever changes for a specific environment (e.g. a fast inner-loop
+            pre-push hook), but the default stays as both packs combined.
           </p>
         </div>
       </div>
