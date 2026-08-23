@@ -1,0 +1,13 @@
+[package]
+name = "ignite-boundaries"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-fs-utils = { path = "../fs-utils" }
+ignite-module-graph = { path = "../module-graph" }
+serde = { version = "1", features = ["derive"] }
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
