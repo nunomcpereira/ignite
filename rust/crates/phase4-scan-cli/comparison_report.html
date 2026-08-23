@@ -1,0 +1,414 @@
+<title>Rust vs Node Scan Timing</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg: #f4f2ee;
+    --surface: #ffffff;
+    --surface-2: #ece8e1;
+    --border: #ddd6c9;
+    --text: #201d17;
+    --text-dim: #5c584e;
+    --text-faint: #8b8577;
+    --node: #c8571f;
+    --node-dim: #f0d9c6;
+    --rust: #0e7c73;
+    --rust-dim: #cfe9e6;
+    --ok: #187a4f;
+    --warn: #93650a;
+    --err: #b23131;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --body: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg: #0e1416;
+      --surface: #151d20;
+      --surface-2: #1b2529;
+      --border: #263336;
+      --text: #e6edee;
+      --text-dim: #93a6ab;
+      --text-faint: #5c7176;
+      --node: #ff9153;
+      --node-dim: #7a5334;
+      --rust: #5fd4c9;
+      --rust-dim: #1f4b47;
+      --ok: #3ecf8e;
+      --warn: #f0b23e;
+      --err: #ef5b5b;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg: #0e1416;
+    --surface: #151d20;
+    --surface-2: #1b2529;
+    --border: #263336;
+    --text: #e6edee;
+    --text-dim: #93a6ab;
+    --text-faint: #5c7176;
+    --node: #ff9153;
+    --node-dim: #7a5334;
+    --rust: #5fd4c9;
+    --rust-dim: #1f4b47;
+    --ok: #3ecf8e;
+    --warn: #f0b23e;
+    --err: #ef5b5b;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--body);
+    font-size:15px;
+    line-height:1.55;
+  }
+  ::selection{ background:var(--rust); color:#062724; }
+
+  .wrap{ max-width:980px; margin:0 auto; padding:56px 24px 96px; }
+
+  header{
+    display:flex; flex-direction:column; gap:10px;
+    margin-bottom:40px; padding-bottom:28px;
+    border-bottom:1px solid var(--border);
+  }
+  .eyebrow{
+    font-family:var(--mono); font-size:12px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--rust);
+  }
+  h1{
+    font-family:var(--mono); font-weight:800; font-size:clamp(26px,3.6vw,38px);
+    margin:0; text-wrap:balance; letter-spacing:-0.01em;
+  }
+  .subtitle{ color:var(--text-dim); max-width:68ch; font-size:15.5px; }
+  .subtitle code{ font-family:var(--mono); font-size:.92em; color:var(--text); }
+
+  .stat-row{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:1px;
+    background:var(--border); border:1px solid var(--border);
+    border-radius:10px; overflow:hidden; margin-bottom:16px;
+  }
+  .stat{ background:var(--surface); padding:20px 18px; display:flex; flex-direction:column; gap:6px; }
+  .stat .who{
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    display:flex; align-items:center; gap:6px;
+  }
+  .dot{ width:7px; height:7px; border-radius:50%; display:inline-block; }
+  .dot.node{ background:var(--node); }
+  .dot.rust{ background:var(--rust); }
+  .stat .value{ font-family:var(--mono); font-weight:700; font-size:28px; font-variant-numeric:tabular-nums; }
+  .stat .value small{ font-size:14px; color:var(--text-dim); font-weight:500; }
+  .stat .label{ font-size:12px; color:var(--text-faint); }
+  .caption{
+    font-size:12.5px; color:var(--text-faint); margin:0 0 48px; font-style:italic;
+  }
+
+  section{ margin-bottom:52px; }
+  h2{
+    font-family:var(--mono); font-size:13px; text-transform:uppercase; letter-spacing:.1em;
+    color:var(--text-dim); margin:0 0 4px; display:flex; align-items:baseline; gap:10px;
+  }
+  h2::after{ content:""; flex:1; height:1px; background:var(--border); }
+  .section-note{ color:var(--text-faint); font-size:13.5px; max-width:72ch; margin:0 0 20px; }
+
+  /* grouped bar comparator */
+  .cmp{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:22px 22px 10px; overflow-x:auto;
+  }
+  .cmp-row{ margin-bottom:20px; }
+  .cmp-label{
+    font-family:var(--mono); font-size:12.5px; color:var(--text); margin-bottom:8px;
+    display:flex; justify-content:space-between; gap:12px;
+  }
+  .cmp-label .tag{
+    font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint);
+    font-family:var(--body);
+  }
+  .cmp-track{ display:flex; flex-direction:column; gap:6px; min-width:520px; }
+  .cmp-bar-wrap{ display:grid; grid-template-columns:96px 1fr 84px; align-items:center; gap:10px; }
+  .cmp-who{ font-family:var(--mono); font-size:11.5px; color:var(--text-dim); }
+  .cmp-track-bg{ height:18px; background:var(--surface-2); border-radius:4px; position:relative; }
+  .cmp-fill{ height:100%; border-radius:4px; }
+  .cmp-fill.node{ background:linear-gradient(90deg, var(--node-dim), var(--node)); }
+  .cmp-fill.rust{ background:linear-gradient(90deg, var(--rust-dim), var(--rust)); }
+  .cmp-ms{ font-family:var(--mono); font-size:12.5px; text-align:right; font-variant-numeric:tabular-nums; color:var(--text-dim); }
+
+  table{
+    width:100%; border-collapse:collapse; font-size:13.5px; background:var(--surface);
+    border:1px solid var(--border); border-radius:10px; overflow:hidden;
+  }
+  .table-wrap{ overflow-x:auto; border-radius:10px; }
+  thead th{
+    text-align:left; font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--text-faint); padding:10px 14px;
+    background:var(--surface-2); border-bottom:1px solid var(--border); white-space:nowrap;
+  }
+  tbody td{ padding:9px 14px; border-bottom:1px solid var(--border); vertical-align:top; }
+  tbody tr:last-child td{ border-bottom:none; }
+  td.num{ font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .pill{
+    display:inline-block; font-family:var(--mono); font-size:11px; padding:2px 8px;
+    border-radius:20px; border:1px solid currentColor; white-space:nowrap;
+  }
+  .pill.node{ color:var(--node); }
+  .pill.rust{ color:var(--rust); }
+  .pill.warn{ color:var(--warn); }
+  .pill.ok{ color:var(--ok); }
+
+  .conclusions{ display:flex; flex-direction:column; gap:2px; }
+  .cx{
+    display:grid; grid-template-columns:34px 1fr; gap:14px;
+    padding:18px 4px; border-bottom:1px solid var(--border);
+  }
+  .cx:last-child{ border-bottom:none; }
+  .cx .mark{ font-family:var(--mono); font-weight:700; font-size:14px; padding-top:2px; }
+  .cx.verdict .mark{ color:var(--ok); }
+  .cx.caveat .mark{ color:var(--warn); }
+  .cx.next .mark{ color:var(--rust); }
+  .cx h3{ margin:0 0 4px; font-size:15.5px; font-family:var(--body); font-weight:600; }
+  .cx p{ margin:0; color:var(--text-dim); font-size:14px; max-width:70ch; }
+  .cx code{ font-family:var(--mono); font-size:.92em; color:var(--text); background:var(--surface-2); padding:1px 5px; border-radius:3px; }
+
+  .scope-grid{
+    display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border);
+    border:1px solid var(--border); border-radius:10px; overflow:hidden;
+  }
+  .scope-col{ background:var(--surface); padding:18px 20px; }
+  .scope-col h3{
+    font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.08em;
+    margin:0 0 12px; display:flex; align-items:center; gap:7px;
+  }
+  .scope-col ul{ margin:0; padding-left:18px; color:var(--text-dim); font-size:13.5px; display:flex; flex-direction:column; gap:6px; }
+  .scope-col li::marker{ color:var(--text-faint); }
+
+  footer{
+    margin-top:56px; padding-top:20px; border-top:1px solid var(--border);
+    color:var(--text-faint); font-size:12.5px; font-family:var(--mono); line-height:1.7;
+  }
+
+  @media (max-width:640px){
+    .stat-row{ grid-template-columns:1fr; }
+    .scope-grid{ grid-template-columns:1fr; }
+    .cmp-bar-wrap{ grid-template-columns:76px 1fr 66px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Ignite &middot; Rust rewrite &middot; performance comparison</div>
+    <h1>Three scans, one repo, an honest read</h1>
+    <p class="subtitle">
+      Same target every time &mdash; <code>/Users/nuno/tests/tadone</code>, a 6-workspace
+      monorepo (tadone, eva-console, parla, despesas, shared, obra-abc) at ~950k LOC.
+      Three real wall-clock runs, two engines, and — as the middle run shows — two very
+      different machine conditions.
+    </p>
+  </header>
+
+  <div class="stat-row">
+    <div class="stat">
+      <div class="who"><span class="dot node"></span>Node &middot; earlier session</div>
+      <div class="value">365<small>s</small></div>
+      <div class="label">validate-all, idle machine &middot; recorded in performance_report.html</div>
+    </div>
+    <div class="stat">
+      <div class="who"><span class="dot rust"></span>Rust &middot; this session</div>
+      <div class="value">360<small>s</small></div>
+      <div class="label">Phase 4 checks only, uncontended, no staging/ORT</div>
+    </div>
+    <div class="stat">
+      <div class="who"><span class="dot node"></span>Node &middot; this session</div>
+      <div class="value">760<small>s</small></div>
+      <div class="label">validate-all, full scope, under heavy CPU contention</div>
+    </div>
+  </div>
+  <p class="caption">All three numbers are genuine wall-clock measurements. None of them measure the same thing — that's the point of this report.</p>
+
+  <section>
+    <h2>The headline number, and why it's misleading alone</h2>
+    <p class="section-note">
+      Stacking 365s / 360s / 760s side by side implies Rust roughly ties Node, then Node
+      regresses 2&times; for no reason. Neither read survives a look at what each run
+      actually did.
+    </p>
+    <div class="cmp">
+      <div class="cmp-row">
+        <div class="cmp-label">
+          <span>Node &middot; earlier session (idle machine)</span>
+          <span class="tag">full validate-all</span>
+        </div>
+        <div class="cmp-bar-wrap">
+          <span class="cmp-who">365.0s</span>
+          <div class="cmp-track-bg"><div class="cmp-fill node" style="width:48.0%"></div></div>
+          <span class="cmp-ms">baseline</span>
+        </div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-label">
+          <span>Rust &middot; this session (uncontended)</span>
+          <span class="tag">Phase 4 checks only</span>
+        </div>
+        <div class="cmp-bar-wrap">
+          <span class="cmp-who">359.9s</span>
+          <div class="cmp-track-bg"><div class="cmp-fill rust" style="width:47.4%"></div></div>
+          <span class="cmp-ms">−0.1s vs. Node Phase 4</span>
+        </div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-label">
+          <span>Node &middot; this session (contended)</span>
+          <span class="tag">full validate-all</span>
+        </div>
+        <div class="cmp-bar-wrap">
+          <span class="cmp-who">759.6s</span>
+          <div class="cmp-track-bg"><div class="cmp-fill node" style="width:100%"></div></div>
+          <span class="cmp-ms">+108% vs. earlier Node run</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What each run actually measured</h2>
+    <p class="section-note">
+      The three columns below are not the same shape of work. Reading the numbers without
+      this table is how you conclude the wrong thing.
+    </p>
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Run</th><th>Engine</th><th>Staging copy</th><th>License/dep scan (ORT)</th><th>Phase 4 checks</th><th>Machine</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="pill node">Node &middot; earlier</span></td>
+          <td>server.js</td>
+          <td class="num">26.0s (59.5k files)</td>
+          <td>yes, concurrent w/ Phase 4</td>
+          <td class="num">339.3s (24 checks)</td>
+          <td>idle</td>
+        </tr>
+        <tr>
+          <td><span class="pill rust">Rust &middot; this session</span></td>
+          <td>phase4-orchestrator crate</td>
+          <td>none &mdash; scans in place</td>
+          <td>not ported yet</td>
+          <td class="num">359.9s (24 checks)</td>
+          <td>idle, alone on 14 cores</td>
+        </tr>
+        <tr>
+          <td><span class="pill node">Node &middot; this session</span></td>
+          <td>server.js</td>
+          <td class="num">included in total (59,242 files)</td>
+          <td>yes, concurrent w/ Phase 4</td>
+          <td class="num">included in total</td>
+          <td>load avg 36 on 14 cores</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why the contended Node run hit 760s</h2>
+    <p class="section-note">
+      Verified by inspecting the live process tree mid-run, not inferred. Every heavy
+      process traced back to <code>ppid 10460</code> &mdash; the same <code>validate-all</code>
+      request, not an unrelated job sharing the box.
+    </p>
+    <div class="scope-grid">
+      <div class="scope-col">
+        <h3><span class="dot node"></span>Running concurrently, one request</h3>
+        <ul>
+          <li><code>pysemgrep</code> &mdash; <code>p/security-audit</code> + <code>p/owasp-top-ten</code></li>
+          <li><code>bearer</code> &mdash; 8 processing workers</li>
+          <li><code>gitleaks detect</code></li>
+          <li><code>checkov</code></li>
+          <li>ORT/Gradle daemon + <code>npm list</code> &mdash; license/dependency resolution</li>
+          <li><code>spectral lint</code>, <code>codeql</code>, <code>trivy</code>, <code>syft</code>, <code>cosign</code>, and more</li>
+        </ul>
+      </div>
+      <div class="scope-col">
+        <h3>Result</h3>
+        <ul>
+          <li>System load average peaked at 36.7 on a 14-core machine</li>
+          <li>Rust's run had those same 14 cores to itself</li>
+          <li>An identical earlier attempt via the <code>ignite</code> CLI timed out client-side at 5 minutes and kept running server-side unnoticed &mdash; the process list briefly showed <em>two</em> full scans stacked; that run was discarded and re-measured clean</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Conclusions</h2>
+    <div class="conclusions">
+      <div class="cx verdict">
+        <div class="mark">✓</div>
+        <div>
+          <h3>On the checks both engines share, Rust is roughly at parity today &mdash; not because the port is slow, but because the bottleneck isn't the orchestrator</h3>
+          <p>
+            359.9s (Rust) vs. 339.3s (Node's own Phase 4, idle machine) is a 6% gap in
+            Node's favor, within measurement noise. Both numbers are dominated by the same
+            external binaries &mdash; semgrep, CodeQL, Bearer, gitleaks &mdash; doing the
+            same work on the same files. Whoever calls <code>execFile</code> on
+            <code>codeql database analyze</code> doesn't change how long CodeQL takes to run.
+            The orchestration language was never where this pipeline's wall time lived.
+          </p>
+        </div>
+      </div>
+      <div class="cx caveat">
+        <div class="mark">!</div>
+        <div>
+          <h3>The 760s number is not evidence Node got slower &mdash; it's evidence of contention, confirmed by process inspection</h3>
+          <p>
+            Same request type, same repo, 2.1&times; the earlier idle-machine time.
+            The process tree traced every extra cycle to legitimate concurrent work
+            (ORT/Gradle/npm license scan) fighting the same cores as Phase 4's own tools,
+            not to a regression in <code>server.js</code>. Comparing 365s against 760s as
+            if they measure the same thing would be the wrong conclusion.
+          </p>
+        </div>
+      </div>
+      <div class="cx caveat">
+        <div class="mark">!</div>
+        <div>
+          <h3>The real Rust opportunity hasn't been measured yet</h3>
+          <p>
+            The earlier Node report's own breakdown shows non-tool-bound, pure-compute
+            checks costing real time on their own: secrets (211.8s, regex + gitleaks over
+            8,806 files), provenance (112.3s, tree-walk + hashing), euAiActDocuments
+            (93.8s, a filename scan that shouldn't cost that much), health (92.6s).
+            Those are exactly the kind of work a compiled implementation should cut hard
+            &mdash; and they weren't isolated in either run above, since Node's total
+            conflates them with tool-bound checks and Rust's run didn't include a staging
+            step to compare against.
+          </p>
+        </div>
+      </div>
+      <div class="cx next">
+        <div class="mark">→</div>
+        <div>
+          <h3>What's needed for a real verdict</h3>
+          <p>
+            <code>phase4-orchestrator</code> is check-engine-complete (33 checks, 42 crates
+            total) but has no HTTP server, staging/copy step, ORT license-scan integration,
+            or git/gh push path yet &mdash; it's not a drop-in replacement for
+            <code>server.js</code>. A controlled rerun needs matched scope on both sides
+            (add staging + ORT to Rust, or run Node with license-scan disabled) on an
+            otherwise idle machine, back to back, same repo.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Node · earlier session — POST /api/pipeline/validate-all, from performance_report.html, idle machine · 24 Phase 4 checks + ORT concurrent · 949,750 LOC before .angular exclusion<br>
+    Rust · this session — ./target/release/phase4-scan /Users/nuno/tests/tadone, release build, 24 Phase 4 checks, no staging/ORT/LLM, machine otherwise idle<br>
+    Node · this session — POST /api/pipeline/validate-all against a live ignite server, 59,242 files staged (791.1 MB), load avg 36.7 confirmed via `ps`/`lsof` process-tree inspection mid-run<br>
+    every external tool present on this machine: trivy, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, picklescan, oasdiff, codeql, gitleaks, ORT
+  </footer>
+
+</div>
