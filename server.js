@@ -402,6 +402,7 @@ const CSS_DEAD_CODE_ENABLED = Boolean(CONFIG.codeIntelligence.cssDeadCode.enable
 const BOUNDARIES_ENABLED = Boolean(CONFIG.architecture.boundaries.enabled);
 const BOUNDARIES_PRESET = String(CONFIG.architecture.boundaries.preset || '');
 const BOUNDARIES_ZONES = Array.isArray(CONFIG.architecture.boundaries.zones) ? CONFIG.architecture.boundaries.zones : [];
+const IGNOREFILE_ENABLED = Boolean(CONFIG.ignoreFile.enabled);
 
 // See lib/tool-runner.js — a factory, not a bare require, so the resolved
 // binary paths above are threaded in explicitly rather than the module
@@ -1078,6 +1079,12 @@ const { checkBoundaries } = createBoundariesCheck({
   config: { enabled: BOUNDARIES_ENABLED, preset: BOUNDARIES_PRESET, zones: BOUNDARIES_ZONES },
 });
 
+const { createIgniteIgnoreCheck } = require('./checks/igniteignore');
+const { checkIgniteIgnoreCommitted } = createIgniteIgnoreCheck({
+  runTool,
+  config: { enabled: IGNOREFILE_ENABLED },
+});
+
 // Runs Phase 4's 11 external-tool checks (secrets, AI-governance, LLM deep-
 // scan, IaC, SBOM, image provenance, semantic SAST, PII/data-flow, code
 // duplication, LOC metrics, API-schema lint, feature posture) concurrently
@@ -1507,6 +1514,21 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, 
       },
     },
     {
+      name: 'igniteIgnore',
+      run: async (blog) => {
+        blog('Check 24 — .igniteignore commit check (built-in)...');
+        const igniteIgnore = await checkIgniteIgnoreCommitted(projectRoot, blog);
+        if (igniteIgnore.findings.length > 0) {
+          blog(`✗ .igniteignore exists but is not committed to git.`);
+        } else if (igniteIgnore.engine === 'built-in') {
+          blog('✓ Check 24 passed — no .igniteignore, or it is already committed.');
+        } else {
+          blog('✓ Check 24 skipped — disabled by config.');
+        }
+        return igniteIgnore;
+      },
+    },
+    {
       name: 'codeql',
       run: async (blog) => {
         blog('Check 15 — cross-file static analysis (CodeQL)...');
@@ -1558,6 +1580,7 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, 
     health: byName.health,
     cssDeadCode: byName.cssDeadCode,
     boundaries: byName.boundaries,
+    igniteIgnore: byName.igniteIgnore,
     euAiAct,
   }).filter((issue) => !isExcludedSecurityFinding(issue));
   return { issues };
@@ -3011,4 +3034,5 @@ module.exports = {
   checkComplexityHealth,
   checkCssDeadCode,
   checkBoundaries,
+  checkIgniteIgnoreCommitted,
 };

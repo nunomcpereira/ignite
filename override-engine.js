@@ -233,7 +233,7 @@ function collectCodeqlIssues(codeql) {
   });
 }
 
-function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, apiSchemaDrift, maliciousDependencies, modelArtifactSecurity, packageHallucination, codeql, deadCode, health, cssDeadCode, boundaries, euAiAct }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, apiSchemaDrift, maliciousDependencies, modelArtifactSecurity, packageHallucination, codeql, deadCode, health, cssDeadCode, boundaries, igniteIgnore, euAiAct }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -555,6 +555,28 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
         category,
         severity: 'warning',
         score: scoreForIssue({ category, severity: 'warning' }),
+        summary: f.message,
+        file: f.file,
+        line: f.line,
+        snippet: f.code || null,
+      });
+    }
+  }
+
+  // Unlike the codebase-intelligence group above, .igniteignore-not-
+  // committed is blocking (severity: 'error') — see checks/igniteignore.js's
+  // doc comment: an uncommitted-but-present .igniteignore is a silent scan
+  // bypass with no reviewable record, the exact thing a compliance
+  // gatekeeper exists to prevent, so it doesn't share that group's
+  // always-'warning' treatment.
+  if (igniteIgnore) {
+    for (const f of igniteIgnore.findings) {
+      const category = 'igniteignore-not-committed';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line, discriminator: f.discriminator || f.kind }),
+        category,
+        severity: 'error',
+        score: scoreForIssue({ category, severity: 'error' }),
         summary: f.message,
         file: f.file,
         line: f.line,

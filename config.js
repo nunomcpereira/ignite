@@ -407,6 +407,16 @@ function loadConfig() {
     architecture: {
       boundaries: { enabled: false, preset: '', zones: [] },
     },
+    // .igniteignore (checks/igniteignore.js): a project-root file, .gitignore
+    // syntax, letting a project opt specific paths (generated code, fixture
+    // data, a vendored bundle) out of every Ignite check entirely — not
+    // just dead-code/health/etc, every check that walks the tree via
+    // lib/fs-utils.js's walkFiles honors it automatically. Unlike
+    // codeIntelligence above, the one finding this produces IS blocking
+    // (`severity: 'error'`): a `.igniteignore` that exists on disk but
+    // isn't committed to git is a silent, unreviewable scan bypass — the
+    // exact thing a compliance gatekeeper exists to prevent. On by default.
+    ignoreFile: { enabled: true },
     // Optional per-phase title/description/enabled overrides, e.g.:
     //   "phases": [{ "id": 4, "enabled": false }]
     // Matched by id; any phase not listed (or the whole key omitted) keeps
@@ -553,6 +563,7 @@ function loadConfig() {
   if (process.env.CSS_DEAD_CODE_ENABLED !== undefined) merged.codeIntelligence.cssDeadCode.enabled = String(process.env.CSS_DEAD_CODE_ENABLED) === 'true';
   if (process.env.ARCHITECTURE_BOUNDARIES_ENABLED !== undefined) merged.architecture.boundaries.enabled = String(process.env.ARCHITECTURE_BOUNDARIES_ENABLED) === 'true';
   if (process.env.ARCHITECTURE_BOUNDARIES_PRESET) merged.architecture.boundaries.preset = process.env.ARCHITECTURE_BOUNDARIES_PRESET;
+  if (process.env.IGNOREFILE_ENABLED !== undefined) merged.ignoreFile.enabled = String(process.env.IGNOREFILE_ENABLED) === 'true';
   if (process.env.TRIVY_IMAGE_ENABLED !== undefined) {
     merged.security.trivyImage.enabled = String(process.env.TRIVY_IMAGE_ENABLED) === 'true';
   }

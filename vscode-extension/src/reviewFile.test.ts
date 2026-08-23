@@ -50,10 +50,28 @@ test('appendUnresolvedIssues creates the .ignite dir and writes a blank Acknowle
     const contents = await fs.readFile(filePath, 'utf8');
     assert.match(contents, /ID: secret::a\.py::3/);
     assert.match(contents, /Acknowledge: $/m);
+    assert.match(contents, /^ID: secret::a\.py::3\n# Issue #1\n/m);
 
     // Re-running with the same unresolved issue must not duplicate the entry.
     const appendedAgain = await appendUnresolvedIssues(repoRoot, [sampleIssue]);
     assert.equal(appendedAgain, 0);
+  } finally {
+    await fs.rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('appendUnresolvedIssues renumbers "# Issue #N" fresh on every write instead of accumulating', async () => {
+  const repoRoot = await makeRepoRoot();
+  try {
+    await appendUnresolvedIssues(repoRoot, [sampleIssue]);
+    const second: IgniteIssue = { ...sampleIssue, id: 'secret::b.py::9', file: 'b.py', line: 9 };
+    await appendUnresolvedIssues(repoRoot, [sampleIssue, second]);
+
+    const contents = await fs.readFile(reviewFilePath(repoRoot), 'utf8');
+    assert.match(contents, /^ID: secret::a\.py::3\n# Issue #1\n/m);
+    assert.match(contents, /^ID: secret::b\.py::9\n# Issue #2\n/m);
+    // No leftover/duplicate numbering from the first write.
+    assert.equal((contents.match(/# Issue #\d+/g) ?? []).length, 2);
   } finally {
     await fs.rm(repoRoot, { recursive: true, force: true });
   }
@@ -127,6 +145,7 @@ test('writeScanSnapshot writes one findings.md per datetime folder under .ignite
     assert.match(contents, /^# Ignite scan findings/);
     assert.match(contents, /secret::a\.py::3/);
     assert.match(contents, /a\.py:3/);
+    assert.match(contents, /^## 1\. \[ERROR\] secret - Hardcoded password$/m);
 
     // A second scan at a different timestamp gets its own folder, not overwritten.
     const laterDate = new Date('2026-08-20T12:40:00.000Z');

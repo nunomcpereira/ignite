@@ -349,12 +349,16 @@ not a real type-checker or build system), so every finding is always
 advisory (`severity: warning`). A human confirms before deleting or
 restructuring; it's never a hard gate.
 
+A fifth, `.igniteignore`, is also built-in but *is* a hard gate when it
+fires — see the row below.
+
 | Check | What it flags | Config / env |
 |---|---|---|
 | **Dead code / unused exports / unused deps** | Builds a module graph from `package.json`'s entry points, then flags any file never transitively imported (`unused-file`), any named export never imported anywhere by name (`unused-export`), and any dependency never required/imported and not mentioned in an npm script (`unused-dependency`) | On by default — `DEAD_CODE_ENABLED=false` to opt out |
 | **Complexity / maintainability health** | Per-file cyclomatic and cognitive complexity, a calibrated Maintainability Index, and a CRAP score (pulls real test coverage from a project's own CI-submitted runtime coverage report when available, otherwise assumes 0%); also computes git-churn-weighted refactor hotspots (descriptive, not a finding) | On by default — `HEALTH_ENABLED=false` to opt out |
 | **Architecture / import-boundary enforcement** | Flags an import that crosses a zone boundary you've defined (e.g. `features/billing` reaching into `features/auth`) | **Off by default** — a default zone layout on a project with no defined layout would be pure noise. Opt in with `ARCHITECTURE_BOUNDARIES_ENABLED=true` and a `preset` (`bulletproof` \| `layered` \| `hexagonal` \| `feature-sliced`) via `ARCHITECTURE_BOUNDARIES_PRESET`, or custom zones in `config.json` |
 | **CSS/Tailwind dead-class scan** | Flags a `.css`/`.scss`/`.less` class selector never referenced in any scanned `class`/`className` attribute. One-directional only — can't flag unused Tailwind utilities, since those only exist if referenced in the first place | On by default — `CSS_DEAD_CODE_ENABLED=false` to opt out |
+| **`.igniteignore` commit check** | A project-root `.igniteignore` (`.gitignore` syntax) excludes those paths from *every* Ignite check — enforced once, centrally, in the file-discovery layer every check shares. If that file exists on disk but was never committed to git, that's flagged as a **blocking** finding (`severity: error`, unlike the four above): an uncommitted exclusion list is a silent, unreviewable scan bypass. Skipped entirely for a brand-new project with no git history yet — nothing to be "committed" against before the first commit exists | On by default — `IGNOREFILE_ENABLED=false` to opt out |
 
 Dead-code findings (`unused-file`, `unused-dependency`, a subset of
 `unused-export`) can be turned into a fix plan — and, optionally, applied —

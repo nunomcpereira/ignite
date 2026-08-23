@@ -16,8 +16,24 @@ const HEADER = [
   '# A `# Code:` line, when present, is the flagged source line own text -',
   '# used to auto-carry-forward this justification if an unrelated edit',
   '# elsewhere in the file later shifts its line number. Do not hand-edit it.',
+  '# The `# Issue #N` line is just a running count of entries in this file',
+  '# - recomputed on every write, not a stable id. Use the `ID:` line to',
+  '# refer to a specific finding.',
   '',
 ].join('\n');
+
+/** Strips a previously-written "# Issue #N" line so it can be recomputed
+ *  fresh against the current combined block order — same dodge hooks/
+ *  pre-push's identical stripIssueNumberLine uses, so neither writer
+ *  accumulates a stale/duplicate number line on the other's output. */
+function stripIssueNumberLine(raw: string): string {
+  return raw.replace(/^(ID: [^\n]*)\n# Issue #\d+\n/, '$1\n');
+}
+
+/** Renumbers a final, ordered list of raw blocks as "# Issue #1", "#2", ... */
+function numberBlocks(blocks: string[]): string[] {
+  return blocks.map((block, i) => block.replace(/^(ID: [^\n]*)\n/, `$1\n# Issue #${i + 1}\n`));
+}
 
 interface ParsedEntry {
   id: string;
@@ -123,9 +139,9 @@ export async function appendUnresolvedIssues(repoRoot: string, issues: IgniteIss
       ].join('\n')
     );
   }
-  const remainingExisting = existing.filter((e) => !e.superseded).map((e) => e.raw);
+  const remainingExisting = existing.filter((e) => !e.superseded).map((e) => stripIssueNumberLine(e.raw));
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, HEADER + [...remainingExisting, ...newBlocks].join('\n\n') + '\n');
+  await fs.writeFile(filePath, HEADER + numberBlocks([...remainingExisting, ...newBlocks]).join('\n\n') + '\n');
   return newBlocks.filter((b) => b.endsWith('Acknowledge: ')).length;
 }
 
@@ -149,9 +165,9 @@ export async function writeScanSnapshot(repoRoot: string, issues: IgniteIssue[],
   if (issues.length === 0) {
     lines.push('No findings.');
   } else {
-    for (const issue of issues) {
+    issues.forEach((issue, i) => {
       const loc = issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : '(no file)';
-      lines.push(`## [${(issue.severity || '').toUpperCase()}] ${issue.category} - ${issue.summary}`);
+      lines.push(`## ${i + 1}. [${(issue.severity || '').toUpperCase()}] ${issue.category} - ${issue.summary}`);
       lines.push('');
       lines.push(`- ID: \`${issue.id}\``);
       lines.push(`- Location: ${loc}`);
@@ -167,7 +183,7 @@ export async function writeScanSnapshot(repoRoot: string, issues: IgniteIssue[],
         lines.push('```');
       }
       lines.push('');
-    }
+    });
   }
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, lines.join('\n'));
@@ -208,9 +224,9 @@ export async function acknowledgeIssues(repoRoot: string, issues: IgniteIssue[],
       ].join('\n')
     );
   }
-  const all = [...existing.filter((e) => !e.superseded).map((e) => e.raw), ...newBlocks];
+  const all = [...existing.filter((e) => !e.superseded).map((e) => stripIssueNumberLine(e.raw)), ...newBlocks];
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, HEADER + all.join('\n\n') + '\n');
+  await fs.writeFile(filePath, HEADER + numberBlocks(all).join('\n\n') + '\n');
 }
 
 /** Byte offset of a given issue id's `Acknowledge:` line, for jumping the editor there. */

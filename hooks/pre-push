@@ -197,13 +197,13 @@ node -e '
     if (allIssues.length === 0) {
       snapshotLines.push("No findings.");
     } else {
-      for (const issue of allIssues) {
+      allIssues.forEach((issue, i) => {
         const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
-        snapshotLines.push(`## [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`, "");
+        snapshotLines.push(`## ${i + 1}. [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`, "");
         snapshotLines.push(`- ID: \`${issue.id}\``, `- Location: ${loc}`, `- Score: ${issue.score}`);
         if (issue.status) snapshotLines.push(`- Status: ${issue.status}`);
         snapshotLines.push("");
-      }
+      });
     }
     fs.mkdirSync(path.dirname(snapshotFile), { recursive: true });
     fs.writeFileSync(snapshotFile, snapshotLines.join("\n"));
