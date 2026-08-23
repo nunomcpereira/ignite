@@ -3,3 +3,6 @@ tsconfig.json
 .vscode/**
 **/*.map
 .gitignore
+node_modules/**
+.stash*/**
+**/*.test.js

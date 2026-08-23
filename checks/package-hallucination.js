@@ -46,7 +46,7 @@ function createPackageHallucinationCheck({ fsUtils, studioManifests, config }) {
   // never treated as a finding).
   const REGISTRY_CHECKERS = {
     npm: async (name) => {
-      const res = await doFetch(`https://registry.npmjs.org/${encodeURIComponent(name).replace('%40', '@')}`, { signal: AbortSignal.timeout(5000) });
+      const res = await doFetch(`https://registry.npmjs.org/${encodeURIComponent(name).replaceAll('%40', '@')}`, { signal: AbortSignal.timeout(5000) });
       if (res.status === 404) return false;
       if (res.ok) return true;
       return null;
