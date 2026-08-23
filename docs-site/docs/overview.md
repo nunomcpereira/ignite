@@ -128,6 +128,8 @@ deterministic, purpose-built static analysis tools: a real SAST engine
 that span multiple files, CVE/GHSA lookups (deps.dev), IaC/container
 scanners (Trivy, Checkov, hadolint) and known-CVE container-image scanning
 (`trivy image`), a supply-chain malicious-dependency scanner (GuardDog),
+malicious ML model artifact scanning (picklescan), API breaking-change
+detection (oasdiff), an AI package-hallucination ("slopsquat") check,
 secret scanning (regex + gitleaks), image signature verification (cosign),
 PII data-flow tracing (Bearer), API schema linting (Spectral), a
 compliance-posture engine, and your org's own governance CI (`act`) —

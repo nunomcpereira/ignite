@@ -46,7 +46,7 @@ install() {
     log_skip "$label - already installed"; SKIPPED+=("$label"); return
   fi
   echo -e "${BOLD}Installing $label...${RESET}"
-  if "$fn"; then
+  if eval "$fn"; then
     log_ok "$label"; INSTALLED+=("$label")
   else
     log_fail "$label - install failed, see output above"; FAILED+=("$label")
@@ -95,6 +95,21 @@ guarddog_install() {
   fi
 }
 install INSTALL_GUARDDOG "command -v guarddog" "GuardDog" guarddog_install
+
+# --- AI-era: malicious model artifacts (picklescan) / API breaking-change diff (oasdiff) ---
+picklescan_install() {
+  if command -v pipx >/dev/null 2>&1; then
+    pipx install picklescan
+  elif $HAS_BREW; then
+    brew install pipx && pipx install picklescan
+  elif $HAS_PIP; then
+    pip3 install --user --break-system-packages picklescan
+  else
+    return 1
+  fi
+}
+install INSTALL_PICKLESCAN "command -v picklescan" "picklescan" picklescan_install
+install INSTALL_OASDIFF    "command -v oasdiff"    "oasdiff"    'brew_install() { brew install oasdiff; }; brew_install'
 
 # --- CodeQL (cross-file static analysis) - on by default in CONFIG, same as
 # the rest of Phase 4 (measured to add only ~3s to Phase 4's wall time, its

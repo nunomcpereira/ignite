@@ -70,6 +70,13 @@
 #                         the delta check above
 #   IGNITE_PREPUSH_SKIP   "true" to skip this hook entirely for one push
 #                         (prefer this over --no-verify so it's logged)
+#   IGNITE_FAST_SCAN      "true" for a lightning pre-push: secrets,
+#                         AI-governance, file-encapsulation and semgrep only,
+#                         skipping CodeQL/Bearer/Trivy/GuardDog/etc — trades
+#                         coverage for speed on every push. Default "false"
+#                         (full Phase 4). A slow full scan still belongs
+#                         somewhere in the loop (CI, or an occasional manual
+#                         `ignite scan` without --fast) even when this is on.
 set -euo pipefail
 
 if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
@@ -84,6 +91,7 @@ ORIGIN_URL="$(git config --get remote.origin.url || echo '')"
 ORG="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\1#')"
 REPO="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\2#')"
 RUN_LOCAL_CI="${IGNITE_RUN_LOCAL_CI:-true}"
+FAST_SCAN="${IGNITE_FAST_SCAN:-false}"
 WARNING_DECISION="${IGNITE_WARNING_MODE:-continue}"
 ACTOR_EMAIL="$(git config --get user.email || echo '')"
 ACTOR_NAME="$(git config --get user.name || echo '')"
@@ -149,17 +157,18 @@ if [ "$OVERRIDES_JSON" != "[]" ]; then
 fi
 
 REQUEST_BODY="$(node -e '
-  const [projectPath, org, repo, runLocalCi, warningDecision, overridesJson, actorEmail, actorName] = process.argv.slice(1);
+  const [projectPath, org, repo, runLocalCi, warningDecision, overridesJson, actorEmail, actorName, fastScan] = process.argv.slice(1);
   const body = {
     projectPath, org, repo,
     gxp: false,
     runLocalCi: runLocalCi === "true",
     warningDecision,
     overrides: JSON.parse(overridesJson),
+    fast: fastScan === "true",
   };
   if (actorEmail) body.actor = { email: actorEmail, name: actorName || actorEmail };
   console.log(JSON.stringify(body));
-' "$REPO_PATH" "$ORG" "$REPO" "$RUN_LOCAL_CI" "$WARNING_DECISION" "$OVERRIDES_JSON" "$ACTOR_EMAIL" "$ACTOR_NAME")"
+' "$REPO_PATH" "$ORG" "$REPO" "$RUN_LOCAL_CI" "$WARNING_DECISION" "$OVERRIDES_JSON" "$ACTOR_EMAIL" "$ACTOR_NAME" "$FAST_SCAN")"
 
 RESPONSE="$(curl -sS -X POST "$IGNITE_URL/api/pipeline/validate-all" \
   -H 'Content-Type: application/json' \

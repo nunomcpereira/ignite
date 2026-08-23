@@ -20,6 +20,8 @@ ARG INSTALL_COSIGN=true
 ARG INSTALL_SEMGREP=true
 ARG INSTALL_BEARER=true
 ARG INSTALL_GUARDDOG=true
+ARG INSTALL_PICKLESCAN=true
+ARG INSTALL_OASDIFF=true
 ARG INSTALL_CODEQL=true
 ARG INSTALL_JSCPD=true
 ARG INSTALL_GOCLOC=true
@@ -127,6 +129,10 @@ RUN if [ "$INSTALL_BEARER" = "true" ]; then \
         | sh -s -- -b /usr/local/bin; \
     fi
 RUN if [ "$INSTALL_GUARDDOG" = "true" ]; then pipx install guarddog && pipx ensurepath; fi
+RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan && pipx ensurepath; fi
+RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
+      curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh; \
+    fi
 # GitHub only ships an x86_64 ("linux64") CodeQL CLI build for Linux - no
 # native arm64 release exists (confirmed against the actual release asset
 # list, not assumed). On an arm64 build host (Apple Silicon's Docker

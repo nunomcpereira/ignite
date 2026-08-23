@@ -1903,6 +1903,14 @@
         label: 'CodeQL',
         info: 'Cross-file static analysis — traces a vulnerability across file/function boundaries, the one gap Semgrep OSS’s single-file engine can’t cover. On by default, same as the rest of Phase 4 — its database build measured at only ~3s added to Phase 4’s wall time, hiding inside whichever other tool is the long pole. No built-in fallback. Toggle via security.codeql.enabled.',
       },
+      picklescan: {
+        label: 'picklescan',
+        info: 'Malicious ML model artifact scan — flags unsafe pickle global imports (arbitrary code execution on load) in .pkl/.pickle/.pt/.pth/.ckpt/.bin files. On by default; no built-in fallback (needs picklescan’s real opcode-level pickle parser). Toggle via security.picklescan.enabled.',
+      },
+      oasdiff: {
+        label: 'oasdiff',
+        info: 'API breaking-change / shadow-endpoint scan — diffs each discovered OpenAPI/AsyncAPI file against its own previous git revision (a removed endpoint, a field that became required, a changed response type). Only active when there’s real git history to diff against; a fresh upload with no prior commit contributes nothing. On by default; no built-in fallback. Toggle via api.oasdiff.enabled.',
+      },
     };
 
     function renderToolsBar(status) {

@@ -8,24 +8,25 @@
  *
  * @param {import('express').Express} app
  * @param {object} deps
- * @param {object} deps.toolings - { ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling, checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling, bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling, codeqlTooling }
- * @param {object} deps.enabled - { gitleaksEnabled, trivyEnabled, trivyImageEnabled, checkovEnabled, hadolintEnabled, syftEnabled, cosignEnabled, semgrepEnabled, bearerEnabled, jscpdEnabled, goclocEnabled, spectralEnabled, guarddogEnabled, codeqlEnabled }
+ * @param {object} deps.toolings - { ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling, checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling, bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling, codeqlTooling, picklescanTooling, oasdiffTooling }
+ * @param {object} deps.enabled - { gitleaksEnabled, trivyEnabled, trivyImageEnabled, checkovEnabled, hadolintEnabled, syftEnabled, cosignEnabled, semgrepEnabled, bearerEnabled, jscpdEnabled, goclocEnabled, spectralEnabled, guarddogEnabled, codeqlEnabled, picklescanEnabled, oasdiffEnabled }
  */
 function mountToolsStatusRoutes(app, { toolings, enabled }) {
   const {
     ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling,
     checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling,
     bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling, codeqlTooling,
+    picklescanTooling, oasdiffTooling,
   } = toolings;
   const {
     gitleaksEnabled, trivyEnabled, trivyImageEnabled, checkovEnabled, hadolintEnabled,
     syftEnabled, cosignEnabled, semgrepEnabled, bearerEnabled, jscpdEnabled,
-    goclocEnabled, spectralEnabled, guarddogEnabled, codeqlEnabled,
+    goclocEnabled, spectralEnabled, guarddogEnabled, codeqlEnabled, picklescanEnabled, oasdiffEnabled,
   } = enabled;
 
   app.get('/api/tools/status', async (req, res) => {
-    const [ort, licensee, gitleaks, trivy, trivyImage, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql] = await Promise.all([
-      ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), trivyImageTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(), codeqlTooling(),
+    const [ort, licensee, gitleaks, trivy, trivyImage, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql, picklescan, oasdiff] = await Promise.all([
+      ortTooling(), licenseeTooling(), gitleaksTooling(), trivyTooling(), trivyImageTooling(), checkovTooling(), hadolintTooling(), syftTooling(), cosignTooling(), semgrepTooling(), bearerTooling(), jscpdTooling(), goclocTooling(), spectralTooling(), guarddogTooling(), codeqlTooling(), picklescanTooling(), oasdiffTooling(),
     ]);
     res.json({
       ort: { ...ort, enabled: true },
@@ -44,6 +45,8 @@ function mountToolsStatusRoutes(app, { toolings, enabled }) {
       spectral: { ...spectral, enabled: spectralEnabled },
       guarddog: { ...guarddog, enabled: guarddogEnabled },
       codeql: { ...codeql, enabled: codeqlEnabled },
+      picklescan: { ...picklescan, enabled: picklescanEnabled },
+      oasdiff: { ...oasdiff, enabled: oasdiffEnabled },
     });
   });
 }

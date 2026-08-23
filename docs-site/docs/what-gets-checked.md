@@ -115,7 +115,7 @@ the project's own test suite, auto-detected by ecosystem (Node/Go/Rust
 
 <div className="phaseDiagram">
 
-<svg viewBox="0 0 1000 526" role="img">
+<svg viewBox="0 0 1000 627" role="img">
   <text x="500.0" y="16" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" letter-spacing="1" fill="var(--ifm-color-emphasis-600)">STAGED PROJECT — ONE EXTERNAL TOOL PER AREA, RUN CONCURRENTLY</text>
   <line x1="15" y1="26" x2="985" y2="26" stroke="var(--ifm-color-emphasis-300)"/>
   <rect x="15.0" y="46.0" width="232.0" height="87" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
@@ -178,28 +178,43 @@ the project's own test suite, auto-detected by ecosystem (Node/Go/Rust
   <text x="765.0" y="285.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Flags risky licenses and known</text>
   <text x="765.0" y="298.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">vulnerable versions</text>
   <text x="765.0" y="315.0" font-family="system-ui, sans-serif" font-size="10" fill="var(--ifm-color-emphasis-500)">deps.dev</text>
-  <line x1="15" y1="352" x2="985" y2="352" stroke="var(--ifm-color-emphasis-300)"/>
-  <text x="500" y="368" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="var(--ifm-color-emphasis-600)">Findings merge into one issue list. A blocking one needs a source fix or a justified, attributed override.</text>
-  <g transform="translate(0,376)">
-  <rect x="15.0" y="15.0" width="478.0" height="74" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
+  <rect x="15.0" y="349.0" width="232.0" height="87" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
+  <text x="27.0" y="367.0" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="var(--ifm-color-emphasis-900)">Malicious model weights</text>
+  <text x="27.0" y="386.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Flags unsafe code execution in</text>
+  <text x="27.0" y="399.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">.pkl/.pt/.pth/.ckpt model files</text>
+  <text x="27.0" y="416.0" font-family="system-ui, sans-serif" font-size="10" fill="var(--ifm-color-emphasis-500)">picklescan</text>
+  <rect x="261.0" y="349.0" width="232.0" height="87" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
+  <text x="273.0" y="367.0" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="var(--ifm-color-emphasis-900)">API breaking changes</text>
+  <text x="273.0" y="386.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Diffs OpenAPI/AsyncAPI specs</text>
+  <text x="273.0" y="399.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">against the prior git revision</text>
+  <text x="273.0" y="416.0" font-family="system-ui, sans-serif" font-size="10" fill="var(--ifm-color-emphasis-500)">oasdiff</text>
+  <line x1="15" y1="453" x2="985" y2="453" stroke="var(--ifm-color-emphasis-300)"/>
+  <text x="500" y="469" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="var(--ifm-color-emphasis-600)">Findings merge into one issue list. A blocking one needs a source fix or a justified, attributed override.</text>
+  <g transform="translate(0,477)">
+  <rect x="15.0" y="15.0" width="313.0" height="74" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
   <text x="27.0" y="33.0" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="var(--ifm-color-emphasis-900)">Codebase-intelligence</text>
   <text x="27.0" y="52.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Dead code, complexity, boundaries, unused CSS. Built in, no external tool</text>
-  <rect x="507.0" y="15.0" width="478.0" height="74" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
-  <text x="519.0" y="33.0" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="var(--ifm-color-emphasis-900)">Local LLM deep-scan</text>
-  <text x="519.0" y="52.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Optional logic-level review, independent of the tools above</text>
+  <rect x="343.0" y="15.0" width="313.0" height="74" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
+  <text x="355.0" y="33.0" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="var(--ifm-color-emphasis-900)">Package hallucination</text>
+  <text x="355.0" y="52.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Flags dependency names not on the real registry. Built in, no external tool</text>
+  <rect x="671.0" y="15.0" width="314.0" height="74" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
+  <text x="683.0" y="33.0" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="var(--ifm-color-emphasis-900)">Local LLM deep-scan</text>
+  <text x="683.0" y="52.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Optional logic-level review, independent of the tools above</text>
   </g>
-  <text x="985" y="504" text-anchor="end" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-600)">Every tool above is a soft dependency. A missing one soft-skips or falls back; it never crashes the run.</text>
+  <text x="985" y="605" text-anchor="end" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-600)">Every tool above is a soft dependency. A missing one soft-skips or falls back; it never crashes the run.</text>
 </svg>
 
 </div>
 
-The bulk of Ignite's static analysis lives here. Twelve tools, each
+The bulk of Ignite's static analysis lives here. Fourteen tools, each
 covering one area, run concurrently against the staged project (see [the
 full tool table below](#threat-coverage) for exactly what each one catches
-and what happens if it isn't installed). Two more checks run alongside them
-with zero external tools: the four built-in [codebase-intelligence
-checks](#codebase-intelligence-checks), and a local LLM deep-scan pass,
-independently toggleable via `LLM_DEEP_SCAN_ENABLED`, for the logic-level
+and what happens if it isn't installed). Three more checks run alongside
+them with zero external tools: the four built-in [codebase-intelligence
+checks](#codebase-intelligence-checks), a built-in AI package-hallucination
+("slopsquat") check that flags a dependency name not found on its real
+public registry, and a local LLM deep-scan pass, independently toggleable
+via `LLM_DEEP_SCAN_ENABLED`, for the logic-level
 flaws a fixed rule set can miss (injection, path traversal, SSRF, insecure
 deserialization, XSS, weak crypto). Every finding from every tool in this
 phase merges into one issue list; a blocking one needs a source fix or a
@@ -319,6 +334,9 @@ installed* (Ignite still runs, and falls back where it can, if it isn't).
 | The project's own automated test suite silently regressing | Auto-detects Node/Go/Rust/Python/Java and runs that ecosystem's native test runner (`npm test`, `go test`, `cargo test`, `pytest`, `mvn test`) inside an isolated Docker container | Built-in detection + Docker | Skipped if no recognized test setup is found, or if Docker isn't available — logged, never silently assumed to pass |
 | A repo drifting out of compliance *after* onboarding — a new vulnerable/malicious dependency merged later, with no one notified | Effectivated repos can opt into a scheduled (daily/weekly/monthly) re-check of the default branch; on failure, emails the repo's CODEOWNERS contact or files a GitHub issue if none can be resolved | Scheduled re-check + CODEOWNERS check | N/A for the schedule/notify logic itself — the re-check still depends on whichever Phase 4 tools are installed on the server at the time it runs |
 | A `CODEOWNERS`-less repo silently having no one accountable for findings | Advisory check for a `CODEOWNERS` file and any email-address owner listed in it | Built-in CODEOWNERS check | N/A — built-in, no external tool involved |
+| A poisoned ML model weight file (`.pkl`/`.pt`/`.pth`/`.ckpt`) executing arbitrary code on load via an unsafe pickle global import | Scans every discovered model artifact for dangerous pickle global imports (opcode-level, not a regex heuristic) | picklescan | Check skipped entirely — no fallback (needs picklescan's real pickle parser) |
+| An AI coding agent silently removing/breaking an existing API endpoint — a shadow change no one reviewed | Diffs every discovered OpenAPI/AsyncAPI file against its own previous git revision, flagging breaking changes | oasdiff | Check skipped entirely — no fallback; also contributes nothing on a fresh upload with no prior git history to diff against |
+| AI package hallucination ("slopsquatting") — an LLM invents a plausible but non-existent package name, which an attacker can then register and ship malware through | Checks every manifest dependency name against its ecosystem's real public registry (npm, PyPI, crates.io); a 404 is flagged (advisory) | Built-in package-hallucination check | N/A — built-in, no external tool involved (always advisory: a private/internal package looks identical to a hallucinated one from a public-registry lookup alone) |
 
 Full details, install instructions, and the on/off default for every tool: see the [README's tool table](https://github.com/nunomcpereira/ignite#external-tools).
 

@@ -55,6 +55,12 @@ function mountValidateAllRoute(app, {
     // ignored rather than honored, matching "hidden and therefore not checked".
     const isGxp = phaseEnabled[2] && body.gxp === true;
     const runLocalCi = body.runLocalCi !== false;
+    // "Lightning" mode — secrets/governance/semgrep/file-encapsulation only,
+    // skipping CodeQL/Bearer/Trivy/GuardDog/etc. Meant for a pre-push hook or
+    // an inner agent fix-verify loop that wants sub-second-ish feedback on
+    // every iteration; a full run (fast: false, the default) still belongs
+    // in CI or an occasional manual push.
+    const fast = body.fast === true;
     const warningDecision = String(body.warningDecision || 'continue').toLowerCase();
     const projectPath = sanitizeAbsoluteProjectPath(body.projectPath || process.cwd());
     const gxpLinks = Array.isArray(body.gxpLinks) ? body.gxpLinks : [];
@@ -225,7 +231,7 @@ function mountValidateAllRoute(app, {
             ...await runLicenseComplianceCheck(projectRoot, log2),
             ...await runDependencyVulnerabilityCheck(projectRoot, log2),
           ])(),
-          runPhase4Checks(projectRoot, log3, { org, repo, projectId, store }),
+          runPhase4Checks(projectRoot, log3, { org, repo, projectId, store, fast }),
         ]);
         issues = [...phase4.issues, ...licenseIssues];
       }
@@ -319,6 +325,7 @@ function mountValidateAllRoute(app, {
         jobId,
         projectPath,
         issues: filterByChangedFiles(taggedIssues),
+        ...(fast ? { fastMode: true } : {}),
         ...(changedFiles ? { totalIssueCount: taggedIssues.length, filteredByChangedFiles: true } : {}),
         ...(baselineMode === 'save' ? { baselineSaved: issues.length } : {}),
         ...(baselineMode === 'gate' ? { baselineIssueCount: baselineIssueIds.size } : {}),

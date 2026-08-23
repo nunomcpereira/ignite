@@ -89,6 +89,14 @@
       "enabled": true,
       "binary": "guarddog"
     },
+    "picklescan": {
+      "enabled": true,
+      "binary": "picklescan",
+      "extensions": [".pkl", ".pickle", ".pt", ".pth", ".ckpt", ".bin"]
+    },
+    "packageHallucination": {
+      "enabled": true
+    },
     "codeql": {
       "enabled": true,
       "binary": "codeql",
@@ -139,6 +147,10 @@
       "enabled": true,
       "binary": "spectral",
       "ruleset": ""
+    },
+    "oasdiff": {
+      "enabled": true,
+      "binary": "oasdiff"
     }
   },
   "sbom": {

@@ -340,6 +340,14 @@ const BEARER_BINARY = String(CONFIG.security.bearer.binary || 'bearer');
 const GUARDDOG_ENABLED = Boolean(CONFIG.security.guarddog.enabled);
 const GUARDDOG_BINARY = String(CONFIG.security.guarddog.binary || 'guarddog');
 
+/* Optional picklescan-powered malicious ML model artifact scan (see CONFIG.security.picklescan) */
+const PICKLESCAN_ENABLED = Boolean(CONFIG.security.picklescan.enabled);
+const PICKLESCAN_BINARY = String(CONFIG.security.picklescan.binary || 'picklescan');
+const PICKLESCAN_EXTENSIONS = Array.isArray(CONFIG.security.picklescan.extensions) ? CONFIG.security.picklescan.extensions : [];
+
+/* Optional AI package-hallucination / slopsquat detection — built-in, no external binary (see CONFIG.security.packageHallucination) */
+const PACKAGE_HALLUCINATION_ENABLED = Boolean(CONFIG.security.packageHallucination.enabled);
+
 /* Optional CodeQL-powered cross-file static analysis (see CONFIG.security.codeql) — deep-scan only, never the fast pipeline */
 const CODEQL_ENABLED = Boolean(CONFIG.security.codeql.enabled);
 const CODEQL_BINARY = String(CONFIG.security.codeql.binary || 'codeql');
@@ -379,6 +387,10 @@ const FILE_SIZE_MAX_LINES = Number(CONFIG.metrics.fileSize.maxLines) || 1000;
 const SPECTRAL_ENABLED = Boolean(CONFIG.api.spectral.enabled);
 const SPECTRAL_BINARY = String(CONFIG.api.spectral.binary || 'spectral');
 
+/* Optional oasdiff-powered API breaking-change / shadow-endpoint scan (see CONFIG.api.oasdiff) */
+const OASDIFF_ENABLED = Boolean(CONFIG.api.oasdiff.enabled);
+const OASDIFF_BINARY = String(CONFIG.api.oasdiff.binary || 'oasdiff');
+
 /* Built-in codebase-intelligence checks (see CONFIG.codeIntelligence / CONFIG.architecture) — no external tool for any of these */
 const DEAD_CODE_ENABLED = Boolean(CONFIG.codeIntelligence.deadCode.enabled);
 const HEALTH_ENABLED = Boolean(CONFIG.codeIntelligence.health.enabled);
@@ -405,7 +417,7 @@ const {
   gitleaks: GITLEAKS_BINARY, trivy: TRIVY_BINARY, checkov: CHECKOV_BINARY, hadolint: HADOLINT_BINARY,
   syft: SYFT_BINARY, cosign: COSIGN_BINARY, semgrep: SEMGREP_BINARY, bearer: BEARER_BINARY,
   guarddog: GUARDDOG_BINARY, jscpd: JSCPD_BINARY, gocloc: GOCLOC_BINARY, spectral: SPECTRAL_BINARY,
-  codeql: CODEQL_BINARY,
+  codeql: CODEQL_BINARY, picklescan: PICKLESCAN_BINARY, oasdiff: OASDIFF_BINARY,
 });
 const SPECTRAL_RULESET = String(CONFIG.api.spectral.ruleset || path.join(__dirname, 'spectral-default-ruleset.yaml'));
 
@@ -789,7 +801,7 @@ const { createGithubApi } = require('./lib/github-api');
 const {
   isGhCliAvailable, resolveServerGithubToken, githubApiRequest, githubGraphqlRequest,
   ghApiWrite, ghApiGet, ghFetchFileRaw, ghListCommits, ghCreatePr, ghArmAutoMerge,
-  ghWatchPrChecks, ghCreateIssue, ghCloneRepo,
+  ghWatchPrChecks, ghCreateIssue, ghCloneRepo, ghCommentOnPr,
 } = createGithubApi({ runTool, runToolStreaming });
 
 /* ------------------------------------------------------------------ */
@@ -951,6 +963,13 @@ const { checkMaliciousDependencies, guarddogTooling } = createMaliciousDependenc
   config: { enabled: GUARDDOG_ENABLED },
 });
 
+const { createModelArtifactSecurityCheck } = require('./checks/model-artifact-security');
+const { checkModelArtifactSecurity, picklescanTooling } = createModelArtifactSecurityCheck({
+  runTool,
+  fsUtils: { walkFiles, relativeToRoot },
+  config: { enabled: PICKLESCAN_ENABLED, extensions: PICKLESCAN_EXTENSIONS },
+});
+
 const { createCodeqlCrossFileCheck } = require('./checks/codeql-cross-file');
 const { checkCodeqlCrossFile, codeqlTooling, discoverCodeqlLanguages, runCustomCodeqlQuery } = createCodeqlCrossFileCheck({
   runTool,
@@ -1004,6 +1023,13 @@ const { checkApiSchemas, spectralTooling, discoverApiSchemaFiles } = createApiSc
   runTool,
   fsUtils: { walkFiles, looksBinary, buildSnippet, relativeToRoot },
   config: { enabled: SPECTRAL_ENABLED, ruleset: SPECTRAL_RULESET },
+});
+
+const { createApiSchemaDriftCheck } = require('./checks/api-schema-drift');
+const { checkApiSchemaDrift, oasdiffTooling } = createApiSchemaDriftCheck({
+  runTool,
+  discoverApiSchemaFiles,
+  config: { enabled: OASDIFF_ENABLED },
 });
 
 const { createFeaturePostureCheck } = require('./checks/feature-posture');
@@ -1087,7 +1113,19 @@ const { checkBoundaries } = createBoundariesCheck({
 // toggleable via CONFIG.security.codeql.enabled (on by default) for
 // environments where Bearer/Semgrep/GuardDog are disabled or fast enough
 // that CodeQL's cost would actually show up.
-async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }) {
+// `fast: true` (the pre-push/CLI "lightning" mode) narrows the batch to the
+// handful of checks that are inherently sub-second/local — secrets,
+// AI-governance, file-encapsulation (all built-in, no external process) and
+// semantic SAST (semgrep, still a real process spawn but the only one of
+// the twenty-odd checks fast enough not to defeat the purpose of a
+// pre-push hook). Every other task is skipped outright rather than run
+// with a shorter timeout — collectPhase4Issues already treats every
+// non-secrets/governance group as optional (`if (group) ...`), so leaving
+// the rest of `byName` undefined below is exactly the same shape as "tool
+// not installed", nothing further to special-case.
+const FAST_MODE_TASKS = new Set(['secrets', 'governance', 'semanticSast', 'fileEncapsulation']);
+
+async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, fast = false }) {
   const tasks = [
     {
       name: 'secrets',
@@ -1306,6 +1344,22 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
       },
     },
     {
+      name: 'apiSchemaDrift',
+      run: async (blog) => {
+        blog('Check 22 — API breaking-change / shadow-endpoint scan (oasdiff, vs. prior git revision)...');
+        const apiSchemaDrift = await checkApiSchemaDrift(projectRoot, blog);
+        if (apiSchemaDrift.findings.length > 0) {
+          blog(`✗ ${apiSchemaDrift.findings.length} API breaking-change finding(s):`);
+          apiSchemaDrift.findings.forEach((f) => blog(`    ${f.severity === 'error' ? '✗' : '⚠'} [${f.severity}] ${f.file} — ${f.message}`));
+        } else if (apiSchemaDrift.engine === 'oasdiff') {
+          blog('✓ Check 22 passed — no API breaking changes detected (or nothing to diff against).');
+        } else {
+          blog('✓ Check 22 skipped — oasdiff disabled or not installed.');
+        }
+        return apiSchemaDrift;
+      },
+    },
+    {
       name: 'maliciousDependencies',
       run: async (blog) => {
         blog('Check 12 — malicious-dependency heuristic scan (guarddog, npm/PyPI)...');
@@ -1319,6 +1373,38 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
           blog('✓ Check 12 skipped — guarddog disabled or not installed.');
         }
         return maliciousDependencies;
+      },
+    },
+    {
+      name: 'modelArtifactSecurity',
+      run: async (blog) => {
+        blog('Check 21 — malicious ML model artifact scan (picklescan, .pkl/.pt/.pth/.ckpt/.bin)...');
+        const modelArtifactSecurity = await checkModelArtifactSecurity(projectRoot, blog);
+        if (modelArtifactSecurity.findings.length > 0) {
+          blog(`✗ ${modelArtifactSecurity.findings.length} unsafe pickle payload(s) flagged:`);
+          modelArtifactSecurity.findings.forEach((f) => blog(`    ✗ ${f.file} — ${f.message}`));
+        } else if (modelArtifactSecurity.engine === 'picklescan') {
+          blog('✓ Check 21 passed — no unsafe pickle payloads found (or no model artifacts present).');
+        } else {
+          blog('✓ Check 21 skipped — picklescan disabled or not installed.');
+        }
+        return modelArtifactSecurity;
+      },
+    },
+    {
+      name: 'packageHallucination',
+      run: async (blog) => {
+        blog('Check 23 — AI package-hallucination / slopsquat scan (built-in, npm/PyPI/crates.io)...');
+        const packageHallucination = await checkPackageHallucination(projectRoot, blog);
+        if (packageHallucination.findings.length > 0) {
+          blog(`⚠ ${packageHallucination.findings.length} possibly-hallucinated dependency/dependencies flagged:`);
+          packageHallucination.findings.forEach((f) => blog(`    ⚠ ${f.file} — ${f.message}`));
+        } else if (packageHallucination.engine === 'built-in') {
+          blog('✓ Check 23 passed — every checked dependency name exists on its public registry.');
+        } else {
+          blog('✓ Check 23 skipped — disabled by config.');
+        }
+        return packageHallucination;
       },
     },
     {
@@ -1439,7 +1525,9 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     },
   ];
 
-  const settled = await Promise.all(tasks.map(async (t) => {
+  const activeTasks = fast ? tasks.filter((t) => FAST_MODE_TASKS.has(t.name)) : tasks;
+  if (fast) log?.(`⚡ Fast mode — running ${activeTasks.map((t) => t.name).join(', ')} only, skipping the rest of Phase 4's checks.`);
+  const settled = await Promise.all(activeTasks.map(async (t) => {
     const value = await t.run((line) => log?.(line));
     return { name: t.name, value };
   }));
@@ -1461,7 +1549,10 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store }
     duplication: byName.duplication,
     fileEncapsulation: byName.fileEncapsulation,
     apiSchema: byName.apiSchema,
+    apiSchemaDrift: byName.apiSchemaDrift,
     maliciousDependencies: byName.maliciousDependencies,
+    modelArtifactSecurity: byName.modelArtifactSecurity,
+    packageHallucination: byName.packageHallucination,
     codeql: byName.codeql,
     deadCode: byName.deadCode,
     health: byName.health,
@@ -1815,6 +1906,12 @@ mountHistoryRoutes(app, {
 const { mountSarifRoute } = require('./routes/sarif');
 mountSarifRoute(app, { store, runningRuns });
 
+const { mountGithubCheckRoute } = require('./routes/github-pr-status');
+mountGithubCheckRoute(app, {
+  store, runningRuns, auth, resolveServerGithubToken, ghApiWrite, ghCommentOnPr,
+  repoNameRegex: REPO_NAME_REGEX, githubNameRegex: GITHUB_NAME_REGEX,
+});
+
 
 /* ------------------------------------------------------------------ */
 /* Dependency license compliance — Black Duck-style red/warning/green   */
@@ -2013,6 +2110,13 @@ const { generateSbom, generateSbomFallback, syftTooling } = createSbomCheck({
   studioMaxDepsPerManifest: STUDIO_MAX_DEPS_PER_MANIFEST,
 });
 
+const { createPackageHallucinationCheck } = require('./checks/package-hallucination');
+const { checkPackageHallucination } = createPackageHallucinationCheck({
+  fsUtils: { walkFiles },
+  studioManifests: STUDIO_MANIFESTS,
+  config: { enabled: PACKAGE_HALLUCINATION_ENABLED },
+});
+
 const { mountConfigRoutes } = require('./routes/config');
 mountConfigRoutes(app, {
   config: CONFIG,
@@ -2028,13 +2132,15 @@ mountToolsStatusRoutes(app, {
     ortTooling, licenseeTooling, gitleaksTooling, trivyTooling, trivyImageTooling,
     checkovTooling, hadolintTooling, syftTooling, cosignTooling, semgrepTooling,
     bearerTooling, jscpdTooling, goclocTooling, spectralTooling, guarddogTooling, codeqlTooling,
+    picklescanTooling, oasdiffTooling,
   },
   enabled: {
     gitleaksEnabled: GITLEAKS_ENABLED, trivyEnabled: TRIVY_ENABLED, trivyImageEnabled: TRIVY_IMAGE_ENABLED,
     checkovEnabled: CHECKOV_ENABLED, hadolintEnabled: HADOLINT_ENABLED, syftEnabled: SYFT_ENABLED,
     cosignEnabled: COSIGN_ENABLED, semgrepEnabled: SEMGREP_ENABLED, bearerEnabled: BEARER_ENABLED,
     jscpdEnabled: JSCPD_ENABLED, goclocEnabled: GOCLOC_ENABLED, spectralEnabled: SPECTRAL_ENABLED,
-    guarddogEnabled: GUARDDOG_ENABLED, codeqlEnabled: CODEQL_ENABLED,
+    guarddogEnabled: GUARDDOG_ENABLED, codeqlEnabled: CODEQL_ENABLED, picklescanEnabled: PICKLESCAN_ENABLED,
+    oasdiffEnabled: OASDIFF_ENABLED,
   },
 });
 
@@ -2889,10 +2995,13 @@ module.exports = {
   checkFileEncapsulation,
   generateLocMetrics,
   checkApiSchemas,
+  checkApiSchemaDrift,
   checkFeaturePosture,
   checkComplianceDocuments,
   DOCUMENT_CATEGORIES,
   checkMaliciousDependencies,
+  checkModelArtifactSecurity,
+  checkPackageHallucination,
   checkCodeqlCrossFile,
   discoverCodeqlLanguages,
   normalizeWorkflowText,

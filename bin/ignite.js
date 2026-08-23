@@ -13,7 +13,7 @@
  * every other agent-facing entrypoint (mcp-server.js's proxyToIgnite).
  *
  * Usage:
- *   ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL]
+ *   ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL] [--fast]
  *
  * Exit codes: 0 = passed, 1 = blocking issues / validation failure,
  * 2 = couldn't reach the Ignite server or bad usage.
@@ -22,12 +22,13 @@
 const path = require('path');
 
 function parseArgs(argv) {
-  const args = { command: null, projectPath: null, changedFiles: null, json: false, baseUrl: null };
+  const args = { command: null, projectPath: null, changedFiles: null, json: false, baseUrl: null, fast: false };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     // eslint-disable-next-line security/detect-object-injection -- i is a bounded numeric loop index, not user-controlled
     const a = argv[i];
     if (a === '--json') args.json = true;
+    else if (a === '--fast') args.fast = true;
     else if (a === '--changed-files') args.changedFiles = String(argv[++i] || '').split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--base-url') args.baseUrl = argv[++i];
     else rest.push(a);
@@ -54,7 +55,7 @@ function printHumanSummary(result) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.command !== 'scan') {
-    console.error('Usage: ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL]');
+    console.error('Usage: ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL] [--fast]');
     process.exit(2);
   }
 
@@ -73,6 +74,7 @@ async function main() {
       body: JSON.stringify({
         projectPath,
         ...(args.changedFiles ? { changedFiles: args.changedFiles } : {}),
+        ...(args.fast ? { fast: true } : {}),
       }),
     });
   } catch (err) {

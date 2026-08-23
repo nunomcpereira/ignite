@@ -221,6 +221,30 @@ function loadConfig() {
       // subcommand instead of `config`) — no separate binary setting.
       // severityThreshold filters trivy's own CVE severities.
       trivyImage: { enabled: false, severityThreshold: 'HIGH,CRITICAL', buildTimeoutMs: 8 * 60_000 },
+      // Optional: malicious ML model artifact scan via picklescan
+      // (https://github.com/mmaitre314/picklescan) — Python's pickle
+      // format executes arbitrary code on load, and it's the format
+      // underneath a wide swath of AI-generated/AI-downloaded model
+      // weights (.pkl/.pickle, PyTorch .pt/.pth/.bin checkpoints, .ckpt
+      // files). None of Ignite's other scanners open these (they read
+      // source text or manifests), so a poisoned weight file would
+      // otherwise sail through untouched. On by default. `extensions`
+      // controls which file extensions are treated as candidate model
+      // artifacts; deliberately excludes .safetensors/.onnx — neither is
+      // pickle-based, so picklescan has nothing to say about them. No
+      // built-in fallback: unsafe-pickle detection needs picklescan's real
+      // opcode-level parser, not a heuristic over binary bytes.
+      picklescan: { enabled: true, binary: 'picklescan', extensions: ['.pkl', '.pickle', '.pt', '.pth', '.ckpt', '.bin'] },
+      // Optional: AI package-hallucination / slopsquat detection
+      // (checks/package-hallucination.js) — built-in, no external binary.
+      // Checks every manifest dependency name against its ecosystem's real
+      // public registry (npm, PyPI, crates.io); a name that 404s is
+      // possibly an AI-invented package an attacker could squat on. On by
+      // default. Always advisory (never blocks a run) — "not on the
+      // public registry" also describes a perfectly legitimate private
+      // package, so this can't be a hard gate without false-positiving on
+      // every internal monorepo dependency.
+      packageHallucination: { enabled: true },
     },
     compliance: {
       // Optional: Compliance & Feature Posture Engine — scans for the
@@ -330,6 +354,18 @@ function loadConfig() {
       // linting needs the real rule engine, so this simply contributes
       // nothing when disabled/missing, or when no matching files exist.
       spectral: { enabled: true, binary: 'spectral', ruleset: path.join(__dirname, 'spectral-default-ruleset.yaml') },
+      // Optional: API breaking-change / shadow-endpoint detection via
+      // oasdiff (https://github.com/oasdiff/oasdiff) — diffs each
+      // discovered OpenAPI/AsyncAPI file against its own previous git
+      // revision, catching what Spectral's isolated lint above can't (a
+      // removed endpoint, a field that became required, a changed
+      // response type). Needs real git history to diff against, same
+      // constraint security.bearer's --diff mode has — a fresh ZIP/folder
+      // upload with no prior commit has nothing to compare, so this
+      // simply contributes nothing rather than fabricating a baseline. On
+      // by default. No built-in fallback: breaking-change detection needs
+      // the real spec-aware diff engine.
+      oasdiff: { enabled: true, binary: 'oasdiff' },
     },
     // Built-in JS/TS codebase-intelligence checks (dead code, complexity/
     // health, architecture boundaries, CSS dead-class scan) — closes the
@@ -477,6 +513,13 @@ function loadConfig() {
   if (process.env.COSIGN_IDENTITY_REGEXP) merged.security.cosign.identityRegexp = process.env.COSIGN_IDENTITY_REGEXP;
   if (process.env.COSIGN_ISSUER_REGEXP) merged.security.cosign.issuerRegexp = process.env.COSIGN_ISSUER_REGEXP;
   if (process.env.COSIGN_CACHE_TTL_SECONDS !== undefined) merged.security.cosign.cacheTtlSeconds = Number(process.env.COSIGN_CACHE_TTL_SECONDS);
+  if (process.env.PICKLESCAN_ENABLED !== undefined) {
+    merged.security.picklescan.enabled = String(process.env.PICKLESCAN_ENABLED) === 'true';
+  }
+  if (process.env.PICKLESCAN_BINARY) merged.security.picklescan.binary = process.env.PICKLESCAN_BINARY;
+  if (process.env.PACKAGE_HALLUCINATION_ENABLED !== undefined) {
+    merged.security.packageHallucination.enabled = String(process.env.PACKAGE_HALLUCINATION_ENABLED) === 'true';
+  }
   if (process.env.SEMGREP_ENABLED !== undefined) {
     merged.security.semgrep.enabled = String(process.env.SEMGREP_ENABLED) === 'true';
   }
@@ -546,6 +589,10 @@ function loadConfig() {
   }
   if (process.env.SPECTRAL_BINARY) merged.api.spectral.binary = process.env.SPECTRAL_BINARY;
   if (process.env.SPECTRAL_RULESET) merged.api.spectral.ruleset = process.env.SPECTRAL_RULESET;
+  if (process.env.OASDIFF_ENABLED !== undefined) {
+    merged.api.oasdiff.enabled = String(process.env.OASDIFF_ENABLED) === 'true';
+  }
+  if (process.env.OASDIFF_BINARY) merged.api.oasdiff.binary = process.env.OASDIFF_BINARY;
   if (process.env.SYFT_ENABLED !== undefined) {
     merged.sbom.syft.enabled = String(process.env.SYFT_ENABLED) === 'true';
   }

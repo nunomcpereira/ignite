@@ -80,6 +80,19 @@ configurable via env vars documented at the top of the script
 `IGNITE_PREPUSH_SKIP=true` escape hatch that's logged rather than silent
 like `git push --no-verify`.
 
+## Lightning mode — skip the slow tools on every push
+
+Phase 4's dozen-plus external tools (CodeQL, Bearer, Trivy, GuardDog, …) are
+thorough but not fast — fine for CI, friction on every local push. Set
+`IGNITE_FAST_SCAN=true` to narrow the hook to secrets, the AI-governance
+check, file-encapsulation, and semgrep — all either built-in or a single
+fast process spawn — and skip the rest of Phase 4 entirely for that run.
+It's a tradeoff, not a free lunch: a fast push still needs a full scan
+somewhere in the loop (CI, or an occasional `ignite scan` without `--fast`)
+to catch what lightning mode skips. The same flag exists on the CLI
+(`ignite scan --fast`) and as `fast: true` on `POST /api/pipeline/validate-all`
+directly, for the same reason.
+
 ---
 
 Full setup, every environment variable, tool-by-tool install instructions,

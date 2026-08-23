@@ -68,8 +68,11 @@ const CATEGORY_SCORES = {
   'code-duplication': 2,
   'code-structure': 2,
   'api-schema-lint': 4,
+  'api-breaking-change': 6,
   'dependency-vulnerability': 8,
   'malicious-dependency': 9,
+  'malicious-model-artifact': 10,
+  'package-hallucination': 5,
   'codeql-sast': 8,
   'ai-act-prohibited-practice': 6,
   'ai-act-transparency-disclosure': 4,
@@ -112,6 +115,7 @@ const CATEGORY_CWE_OWASP = {
   'image-provenance': { cwe: 'CWE-345', owasp: 'A08:2021 - Software and Data Integrity Failures' },
   'pii-dataflow': { cwe: 'CWE-359', owasp: null },
   'malicious-dependency': { cwe: 'CWE-506', owasp: 'A08:2021 - Software and Data Integrity Failures' },
+  'malicious-model-artifact': { cwe: 'CWE-502', owasp: 'A08:2021 - Software and Data Integrity Failures' },
   'dependency-vulnerability': { cwe: 'CWE-1104', owasp: 'A06:2021 - Vulnerable and Outdated Components' },
   'structure-audit': { cwe: 'CWE-540', owasp: 'A05:2021 - Security Misconfiguration' },
 };
@@ -229,7 +233,7 @@ function collectCodeqlIssues(codeql) {
   });
 }
 
-function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, maliciousDependencies, codeql, deadCode, health, cssDeadCode, boundaries, euAiAct }) {
+function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabilities, imageProvenance, semanticSast, piiDataFlow, duplication, fileEncapsulation, apiSchema, apiSchemaDrift, maliciousDependencies, modelArtifactSecurity, packageHallucination, codeql, deadCode, health, cssDeadCode, boundaries, euAiAct }) {
   const issues = [];
 
   for (const f of secrets.findings) {
@@ -432,12 +436,63 @@ function collectPhase4Issues({ secrets, governance, llm, iac, imageVulnerabiliti
     }
   }
 
+  if (apiSchemaDrift) {
+    for (const f of apiSchemaDrift.findings) {
+      const category = 'api-breaking-change';
+      const severity = f.severity === 'error' ? 'error' : 'warning';
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line, discriminator: f.kind }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: null,
+      });
+    }
+  }
+
   if (maliciousDependencies) {
     for (const f of maliciousDependencies.findings) {
       const category = 'malicious-dependency';
       const severity = 'error'; // GuardDog's whole purpose is malicious-code heuristics, not style/license findings
       issues.push({
         id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: null,
+      });
+    }
+  }
+
+  if (modelArtifactSecurity) {
+    for (const f of modelArtifactSecurity.findings) {
+      const category = 'malicious-model-artifact';
+      const severity = 'error'; // an unsafe pickle global import executes on load — never advisory
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line }),
+        category,
+        severity,
+        score: scoreForIssue({ category, severity }),
+        summary: f.message || f.kind,
+        file: f.file,
+        line: f.line,
+        snippet: null,
+      });
+    }
+  }
+
+  if (packageHallucination) {
+    for (const f of packageHallucination.findings) {
+      const category = 'package-hallucination';
+      const severity = 'warning'; // advisory only — "not on the public registry" also describes a legitimate private package
+      issues.push({
+        id: buildIssueId({ category, file: f.file, line: f.line, discriminator: f.message }),
         category,
         severity,
         score: scoreForIssue({ category, severity }),

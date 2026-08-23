@@ -545,6 +545,68 @@ process.exit(1);
   return { binary: scriptPath, callLogPath };
 }
 
+/**
+ * Writes a small Node script that stands in for the real `picklescan` CLI,
+ * so tests can exercise the model-artifact-security integration without
+ * requiring picklescan (or real model weight files) to be installed.
+ * Understands `--help` (tooling probe) and `--path <dir>` (scan), replaying
+ * the given plain-text finding-line templates (mirroring picklescan's real
+ * "<path>[:<member>]: global import '<name>' FOUND" line format). Each
+ * template's literal string `{root}` is substituted at run time with the
+ * actual directory picklescan was invoked against (the `--path` argument),
+ * since the check module resolves each finding's file back to a real
+ * filesystem path via relativeToRoot.
+ *
+ * @param {string[]} findingLineTemplates - e.g. ["{root}/model.pkl: global import '__builtin__ eval' FOUND"] (empty array = clean scan)
+ */
+async function makeFakePicklescan(findingLineTemplates) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-picklescan-'));
+  const scriptPath = path.join(dir, 'picklescan');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--help') { process.stdout.write('usage: picklescan\\n'); process.exit(0); }
+if (args[0] === '--path') {
+  const root = args[1];
+  const templates = ${JSON.stringify(findingLineTemplates)};
+  const lines = templates.map((t) => t.split('{root}').join(root));
+  for (const line of lines) process.stdout.write(line + '\\n');
+  process.stdout.write('----------- SCAN SUMMARY -----------\\n');
+  process.exit(lines.length > 0 ? 1 : 0);
+}
+process.exit(2);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Writes a small Node script that stands in for the real `oasdiff` CLI, so
+ * tests can exercise the API-breaking-change integration without requiring
+ * oasdiff to be installed. Understands `--version` (tooling probe) and
+ * `breaking <base> <revision> --format json` (scan), replaying the given
+ * canned array of change objects (empty array = no breaking changes,
+ * matching oasdiff's own exit-code convention: 0 clean, 1 breaking changes
+ * found).
+ *
+ * @param {Array} changes - change objects (id/text/level/operation/path)
+ */
+async function makeFakeOasdiff(changes) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ignite-fake-oasdiff-'));
+  const scriptPath = path.join(dir, 'oasdiff');
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('oasdiff version 1.0.0\\n'); process.exit(0); }
+if (args[0] === 'breaking') {
+  const changes = ${JSON.stringify(changes)};
+  process.stdout.write(JSON.stringify(changes));
+  process.exit(changes.length > 0 ? 1 : 0);
+}
+process.exit(2);
+`;
+  await fs.writeFile(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
 module.exports = {
-  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral, makeFakeGuardDog, makeFakeDockerAndTrivyImage, makeFakeCodeQL,
+  withServerEnv, makeTempProject, makeFakeGitleaks, makeFakeLicenseTools, makeFakeTrivy, makeFakeCheckov, makeFakeHadolint, makeFakeSyft, makeFakeCosign, makeFakeSemgrep, makeFakeBearer, makeFakeJscpd, makeFakeGocloc, makeFakeSpectral, makeFakeGuardDog, makeFakeDockerAndTrivyImage, makeFakeCodeQL, makeFakePicklescan, makeFakeOasdiff,
 };
