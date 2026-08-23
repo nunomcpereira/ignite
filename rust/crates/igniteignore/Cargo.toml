@@ -1,0 +1,13 @@
+[package]
+name = "ignite-igniteignore"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-tool-runner = { path = "../tool-runner" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
