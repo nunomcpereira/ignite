@@ -1,0 +1,8 @@
+[package]
+name = "dump-config"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-config = { path = "../config" }
+serde_json = "1"
