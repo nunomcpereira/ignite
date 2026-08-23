@@ -25,6 +25,9 @@ ignite-loc-metrics = { path = "../loc-metrics" }
 ignite-sbom = { path = "../sbom" }
 ignite-feature-posture = { path = "../feature-posture" }
 ignite-package-hallucination = { path = "../package-hallucination" }
+ignite-github-api = { path = "../github-api" }
+once_cell = "1"
+regex = "1"
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-db-store = { path = "../db-store" }
 ignite-sarif = { path = "../sarif" }

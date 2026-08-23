@@ -20,6 +20,7 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::auto_fix::router())
         .merge(routes::dependencies::router())
         .merge(routes::reports::router())
+        .merge(routes::github_pr_status::router())
         .with_state(state)
 }
 
@@ -186,6 +187,22 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/reports/sbom")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn github_check_rejects_invalid_owner_name() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/job-1/github-check")).json(&serde_json::json!({ "owner": "-bad-", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn github_check_returns_404_for_unknown_job() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/nope/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
+        assert_eq!(res.status(), 404);
     }
 
     #[tokio::test]
