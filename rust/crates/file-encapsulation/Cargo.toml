@@ -1,0 +1,11 @@
+[package]
+name = "ignite-file-encapsulation"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-fs-utils = { path = "../fs-utils" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
