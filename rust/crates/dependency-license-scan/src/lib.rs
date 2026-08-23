@@ -401,6 +401,84 @@ pub async fn run_licensee_detect(root: &Path, runner: &ToolRunner) -> Option<Pro
     Some(ProjectLicenseDetection { spdx_id, confidence, tier: tier_to_str(&classification.tier), reason: classification.reason })
 }
 
+pub struct DependencyLicenseScan {
+    pub engine: &'static str,
+    pub project_license: Option<ProjectLicenseDetection>,
+    pub manifests: Vec<LicenseScanManifest>,
+}
+
+/// Combines `run_licensee_detect`'s whole-project license detection with
+/// the deps.dev-backed per-manifest scan. ORT (OSS Review Toolkit)
+/// integration isn't ported yet (see module doc), so unlike the JS
+/// original this always runs in fallback-only mode — the same mode the
+/// JS original itself falls back to when ORT isn't installed.
+pub async fn scan_dependency_licenses(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client) -> std::io::Result<DependencyLicenseScan> {
+    let project_license = run_licensee_detect(root, runner).await;
+    let manifests = scan_dependency_licenses_fallback(root, client, npm_http, &HashSet::new()).await?;
+    Ok(DependencyLicenseScan { engine: "fallback", project_license, manifests })
+}
+
+/// Faithful port of `runLicenseComplianceCheck` — Phase 3's license
+/// compliance gate. Never fails the phase on a scan error (a deps.dev
+/// network hiccup shouldn't fail structure audit); returns an empty issue
+/// list instead.
+pub async fn run_license_compliance_check(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client, mut log: impl FnMut(&str)) -> Vec<Issue> {
+    log("Check 5 — dependency & license compliance scan (manifests + LICENSE files)...");
+    let scan = match scan_dependency_licenses(root, runner, client, npm_http).await {
+        Ok(s) => s,
+        Err(e) => {
+            log(&format!("⚠ License compliance scan failed (non-blocking): {e}"));
+            return vec![];
+        }
+    };
+    let license_files = match scan_project_license_files(root) {
+        Ok(f) => f,
+        Err(e) => {
+            log(&format!("⚠ License compliance scan failed (non-blocking): {e}"));
+            return vec![];
+        }
+    };
+    let issues = collect_license_issues(&scan.manifests, &license_files);
+    if !issues.is_empty() {
+        let blocking = issues.iter().filter(|i| i.severity == Severity::Error).count();
+        log(&format!("⚠ {} license compliance finding(s) ({blocking} commercial/blocking):", issues.len()));
+        for li in &issues {
+            let marker = if li.severity == Severity::Error { "✗" } else { "⚠" };
+            let loc = li.line.map(|l| format!(":{l}")).unwrap_or_default();
+            log(&format!("    {marker} {}{loc} — {}", li.file.as_deref().unwrap_or(""), li.summary));
+        }
+    } else {
+        log("✓ Check 5 passed — no commercial/restrictive licenses detected.");
+    }
+    issues
+}
+
+/// Faithful port of `runDependencyVulnerabilityCheck` — Phase 3's
+/// dependency-vulnerability gate. Never fails the phase on a scan error.
+pub async fn run_dependency_vulnerability_check(root: &Path, client: &DepsDevClient, mut log: impl FnMut(&str)) -> Vec<Issue> {
+    log("Check 6 — dependency vulnerability scan (known CVE/GHSA advisories via deps.dev)...");
+    let manifests = match scan_dependency_vulnerabilities(root, client).await {
+        Ok(m) => m,
+        Err(e) => {
+            log(&format!("⚠ Dependency vulnerability scan failed (non-blocking): {e}"));
+            return vec![];
+        }
+    };
+    let issues = collect_dependency_vulnerability_issues(&manifests);
+    if !issues.is_empty() {
+        let blocking = issues.iter().filter(|i| i.severity == Severity::Error).count();
+        log(&format!("⚠ {} dependency vulnerability finding(s) ({blocking} critical/high — CVSS ≥7):", issues.len()));
+        for vi in &issues {
+            let marker = if vi.severity == Severity::Error { "✗" } else { "⚠" };
+            let loc = vi.line.map(|l| format!(":{l}")).unwrap_or_default();
+            log(&format!("    {marker} {}{loc} — {}", vi.file.as_deref().unwrap_or(""), vi.summary));
+        }
+    } else {
+        log("✓ Check 6 passed — no known vulnerabilities found in resolved dependencies.");
+    }
+    issues
+}
+
 /// Turns `scan_dependency_licenses_fallback`'s manifest findings and
 /// `scan_project_license_files`'s raw LICENSE-file findings into the same
 /// addressable-issue shape `collect_phase4_issues` uses, so commercial/
@@ -518,6 +596,35 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn run_license_compliance_check_logs_and_returns_no_issues_for_internal_only_deps() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("package.json"), r#"{"dependencies": {"@myorg/shared": "workspace:*"}}"#).unwrap();
+
+        let runner = ignite_tool_runner::ToolRunner::new(HashMap::new());
+        let client = DepsDevClient::new();
+        let npm_http = reqwest::Client::new();
+        let mut logs = Vec::new();
+        let issues = run_license_compliance_check(root, &runner, &client, &npm_http, |l| logs.push(l.to_string())).await;
+        assert!(issues.is_empty());
+        assert!(logs.iter().any(|l| l.contains("Check 5")));
+        assert!(logs.iter().any(|l| l.contains("passed")));
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn run_dependency_vulnerability_check_logs_and_returns_no_issues_for_no_manifests() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let client = DepsDevClient::new();
+        let mut logs = Vec::new();
+        let issues = run_dependency_vulnerability_check(root, &client, |l| logs.push(l.to_string())).await;
+        assert!(issues.is_empty());
+        assert!(logs.iter().any(|l| l.contains("Check 6")));
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
 
     #[test]
     fn collect_license_issues_skips_green_and_internal_deps() {
