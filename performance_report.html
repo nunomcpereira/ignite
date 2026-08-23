@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tadone Scan Timing</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+  :root{
+    --bg: #0e1416;
+    --surface: #151d20;
+    --surface-2: #1b2529;
+    --border: #263336;
+    --text: #e6edee;
+    --text-dim: #93a6ab;
+    --text-faint: #5c7176;
+    --accent: #ff9153;
+    --accent-dim: #7a5334;
+    --ok: #3ecf8e;
+    --warn: #f0b23e;
+    --err: #ef5b5b;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --body: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="light"]){
+      --bg: #f4f2ee;
+      --surface: #ffffff;
+      --surface-2: #ece8e1;
+      --border: #ddd6c9;
+      --text: #201d17;
+      --text-dim: #5c584e;
+      --text-faint: #8b8577;
+      --accent: #c8571f;
+      --accent-dim: #f0d9c6;
+      --ok: #187a4f;
+      --warn: #93650a;
+      --err: #b23131;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg: #f4f2ee;
+    --surface: #ffffff;
+    --surface-2: #ece8e1;
+    --border: #ddd6c9;
+    --text: #201d17;
+    --text-dim: #5c584e;
+    --text-faint: #8b8577;
+    --accent: #c8571f;
+    --accent-dim: #f0d9c6;
+    --ok: #187a4f;
+    --warn: #93650a;
+    --err: #b23131;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--body);
+    font-size:15px;
+    line-height:1.55;
+  }
+  ::selection{ background:var(--accent); color:#100b06; }
+
+  .wrap{
+    max-width:960px;
+    margin:0 auto;
+    padding:56px 24px 96px;
+  }
+
+  header{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    margin-bottom:40px;
+    padding-bottom:28px;
+    border-bottom:1px solid var(--border);
+  }
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:12px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--accent);
+  }
+  h1{
+    font-family:var(--mono);
+    font-weight:800;
+    font-size:clamp(28px,4vw,40px);
+    margin:0;
+    text-wrap:balance;
+    letter-spacing:-0.01em;
+  }
+  .subtitle{
+    color:var(--text-dim);
+    max-width:64ch;
+    font-size:15.5px;
+  }
+  .subtitle code{ font-family:var(--mono); font-size:.92em; color:var(--text); }
+
+  .stat-row{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:1px;
+    background:var(--border);
+    border:1px solid var(--border);
+    border-radius:10px;
+    overflow:hidden;
+    margin-bottom:48px;
+  }
+  .stat{
+    background:var(--surface);
+    padding:20px 18px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  .stat .value{
+    font-family:var(--mono);
+    font-weight:700;
+    font-size:26px;
+    font-variant-numeric:tabular-nums;
+  }
+  .stat .value small{ font-size:14px; color:var(--text-dim); font-weight:500; }
+  .stat .label{
+    font-size:12px;
+    color:var(--text-faint);
+    text-transform:uppercase;
+    letter-spacing:.08em;
+  }
+  .stat.hot .value{ color:var(--accent); }
+  .stat.bad .value{ color:var(--err); }
+
+  section{ margin-bottom:52px; }
+  h2{
+    font-family:var(--mono);
+    font-size:13px;
+    text-transform:uppercase;
+    letter-spacing:.1em;
+    color:var(--text-dim);
+    margin:0 0 4px;
+    display:flex;
+    align-items:baseline;
+    gap:10px;
+  }
+  h2::after{
+    content:"";
+    flex:1;
+    height:1px;
+    background:var(--border);
+  }
+  .section-note{
+    color:var(--text-faint);
+    font-size:13.5px;
+    max-width:70ch;
+    margin:0 0 20px;
+  }
+
+  /* timeline */
+  .timeline{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:20px;
+    overflow-x:auto;
+  }
+  .tl-row{
+    display:grid;
+    grid-template-columns:190px 1fr 70px;
+    align-items:center;
+    gap:14px;
+    padding:9px 0;
+  }
+  .tl-row + .tl-row{ border-top:1px solid var(--border); }
+  .tl-name{
+    font-family:var(--mono);
+    font-size:12.5px;
+    color:var(--text-dim);
+  }
+  .tl-track{
+    position:relative;
+    height:20px;
+    background:var(--surface-2);
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .tl-bar{
+    position:absolute;
+    top:0; bottom:0;
+    background:var(--text-faint);
+    border-radius:4px;
+  }
+  .tl-bar.concurrent{ background:var(--accent-dim); border:1px solid var(--accent); }
+  .tl-ms{
+    font-family:var(--mono);
+    font-size:12.5px;
+    text-align:right;
+    font-variant-numeric:tabular-nums;
+    color:var(--text-dim);
+  }
+  .tl-scale{
+    display:grid;
+    grid-template-columns:190px 1fr 70px;
+    gap:14px;
+    padding-top:10px;
+    margin-top:6px;
+    border-top:1px dashed var(--border);
+  }
+  .tl-scale-track{
+    position:relative;
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--text-faint);
+  }
+  .tl-scale-track span{ position:absolute; transform:translateX(-50%); }
+  .tl-scale-track span:first-child{ transform:none; }
+  .tl-scale-track span:last-child{ transform:translateX(-100%); }
+
+  /* bar chart */
+  .chart{
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+    background:var(--border);
+    border:1px solid var(--border);
+    border-radius:10px;
+    overflow:hidden;
+  }
+  .bar-row{
+    display:grid;
+    grid-template-columns:172px 1fr 64px;
+    align-items:center;
+    gap:12px;
+    padding:8px 16px;
+    background:var(--surface);
+  }
+  .bar-row.critical-path{ background:var(--surface-2); }
+  .bar-name{
+    font-family:var(--mono);
+    font-size:12.5px;
+    color:var(--text);
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .bar-name .tag{
+    display:inline-block;
+    margin-left:6px;
+    font-size:9.5px;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    color:var(--accent);
+    border:1px solid var(--accent-dim);
+    border-radius:3px;
+    padding:1px 4px;
+    vertical-align:1px;
+  }
+  .bar-track{
+    height:16px;
+    background:var(--surface-2);
+    border-radius:3px;
+    position:relative;
+  }
+  .bar-row.critical-path .bar-track{ background:var(--bg); }
+  .bar-fill{
+    height:100%;
+    border-radius:3px;
+    background:linear-gradient(90deg, var(--accent-dim), var(--accent));
+  }
+  .bar-ms{
+    font-family:var(--mono);
+    font-size:12.5px;
+    text-align:right;
+    font-variant-numeric:tabular-nums;
+    color:var(--text-dim);
+  }
+
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13.5px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    overflow:hidden;
+  }
+  thead th{
+    text-align:left;
+    font-family:var(--mono);
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    color:var(--text-faint);
+    padding:10px 14px;
+    background:var(--surface-2);
+    border-bottom:1px solid var(--border);
+  }
+  tbody td{
+    padding:9px 14px;
+    border-bottom:1px solid var(--border);
+    vertical-align:top;
+  }
+  tbody tr:last-child td{ border-bottom:none; }
+  td.num{ font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums; }
+  .pill{
+    display:inline-block;
+    font-family:var(--mono);
+    font-size:11px;
+    padding:2px 7px;
+    border-radius:20px;
+    border:1px solid currentColor;
+  }
+  .pill.err{ color:var(--err); }
+  .pill.warn{ color:var(--warn); }
+
+  .recs{
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+  }
+  .rec{
+    display:grid;
+    grid-template-columns:26px 1fr;
+    gap:14px;
+    padding:16px 4px;
+    border-bottom:1px solid var(--border);
+  }
+  .rec:last-child{ border-bottom:none; }
+  .rec .n{
+    font-family:var(--mono);
+    color:var(--accent);
+    font-weight:700;
+    font-size:13px;
+    padding-top:2px;
+  }
+  .rec h3{
+    margin:0 0 4px;
+    font-size:15.5px;
+    font-family:var(--body);
+    font-weight:600;
+  }
+  .rec p{ margin:0; color:var(--text-dim); font-size:14px; }
+  .rec .save{
+    display:inline-block;
+    margin-top:8px;
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--ok);
+  }
+
+  footer{
+    margin-top:56px;
+    padding-top:20px;
+    border-top:1px solid var(--border);
+    color:var(--text-faint);
+    font-size:12.5px;
+    font-family:var(--mono);
+  }
+
+  @media (max-width:640px){
+    .stat-row{ grid-template-columns:repeat(2,1fr); }
+    .bar-row, .tl-row, .tl-scale{ grid-template-columns:110px 1fr 52px; }
+    .bar-name{ font-size:11px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Ignite &middot; performance measurement</div>
+    <h1>Where the tadone scan spends its 6 minutes</h1>
+    <p class="subtitle">
+      One <code>validate-all</code> run of Ignite's onboarding pipeline against
+      <code>/Users/nuno/tests/tadone</code> — a 6-workspace monorepo (tadone, eva-console,
+      parla, despesas, shared, obra-abc). Phases 1&ndash;5, shipping skipped, org-governance
+      CI (act) skipped. Every timing below is a real wall-clock measurement from an
+      instrumented run, not an estimate.
+    </p>
+  </header>
+
+  <div class="stat-row">
+    <div class="stat hot">
+      <div class="value">6<small>m 05s</small></div>
+      <div class="label">Total wall time</div>
+    </div>
+    <div class="stat">
+      <div class="value">59,552</div>
+      <div class="label">Files staged</div>
+    </div>
+    <div class="stat">
+      <div class="value">949,750</div>
+      <div class="label">Lines of code</div>
+    </div>
+    <div class="stat bad">
+      <div class="value">42</div>
+      <div class="label">Blocking findings</div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Pipeline timeline</h2>
+    <p class="section-note">
+      Stages run in this order. The two shaded bars overlap deliberately &mdash; Ignite
+      already runs the license/dependency scan concurrently with Phase 4, so the
+      slower of the two (Phase 4, at 339s) sets the pace instead of both costs adding up.
+    </p>
+    <div class="timeline">
+      <div class="tl-row">
+        <div class="tl-name">stage / copy tree</div>
+        <div class="tl-track"><div class="tl-bar" style="left:0%; width:7.1%;"></div></div>
+        <div class="tl-ms">26.0s</div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-name">env / codeowners</div>
+        <div class="tl-track"><div class="tl-bar" style="left:7.1%; width:0.1%;"></div></div>
+        <div class="tl-ms">0.3s</div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-name">license + dep scan</div>
+        <div class="tl-track"><div class="tl-bar concurrent" style="left:7.2%; width:22.6%;"></div></div>
+        <div class="tl-ms">82.7s</div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-name">Phase 4 (24 checks)</div>
+        <div class="tl-track"><div class="tl-bar concurrent" style="left:7.2%; width:92.8%;"></div></div>
+        <div class="tl-ms">339.3s</div>
+      </div>
+      <div class="tl-scale">
+        <div></div>
+        <div class="tl-scale-track">
+          <span style="left:0%">0s</span>
+          <span style="left:26.2%">100s</span>
+          <span style="left:52.3%">200s</span>
+          <span style="left:78.5%">300s</span>
+          <span style="left:100%">365s</span>
+        </div>
+        <div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase 4 &mdash; per-check duration</h2>
+    <p class="section-note">
+      All 24 checks run concurrently via <code>Promise.all</code>, so Phase 4's total
+      cost (339s) equals its single slowest check, not the sum of the column below.
+      Sorted longest to shortest; the two marked <span class="tag" style="position:static;display:inline">critical path</span>
+      are what Phase 4's wall time is actually waiting on.
+    </p>
+    <div class="chart">
+      <div class="bar-row critical-path">
+        <div class="bar-name">semanticSast <span class="tag">critical path</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
+        <div class="bar-ms">339.2s</div>
+      </div>
+      <div class="bar-row critical-path">
+        <div class="bar-name">codeql <span class="tag">critical path</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:96.1%"></div></div>
+        <div class="bar-ms">326.0s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">secrets</div>
+        <div class="bar-track"><div class="bar-fill" style="width:62.4%"></div></div>
+        <div class="bar-ms">211.8s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">provenance</div>
+        <div class="bar-track"><div class="bar-fill" style="width:33.1%"></div></div>
+        <div class="bar-ms">112.3s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">piiDataFlow (bearer)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:32.3%"></div></div>
+        <div class="bar-ms">109.5s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">euAiActDocuments</div>
+        <div class="bar-track"><div class="bar-fill" style="width:27.6%"></div></div>
+        <div class="bar-ms">93.8s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">health</div>
+        <div class="bar-track"><div class="bar-fill" style="width:27.3%"></div></div>
+        <div class="bar-ms">92.6s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">packageHallucination</div>
+        <div class="bar-track"><div class="bar-fill" style="width:23.2%"></div></div>
+        <div class="bar-ms">78.7s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">posture (semgrep)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:22.6%"></div></div>
+        <div class="bar-ms">76.8s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">iac</div>
+        <div class="bar-track"><div class="bar-fill" style="width:22.5%"></div></div>
+        <div class="bar-ms">76.3s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">apiSchema (spectral)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:22.3%"></div></div>
+        <div class="bar-ms">75.7s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">cssDeadCode</div>
+        <div class="bar-track"><div class="bar-fill" style="width:19.8%"></div></div>
+        <div class="bar-ms">67.2s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">duplication (jscpd)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:17.9%"></div></div>
+        <div class="bar-ms">60.6s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">sbom (syft)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:6.2%"></div></div>
+        <div class="bar-ms">21.1s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">fileEncapsulation</div>
+        <div class="bar-track"><div class="bar-fill" style="width:6.3%"></div></div>
+        <div class="bar-ms">21.4s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">deadCode</div>
+        <div class="bar-track"><div class="bar-fill" style="width:6.1%"></div></div>
+        <div class="bar-ms">20.6s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">loc (gocloc)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:4.8%"></div></div>
+        <div class="bar-ms">16.4s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">apiSchemaDrift (oasdiff)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:4.8%"></div></div>
+        <div class="bar-ms">16.3s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">imageVulnerabilities</div>
+        <div class="bar-track"><div class="bar-fill" style="width:3.1%"></div></div>
+        <div class="bar-ms">10.6s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">imageProvenance (cosign)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:2.9%"></div></div>
+        <div class="bar-ms">9.8s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">governance</div>
+        <div class="bar-track"><div class="bar-fill" style="width:2.4%"></div></div>
+        <div class="bar-ms">8.3s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">modelArtifactSecurity</div>
+        <div class="bar-track"><div class="bar-fill" style="width:2.4%"></div></div>
+        <div class="bar-ms">8.3s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">maliciousDependencies</div>
+        <div class="bar-track"><div class="bar-fill" style="width:2.3%"></div></div>
+        <div class="bar-ms">7.7s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">llm (deep-scan)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:0.1%"></div></div>
+        <div class="bar-ms">0.07s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">boundaries / igniteIgnore</div>
+        <div class="bar-track"><div class="bar-fill" style="width:0.1%"></div></div>
+        <div class="bar-ms">&lt;0.02s</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What each cost is actually paying for</h2>
+    <table>
+      <thead>
+        <tr><th>Check</th><th>Time</th><th>What it did</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>semanticSast</td><td class="num">339.2s</td>
+          <td>Semgrep run with two rulesets back to back (<code>p/security-audit</code> +
+          <code>p/owasp-top-ten</code>) over the whole tree. This is the single biggest cost
+          in the run &mdash; two full registry rulesets on ~950k LOC.</td>
+        </tr>
+        <tr>
+          <td>codeql</td><td class="num">326.0s</td>
+          <td>Builds a fresh CodeQL database and runs <code>security-extended</code> per
+          language. Only JS/TS applied here, but building + analyzing one language database
+          from scratch on this codebase alone takes ~5.5 minutes &mdash; a second or third
+          language (Python/Java/Go) would run concurrently but each adds its own
+          multi-minute database build.</td>
+        </tr>
+        <tr>
+          <td>secrets</td><td class="num">211.8s</td>
+          <td>Regex + gitleaks pass over 8,806 text files &mdash; the single largest file
+          count of any check, since it can't skip non-code assets the way SAST tools do.</td>
+        </tr>
+        <tr>
+          <td>provenance</td><td class="num">112.3s</td>
+          <td>Built-in git/commit provenance record &mdash; no external tool, so its cost is
+          pure tree-walking + hashing over the full 59.5k-file staged copy.</td>
+        </tr>
+        <tr>
+          <td>piiDataFlow</td><td class="num">109.5s</td>
+          <td>Bearer's own git bootstrap (<code>ensureGitContextForBearer</code>: init +
+          commit + fake origin) plus a full security-report scan, filtered down to PII
+          categories after the fact.</td>
+        </tr>
+        <tr>
+          <td>euAiActDocuments</td><td class="num">93.8s</td>
+          <td>A pure filename/path scan should be near-instant; at 93.8s it's walking all
+          59.5k staged files rather than a pruned subset &mdash; the biggest single anomaly
+          in this run relative to what the check actually does.</td>
+        </tr>
+        <tr>
+          <td>packageHallucination</td><td class="num">78.7s</td>
+          <td>257 manifest dependencies, each a live HTTP existence check against
+          npm/PyPI/crates.io &mdash; six workspaces means six package.json files' worth of
+          dependencies checked one registry round-trip at a time.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Recommendations, ranked by expected time recovered</h2>
+    <div class="recs">
+      <div class="rec">
+        <div class="n">01</div>
+        <div>
+          <h3>Cap or split the double semgrep run</h3>
+          <p>
+            <code>semanticSast</code> is the critical path at 339s specifically because it
+            runs two rulesets sequentially in one process. Running
+            <code>p/security-audit</code> and <code>p/owasp-top-ten</code> as two concurrent
+            semgrep invocations instead of one sequential one would let them overlap; on a
+            monorepo this size that alone could cut the single longest check by closer to
+            half.
+          </p>
+          <div class="save">expected: shortens the current critical path directly</div>
+        </div>
+      </div>
+      <div class="rec">
+        <div class="n">02</div>
+        <div>
+          <h3>Scope CodeQL/Bearer/Semgrep to changed workspaces on re-scans</h3>
+          <p>
+            This is a 6-workspace monorepo; on a real PR, almost all edits touch one
+            workspace. <code>CODEQL_LANGUAGES</code> and per-check scoping to
+            changed-workspace directories (not just <code>changedFiles</code> for issue
+            filtering, but for tool invocation itself) would let a routine PR scan skip
+            rebuilding a whole-repo CodeQL database and re-running Semgrep/Bearer over
+            code nobody touched.
+          </p>
+          <div class="save">expected: turns most re-scans from ~340s critical path into tens of seconds</div>
+        </div>
+      </div>
+      <div class="rec">
+        <div class="n">03</div>
+        <div>
+          <h3>Prune SKIP_DIRS at copy time, not just scan time</h3>
+          <p>
+            <code>stageExistingProject</code> copied all 59,552 files (838MB) before any
+            check's <code>walkFiles</code> call excludes <code>node_modules</code>/
+            <code>dist</code>/<code>build</code>. Filtering those directories out during the
+            copy itself (not just during the later walk) would shrink the 26s staging step
+            and, more importantly, shrink what <code>secrets</code>, <code>provenance</code>,
+            and <code>euAiActDocuments</code> walk over &mdash; three of the seven most
+            expensive checks in this run.
+          </p>
+          <div class="save">expected: −15-20s staging, plus knock-on savings in the three tree-walking checks above</div>
+        </div>
+      </div>
+      <div class="rec">
+        <div class="n">04</div>
+        <div>
+          <h3>Give <code>euAiActDocuments</code> a real early-exit</h3>
+          <p>
+            93.8s for a filename/path match is disproportionate to what the check does.
+            Confirm it isn't re-walking the full tree per document category (5 categories
+            &times; a full walk each would explain this) rather than a single walk checked
+            against 5 patterns.
+          </p>
+          <div class="save">expected: likely a 5x-ish reduction on this one check if it is re-walking per category</div>
+        </div>
+      </div>
+      <div class="rec">
+        <div class="n">05</div>
+        <div>
+          <h3>Reach for <code>fast: true</code> in the inner dev loop</h3>
+          <p>
+            Fast mode already exists and restricts Phase 4 to secrets/governance/semgrep
+            (single config)/file-encapsulation. On this repo that skips CodeQL, Bearer,
+            Trivy, GuardDog, jscpd, Spectral, gocloc, Syft, cosign, picklescan, and oasdiff
+            entirely &mdash; the checks responsible for roughly 250s of this run's 339s
+            critical path. Full runs still belong in CI or an occasional manual push, not
+            every iteration.
+          </p>
+          <div class="save">expected: an inner-loop scan lands well under a minute instead of six</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Findings by category (context, not the focus of this report)</h2>
+    <table>
+      <thead>
+        <tr><th>Category</th><th>Count</th><th>Severity</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>secret</td><td class="num">16</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>container-image-cve</td><td class="num">14</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>api-schema-lint</td><td class="num">4</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>iac-security</td><td class="num">3</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>semantic-sast</td><td class="num">2</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>license-compliance</td><td class="num">2</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>dependency-vulnerability</td><td class="num">1</td><td><span class="pill warn">1 critical/high (CVSS&nbsp;7.5)</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>
+    method &mdash; POST /api/pipeline/validate-all, projectPath=/Users/nuno/tests/tadone, runLocalCi=false (Phase 5/act excluded from this measurement) &middot;
+    every external tool present (trivy, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, picklescan, oasdiff, codeql, gitleaks) &middot;
+    timings captured via temporary Date.now() instrumentation around each Phase 4 task and each outer pipeline stage, not shipped in server.js
+  </footer>
+
+</div>
+</body>
+</html>

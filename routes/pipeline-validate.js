@@ -84,6 +84,14 @@ function mountValidateAllRoute(app, {
     const baselineMode = ['gate', 'save'].includes(body.baselineMode) ? body.baselineMode : null;
     const baselineIssueIds = baselineMode === 'gate' ? store.getBaselineIssueIds(org, repo) : null;
 
+    const __stageTimings = [];
+    const __time = async (name, fn) => {
+      const __t0 = Date.now();
+      const r = await fn();
+      __stageTimings.push({ name, ms: Date.now() - __t0 });
+      return r;
+    };
+
     const jobId = crypto.randomUUID();
     const stagingDir = path.join(os.tmpdir(), 'gatekeeper-staging', `${jobId}-api-validation`);
     const workflowDir = stagingDir + '-workflows';
@@ -174,11 +182,11 @@ function mountValidateAllRoute(app, {
 
       status(3, 'running');
       const log2 = phaseLog(3);
-      await stageExistingProject(projectPath, stagingDir, log2);
+      await __time('stageExistingProject', () => stageExistingProject(projectPath, stagingDir, log2));
       const projectRoot = await resolveProjectRoot(stagingDir);
 
       log2('Check 1 — scanning for raw environment files (.env*)...');
-      const envCheck = await checkEnvFiles(projectRoot);
+      const envCheck = await __time('checkEnvFiles', () => checkEnvFiles(projectRoot));
       if (envCheck.ignored.length > 0) {
         log2(`ℹ ${envCheck.ignored.length} .env file(s) found but already excluded by this project's .gitignore — not blocking: ${envCheck.ignored.join(', ')}`);
       }
@@ -192,7 +200,7 @@ function mountValidateAllRoute(app, {
       }
       log2('✓ Check 1 passed — no raw environment files present.');
       log2('Check 2 — checking for a CODEOWNERS file...');
-      const codeownersCheck = await checkCodeowners(projectRoot);
+      const codeownersCheck = await __time('checkCodeowners', () => checkCodeowners(projectRoot));
       log2(codeownersCheck.found
         ? `✓ CODEOWNERS found at ${codeownersCheck.path} (${codeownersCheck.emails.length} contact email(s)).`
         : 'ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).');
@@ -203,7 +211,7 @@ function mountValidateAllRoute(app, {
       // the same tree (Phase 4's Bearer check below does its own git
       // init/add/commit on projectRoot, which would otherwise race a
       // concurrently-running test container's writes).
-      await runProjectUnitTests(projectRoot, log2);
+      await __time('runProjectUnitTests', () => runProjectUnitTests(projectRoot, log2));
       status(3, 'success');
 
       status(4, 'running');
@@ -227,13 +235,14 @@ function mountValidateAllRoute(app, {
         // time is fully hidden behind Phase 4's longer tail).
         log2('Check 3 — dependency & license compliance scan (manifests + LICENSE files)...');
         const [licenseIssues, phase4] = await Promise.all([
-          (async () => [
+          __time('licenseAndDependencyScan', async () => [
             ...await runLicenseComplianceCheck(projectRoot, log2),
             ...await runDependencyVulnerabilityCheck(projectRoot, log2),
-          ])(),
-          runPhase4Checks(projectRoot, log3, { org, repo, projectId, store, fast }),
+          ]),
+          __time('phase4Total', () => runPhase4Checks(projectRoot, log3, { org, repo, projectId, store, fast })),
         ]);
         issues = [...phase4.issues, ...licenseIssues];
+        if (Array.isArray(phase4.__taskTimings)) __stageTimings.push(...phase4.__taskTimings.map((t) => ({ name: `phase4:${t.name}`, ms: t.ms })));
       }
       const gatedIssues = baselineMode === 'gate' ? filterIssuesByBaseline(issues, baselineIssueIds) : issues;
       const errorIssues = gatedIssues.filter((i) => i.severity === 'error');
@@ -295,9 +304,9 @@ function mountValidateAllRoute(app, {
           log4(`⚠ Local CI skipped: ${tooling.reason}`);
           status(5, 'skipped');
         } else {
-          const wfFile = await fetchGovernanceWorkflow(workflowDir, log4);
+          const wfFile = await __time('fetchGovernanceWorkflow', () => fetchGovernanceWorkflow(workflowDir, log4));
           log4(`Executing org governance workflows locally with act (event: ${actEvent}).`);
-          await runActionsLocally(projectRoot, wfFile, log4);
+          await __time('runActionsLocally', () => runActionsLocally(projectRoot, wfFile, log4));
           log4('✓ All org governance jobs passed locally.');
           status(5, 'success');
         }
@@ -330,6 +339,7 @@ function mountValidateAllRoute(app, {
         ...(baselineMode === 'save' ? { baselineSaved: issues.length } : {}),
         ...(baselineMode === 'gate' ? { baselineIssueCount: baselineIssueIds.size } : {}),
         phases: phaseSummary(),
+        __stageTimings,
         events,
       });
     } catch (err) {
@@ -353,6 +363,7 @@ function mountValidateAllRoute(app, {
         issues: failureIssues ? filterByChangedFiles(failureIssues) : failureIssues,
         ...(changedFiles && failureIssues ? { totalIssueCount: failureIssues.length, filteredByChangedFiles: true } : {}),
         phases: phaseSummary(),
+        __stageTimings,
         events,
       });
     } finally {

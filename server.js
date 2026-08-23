@@ -1549,8 +1549,11 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, 
 
   const activeTasks = fast ? tasks.filter((t) => FAST_MODE_TASKS.has(t.name)) : tasks;
   if (fast) log?.(`⚡ Fast mode — running ${activeTasks.map((t) => t.name).join(', ')} only, skipping the rest of Phase 4's checks.`);
+  const __taskTimings = [];
   const settled = await Promise.all(activeTasks.map(async (t) => {
+    const __t0 = Date.now();
     const value = await t.run((line) => log?.(line));
+    __taskTimings.push({ name: t.name, ms: Date.now() - __t0 });
     return { name: t.name, value };
   }));
   const byName = Object.fromEntries(settled.map((r) => [r.name, r.value]));
@@ -1583,7 +1586,7 @@ async function runPhase4Checks(projectRoot, log, { org, repo, projectId, store, 
     igniteIgnore: byName.igniteIgnore,
     euAiAct,
   }).filter((issue) => !isExcludedSecurityFinding(issue));
-  return { issues };
+  return { issues, __taskTimings };
 }
 
 // Only called when CONFIG.compliance.euAiAct.reportAsFindings is true (see
