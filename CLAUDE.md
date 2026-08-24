@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Rust rewrite in progress
+
+There's an in-progress Rust port of this codebase under `rust/` (73 crates so far, on branch `rust-rewrite`). At the start of a session, check `rust/MIGRATION_STATUS.md` for what's done and what's left, and ask the user if they want to resume the migration before doing anything else Rust-related. Standing rule from the user (stated multiple times): keep converting piece by piece with real tests; do not run a scan-comparison benchmark against the Node implementation until the migration status file says everything is converted.
+
 ## What this is
 
 Ignite is a compliance gatekeeper for onboarding code into a GitHub org. A user uploads a project (ZIP or folder) via a single-page app; the server runs it through a multi-phase pipeline - structure audit, secret scan, AI-governance audit, local LLM deep-scan, org governance CI (via `act`), unit tests - and only provisions + pushes to GitHub if every phase passes (or flagged issues are explicitly overridden with justification).
