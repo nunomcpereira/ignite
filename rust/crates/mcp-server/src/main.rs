@@ -7,10 +7,11 @@
 //! running Ignite server, same "MCP process never touches git/gh/the
 //! manifest parsers directly" pattern as the JS original).
 //!
-//! Only stdio transport is ported (`MCP_TRANSPORT=http`'s Streamable
-//! HTTP multi-session mode isn't) — stdio is the default and by far the
-//! more common integration (spawned as a child process by an editor/
-//! agent).
+//! Both transports are ported: `MCP_TRANSPORT=stdio` (default, spawned
+//! as a child process by an editor/agent) and `MCP_TRANSPORT=http`
+//! (one long-lived server on `MCP_HTTP_PORT`, default 51338, all
+//! clients connect over Streamable HTTP at `POST/GET /mcp`), faithful
+//! to `mcp-server.js`'s `main()`.
 
 use ignite_guidelines::catalog::Severity;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -270,9 +271,204 @@ impl ServerHandler for IgniteMcp {
     }
 }
 
+/// Adapts rmcp's `StreamableHttpService` (a `tower_service::Service` over
+/// `http_body_util::combinators::BoxBody`) onto axum's expected
+/// `Response = axum::response::Response`, so it can be mounted with
+/// `Router::route_service`. Faithful to `mcp-server.js`'s single `app.all
+/// ('/mcp', ...)` handler backed by the SDK's `StreamableHTTPServerTransport`.
+struct AxumStreamableHttp<S, M>(
+    rmcp::transport::streamable_http_server::tower::StreamableHttpService<S, M>,
+);
+
+impl<S, M> Clone for AxumStreamableHttp<S, M> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<S, M> tower_service::Service<axum::extract::Request> for AxumStreamableHttp<S, M>
+where
+    S: ServerHandler + Send + 'static,
+    M: rmcp::transport::streamable_http_server::session::SessionManager,
+{
+    type Response = axum::response::Response;
+    type Error = std::convert::Infallible;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        <rmcp::transport::streamable_http_server::tower::StreamableHttpService<S, M> as tower_service::Service<axum::extract::Request>>::poll_ready(&mut self.0, cx)
+    }
+
+    fn call(&mut self, req: axum::extract::Request) -> Self::Future {
+        let mut inner = self.0.clone();
+        Box::pin(async move {
+            let resp = tower_service::Service::call(&mut inner, req).await?;
+            Ok(resp.map(axum::body::Body::new))
+        })
+    }
+}
+
+fn mcp_http_port() -> u16 {
+    std::env::var("MCP_HTTP_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(51338)
+}
+
+async fn run_http() -> anyhow::Result<()> {
+    let port = mcp_http_port();
+    let session_manager = std::sync::Arc::new(
+        rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
+    );
+    let service = rmcp::transport::streamable_http_server::tower::StreamableHttpService::new(
+        || Ok(IgniteMcp::new()),
+        session_manager,
+        Default::default(),
+    );
+    let app = axum::Router::new().route_service("/mcp", AxumStreamableHttp(service));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    eprintln!("[mcp] ai-validation-guidelines listening on http://localhost:{port}/mcp (Streamable HTTP)");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let server = IgniteMcp::new().serve(rmcp::transport::stdio()).await?;
-    server.waiting().await?;
-    Ok(())
+    let mode = std::env::var("MCP_TRANSPORT").unwrap_or_else(|_| "stdio".to_string()).to_lowercase();
+
+    match mode.as_str() {
+        "stdio" => {
+            let server = IgniteMcp::new().serve(rmcp::transport::stdio()).await?;
+            server.waiting().await?;
+            Ok(())
+        }
+        "http" => run_http().await,
+        other => anyhow::bail!("Unknown MCP_TRANSPORT \"{other}\". Use \"stdio\" or \"http\"."),
+    }
+}
+
+#[cfg(test)]
+mod http_transport_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Real end-to-end JSON-RPC handshake over Streamable HTTP: spawns the
+    /// actual server on an ephemeral port, does initialize + tools/list +
+    /// a real tools/call for the local (no-network) `list_guidelines` tool.
+    #[tokio::test]
+    async fn http_transport_serves_real_jsonrpc_handshake() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let session_manager = std::sync::Arc::new(
+            rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
+        );
+        let service = rmcp::transport::streamable_http_server::tower::StreamableHttpService::new(
+            || Ok(IgniteMcp::new()),
+            session_manager,
+            Default::default(),
+        );
+        let app = axum::Router::new().route_service("/mcp", AxumStreamableHttp(service));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/mcp");
+        let client = reqwest::Client::new();
+
+        let init_resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-client", "version": "0.0.1"}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(init_resp.status().is_success(), "initialize failed: {}", init_resp.status());
+        let session_id = init_resp
+            .headers()
+            .get("mcp-session-id")
+            .expect("server must issue a session id on initialize")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let init_body: Value = parse_sse_or_json(init_resp).await;
+        assert_eq!(init_body["result"]["serverInfo"].is_object(), true);
+
+        // Required by the spec before any further requests on this session.
+        client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &session_id)
+            .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .send()
+            .await
+            .unwrap();
+
+        let list_resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &session_id)
+            .json(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert!(list_resp.status().is_success());
+        let list_body: Value = parse_sse_or_json(list_resp).await;
+        let tools = list_body["result"]["tools"].as_array().unwrap();
+        assert!(tools.iter().any(|t| t["name"] == "list_guidelines"));
+
+        let call_resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &session_id)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "list_guidelines", "arguments": {}}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(call_resp.status().is_success());
+        let call_body: Value = parse_sse_or_json(call_resp).await;
+        assert!(call_body["result"]["content"].is_array());
+    }
+
+    /// The transport responds with either a plain JSON body or a
+    /// `text/event-stream` body carrying one `data:` JSON payload,
+    /// depending on the negotiated protocol version. Handle both.
+    async fn parse_sse_or_json(resp: reqwest::Response) -> Value {
+        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let text = resp.text().await.unwrap();
+        if content_type.contains("text/event-stream") {
+            // The stream may lead with a priming `data: \nretry: ...`
+            // keep-alive event before the real JSON-RPC payload — skip
+            // empty `data:` lines and take the first non-empty one.
+            let data_line = text
+                .lines()
+                .filter(|l| l.starts_with("data:"))
+                .map(|l| l.trim_start_matches("data:").trim())
+                .find(|d| !d.is_empty())
+                .expect("SSE body must contain a non-empty data: line");
+            serde_json::from_str(data_line).unwrap()
+        } else {
+            serde_json::from_str(&text).unwrap()
+        }
+    }
 }

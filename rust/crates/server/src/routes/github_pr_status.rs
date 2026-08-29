@@ -1,8 +1,8 @@
 //! POST /api/pipeline/:jobId/github-check — faithful port of
-//! routes/github-pr-status.js. `auth.resolveGithubToken(req)` (a
-//! connected-session token) isn't available yet — no session/auth
-//! middleware exists — so this falls back straight to
-//! `resolve_server_github_token()` (GH_TOKEN/GITHUB_TOKEN env).
+//! routes/github-pr-status.js. Token resolution mirrors the push path:
+//! `crate::auth::resolve_effective_github_token` (connected session first),
+//! falling back to `resolve_server_github_token()` (GH_TOKEN/GITHUB_TOKEN
+//! env) for unattended CI callers with no session.
 
 use crate::routes::job_issues::lookup_job_issues;
 use crate::state::AppState;
@@ -74,7 +74,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, Json(body): Json<Value>) -> Response {
+async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
     let owner = body.get("owner").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
@@ -100,7 +100,7 @@ async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
         return err(StatusCode::NOT_FOUND, "Unknown job id.".to_string());
     };
 
-    let gh_token = ignite_github_api::resolve_server_github_token();
+    let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     if gh_token.is_empty() {
         return err(StatusCode::UNAUTHORIZED, "No GitHub token available — connect a GitHub account, or set GH_TOKEN/GITHUB_TOKEN on the Ignite server.".to_string());
     }

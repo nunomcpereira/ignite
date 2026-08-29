@@ -3,6 +3,9 @@
 //! aren't ported yet — see each `routes/*.rs` module's doc comment for
 //! what it covers.
 
+mod auth;
+mod phase4_config;
+mod review_gate;
 mod routes;
 mod state;
 
@@ -12,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 fn build_router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
+        .merge(auth::router())
         .merge(routes::tools_status::router())
         .merge(routes::sarif::router())
         .merge(routes::github_annotations::router())
@@ -26,6 +30,9 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::pipeline_validate::router())
         .merge(routes::config::router())
         .merge(routes::pipeline_onboard::router())
+        .merge(routes::pipeline_interactive::router())
+        .merge(routes::studio::router())
+        .merge(routes::effectivate::router())
         .with_state(state)
 }
 
@@ -36,10 +43,27 @@ async fn main() {
     let db_path = std::env::var("IGNITE_DB_PATH").unwrap_or_else(|_| "ignite.db".to_string());
     let db = ignite_db_store::DbStore::open(std::path::Path::new(&db_path)).expect("failed to open db");
 
-    let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()), llm_config: state::default_llm_config() });
+    // Mirrors config.js's __dirname convention (config.json,
+    // ignite-posture-rules.yaml, spectral-default-ruleset.yaml all live
+    // next to it) — IGNITE_CONFIG_DIR lets a packaged/deployed binary
+    // point elsewhere; defaults to the process cwd otherwise.
+    let config_dir = std::env::var("IGNITE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::current_dir().expect("cwd"));
+    let config = ignite_config::load_config(&config_dir).expect("failed to load config.json");
+
+    let state = Arc::new(AppState {
+        runner: phase4_config::runner_from_config(&config),
+        db,
+        running_runs: Mutex::new(HashMap::new()),
+        pending_effectivations: Mutex::new(HashMap::new()),
+        review_gate: review_gate::ReviewGate::default(),
+        llm_config: state::llm_config_from_config(&config),
+        config,
+    });
+    let config_port = state.config.port;
     let app = build_router(state);
 
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(51337);
+    // Mirrors server.js: `process.env.PORT || CONFIG.port`.
+    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config_port);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("failed to bind port");
     tracing::info!("Ignite (Rust) listening on http://0.0.0.0:{port}");
     axum::serve(listener, app).await.expect("server error");
@@ -53,7 +77,15 @@ mod tests {
     async fn spawn_test_server() -> String {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        let state = Arc::new(AppState { runner: state::default_runner(), db, running_runs: Mutex::new(HashMap::new()), llm_config: state::default_llm_config() });
+        let state = Arc::new(AppState {
+            runner: state::default_runner(),
+            db,
+            running_runs: Mutex::new(HashMap::new()),
+            pending_effectivations: Mutex::new(HashMap::new()),
+            review_gate: review_gate::ReviewGate::default(),
+            llm_config: state::default_llm_config(),
+            config: ignite_config::Config::default(),
+        });
         let app = build_router(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -212,12 +244,17 @@ mod tests {
 
     #[tokio::test]
     async fn onboard_rejects_missing_gh_token_when_not_dry_run() {
+        // See `state::GH_TOKEN_ENV_GUARD`: this depends on the ambient
+        // absence of GH_TOKEN/GITHUB_TOKEN, shared with the tests in
+        // `routes/effectivate.rs` that set/unset those vars.
+        let _guard = crate::state::GH_TOKEN_ENV_GUARD.lock().unwrap();
+        std::env::remove_var("GH_TOKEN");
+        std::env::remove_var("GITHUB_TOKEN");
         let dir = tempfile::tempdir().unwrap();
         let base = spawn_test_server().await;
         let client = reqwest::Client::new();
-        // No GH_TOKEN/GITHUB_TOKEN in this test process's env, and dryRun
-        // is omitted (defaults false) — must fail fast before touching
-        // the filesystem or making any GitHub API call.
+        // dryRun is omitted (defaults false) — must fail fast before
+        // touching the filesystem or making any GitHub API call.
         let res = client.post(format!("{base}/api/pipeline/onboard")).json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": dir.path().to_string_lossy() })).send().await.unwrap();
         assert_eq!(res.status(), 401);
     }

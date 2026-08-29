@@ -223,6 +223,13 @@ impl ToolRunner {
         ToolRunner { binaries }
     }
 
+    /// Resolved binary path/name registered for `tool`, if any — mainly
+    /// for tests/diagnostics asserting a config-driven binary override
+    /// actually reached the runner.
+    pub fn binary_for(&self, tool: &str) -> Option<&str> {
+        self.binaries.get(tool).map(String::as_str)
+    }
+
     fn resolve_binary(&self, tool: &str) -> Result<String, ToolError> {
         if FIXED_COMMANDS.contains(&tool) {
             return Ok(tool.to_string());

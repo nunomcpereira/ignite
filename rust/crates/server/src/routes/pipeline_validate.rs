@@ -3,8 +3,7 @@
 //! phases 1-5 only (always skips shipping), for agent/CI callers that
 //! want pass/fail without a real push.
 //!
-//! Known gaps vs. the JS original: phase title/enabled config.json
-//! overrides aren't wired (uses the hardcoded DEFAULT_PHASE_META);
+//! Known gaps vs. the JS original:
 //! per-Phase-4-task timing breakdown (`__taskTimings`) isn't tracked,
 //! only top-level stage timings; GxP (Phase 2) document links are
 //! accepted/validated but not persisted as real documents (no
@@ -29,7 +28,7 @@ use std::time::Instant;
 static GITHUB_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$").unwrap());
 static REPO_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
 
-use crate::routes::phase_meta::{phase_enabled, phase_title, PHASE_META};
+use crate::routes::phase_meta::{phase_enabled, phase_title, resolve_phase_meta, PhaseMeta};
 
 struct PhaseRecord {
     state: String,
@@ -45,6 +44,7 @@ struct PipelineState {
 #[derive(Clone)]
 struct Logger {
     state: Arc<AppState>,
+    meta: Vec<PhaseMeta>,
     inner: Arc<Mutex<PipelineState>>,
 }
 
@@ -53,7 +53,7 @@ impl Logger {
         let inner = self.inner.lock().unwrap();
         let Some(project_id) = inner.project_id else { return };
         if let Some(rec) = inner.record.get(&phase) {
-            self.state.db.upsert_step(project_id, phase, phase_title(phase), &rec.state, &rec.logs.join("\n"));
+            self.state.db.upsert_step(project_id, phase, &phase_title(&self.meta, phase), &rec.state, &rec.logs.join("\n"));
         }
     }
 
@@ -90,11 +90,11 @@ impl Logger {
 
     fn phase_summary(&self) -> Vec<Value> {
         let inner = self.inner.lock().unwrap();
-        PHASE_META
+        self.meta
             .iter()
-            .map(|(id, title, _, _)| {
-                let (state, logs) = inner.record.get(id).map(|r| (r.state.clone(), r.logs.clone())).unwrap_or(("pending".to_string(), vec![]));
-                json!({ "phase": id, "title": title, "state": state, "logs": logs })
+            .map(|p| {
+                let (state, logs) = inner.record.get(&p.id).map(|r| (r.state.clone(), r.logs.clone())).unwrap_or(("pending".to_string(), vec![]));
+                json!({ "phase": p.id, "title": p.title, "state": state, "logs": logs })
             })
             .collect()
     }
@@ -143,7 +143,8 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
     let org = if org.is_empty() { "local-validation".to_string() } else { org };
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("local-project").trim().to_string();
     let repo = if repo.is_empty() { "local-project".to_string() } else { repo };
-    let is_gxp = phase_enabled(2) && body.get("gxp").and_then(|v| v.as_bool()).unwrap_or(false);
+    let phase_meta = resolve_phase_meta(&state.config);
+    let is_gxp = phase_enabled(&phase_meta, 2) && body.get("gxp").and_then(|v| v.as_bool()).unwrap_or(false);
     let run_local_ci = body.get("runLocalCi").and_then(|v| v.as_bool()).unwrap_or(true);
     let fast = body.get("fast").and_then(|v| v.as_bool()).unwrap_or(false);
     let warning_decision = body.get("warningDecision").and_then(|v| v.as_str()).unwrap_or("continue").to_lowercase();
@@ -170,7 +171,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
     let workflow_dir_str = format!("{}-workflows", staging_dir.to_string_lossy());
     let workflow_dir = std::path::PathBuf::from(&workflow_dir_str);
 
-    let logger = Logger { state: state.clone(), inner: Arc::new(Mutex::new(PipelineState { record: HashMap::new(), events: vec![], project_id: None })) };
+    let logger = Logger { state: state.clone(), meta: phase_meta.clone(), inner: Arc::new(Mutex::new(PipelineState { record: HashMap::new(), events: vec![], project_id: None })) };
 
     let mut project_root: Option<std::path::PathBuf> = None;
     let mut issues: Vec<Issue> = vec![];
@@ -255,7 +256,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
         logger.status(4, "running", None);
         let client = ignite_deps_dev_client::DepsDevClient::new();
         let npm_http = reqwest::Client::new();
-        if !phase_enabled(4) {
+        if !phase_enabled(&phase_meta, 4) {
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
@@ -270,7 +271,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
             let root_b = root.clone();
             let state_a = state.clone();
             let state_b = state.clone();
-            let config = default_phase4_config(&org, &repo, Some(project_id), fast);
+            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), fast);
             let (license_issues, phase4_result) = tokio::join!(
                 time_stage(&timings, "licenseAndDependencyScan", async move {
                     let mut v = ignite_dependency_license_scan::run_license_compliance_check(&root_a, &state_a.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
@@ -326,7 +327,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
 
         // Phase 5
         logger.status(5, "running", None);
-        if !phase_enabled(5) {
+        if !phase_enabled(&phase_meta, 5) {
             logger.log(5, "Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).");
             logger.status(5, "skipped", None);
         } else if !run_local_ci {
@@ -474,39 +475,11 @@ fn filter_tagged_by_changed_files(tagged: &[Value], changed_files: Option<&std::
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn default_phase4_config(org: &str, repo: &str, project_id: Option<i64>, fast: bool) -> ignite_phase4_orchestrator::Phase4Config {
-    ignite_phase4_orchestrator::Phase4Config {
-        fast,
-        org: org.to_string(),
-        repo: repo.to_string(),
-        project_id,
-        secrets: ignite_secrets::SecretsConfig::default(),
-        llm: None,
-        iac: ignite_iac_security::IacSecurityConfig::default(),
-        container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig::default(),
-        sbom_enabled: true,
-        image_provenance: ignite_image_provenance::ImageProvenanceConfig::default(),
-        semantic_sast: ignite_semantic_sast::SemanticSastConfig::default(),
-        pii_data_flow: ignite_pii_dataflow::PiiDataFlowConfig::default(),
-        code_duplication: ignite_code_duplication::CodeDuplicationConfig::default(),
-        file_encapsulation: ignite_file_encapsulation::FileEncapsulationConfig { enabled: true, max_lines: 1000 },
-        loc_metrics_enabled: true,
-        api_schema: ignite_api_schema::ApiSchemaConfig::default(),
-        api_schema_drift: ignite_api_schema_drift::ApiSchemaDriftConfig::default(),
-        malicious_dependencies: ignite_malicious_dependencies::MaliciousDependenciesConfig::default(),
-        model_artifact_security: ignite_model_artifact_security::ModelArtifactSecurityConfig::default(),
-        package_hallucination_enabled: true,
-        feature_posture: ignite_feature_posture::FeaturePostureConfig { enabled: true, ruleset: String::new(), max_scan_file_bytes: 1_000_000 },
-        eu_ai_act_documents_enabled: true,
-        eu_ai_act_report_as_findings: false,
-        dead_code: ignite_dead_code::DeadCodeConfig { enabled: true },
-        complexity_health: ignite_complexity_health::ComplexityHealthConfig::default(),
-        css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: true },
-        boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
-        igniteignore_enabled: true,
-        codeql: ignite_codeql_cross_file::CodeqlConfig::default(),
-    }
+/// Builds the real Phase4Config from `state.config` (config.json + env
+/// overrides) rather than every check's hardcoded `::default()` — see
+/// `crate::phase4_config`.
+fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>, fast: bool) -> ignite_phase4_orchestrator::Phase4Config {
+    crate::phase4_config::from_config(&state.config, org, repo, project_id, fast)
 }
 
 async fn validate_all(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
@@ -518,4 +491,93 @@ async fn validate_all(State(state): State<Arc<AppState>>, Json(body): Json<Value
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/api/pipeline/validate-all", post(validate_all))
+}
+
+#[cfg(test)]
+mod phase_gating_tests {
+    use crate::state::{self, AppState};
+    use axum::Router;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn build_state(config: ignite_config::Config) -> (Arc<AppState>, tempfile::TempDir) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let app_state = Arc::new(AppState {
+            runner: state::default_runner(),
+            db,
+            running_runs: Mutex::new(HashMap::new()),
+            pending_effectivations: Mutex::new(HashMap::new()),
+            review_gate: crate::review_gate::ReviewGate::default(),
+            llm_config: state::default_llm_config(),
+            config,
+        });
+        (app_state, db_dir)
+    }
+
+    async fn spawn_test_server(state: Arc<AppState>) -> String {
+        let router = Router::new().merge(super::router()).with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    fn secret_fixture_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"phase-gating-fixture"}"#).unwrap();
+        // Matches secrets crate's SECRET_RE — a real, blocking phase-4-only
+        // finding (never produced by the always-on license/vuln checks
+        // pipeline_validate.rs still runs when phase 4 is disabled).
+        std::fs::write(dir.path().join("config.js"), "const api_key = \"sk_live_abcdefghij1234567890\";\n").unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn phase_4_disabled_via_config_skips_secrets_scan_but_still_runs() {
+        let dir = secret_fixture_dir();
+        let mut cfg = ignite_config::Config::default();
+        cfg.phases = vec![json!({ "id": 4, "enabled": false })];
+        let (state, _db_dir) = build_state(cfg);
+        let base = spawn_test_server(state).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+        let res = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+
+        let phase4_log = body["phases"].as_array().unwrap().iter().find(|p| p["phase"] == 4).unwrap()["logs"].as_array().unwrap().iter().map(|l| l.as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        assert!(phase4_log.contains("Skipped — disabled by config"), "expected skip log, got: {phase4_log}");
+
+        let issues = body["issues"].as_array().cloned().unwrap_or_default();
+        assert!(!issues.iter().any(|i| i["category"] == "secret"), "secrets check should not have run when phase 4 is disabled: {issues:?}");
+    }
+
+    #[tokio::test]
+    async fn phase_4_enabled_by_default_runs_secrets_scan() {
+        let dir = secret_fixture_dir();
+        let cfg = ignite_config::Config::default();
+        let (state, _db_dir) = build_state(cfg);
+        let base = spawn_test_server(state).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+        let res = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body: Value = res.json().await.unwrap();
+        assert!(status == 200 || status == 400, "unexpected status {status}: {body}");
+
+        let issues = body["issues"].as_array().cloned().unwrap_or_default();
+        assert!(issues.iter().any(|i| i["category"] == "secret"), "expected a secrets finding with phase 4 enabled: {issues:?}");
+    }
 }

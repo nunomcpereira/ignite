@@ -59,6 +59,13 @@ pub fn generate_api_key() -> String {
     format!("{}{}", API_KEY_PREFIX, hex_encode(&random_bytes(32)))
 }
 
+/// A fresh high-entropy session id (32 random bytes, hex-encoded) —
+/// `crypto.randomBytes(32).toString('hex')` in the Node original's
+/// `issueSession`.
+pub fn generate_session_id() -> String {
+    hex_encode(&random_bytes(32))
+}
+
 /// `__proto__`/`constructor`/`prototype` guard from the JS original is a
 /// prototype-pollution concern specific to JS plain objects — a Rust
 /// `HashMap` has no such hazard — but the same key set is still rejected

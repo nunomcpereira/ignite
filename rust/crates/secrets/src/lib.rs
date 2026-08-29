@@ -1,13 +1,12 @@
 //! Regex-based secret scan + optional gitleaks supplement. Faithful port
 //! of `checks/secrets.js`.
 //!
-//! gitleaks itself is an external subprocess (`gitleaks detect ...`) — as
-//! with git-churn in `ignite-complexity-health`, running it is left to the
-//! caller (once the tool-runner/server integration exists); this crate
-//! exposes `parse_gitleaks_report` (pure JSON parsing) and
-//! `merge_gitleaks_findings` (the gitignore/allowlist/dedup filtering the
-//! JS original applies to gitleaks' raw results) so the whole non-process
-//! part of that path is still ported and tested.
+//! `run_gitleaks_scan` shells out to the real `gitleaks detect` binary and
+//! parses its report (via `parse_gitleaks_report`); `merge_gitleaks_findings`
+//! applies the same gitignore/allowlist/dedup filtering the JS original
+//! applies to gitleaks' raw results. The caller (`phase4-orchestrator`) is
+//! responsible for calling `run_gitleaks_scan` + `merge_gitleaks_findings`
+//! after `check_secrets` when `security.gitleaks.enabled` is set.
 
 use ignite_fs_utils::{
     build_snippet, hash_buffer, is_gitignored, load_gitignore_patterns, looks_binary, walk_files, IgnorePattern, Snippet,
@@ -176,11 +175,12 @@ pub struct SecretsConfig {
     pub known_public_key_patterns: Vec<Regex>,
     pub max_scan_file_bytes: u64,
     pub gitleaks_config_path: Option<std::path::PathBuf>,
+    pub gitleaks_enabled: bool,
 }
 
 impl Default for SecretsConfig {
     fn default() -> Self {
-        SecretsConfig { known_public_key_patterns: vec![], max_scan_file_bytes: 5 * 1024 * 1024, gitleaks_config_path: None }
+        SecretsConfig { known_public_key_patterns: vec![], max_scan_file_bytes: 5 * 1024 * 1024, gitleaks_config_path: None, gitleaks_enabled: false }
     }
 }
 
@@ -282,6 +282,60 @@ pub fn check_secrets(
     }
 
     Ok((SecretsResult { findings, scanned, cache_hits, gitignored_skipped }, new_cache))
+}
+
+/// Runs `gitleaks detect` against `root` and parses its JSON report.
+/// Soft-fails (returns no findings) on any missing-binary/timeout/parse
+/// error, mirroring `checks/secrets.js`'s `runGitleaksScan` — a
+/// misconfigured or absent gitleaks install must never break the pipeline.
+pub async fn run_gitleaks_scan(
+    root: &Path,
+    runner: &ignite_tool_runner::ToolRunner,
+    config_path: Option<&Path>,
+) -> Vec<GitleaksRawResult> {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+    );
+    let report_path = std::env::temp_dir().join(format!("ignite-gitleaks-{unique}.json"));
+
+    let mut args = vec![
+        "detect".to_string(),
+        "--source".to_string(),
+        root.to_string_lossy().into_owned(),
+        "--no-git".to_string(),
+        "--report-format".to_string(),
+        "json".to_string(),
+        "--report-path".to_string(),
+        report_path.to_string_lossy().into_owned(),
+        "--exit-code".to_string(),
+        "0".to_string(),
+    ];
+    if let Some(cp) = config_path {
+        args.push("--config".to_string());
+        args.push(cp.to_string_lossy().into_owned());
+    }
+
+    let run_result = runner
+        .run_tool(
+            "gitleaks",
+            &args,
+            &root.to_string_lossy(),
+            ignite_tool_runner::RunToolOptions { timeout_ms: Some(10 * 60_000), ..Default::default() },
+        )
+        .await;
+
+    let results = if run_result.is_err() {
+        vec![]
+    } else {
+        match std::fs::read_to_string(&report_path) {
+            Ok(raw) => parse_gitleaks_report(&raw, root, |p| std::fs::read_to_string(p).ok()),
+            Err(_) => vec![], // no report written (e.g. nothing found on some gitleaks versions)
+        }
+    };
+    let _ = std::fs::remove_file(&report_path);
+    results
 }
 
 // --- gitleaks report parsing (pure — subprocess execution stays with the caller) ---

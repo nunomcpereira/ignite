@@ -826,6 +826,20 @@ impl DbStore {
         .unwrap()
     }
 
+    /// Deliberately separate from `get_user_by_email`/`get_user_by_id`
+    /// (which return the serializable `User` — never carries the hash)
+    /// so a login check is the only place this ever leaves the DB layer.
+    pub fn get_local_user_password_hash(&self, user_id: i64) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT password_hash FROM users WHERE id = ? AND provider = 'local'",
+            params![user_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
     pub fn get_user_by_id(&self, user_id: i64) -> Option<User> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(

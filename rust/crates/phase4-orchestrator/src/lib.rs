@@ -4,11 +4,7 @@
 //! `RawFinding`/`CheckResult` shape, and calls `collect_phase4_issues` to
 //! produce the final addressable issue list.
 //!
-//! Known gap vs. the JS original: `checkSecrets`' gitleaks-supplement
-//! merge (`runGitleaksScan`/`mergeGitleaksFindings`, already ported in
-//! `ignite-secrets` as standalone functions) isn't wired in here yet — the
-//! built-in regex secret scan runs, gitleaks's additional coverage
-//! doesn't. `FAST_MODE_TASKS` filtering (secrets/governance/semanticSast/
+//! `FAST_MODE_TASKS` filtering (secrets/governance/semanticSast/
 //! fileEncapsulation only) is implemented.
 
 use ignite_db_store::DbStore;
@@ -74,13 +70,19 @@ pub async fn run_phase4_checks(root: &Path, runner: &ToolRunner, store: &DbStore
     let secrets_cache = store.get_file_scan_cache(&config.org, &config.repo, "secrets");
     let secrets_cache: HashMap<String, ignite_secrets::CachedFileEntry> =
         secrets_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_secrets::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
-    let (secrets_result, secrets_new_cache) = ignite_secrets::check_secrets(root, &config.secrets, &secrets_cache)?;
+    let (mut secrets_result, secrets_new_cache) = ignite_secrets::check_secrets(root, &config.secrets, &secrets_cache)?;
     store.replace_file_scan_cache(
         &config.org,
         &config.repo,
         "secrets",
         &secrets_new_cache.iter().map(|(k, v)| ignite_db_store::FileScanCacheInput { rel_path: k.clone(), hash: v.hash.clone(), findings: serde_json::to_value(v).unwrap() }).collect::<Vec<_>>(),
     );
+    if config.secrets.gitleaks_enabled {
+        let gitleaks_raw = ignite_secrets::run_gitleaks_scan(root, runner, config.secrets.gitleaks_config_path.as_deref()).await;
+        let gitignore_patterns = ignite_fs_utils::load_gitignore_patterns(root);
+        let added = ignite_secrets::merge_gitleaks_findings(&secrets_result.findings, &gitleaks_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
+        secrets_result.findings.extend(added);
+    }
     let secrets_check = CheckResult {
         findings: secrets_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), ..Default::default() }).collect(),
         engine: Some("built-in".to_string()),
@@ -146,27 +148,83 @@ pub async fn run_phase4_checks(root: &Path, runner: &ToolRunner, store: &DbStore
 
     let http_client = reqwest::Client::new();
 
-    let llm_check = if let Some(llm_config) = &config.llm {
-        let result = ignite_llm_deep_scan::check_llm_deep_scan(root, llm_config, store, &config.org, &config.repo, |_l| {}).await?;
-        Some(LlmResult {
-            available: result.available,
-            findings: result
-                .findings
-                .iter()
-                .map(|f| OeLlmFinding { category: f.category.clone(), file: Some(f.file.clone()), line: Some(f.line), level: Some(f.level.clone()), issue: Some(f.issue.clone()), recommendation: Some(f.recommendation.clone()), code: snippet_json(&f.code) })
-                .collect(),
-        })
-    } else {
-        None
+    // Group 1: async checks with no fallible outcome — run concurrently
+    // (mirrors server.js's `Promise.all()` fan-out for Phase 4).
+    let (semantic_sast_result, pii_result, duplication_result, loc_metrics_result, igniteignore_result) = tokio::join!(
+        ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast),
+        ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow),
+        ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication),
+        ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled),
+        ignite_igniteignore::check_igniteignore_committed(root, runner, config.igniteignore_enabled),
+    );
+
+    // Group 2: async, `std::io::Result`-returning checks — also run
+    // concurrently. Optional ones (llm/provenance) are wrapped so every
+    // branch of the join shares the same `Result<_, io::Error>` shape.
+    let manifests = ignite_package_hallucination::default_manifests();
+    let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+
+    let llm_fut = async {
+        if let Some(llm_config) = &config.llm {
+            let result = ignite_llm_deep_scan::check_llm_deep_scan(root, llm_config, store, &config.org, &config.repo, |_l| {}).await?;
+            Ok::<_, std::io::Error>(Some(result))
+        } else {
+            Ok(None)
+        }
+    };
+    let provenance_fut = async {
+        if config.project_id.is_some() {
+            let provenance = ignite_provenance::generate_provenance(root, runner, "0.1.0", ignite_provenance::ProvenanceParams { org: Some(&config.org), repo: Some(&config.repo), job_id: None }).await?;
+            Ok::<_, std::io::Error>(Some(provenance))
+        } else {
+            Ok(None)
+        }
     };
 
-    let iac_result = ignite_iac_security::check_iac_security(root, runner, &config.iac).await?;
+    let (
+        llm_result,
+        iac_result,
+        image_vuln_result,
+        sbom_result,
+        provenance_result,
+        image_provenance_result,
+        api_schema_result,
+        api_schema_drift_result,
+        malicious_deps_result,
+        model_artifact_result,
+        hallucination_result,
+        posture_result,
+        codeql_result,
+    ) = tokio::try_join!(
+        llm_fut,
+        ignite_iac_security::check_iac_security(root, runner, &config.iac),
+        ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities),
+        ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000),
+        provenance_fut,
+        ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store)),
+        ignite_api_schema::check_api_schemas(root, runner, &config.api_schema),
+        ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift),
+        ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store)),
+        ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security),
+        hallucination_checker.check(root, config.package_hallucination_enabled, &manifests),
+        ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture),
+        ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None }),
+    )?;
+
+    let llm_check = llm_result.map(|result| LlmResult {
+        available: result.available,
+        findings: result
+            .findings
+            .iter()
+            .map(|f| OeLlmFinding { category: f.category.clone(), file: Some(f.file.clone()), line: Some(f.line), level: Some(f.level.clone()), issue: Some(f.issue.clone()), recommendation: Some(f.recommendation.clone()), code: snippet_json(&f.code) })
+            .collect(),
+    });
+
     let iac_check = Some(CheckResult {
         findings: iac_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(iac_result.engine),
     });
 
-    let image_vuln_result = ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities).await?;
     let image_vuln_check = Some(CheckResult {
         findings: image_vuln_result
             .findings
@@ -176,33 +234,20 @@ pub async fn run_phase4_checks(root: &Path, runner: &ToolRunner, store: &DbStore
         engine: Some(image_vuln_result.engine.to_string()),
     });
 
-    let (sbom_engine, sbom_doc) = {
-        let manifests = ignite_package_hallucination::default_manifests();
-        let sbom_result = ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000).await?;
-        let doc = if config.project_id.is_some() {
-            match &sbom_result.sbom {
-                ignite_sbom::SbomOutcome::Syft(v) => Some((format!("sbom.cyclonedx.json"), to_json_bytes(v))),
-                ignite_sbom::SbomOutcome::Fallback(v) => Some((format!("sbom.fallback.json"), to_json_bytes(v))),
-            }
-        } else {
-            None
-        };
-        (sbom_result.engine, doc)
-    };
-    let _ = sbom_engine;
-
-    let provenance_doc = if config.project_id.is_some() {
-        let provenance = ignite_provenance::generate_provenance(root, runner, "0.1.0", ignite_provenance::ProvenanceParams { org: Some(&config.org), repo: Some(&config.repo), job_id: None }).await?;
-        Some(to_json_bytes(&provenance))
+    let sbom_doc = if config.project_id.is_some() {
+        match &sbom_result.sbom {
+            ignite_sbom::SbomOutcome::Syft(v) => Some(("sbom.cyclonedx.json".to_string(), to_json_bytes(v))),
+            ignite_sbom::SbomOutcome::Fallback(v) => Some(("sbom.fallback.json".to_string(), to_json_bytes(v))),
+        }
     } else {
         None
     };
 
-    let image_provenance_result = ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store)).await?;
+    let provenance_doc = provenance_result.map(|p| to_json_bytes(&p));
+
     let image_provenance_check =
         Some(CheckResult { findings: image_provenance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(), engine: Some(image_provenance_result.engine.to_string()) });
 
-    let semantic_sast_result = ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await;
     let semantic_sast_check = Some(CheckResult {
         findings: semantic_sast_result
             .findings
@@ -212,13 +257,11 @@ pub async fn run_phase4_checks(root: &Path, runner: &ToolRunner, store: &DbStore
         engine: Some(semantic_sast_result.engine.to_string()),
     });
 
-    let pii_result = ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow).await;
     let pii_check = Some(CheckResult {
         findings: pii_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), ..Default::default() }).collect(),
         engine: Some(pii_result.engine.to_string()),
     });
 
-    let duplication_result = ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication).await;
     let duplication_check = Some(CheckResult {
         findings: duplication_result
             .findings
@@ -243,41 +286,33 @@ pub async fn run_phase4_checks(root: &Path, runner: &ToolRunner, store: &DbStore
         engine: Some(file_encapsulation_result.engine.to_string()),
     });
 
-    let loc_metrics_result = ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled).await;
     let loc_metrics_doc = if config.project_id.is_some() { loc_metrics_result.metrics.as_ref().map(to_json_bytes) } else { None };
 
-    let api_schema_result = ignite_api_schema::check_api_schemas(root, runner, &config.api_schema).await?;
     let api_schema_check = Some(CheckResult {
         findings: api_schema_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(api_schema_result.engine.to_string()),
     });
 
-    let api_schema_drift_result = ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift).await?;
     let api_schema_drift_check = Some(CheckResult {
         findings: api_schema_drift_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(api_schema_drift_result.engine.to_string()),
     });
 
-    let malicious_deps_result = ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store)).await?;
     let malicious_deps_check = Some(CheckResult {
         findings: malicious_deps_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(malicious_deps_result.engine.to_string()),
     });
 
-    let model_artifact_result = ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security).await?;
     let model_artifact_check = Some(CheckResult {
         findings: model_artifact_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(model_artifact_result.engine.to_string()),
     });
 
-    let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
-    let hallucination_result = hallucination_checker.check(root, config.package_hallucination_enabled, &ignite_package_hallucination::default_manifests()).await?;
     let hallucination_check = Some(CheckResult {
         findings: hallucination_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: f.line.map(|l| l as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(hallucination_result.engine.to_string()),
     });
 
-    let posture_result = ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture).await?;
     let posture_doc = if config.project_id.is_some() { Some(to_json_bytes(&serde_json::json!({ "engine": posture_result.engine, "posture": posture_result.posture }))) } else { None };
 
     let ai_act_docs_result = ignite_compliance_documents::check_compliance_documents(root, config.eu_ai_act_documents_enabled)?;
@@ -316,13 +351,11 @@ pub async fn run_phase4_checks(root: &Path, runner: &ToolRunner, store: &DbStore
         engine: Some(boundaries_result.engine.to_string()),
     });
 
-    let igniteignore_result = ignite_igniteignore::check_igniteignore_committed(root, runner, config.igniteignore_enabled).await;
     let igniteignore_check = Some(CheckResult {
         findings: igniteignore_result.findings.iter().map(|f| RawFinding { file: Some(f.file.to_string()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(igniteignore_result.engine.to_string()),
     });
 
-    let codeql_result = ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store) }).await?;
     let codeql_check = Some(CodeqlResult {
         findings: codeql_result
             .findings
@@ -446,6 +479,38 @@ mod tests {
 
         let output = run_phase4_checks(root, &runner, &store, &config).await.unwrap();
         assert!(output.issues.iter().any(|i| i.category == "secret"));
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn gitleaks_supplement_is_merged_into_secret_findings() {
+        let runner = ToolRunner::new(StdHashMap::from([("gitleaks", "gitleaks".to_string())]));
+        if !ignite_secrets::gitleaks_tooling(&runner).await {
+            eprintln!("skipping: gitleaks not installed");
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // A GCP/Firebase web API key under an `apiKey:` property — gitleaks'
+        // built-in `gcp-api-key` rule (format + entropy check) catches this;
+        // the built-in regex scan (`SECRET_RE`, keyed on
+        // `password|aws_secret|api_key|token|private_key`) does not, since
+        // the property here is `apiKey` nested under `firebase:`, not a
+        // bare `api_key = ...` assignment the regex matches on.
+        fs::write(root.join("config.js"), "export const environment = { firebase: { apiKey: 'AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk' } };\n").unwrap();
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let mut config = test_config(None);
+        config.secrets.gitleaks_enabled = true;
+
+        let output = run_phase4_checks(root, &runner, &store, &config).await.unwrap();
+        assert!(
+            output.issues.iter().any(|i| i.category == "secret" && i.file.as_deref() == Some("config.js")),
+            "expected gitleaks-only finding to appear in issues: {:?}",
+            output.issues
+        );
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 

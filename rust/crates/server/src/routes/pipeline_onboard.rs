@@ -4,13 +4,13 @@
 //! provisioning + push (skipped when `dryRun: true`, which gives
 //! validate-all's behavior from this same request shape).
 //!
-//! Same known gaps as pipeline_validate.rs (config.json phase overrides,
-//! per-task Phase 4 timings, GxP document persistence, override email
-//! notifications), plus: `auth.resolveGithubToken(req)`'s connected-
-//! session lookup isn't available (no session middleware) — falls back
-//! straight to `resolve_server_github_token()`.
+//! Same known gaps as pipeline_validate.rs (per-task Phase 4 timings, GxP
+//! document persistence, override email notifications). Push-token
+//! resolution now prefers a connected session
+//! (`crate::auth::resolve_effective_github_token`) over the
+//! `resolve_server_github_token()` env fallback, matching `auth.js`.
 
-use crate::routes::phase_meta::{phase_enabled, phase_title, PHASE_META};
+use crate::routes::phase_meta::{phase_enabled, phase_title, resolve_phase_meta, PhaseMeta};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -41,6 +41,7 @@ struct PipelineState {
 #[derive(Clone)]
 struct Logger {
     state: Arc<AppState>,
+    meta: Vec<PhaseMeta>,
     inner: Arc<Mutex<PipelineState>>,
 }
 
@@ -49,7 +50,7 @@ impl Logger {
         let inner = self.inner.lock().unwrap();
         let Some(project_id) = inner.project_id else { return };
         if let Some(rec) = inner.record.get(&phase) {
-            self.state.db.upsert_step(project_id, phase, phase_title(phase), &rec.state, &rec.logs.join("\n"));
+            self.state.db.upsert_step(project_id, phase, &phase_title(&self.meta, phase), &rec.state, &rec.logs.join("\n"));
         }
     }
 
@@ -85,11 +86,11 @@ impl Logger {
 
     fn phase_summary(&self) -> Vec<Value> {
         let inner = self.inner.lock().unwrap();
-        PHASE_META
+        self.meta
             .iter()
-            .map(|(id, title, _, _)| {
-                let (state, logs) = inner.record.get(id).map(|r| (r.state.clone(), r.logs.clone())).unwrap_or(("pending".to_string(), vec![]));
-                json!({ "phase": id, "title": title, "state": state, "logs": logs })
+            .map(|p| {
+                let (state, logs) = inner.record.get(&p.id).map(|r| (r.state.clone(), r.logs.clone())).unwrap_or(("pending".to_string(), vec![]));
+                json!({ "phase": p.id, "title": p.title, "state": state, "logs": logs })
             })
             .collect()
     }
@@ -119,49 +120,23 @@ impl PipelineError {
     }
 }
 
-fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
+pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
     ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone() }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn default_phase4_config(org: &str, repo: &str, project_id: Option<i64>) -> ignite_phase4_orchestrator::Phase4Config {
-    ignite_phase4_orchestrator::Phase4Config {
-        fast: false,
-        org: org.to_string(),
-        repo: repo.to_string(),
-        project_id,
-        secrets: ignite_secrets::SecretsConfig::default(),
-        llm: None,
-        iac: ignite_iac_security::IacSecurityConfig::default(),
-        container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig::default(),
-        sbom_enabled: true,
-        image_provenance: ignite_image_provenance::ImageProvenanceConfig::default(),
-        semantic_sast: ignite_semantic_sast::SemanticSastConfig::default(),
-        pii_data_flow: ignite_pii_dataflow::PiiDataFlowConfig::default(),
-        code_duplication: ignite_code_duplication::CodeDuplicationConfig::default(),
-        file_encapsulation: ignite_file_encapsulation::FileEncapsulationConfig { enabled: true, max_lines: 1000 },
-        loc_metrics_enabled: true,
-        api_schema: ignite_api_schema::ApiSchemaConfig::default(),
-        api_schema_drift: ignite_api_schema_drift::ApiSchemaDriftConfig::default(),
-        malicious_dependencies: ignite_malicious_dependencies::MaliciousDependenciesConfig::default(),
-        model_artifact_security: ignite_model_artifact_security::ModelArtifactSecurityConfig::default(),
-        package_hallucination_enabled: true,
-        feature_posture: ignite_feature_posture::FeaturePostureConfig { enabled: true, ruleset: String::new(), max_scan_file_bytes: 1_000_000 },
-        eu_ai_act_documents_enabled: true,
-        eu_ai_act_report_as_findings: false,
-        dead_code: ignite_dead_code::DeadCodeConfig { enabled: true },
-        complexity_health: ignite_complexity_health::ComplexityHealthConfig::default(),
-        css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: true },
-        boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
-        igniteignore_enabled: true,
-        codeql: ignite_codeql_cross_file::CodeqlConfig::default(),
-    }
+/// Builds the real Phase4Config from `state.config` (config.json + env
+/// overrides) rather than every check's hardcoded `::default()` — see
+/// `crate::phase4_config`. `fast` is always `false` here: onboarding
+/// (unlike validate-all/the pre-push hook) never runs in lightning mode.
+pub(crate) fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>) -> ignite_phase4_orchestrator::Phase4Config {
+    crate::phase4_config::from_config(&state.config, org, repo, project_id, false)
 }
 
-async fn run_onboard(state: Arc<AppState>, body: Value) -> Result<Value, (StatusCode, Value)> {
+async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (StatusCode, Value)> {
     let org = body.get("org").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-    let is_gxp = phase_enabled(2) && body.get("gxp").and_then(|v| v.as_bool()).unwrap_or(false);
+    let phase_meta = resolve_phase_meta(&state.config);
+    let is_gxp = phase_enabled(&phase_meta, 2) && body.get("gxp").and_then(|v| v.as_bool()).unwrap_or(false);
     let run_local_ci = body.get("runLocalCi").and_then(|v| v.as_bool()).unwrap_or(true);
     let dry_run = body.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
     let warning_decision = body.get("warningDecision").and_then(|v| v.as_str()).unwrap_or("continue").to_lowercase();
@@ -176,7 +151,7 @@ async fn run_onboard(state: Arc<AppState>, body: Value) -> Result<Value, (Status
 
     // Provisioning (Phase 6) must run as the actual caller's own GitHub
     // account — fail fast rather than burning phases 1-5 first.
-    let gh_token = if dry_run { String::new() } else { ignite_github_api::resolve_server_github_token() };
+    let gh_token = if dry_run { String::new() } else { crate::auth::resolve_effective_github_token(&headers, &state.db) };
     if !dry_run && gh_token.is_empty() {
         return Err((StatusCode::UNAUTHORIZED, json!({ "error": "Log in and connect your GitHub account before onboarding for real, or pass dryRun: true." })));
     }
@@ -192,7 +167,7 @@ async fn run_onboard(state: Arc<AppState>, body: Value) -> Result<Value, (Status
     let publish_dir = std::path::PathBuf::from(format!("{}-publish", staging_dir.to_string_lossy()));
     let workflow_dir = std::path::PathBuf::from(format!("{}-workflows", staging_dir.to_string_lossy()));
 
-    let logger = Logger { state: state.clone(), inner: Arc::new(Mutex::new(PipelineState { record: HashMap::new(), events: vec![], project_id: None })) };
+    let logger = Logger { state: state.clone(), meta: phase_meta.clone(), inner: Arc::new(Mutex::new(PipelineState { record: HashMap::new(), events: vec![], project_id: None })) };
     let mut project_root: Option<std::path::PathBuf> = None;
     let mut project_id: i64 = 0;
     let mut repo_url: Option<String> = None;
@@ -287,10 +262,10 @@ async fn run_onboard(state: Arc<AppState>, body: Value) -> Result<Value, (Status
 
         logger.status(4, "running", None);
         let mut issues: Vec<Issue> = license_issues.clone();
-        if !phase_enabled(4) {
+        if !phase_enabled(&phase_meta, 4) {
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
         } else {
-            let config = default_phase4_config(&org, &repo, Some(project_id));
+            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id));
             let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config).await.map_err(|e| PipelineError::new(4, e.to_string()))?;
             issues = output.issues;
             issues.extend(license_issues);
@@ -330,7 +305,7 @@ async fn run_onboard(state: Arc<AppState>, body: Value) -> Result<Value, (Status
         logger.status(4, "success", None);
 
         logger.status(5, "running", None);
-        if !phase_enabled(5) {
+        if !phase_enabled(&phase_meta, 5) {
             logger.log(5, "Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).");
             logger.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
             logger.status(5, "skipped", None);
@@ -444,8 +419,8 @@ fn gh_api_for_ship(state: &AppState) -> ignite_github_api::GithubApi<'_> {
     ignite_github_api::GithubApi::new(&state.runner)
 }
 
-async fn onboard(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
-    match run_onboard(state, body).await {
+async fn onboard(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    match run_onboard(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err((status, v)) => (status, Json(v)).into_response(),
     }

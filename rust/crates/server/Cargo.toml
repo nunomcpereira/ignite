@@ -48,6 +48,7 @@ ignite-boundaries = { path = "../boundaries" }
 ignite-file-encapsulation = { path = "../file-encapsulation" }
 ignite-css-dead-code = { path = "../css-dead-code" }
 ignite-shipping = { path = "../shipping" }
+jsonwebtoken = "9"
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-db-store = { path = "../db-store" }
 ignite-sarif = { path = "../sarif" }
@@ -57,13 +58,22 @@ ignite-auto-fix = { path = "../auto-fix" }
 ignite-dead-code = { path = "../dead-code" }
 ignite-ai-governance = { path = "../ai-governance" }
 ignite-deps-dev-client = { path = "../deps-dev-client" }
-axum = "0.7"
+ignite-provenance = { path = "../provenance" }
+axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-http = { version = "0.5", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tower = { version = "0.4", features = ["util"] }
+rsa = "0.9"
+rand = "0.8"
+base64 = "0.22"
