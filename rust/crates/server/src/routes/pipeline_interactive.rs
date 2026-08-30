@@ -198,6 +198,7 @@ struct EventLog {
     tx: tokio::sync::mpsc::UnboundedSender<String>,
     record: Mutex<HashMap<i64, PhaseRecord>>,
     project_id: Mutex<Option<i64>>,
+    job_id: String,
 }
 
 impl EventLog {
@@ -226,6 +227,7 @@ impl EventLog {
             let mut record = self.record.lock().unwrap();
             record.entry(phase).or_insert_with(|| PhaseRecord { state: "pending".to_string(), logs: vec![] }).logs.push(message.to_string());
         }
+        tracing::info!(job_id = %self.job_id, phase, "{message}");
         self.send(json!({ "type": "log", "phase": phase, "message": message }));
         self.persist(phase);
     }
@@ -235,6 +237,7 @@ impl EventLog {
             let mut record = self.record.lock().unwrap();
             record.entry(phase).or_insert_with(|| PhaseRecord { state: "pending".to_string(), logs: vec![] }).state = state.to_string();
         }
+        tracing::info!(job_id = %self.job_id, phase, state, "phase status");
         let mut ev = json!({ "type": "status", "phase": phase, "state": state });
         if let Some(extra) = extra {
             if let (Some(ev_obj), Some(extra_obj)) = (ev.as_object_mut(), extra.as_object()) {
@@ -434,6 +437,7 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
             if root != staging_dir {
                 log.log(3, &format!("Detected single top-level folder — project root: {}/", root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
             }
+            log.log(3, &format!("Project root: {}", root.display()));
             project_root = Some(root.clone());
 
             ignite_staging::clone_directory_without_symlinks(&root, &source_backup_dir).map_err(|e| e.to_string())?;
@@ -776,8 +780,9 @@ async fn pipeline(State(state): State<Arc<AppState>>, headers: axum::http::Heade
 
     let session_gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     let job_id = uuid::Uuid::new_v4().to_string();
+    tracing::info!(job_id = %job_id, org = %upload.org, repo = %upload.repo, dry_run = upload.dry_run, "starting interactive pipeline run");
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let log = Arc::new(EventLog { state: state.clone(), meta: super::phase_meta::resolve_phase_meta(&state.config), tx, record: Mutex::new(HashMap::new()), project_id: Mutex::new(None) });
+    let log = Arc::new(EventLog { state: state.clone(), meta: super::phase_meta::resolve_phase_meta(&state.config), tx, record: Mutex::new(HashMap::new()), project_id: Mutex::new(None), job_id: job_id.clone() });
 
     let job_id_task = job_id.clone();
     tokio::spawn(async move {

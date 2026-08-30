@@ -46,6 +46,7 @@ struct Logger {
     state: Arc<AppState>,
     meta: Vec<PhaseMeta>,
     inner: Arc<Mutex<PipelineState>>,
+    job_id: String,
 }
 
 impl Logger {
@@ -63,10 +64,12 @@ impl Logger {
             inner.record.entry(phase).or_insert_with(|| PhaseRecord { state: "pending".to_string(), logs: vec![] }).logs.push(message.to_string());
             inner.events.push(json!({ "type": "log", "phase": phase, "message": message }));
         }
+        tracing::info!(job_id = %self.job_id, phase, "{message}");
         self.persist(phase);
     }
 
     fn status(&self, phase: i64, state: &str, extra: Option<Value>) {
+        tracing::info!(job_id = %self.job_id, phase, state, "phase status");
         {
             let mut inner = self.inner.lock().unwrap();
             inner.record.entry(phase).or_insert_with(|| PhaseRecord { state: "pending".to_string(), logs: vec![] }).state = state.to_string();
@@ -167,11 +170,12 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
 
     let timings: Mutex<Vec<StageTiming>> = Mutex::new(Vec::new());
     let job_id = uuid::Uuid::new_v4().to_string();
+    tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting validate-all pipeline run");
     let staging_dir = std::env::temp_dir().join("gatekeeper-staging").join(format!("{job_id}-api-validation"));
     let workflow_dir_str = format!("{}-workflows", staging_dir.to_string_lossy());
     let workflow_dir = std::path::PathBuf::from(&workflow_dir_str);
 
-    let logger = Logger { state: state.clone(), meta: phase_meta.clone(), inner: Arc::new(Mutex::new(PipelineState { record: HashMap::new(), events: vec![], project_id: None })) };
+    let logger = Logger { state: state.clone(), meta: phase_meta.clone(), inner: Arc::new(Mutex::new(PipelineState { record: HashMap::new(), events: vec![], project_id: None })), job_id: job_id.clone() };
 
     let mut project_root: Option<std::path::PathBuf> = None;
     let mut issues: Vec<Issue> = vec![];
