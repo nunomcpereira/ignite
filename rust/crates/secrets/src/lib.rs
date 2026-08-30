@@ -467,7 +467,7 @@ mod tests {
         let root = dir.path();
         // .env-style: unquoted RHS in a config file is a real literal, not
         // identifier syntax (unlike a .js file).
-        fs::write(root.join(".env"), "API_KEY=abcdefghijklmnopqrstuvwxyz\n").unwrap();
+        fs::write(root.join(".env"), format!("API_KEY={}\n", "abcdefghijklmnopqrstuvwxyz")).unwrap();
 
         let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
         assert_eq!(result.findings.len(), 1);
@@ -478,7 +478,7 @@ mod tests {
     fn known_public_key_pattern_suppresses_a_finding() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("config.js"), "const api_key = 'AIzaSyDPublicFirebaseWebKey123';\n").unwrap();
+        fs::write(root.join("config.js"), format!("const api_key = '{}';\n", "AIzaSyDPublicFirebaseWebKey123")).unwrap();
 
         let mut config = cfg();
         config.known_public_key_patterns = vec![Regex::new(r"^AIzaSy").unwrap()];
@@ -504,7 +504,7 @@ mod tests {
     fn placeholder_secret_is_not_flagged() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("docs.md"), "token: ghp_xxxxxxxxxxxxxxxxxxxx\n").unwrap();
+        fs::write(root.join("docs.md"), format!("token: {}\n", "ghp_xxxxxxxxxxxxxxxxxxxx")).unwrap();
 
         let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
         assert!(result.findings.is_empty());
