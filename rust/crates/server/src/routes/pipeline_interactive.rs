@@ -507,7 +507,7 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
             log.status(4, "running", None);
             let root = project_root.clone().unwrap();
             let config = default_phase4_config(state.as_ref(), &org, &repo, project_id);
-            match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker).await {
+            match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| log.log(4, m)).await {
                 Ok(output) => {
                     let issue_count = output.issues.len();
                     let blocking_count = output.issues.iter().filter(|i| i.severity == Severity::Error).count();

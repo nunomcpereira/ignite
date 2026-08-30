@@ -12,7 +12,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -244,6 +244,7 @@ mod tests {
     use crate::review_gate::ReviewGate;
     use axum::body::Body;
     use axum::http::Request;
+    use serde_json::Value;
     use std::collections::HashMap as Map;
     use std::sync::Mutex as StdMutex;
     use tower::ServiceExt;

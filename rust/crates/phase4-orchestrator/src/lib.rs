@@ -74,13 +74,20 @@ fn to_json_bytes<T: serde::Serialize>(v: &T) -> Vec<u8> {
 
 /// Times a single fallible check future, matching the wall-clock captured
 /// by server.js's per-task `Date.now()` wrapper around each `tasks[i].run`.
-async fn timed<F, T>(fut: F) -> std::io::Result<(T, u64)>
+/// Also logs a start/done line right as each future is polled/resolves —
+/// since every `timed()` call in the `tokio::try_join!` fan-out below runs
+/// concurrently, these lines genuinely interleave in real time (unlike a
+/// single summary logged after the whole join completes).
+async fn timed<F, T>(name: &'static str, log: &(dyn Fn(&str) + Sync), fut: F) -> std::io::Result<(T, u64)>
 where
     F: std::future::Future<Output = std::io::Result<T>>,
 {
+    log(&format!("→ {name} starting..."));
     let t0 = std::time::Instant::now();
     let r = fut.await?;
-    Ok((r, t0.elapsed().as_millis() as u64))
+    let ms = t0.elapsed().as_millis() as u64;
+    log(&format!("✓ {name} done ({ms}ms)"));
+    Ok((r, ms))
 }
 
 pub async fn run_phase4_checks(
@@ -89,9 +96,11 @@ pub async fn run_phase4_checks(
     store: &DbStore,
     config: &Phase4Config,
     hallucination_checker: &ignite_package_hallucination::PackageHallucinationChecker<ignite_package_hallucination::HttpRegistryChecker>,
+    log: &(dyn Fn(&str) + Sync),
 ) -> std::io::Result<Phase4Output> {
     let mut task_timings: Vec<(&'static str, u64)> = Vec::new();
     let __t0 = std::time::Instant::now();
+    log("→ secrets starting...");
     let secrets_cache = store.get_file_scan_cache(&config.org, &config.repo, "secrets");
     let secrets_cache: HashMap<String, ignite_secrets::CachedFileEntry> =
         secrets_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_secrets::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
@@ -109,12 +118,15 @@ pub async fn run_phase4_checks(
         let added = ignite_secrets::merge_gitleaks_findings(&secrets_result.findings, &gitleaks_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
         secrets_result.findings.extend(added);
     }
-    task_timings.push(("secrets", __t_secrets.elapsed().as_millis() as u64));
+    let ms_secrets = __t_secrets.elapsed().as_millis() as u64;
+    task_timings.push(("secrets", ms_secrets));
+    log(&format!("✓ secrets done ({} finding(s), {ms_secrets}ms)", secrets_result.findings.len()));
     let secrets_check = CheckResult {
         findings: secrets_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), ..Default::default() }).collect(),
         engine: Some("built-in".to_string()),
     };
 
+    log("→ governance starting...");
     let governance_cache = store.get_file_scan_cache(&config.org, &config.repo, "governance");
     let governance_cache: HashMap<String, ignite_ai_governance::CachedFileEntry> =
         governance_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_ai_governance::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
@@ -126,15 +138,20 @@ pub async fn run_phase4_checks(
         "governance",
         &governance_new_cache.iter().map(|(k, v)| ignite_db_store::FileScanCacheInput { rel_path: k.clone(), hash: v.hash.clone(), findings: serde_json::to_value(v).unwrap() }).collect::<Vec<_>>(),
     );
-    task_timings.push(("governance", __t_governance.elapsed().as_millis() as u64));
+    let ms_governance = __t_governance.elapsed().as_millis() as u64;
+    task_timings.push(("governance", ms_governance));
+    log(&format!("✓ governance done ({} finding(s), {ms_governance}ms)", governance_result.findings.len()));
     let governance_check =
         CheckResult { findings: governance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), raw_snippet_text: Some(f.snippet.clone()), ..Default::default() }).collect(), engine: Some("built-in".to_string()) };
 
     if config.fast {
         // FAST_MODE_TASKS = secrets, governance, semanticSast, fileEncapsulation
+        log("→ semanticSast starting...");
         let __t = std::time::Instant::now();
         let semantic_sast_result = ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await;
-        task_timings.push(("semanticSast", __t.elapsed().as_millis() as u64));
+        let ms = __t.elapsed().as_millis() as u64;
+        task_timings.push(("semanticSast", ms));
+        log(&format!("✓ semanticSast done ({} finding(s), {ms}ms)", semantic_sast_result.findings.len()));
         let semantic_sast_check = CheckResult {
             findings: semantic_sast_result
                 .findings
@@ -143,9 +160,12 @@ pub async fn run_phase4_checks(
                 .collect(),
             engine: Some(semantic_sast_result.engine.to_string()),
         };
+        log("→ fileEncapsulation starting...");
         let __t = std::time::Instant::now();
         let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation)?;
-        task_timings.push(("fileEncapsulation", __t.elapsed().as_millis() as u64));
+        let ms = __t.elapsed().as_millis() as u64;
+        task_timings.push(("fileEncapsulation", ms));
+        log(&format!("✓ fileEncapsulation done ({} finding(s), {ms}ms)", file_encapsulation_result.findings.len()));
         let file_encapsulation_check = CheckResult {
             findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
             engine: Some(file_encapsulation_result.engine.to_string()),
@@ -239,24 +259,24 @@ pub async fn run_phase4_checks(
         (posture_result, ms_posture),
         (codeql_result, ms_codeql),
     ) = tokio::try_join!(
-        timed(semantic_sast_fut),
-        timed(pii_fut),
-        timed(duplication_fut),
-        timed(loc_metrics_fut),
-        timed(igniteignore_fut),
-        timed(llm_fut),
-        timed(ignite_iac_security::check_iac_security(root, runner, &config.iac)),
-        timed(ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities)),
-        timed(ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000)),
-        timed(provenance_fut),
-        timed(ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store))),
-        timed(ignite_api_schema::check_api_schemas(root, runner, &config.api_schema)),
-        timed(ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift)),
-        timed(ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store))),
-        timed(ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security)),
-        timed(hallucination_checker.check(root, config.package_hallucination_enabled, &manifests)),
-        timed(ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture)),
-        timed(ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None })),
+        timed("semanticSast", log, semantic_sast_fut),
+        timed("pii", log, pii_fut),
+        timed("duplication", log, duplication_fut),
+        timed("locMetrics", log, loc_metrics_fut),
+        timed("igniteIgnore", log, igniteignore_fut),
+        timed("llm", log, llm_fut),
+        timed("iac", log, ignite_iac_security::check_iac_security(root, runner, &config.iac)),
+        timed("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities)),
+        timed("sbom", log, ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000)),
+        timed("provenance", log, provenance_fut),
+        timed("imageProvenance", log, ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store))),
+        timed("apiSchema", log, ignite_api_schema::check_api_schemas(root, runner, &config.api_schema)),
+        timed("apiSchemaDrift", log, ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift)),
+        timed("maliciousDependencies", log, ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store))),
+        timed("modelArtifactSecurity", log, ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security)),
+        timed("packageHallucination", log, hallucination_checker.check(root, config.package_hallucination_enabled, &manifests)),
+        timed("posture", log, ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture)),
+        timed("codeql", log, ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None })),
     )?;
     task_timings.extend([
         ("semanticSast", ms_semantic_sast),
@@ -348,9 +368,12 @@ pub async fn run_phase4_checks(
         engine: Some(duplication_result.engine.to_string()),
     });
 
+    log("→ fileEncapsulation starting...");
     let __t = std::time::Instant::now();
     let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation)?;
-    task_timings.push(("fileEncapsulation", __t.elapsed().as_millis() as u64));
+    let ms = __t.elapsed().as_millis() as u64;
+    task_timings.push(("fileEncapsulation", ms));
+    log(&format!("✓ fileEncapsulation done ({} finding(s), {ms}ms)", file_encapsulation_result.findings.len()));
     let file_encapsulation_check = Some(CheckResult {
         findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(file_encapsulation_result.engine.to_string()),
@@ -385,9 +408,12 @@ pub async fn run_phase4_checks(
 
     let posture_doc = if config.project_id.is_some() { Some(to_json_bytes(&serde_json::json!({ "engine": posture_result.engine, "posture": posture_result.posture }))) } else { None };
 
+    log("→ euAiActDocuments starting...");
     let __t = std::time::Instant::now();
     let ai_act_docs_result = ignite_compliance_documents::check_compliance_documents(root, config.eu_ai_act_documents_enabled)?;
-    task_timings.push(("euAiActDocuments", __t.elapsed().as_millis() as u64));
+    let ms = __t.elapsed().as_millis() as u64;
+    task_timings.push(("euAiActDocuments", ms));
+    log(&format!("✓ euAiActDocuments done ({ms}ms)"));
     let ai_act_docs_doc = if config.project_id.is_some() { Some(to_json_bytes(&serde_json::json!({ "engine": ai_act_docs_result.engine, "documents": ai_act_docs_result.documents }))) } else { None };
 
     let eu_ai_act_check = if config.eu_ai_act_report_as_findings {
@@ -396,9 +422,12 @@ pub async fn run_phase4_checks(
         None
     };
 
+    log("→ deadCode starting...");
     let __t = std::time::Instant::now();
     let dead_code_result = ignite_dead_code::check_dead_code(root, &config.dead_code)?;
-    task_timings.push(("deadCode", __t.elapsed().as_millis() as u64));
+    let ms = __t.elapsed().as_millis() as u64;
+    task_timings.push(("deadCode", ms));
+    log(&format!("✓ deadCode done ({} finding(s), {ms}ms)", dead_code_result.findings.len()));
     let dead_code_check = Some(CheckResult {
         findings: dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(dead_code_result.engine.to_string()),
@@ -407,25 +436,34 @@ pub async fn run_phase4_checks(
     let churn: HashMap<String, u64> = HashMap::new(); // git-churn weighting not yet wired (needs `git log --numstat`)
     let org = config.org.clone();
     let repo = config.repo.clone();
+    log("→ health starting...");
     let __t = std::time::Instant::now();
     let health_result = ignite_complexity_health::check_complexity_health(root, &config.complexity_health, &churn, |rel_path| store.get_runtime_coverage_for_file(&org, &repo, rel_path).and_then(|r| r.covered_pct))?;
-    task_timings.push(("health", __t.elapsed().as_millis() as u64));
+    let ms = __t.elapsed().as_millis() as u64;
+    task_timings.push(("health", ms));
+    log(&format!("✓ health done ({} finding(s), {ms}ms)", health_result.findings.len()));
     let health_check = Some(CheckResult {
         findings: health_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(health_result.engine.to_string()),
     });
 
+    log("→ cssDeadCode starting...");
     let __t = std::time::Instant::now();
     let css_dead_code_result = ignite_css_dead_code::check_css_dead_code(root, &config.css_dead_code)?;
-    task_timings.push(("cssDeadCode", __t.elapsed().as_millis() as u64));
+    let ms = __t.elapsed().as_millis() as u64;
+    task_timings.push(("cssDeadCode", ms));
+    log(&format!("✓ cssDeadCode done ({} finding(s), {ms}ms)", css_dead_code_result.findings.len()));
     let css_dead_code_check = Some(CheckResult {
         findings: css_dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(css_dead_code_result.engine.to_string()),
     });
 
+    log("→ boundaries starting...");
     let __t = std::time::Instant::now();
     let boundaries_result = ignite_boundaries::check_boundaries(root, &config.boundaries)?;
-    task_timings.push(("boundaries", __t.elapsed().as_millis() as u64));
+    let ms = __t.elapsed().as_millis() as u64;
+    task_timings.push(("boundaries", ms));
+    log(&format!("✓ boundaries done ({} finding(s), {ms}ms)", boundaries_result.findings.len()));
     let boundaries_check = Some(CheckResult {
         findings: boundaries_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(boundaries_result.engine.to_string()),
@@ -470,7 +508,9 @@ pub async fn run_phase4_checks(
     };
     let issues = ignite_override_engine::collect_phase4_issues(&inputs);
     let _ = http_client;
-    task_timings.push(("phase4Total", __t0.elapsed().as_millis() as u64));
+    let total_ms = __t0.elapsed().as_millis() as u64;
+    task_timings.push(("phase4Total", total_ms));
+    log(&format!("Phase 4 complete — {} check(s) run, {} issue(s) found ({total_ms}ms total).", task_timings.len().saturating_sub(1), issues.len()));
 
     Ok(Phase4Output {
         issues,
@@ -560,7 +600,7 @@ mod tests {
         let config = test_config(None);
 
         let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
-        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker).await.unwrap();
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
         assert!(output.issues.iter().any(|i| i.category == "secret"));
         ignite_fs_utils::invalidate_walk_cache(root);
     }
@@ -589,7 +629,7 @@ mod tests {
         config.secrets.gitleaks_enabled = true;
 
         let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
-        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker).await.unwrap();
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
         assert!(
             output.issues.iter().any(|i| i.category == "secret" && i.file.as_deref() == Some("config.js")),
             "expected gitleaks-only finding to appear in issues: {:?}",
@@ -611,7 +651,7 @@ mod tests {
         config.fast = true;
 
         let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
-        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker).await.unwrap();
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
         assert!(output.issues.iter().any(|i| i.category == "secret"));
         assert!(output.documents.sbom.is_none());
         ignite_fs_utils::invalidate_walk_cache(root);
@@ -629,7 +669,7 @@ mod tests {
         let config = test_config(None);
 
         let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
-        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker).await.unwrap();
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
         assert!(output.documents.sbom.is_none());
         assert!(output.documents.provenance.is_none());
         ignite_fs_utils::invalidate_walk_cache(root);

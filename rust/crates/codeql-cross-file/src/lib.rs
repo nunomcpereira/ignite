@@ -447,12 +447,24 @@ pub async fn check_codeql_cross_file_with_log(
     let mut findings = Vec::new();
     for language in &languages {
         let file_set_hash = hash_file_set(root, language)?;
-        let cached = match (ctx.org, ctx.repo, &tooling.version, ctx.store) {
-            (Some(org), Some(repo), Some(version), Some(store)) => store.get_codeql_scan_cache(org, repo, language, &file_set_hash, version),
-            _ => None,
+        // A caller that wants the built database kept on disk (Studio's
+        // "Run CodeQL" button, ahead of an ad-hoc query against it) can
+        // never accept a cache hit here — a cache hit skips
+        // `run_one_language` entirely, so no database gets built/copied to
+        // `keep_db_dir` even though this language stays in the returned
+        // `languages` list, leaving the UI offering a language with no
+        // on-disk database. Only consult the findings cache when nothing
+        // downstream needs the database itself.
+        let keep_db_dir_for_lang = ctx.keep_db_dir.map(|d| d.join(language).join("db"));
+        let cached = if keep_db_dir_for_lang.is_some() {
+            None
+        } else {
+            match (ctx.org, ctx.repo, &tooling.version, ctx.store) {
+                (Some(org), Some(repo), Some(version), Some(store)) => store.get_codeql_scan_cache(org, repo, language, &file_set_hash, version),
+                _ => None,
+            }
         };
 
-        let keep_db_dir_for_lang = ctx.keep_db_dir.map(|d| d.join(language).join("db"));
         let lang_findings = if let Some(cached_json) = cached {
             serde_json::from_value(cached_json).unwrap_or_default()
         } else {

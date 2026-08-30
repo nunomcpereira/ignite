@@ -272,6 +272,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
             let l3b = logger.clone();
+            let l4 = logger.clone();
             let root_a = root.clone();
             let root_b = root.clone();
             let state_a = state.clone();
@@ -283,7 +284,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                     v.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root_a, &client, move |m| l3b.log(3, m)).await);
                     v
                 }),
-                time_stage(&timings, "phase4Total", async move { ignite_phase4_orchestrator::run_phase4_checks(&root_b, &state_b.runner, &state_b.db, &config, &state_b.package_hallucination_checker).await })
+                time_stage(&timings, "phase4Total", async move { ignite_phase4_orchestrator::run_phase4_checks(&root_b, &state_b.runner, &state_b.db, &config, &state_b.package_hallucination_checker, &|m: &str| l4.log(4, m)).await })
             );
             match phase4_result {
                 Ok(output) => {

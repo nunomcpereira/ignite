@@ -77,6 +77,7 @@ pub fn llm_config_from_config(cfg: &ignite_config::Config) -> ignite_llm_client:
 
 /// Test/back-compat convenience: the local-LLM defaults with no
 /// config.json/env involved.
+#[cfg(test)]
 pub fn default_llm_config() -> ignite_llm_client::LlmClientConfig {
     llm_config_from_config(&ignite_config::Config::default())
 }
@@ -97,6 +98,7 @@ pub static GH_TOKEN_ENV_GUARD: Mutex<()> = Mutex::new(());
 /// tool name, matching config.json's own defaults). Real server startup
 /// uses `crate::phase4_config::runner_from_config(&state.config)` instead,
 /// so a config.json/env binary override actually takes effect.
+#[cfg(test)]
 pub fn default_runner() -> ToolRunner {
     crate::phase4_config::runner_from_config(&ignite_config::Config::default())
 }
