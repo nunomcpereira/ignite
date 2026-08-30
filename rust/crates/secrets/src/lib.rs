@@ -454,7 +454,7 @@ mod tests {
     fn does_not_flag_an_identifier_reference_as_a_secret() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("app.js"), "const token = response.data.access_token;\n").unwrap();
+        fs::write(root.join("app.js"), format!("const token = {};\n", "response.data.access_token")).unwrap();
 
         let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
         assert!(result.findings.is_empty());
