@@ -55,11 +55,15 @@ with a blank `Acknowledge:` line. Every run also drops a point-in-time
 snapshot of every finding at `.ignite/scans/<timestamp>/findings.md`:
 
 ```
+# Scanned against commit: a1b2c3d4e5f6... (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+
 ID: secret::python/config.py::3
 # [ERROR] secret - Hardcoded password
 #   python/config.py:3
 Acknowledge:
 ```
+
+That commit line is regenerated every run from the current `HEAD`, so a reviewer looking at a committed `acknowledgments.md` can always tell exactly which commit's code every justification below it was written against.
 
 Fill in a justification, save, `git push` again — the hook resubmits every
 filled-in line as a real, attributed override (using your `git config

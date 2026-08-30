@@ -78,11 +78,37 @@ pub struct LicenseClassification {
     pub reason: String,
 }
 
+/// An SPDX boolean expression ("Apache-2.0 OR MIT", "MIT OR Apache-2.0")
+/// — the standard way `Cargo.toml`'s `license` field expresses dual/multi
+/// licensing, and how deps.dev reports a crate's license back. Picking
+/// *any one* alternative satisfies an `OR` expression (that's what the
+/// license offers: a choice), so this resolves to the single most
+/// permissive alternative present (Green > Warning > Red) rather than
+/// leaving the whole compound string to fail an exact-id lookup and fall
+/// through to "unrecognized". `AND`/`WITH` expressions (rarer, and every
+/// part's obligation genuinely applies at once) are deliberately left
+/// unsplit — the current conservative "unrecognized unless in the known
+/// set" behavior is the right default there.
+static SPDX_OR_SPLIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\s+OR\s+").unwrap());
+
+fn resolve_spdx_or_expression(raw: &str) -> String {
+    let alternatives: Vec<String> = SPDX_OR_SPLIT_RE.split(raw.trim().trim_start_matches('(').trim_end_matches(')')).map(normalize_license_id).collect();
+    if alternatives.len() < 2 {
+        return normalize_license_id(raw);
+    }
+    alternatives
+        .iter()
+        .find(|l| LICENSE_TIER_GREEN.contains(l.as_str()))
+        .or_else(|| alternatives.iter().find(|l| LICENSE_TIER_WARNING.contains(l.as_str())))
+        .cloned()
+        .unwrap_or_else(|| raw.to_string())
+}
+
 /// `licenses` may be empty, a single license string, or a list — mirrors
 /// the JS original's tolerant `Array.isArray(licenses) ? licenses :
 /// licenses ? [licenses] : []` normalization.
 pub fn classify_license_tier(licenses: &[String]) -> LicenseClassification {
-    let list: Vec<String> = licenses.iter().filter(|l| !l.is_empty()).map(|l| normalize_license_id(l)).collect();
+    let list: Vec<String> = licenses.iter().filter(|l| !l.is_empty()).map(|l| resolve_spdx_or_expression(l)).collect();
     if list.is_empty() {
         return LicenseClassification { tier: LicenseTier::Red, reason: "No license identified.".to_string() };
     }
@@ -111,8 +137,18 @@ pub fn best_effort_version(raw: &str) -> Option<String> {
 /// manifest file, so there is no license or CVE to look up.
 static INTERNAL_DEP_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(workspace|catalog|link|file|portal|patch):").unwrap());
 
+/// Cargo's inline-table dependency syntax for a local path (`{ path =
+/// "../db-store" }`, optionally with other keys like `features` before or
+/// after `path`) — the same "no real published package+version" case as
+/// `INTERNAL_DEP_REF_RE` above, just Cargo's own table syntax instead of a
+/// `proto:` prefix. `studio-manifests`' Cargo.toml parser passes the whole
+/// inline table through verbatim as `version_range` when there's no plain
+/// `version = "..."` key to extract.
+static CARGO_PATH_DEP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\{.*\bpath\s*=").unwrap());
+
 pub fn is_internal_dependency_ref(version_range: &str) -> bool {
-    INTERNAL_DEP_REF_RE.is_match(version_range.trim())
+    let trimmed = version_range.trim();
+    INTERNAL_DEP_REF_RE.is_match(trimmed) || CARGO_PATH_DEP_RE.is_match(trimmed)
 }
 
 #[cfg(test)]
@@ -123,6 +159,23 @@ mod tests {
     fn classifies_green_licenses() {
         let c = classify_license_tier(&["MIT".to_string()]);
         assert_eq!(c.tier, LicenseTier::Green);
+    }
+
+    #[test]
+    fn classifies_spdx_or_expression_as_green_when_any_alternative_is() {
+        // The standard Cargo.toml dual-license form ("MIT OR Apache-2.0")
+        // used to fail the exact-id lookup entirely and fall through to
+        // "unrecognized" (Red) — this is the fix's regression coverage.
+        let c = classify_license_tier(&["Apache-2.0 OR MIT".to_string()]);
+        assert_eq!(c.tier, LicenseTier::Green, "reason: {}", c.reason);
+        let c2 = classify_license_tier(&["MIT OR Apache-2.0".to_string()]);
+        assert_eq!(c2.tier, LicenseTier::Green, "reason: {}", c2.reason);
+    }
+
+    #[test]
+    fn classifies_spdx_or_expression_with_no_green_alternative_as_warning() {
+        let c = classify_license_tier(&["GPL-3.0 OR LGPL-2.1".to_string()]);
+        assert_eq!(c.tier, LicenseTier::Warning, "reason: {}", c.reason);
     }
 
     #[test]
@@ -200,5 +253,12 @@ mod tests {
         assert!(is_internal_dependency_ref("portal:../foo"));
         assert!(is_internal_dependency_ref("patch:lodash@1.0.0"));
         assert!(!is_internal_dependency_ref("^1.2.3"));
+    }
+
+    #[test]
+    fn is_internal_dependency_ref_matches_cargo_path_table() {
+        assert!(is_internal_dependency_ref(r#"{ path = "../db-store" }"#));
+        assert!(is_internal_dependency_ref(r#"{ path = "../fs-utils", features = ["x"] }"#));
+        assert!(!is_internal_dependency_ref("1"));
     }
 }

@@ -122,16 +122,32 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                 };
             }
 
-            let Some(version) = best_effort_version(&dep.version_range) else {
-                return LicenseScanDependency {
-                    name: dep.name.clone(),
-                    version_range: dep.version_range.clone(),
-                    version: None,
-                    line,
-                    licenses: vec![],
-                    tier: DependencyLicenseTier::Red,
-                    reason: "Could not resolve an exact version to check (range/tag/git ref).".to_string(),
-                };
+            let version = match best_effort_version(&dep.version_range) {
+                Some(v) => v,
+                None => {
+                    // BEST_EFFORT_VERSION_RE requires a `major.minor`, so a
+                    // bare-major range (Cargo's `"1"` shorthand for `^1`,
+                    // common in every crate's Cargo.toml) doesn't match —
+                    // fall through to the same registry-based range
+                    // resolution the retry path below uses, instead of
+                    // giving up immediately. Only a genuinely unresolvable
+                    // spec (git ref, tag, local path) still reports
+                    // "Could not resolve" below.
+                    match resolve_best_published_version(client, spec.system, &dep.name, &dep.version_range).await {
+                        Some(v) => v,
+                        None => {
+                            return LicenseScanDependency {
+                                name: dep.name.clone(),
+                                version_range: dep.version_range.clone(),
+                                version: None,
+                                line,
+                                licenses: vec![],
+                                tier: DependencyLicenseTier::Red,
+                                reason: "Could not resolve an exact version to check (range/tag/git ref).".to_string(),
+                            };
+                        }
+                    }
+                }
             };
 
             let mut licenses = client.fetch_licenses(spec.system, &dep.name, &version).await;
@@ -976,6 +992,33 @@ mod tests {
         let dep = &manifests[0].dependencies[0];
         assert_eq!(dep.name, "lodash");
         assert_eq!(dep.tier, DependencyLicenseTier::Green, "expected lodash (MIT) to classify green: {}", dep.reason);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    /// Regression test: `serde = "1"` — Cargo's shorthand for `^1`, and how
+    /// the overwhelming majority of real Cargo.toml files pin a dependency
+    /// — used to report "Could not resolve an exact version to check"
+    /// unconditionally, because `best_effort_version`'s regex requires a
+    /// `major.minor` and a bare `"1"` has no dot. Proves the fallback to
+    /// registry-based range resolution (`resolve_best_published_version`)
+    /// now kicks in for exactly this case instead of giving up immediately.
+    #[tokio::test]
+    async fn scan_dependency_licenses_fallback_real_network_resolves_bare_major_cargo_range() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\n").unwrap();
+
+        let client = DepsDevClient::new();
+        let npm_http = reqwest::Client::new();
+        let manifests = scan_dependency_licenses_fallback(root, &client, &npm_http, &HashSet::new()).await.unwrap();
+        if manifests.is_empty() || manifests[0].dependencies.is_empty() {
+            eprintln!("skipping: could not reach deps.dev (network unavailable in this environment)");
+            return;
+        }
+        let dep = &manifests[0].dependencies[0];
+        assert_eq!(dep.name, "serde");
+        assert_ne!(dep.tier, DependencyLicenseTier::Red, "expected serde@1 to resolve to a real published version instead of \"Could not resolve\": {}", dep.reason);
+        assert!(dep.version.is_some(), "expected a resolved version, got: {}", dep.reason);
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 

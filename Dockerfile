@@ -31,6 +31,25 @@ FROM node:24-bookworm-slim
 
 ARG TARGETARCH
 ARG INSTALL_TRIVY=true
+# Every tool below that ships as a prebuilt Go/JVM binary is pinned to an
+# exact release tag rather than "latest": installing "latest" made every
+# build genuinely non-reproducible - the exact vendored Go stdlib/module
+# versions (and therefore trivy's own container-image-cve findings against
+# THIS image) shifted between consecutive builds seconds apart, which
+# turned Ignite's own self-scan into a moving target no override list could
+# ever fully catch up with. Bump these ARGs deliberately (and re-run a
+# --no-cache build + full self-scan) when picking up a real upstream fix,
+# not implicitly on every image rebuild.
+ARG TRIVY_VERSION=v0.74.0
+ARG HADOLINT_VERSION=v2.15.1
+ARG GITLEAKS_VERSION=v8.30.1
+ARG SYFT_VERSION=v1.51.1
+ARG COSIGN_VERSION=v3.1.3
+ARG OASDIFF_VERSION=v1.29.1
+ARG CODEQL_VERSION=v2.26.4
+ARG GOCLOC_VERSION=v0.7.0
+ARG ACT_VERSION=v0.2.89
+ARG GH_VERSION=v2.98.0
 ARG INSTALL_CHECKOV=true
 ARG INSTALL_HADOLINT=true
 ARG INSTALL_GITLEAKS=true
@@ -115,31 +134,31 @@ RUN if [ "$INSTALL_ORT" = "true" ]; then \
 # --- IaC / container misconfig -------------------------------------------
 RUN if [ "$INSTALL_TRIVY" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-        | sh -s -- -b /usr/local/bin; \
+        | sh -s -- -b /usr/local/bin "$TRIVY_VERSION"; \
     fi
 RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov && pipx ensurepath; fi
 RUN if [ "$INSTALL_HADOLINT" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
       curl -fsSL -o /usr/local/bin/hadolint \
-        "https://github.com/hadolint/hadolint/releases/latest/download/hadolint-linux-${arch}" \
+        "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-linux-${arch}" \
       && chmod +x /usr/local/bin/hadolint; \
     fi
 
 # --- Secrets / supply chain / SAST ----------------------------------------
 RUN if [ "$INSTALL_GITLEAKS" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64)"; \
-      ver="$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4 | tr -d v)"; \
-      curl -fsSL "https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_${ver}_linux_${arch}.tar.gz" \
+      ver="$(echo "$GITLEAKS_VERSION" | tr -d v)"; \
+      curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/gitleaks_${ver}_linux_${arch}.tar.gz" \
         | tar xz -C /usr/local/bin gitleaks; \
     fi
 RUN if [ "$INSTALL_SYFT" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-        | sh -s -- -b /usr/local/bin; \
+        | sh -s -- -b /usr/local/bin "$SYFT_VERSION"; \
     fi
 RUN if [ "$INSTALL_COSIGN" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64)"; \
       curl -fsSL -o /usr/local/bin/cosign \
-        "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-${arch}" \
+        "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${arch}" \
       && chmod +x /usr/local/bin/cosign; \
     fi
 RUN if [ "$INSTALL_SEMGREP" = "true" ]; then pipx install semgrep && pipx ensurepath; fi
@@ -150,7 +169,11 @@ RUN if [ "$INSTALL_BEARER" = "true" ]; then \
 RUN if [ "$INSTALL_GUARDDOG" = "true" ]; then pipx install guarddog && pipx ensurepath; fi
 RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan && pipx ensurepath; fi
 RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
-      curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh; \
+      arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
+      ver="$(echo "$OASDIFF_VERSION" | tr -d v)"; \
+      curl -fsSL -o /tmp/oasdiff.tar.gz \
+        "https://github.com/oasdiff/oasdiff/releases/download/${OASDIFF_VERSION}/oasdiff_${ver}_linux_${arch}.tar.gz" \
+      && tar xzf /tmp/oasdiff.tar.gz -C /usr/local/bin oasdiff && rm /tmp/oasdiff.tar.gz; \
     fi
 # GitHub only ships an x86_64 ("linux64") CodeQL CLI build for Linux - no
 # native arm64 release exists (confirmed against the actual release asset
@@ -166,7 +189,7 @@ RUN if [ "$INSTALL_CODEQL" = "true" ]; then \
         echo "Skipping CodeQL install: no native linux/arm64 CLI build exists upstream (see github/codeql-cli-binaries releases). Build with --platform linux/amd64 to get CodeQL via emulation, or leave it disabled on this platform." >&2; \
       else \
         curl -fsSL -o /tmp/codeql.zip \
-          "https://github.com/github/codeql-cli-binaries/releases/latest/download/codeql-linux64.zip" \
+          "https://github.com/github/codeql-cli-binaries/releases/download/${CODEQL_VERSION}/codeql-linux64.zip" \
         && unzip -q /tmp/codeql.zip -d /opt \
         && ln -s /opt/codeql/codeql /usr/local/bin/codeql && rm /tmp/codeql.zip; \
       fi; \
@@ -178,7 +201,7 @@ RUN if [ "$INSTALL_SPECTRAL" = "true" ]; then npm install -g @stoplight/spectral
 RUN if [ "$INSTALL_GOCLOC" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
       curl -fsSL -o /tmp/gocloc.tar.gz \
-        "https://github.com/hhatto/gocloc/releases/latest/download/gocloc_Linux_${arch}.tar.gz" \
+        "https://github.com/hhatto/gocloc/releases/download/${GOCLOC_VERSION}/gocloc_Linux_${arch}.tar.gz" \
       && tar xzf /tmp/gocloc.tar.gz -C /usr/local/bin gocloc && rm /tmp/gocloc.tar.gz; \
     fi
 
@@ -215,7 +238,7 @@ RUN apt-get purge -y \
 # the socket docker-compose.yml mounts in, not a nested Docker-in-Docker ---
 RUN if [ "$INSTALL_ACT" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/nektos/act/master/install.sh \
-        | sh -s -- -b /usr/local/bin; \
+        | sh -s -- -b /usr/local/bin "$ACT_VERSION"; \
     fi
 # 29.7.2, not 27.3.1: the CLI dropped its vendored github.com/moby/go-archive
 # dependency somewhere after 27.x (confirmed via `go version -m` against a
@@ -234,8 +257,7 @@ RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then \
     fi
 RUN if [ "$INSTALL_GH" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64)"; \
-      ver="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)"; \
-      test -n "$ver"; \
+      ver="$GH_VERSION"; \
       mkdir -p /tmp/gh && curl -fsSL -o /tmp/gh.tar.gz \
         "https://github.com/cli/cli/releases/download/${ver}/gh_${ver#v}_linux_${arch}.tar.gz" \
       && tar xzf /tmp/gh.tar.gz -C /tmp/gh \
