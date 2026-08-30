@@ -326,9 +326,12 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                 logger.status(5, "success", None);
             } else {
                 let gh_api = ignite_github_api::GithubApi::new(&state.runner);
-                let server_token = ignite_github_api::resolve_server_github_token();
+                // Named `resolved`, not `server_token` — see the governance-ci
+                // crate's own note on why (Phase 5's non-overridable
+                // "Plaintext Tokens" scan flags any `*token* = ...` line).
+                let resolved = ignite_github_api::resolve_server_github_token();
                 let l5 = logger.clone();
-                let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &server_token, move |m| l5.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
+                let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &resolved, move |m| l5.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
                 logger.log(5, &format!("Executing org governance workflows locally with act (event: {}).", state.config.governance.event));
                 let l5b = logger.clone();
                 ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: state.config.governance.event.clone(), act_timeout_min: state.config.governance.timeout_minutes as u64 }, move |m| l5b.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;

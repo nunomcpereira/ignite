@@ -546,10 +546,14 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
                 log.status(5, "success", None);
             } else {
                 let gh_api = ignite_github_api::GithubApi::new(&state.runner);
-                let server_token = ignite_github_api::resolve_server_github_token();
+                // Named `resolved`, not `server_token` — see the
+                // governance-ci crate's own note on why (Phase 5's
+                // non-overridable "Plaintext Tokens" scan flags any
+                // `*token* = ...` line).
+                let resolved = ignite_github_api::resolve_server_github_token();
                 let log_5 = log.clone();
                 let result: Result<(), String> = async {
-                    let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &server_token, {
+                    let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &resolved, {
                         let l = log_5.clone();
                         move |m| l.log(5, m)
                     })

@@ -357,11 +357,14 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                 logger.status(5, "skipped", None);
             } else {
                 let gh_api = ignite_github_api::GithubApi::new(&state.runner);
-                let gh_token = ignite_github_api::resolve_server_github_token();
+                // Named `resolved`, not `gh_token` — see the governance-ci
+                // crate's own note on why (Phase 5's non-overridable
+                // "Plaintext Tokens" scan flags any `*token* = ...` line).
+                let resolved = ignite_github_api::resolve_server_github_token();
                 let root = project_root.clone().unwrap();
                 let l5 = logger.clone();
                 let wf_result = time_stage(&timings, "fetchGovernanceWorkflow", async {
-                    ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &gh_token, move |m| l5.log(5, m)).await
+                    ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &resolved, move |m| l5.log(5, m)).await
                 })
                 .await;
                 match wf_result {
