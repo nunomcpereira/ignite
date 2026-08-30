@@ -29,7 +29,7 @@ git config --global core.hooksPath ~/.git-hooks
 ```
 
 It needs a running Ignite server reachable at `IGNITE_BASE_URL` (default
-`http://localhost:51337`) and `node` on `PATH`. On `git push`, it posts the
+`http://localhost:51337`) and `jq` on `PATH`. On `git push`, it posts the
 repo's absolute path to `/api/pipeline/validate-all`, blocks the push if any
 check fails, and prints the failing phase's logs so you don't have to open
 the UI just to see what broke:

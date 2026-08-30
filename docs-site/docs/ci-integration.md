@@ -48,7 +48,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "{\"projectPath\":\"$GITHUB_WORKSPACE\",\"org\":\"${{ github.repository_owner }}\",\"repo\":\"${{ github.event.repository.name }}\",\"runLocalCi\":false}")
           echo "$RESPONSE" > result.json
-          echo "job_id=$(node -pe "require('./result.json').jobId")" >> "$GITHUB_OUTPUT"
+          echo "job_id=$(jq -r '.jobId' result.json)" >> "$GITHUB_OUTPUT"
       - name: Post result to the PR
         if: always()
         run: |
@@ -64,7 +64,7 @@ request's connected-GitHub-account session, or `GH_TOKEN`/`GITHUB_TOKEN`
 set on the Ignite server itself for unattended CI callers with no session.
 It uses the `gh` CLI when available and falls back to a direct REST call
 otherwise, same soft-dependency pattern as every other GitHub API call in
-`lib/github-api.js`.
+the `ignite-github-api` crate (`rust/crates/github-api`).
 
 Re-running against the same commit/PR is safe: GitHub replaces the old
 `ignite/gate` status with the new one, and each call adds one more comment
@@ -74,7 +74,7 @@ prior comment id rather than always posting a new one.
 ## Agent self-fix loop — closing the loop without a human in between
 
 An agent that already calls `check_project`/`onboard_project` (the MCP
-tools in `mcp-server.js`) or `POST /api/pipeline/validate-all` directly
+tools served by the `mcp-server` binary) or `POST /api/pipeline/validate-all` directly
 gets back the same flat `issues[]` list this doc's PR comment is built
 from — file, line, category, severity, summary. That's already enough for
 an agent to fix its own findings and re-scan without a person relaying

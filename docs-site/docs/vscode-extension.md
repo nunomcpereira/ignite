@@ -17,8 +17,8 @@ server. Works with VS Code, Cursor, or VS Code Insiders.
 - A running Ignite server, reachable at the URL configured in
   `ignite.baseUrl` (default `http://localhost:51337`):
   ```bash
-  npm install
-  npm start
+  cd rust && cargo build --release -p ignite-server
+  IGNITE_CONFIG_DIR=.. ./target/release/ignite-server
   ```
 - The `code` (or `code-insiders` / `cursor`) CLI on your `PATH`. If `code`
   isn't found, run **Shell Command: Install 'code' command in PATH** once

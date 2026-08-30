@@ -88,13 +88,13 @@ onboarded it, wasn't a person.
 
 ## Architecture
 
-Three request paths converge on the same Express server and the same six-phase pipeline - there's no "lighter" mode for one caller versus another:
+Three request paths converge on the same Rust server and the same six-phase pipeline - there's no "lighter" mode for one caller versus another:
 
 ```
 ┌───────────────┐  multipart POST (dryRun?)   ┌──────────────────────────────────────────────┐
-│    Browser    │ ──────────────────────────▶ │  Express server (server.js)                    │
+│    Browser    │ ──────────────────────────▶ │  ignite-server (Rust, axum)                    │
 │  (index.html) │                              │                                                │
-│  NDJSON       │ ◀────────────────────────── │  1. multer buffers ZIP/folder →                │
+│  NDJSON       │ ◀────────────────────────── │  1. multipart upload buffered/streamed →       │
 │  pipeline UI  │  streamed events (log /      │     $TMPDIR/gatekeeper-uploads/<rand>          │
 └───────────────┘  status / review_required /  │  2. safe-extract (zip-slip + zip-bomb guards,  │
                     done)                      │     symlinks skipped) →                        │
@@ -112,9 +112,9 @@ Three request paths converge on the same Express server and the same six-phase p
         │ HTTP :51338/mcp                       │              soft-dependency external tools)    │
         ▼                                       │     Phase 5  Org governance CI (act + Docker)  │
 ┌───────────────┐                               │     Phase 6  (only if all green, not dryRun):  │
-│ mcp-server.js │  proxies every call over       │              git init/add/commit,               │
-│ (child proc,  │  plain HTTP - never touches    │              gh repo create --private,          │
-│  auto-started)│  git/gh itself                 │              git remote add + push              │
+│  mcp-server   │  proxies every call over       │              git init/add/commit,               │
+│ (Rust binary, │  plain HTTP - never touches    │              gh repo create --private,          │
+│  standalone)  │  git/gh itself                 │              git remote add + push              │
 └───────────────┘                               │  4. finally: rm -rf staging dir AND uploaded   │
                                                  │     ZIP - success or failure                    │
                                                  └──────────────────────┬──────────────────────────┘
@@ -128,7 +128,7 @@ Three request paths converge on the same Express server and the same six-phase p
                                                                  └─────────────┘
 ```
 
-The interactive browser upload (`POST /api/pipeline`) streams NDJSON progress and pauses at a review gate; the headless path the [pre-push hook](#pre-push-hook) and `ignite scan` CLI use (`POST /api/pipeline/validate-all`) is synchronous, phases 1-5 only, and never ships; the [MCP server](#mcp-server) is a thin proxy - `mcp-server.js` never runs `git`/`gh` itself, it just calls the same HTTP API. Every user-facing project file is staged under a per-job UUID directory and force-deleted in a `finally` block regardless of outcome, so nothing lingers on disk after a run.
+The interactive browser upload (`POST /api/pipeline`) streams NDJSON progress and pauses at a review gate; the headless path the [pre-push hook](#pre-push-hook) and `ignite scan` CLI use (`POST /api/pipeline/validate-all`) is synchronous, phases 1-5 only, and never ships; the [MCP server](#mcp-server) is a thin proxy - the `mcp-server` binary never runs `git`/`gh` itself, it just calls the same HTTP API. Every user-facing project file is staged under a per-job UUID directory and force-deleted in a `finally` block regardless of outcome, so nothing lingers on disk after a run.
 
 ## Walkthrough
 
@@ -203,6 +203,20 @@ Run **Ignite: Scan Workspace** from the Command Palette; a blocking finding also
 
 **Ignite: Install Pre-Push Hook** wires the same [pre-push hook](#pre-push-hook) into the open repo's git hooks from inside the editor, and **Ignite: Open Review File** opens `.ignite/acknowledgments.md` for filling in `Acknowledge:` justifications on blocking findings - the identical override flow the terminal-based hook uses, just without leaving VS Code. Works with VS Code, Cursor, or VS Code Insiders; full install/settings reference in the [extension's own README](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension#readme).
 
+![VS Code - acknowledgments.md open beside the Problems panel](assets/images/11-vscode-review-file.png)
+
+### 6. Or scan from the CLI - one command, no server config
+
+For agents and CI loops that just want pass/fail plus a findings list, `ignite scan [path]` wraps the same `validate-all` pipeline as a single command against a running Ignite server:
+
+```bash
+ignite scan /path/to/project [--changed-files a.js,b.py] [--json] [--fast]
+```
+
+Exit code `0` means the run passed, `1` means blocking findings need a justification or a source fix, `2` means the server wasn't reachable or the invocation was wrong - enough for a fix-verify loop to branch on without parsing anything. `--changed-files` narrows the printed list to just the files an agent just edited; `--fast` trades coverage for speed the same way the pre-push hook's lightning mode does.
+
+![ignite scan - terminal output listing blocking findings by file](assets/images/10-cli-scan.png)
+
 **Findings can be grouped and acknowledged in bulk.** The Findings tree's title-bar icon (**Ignite: Toggle Findings Grouping**) switches between the original per-phase layout and a per-finding layout - every occurrence of the same (category + summary) finding collapsed under one row, unresolved findings sorted first. Select a group, or multi-select rows with `Cmd`/`Ctrl`-click, and **Ignite: Acknowledge Selected** writes one shared justification to `.ignite/acknowledgments.md` for every unresolved occurrence at once, instead of acknowledging them one at a time.
 
 **The same non-issue reports Studio shows - SBOM, LOC metrics, posture, license compliance - now open right in the editor too**, via **Ignite: Show SBOM** / **Show LOC Metrics** / **Show Compliance & Feature Posture** / **Show License Compliance**: each opens a read-only panel beside the editor with that report's data, backed by new standalone `/api/reports/{sbom,loc-metrics,posture}` endpoints (license compliance reuses the existing dependencies endpoint) - no jobId or web-UI review-gate state required, since the extension only ever drives `validate-all`.
@@ -275,10 +289,10 @@ Full details, install instructions, and the on/off default for every tool: see t
 {: #mcp-server }
 
 Beyond the web app, Ignite ships an [MCP](https://modelcontextprotocol.io)
-server (`mcp-server.js`) exposing the same guideline/security checks as
-tools an AI coding agent can call *during development* - not just at
-onboarding time. Point Claude Code, Claude Desktop, or any other MCP client
-at it (stdio, or Streamable HTTP - auto-started alongside `npm start` on
+server (the `mcp-server` Rust binary) exposing the same guideline/security
+checks as tools an AI coding agent can call *during development* - not just
+at onboarding time. Point Claude Code, Claude Desktop, or any other MCP
+client at it (stdio, or Streamable HTTP - run with `MCP_TRANSPORT=http` on
 `:51338/mcp`) to get:
 
 - `check_guidelines` / `check_project` - run the same regex/AST guideline checks against a snippet or a whole project directory, live, as you write code.
@@ -305,7 +319,7 @@ See [MCP server](https://github.com/nunomcpereira/ignite#mcp-server) in the READ
 
 **Prerequisites:**
 
-- **Node.js ≥ 22**
+- **Rust** (stable toolchain - `rustup` is the easy path)
 - **git** on `PATH`
 - **A way to authenticate to GitHub** - `gh` CLI is the easy path:
   ```bash
@@ -318,9 +332,9 @@ See [MCP server](https://github.com/nunomcpereira/ignite#mcp-server) in the READ
 
 ```bash
 git clone https://github.com/nunomcpereira/ignite.git
-cd ignite
-npm install
-npm start
+cd ignite/rust
+cargo build --release -p ignite-server
+IGNITE_CONFIG_DIR=.. ./target/release/ignite-server
 # → http://localhost:51337
 ```
 
@@ -402,7 +416,7 @@ git config --global core.hooksPath ~/.git-hooks
 ```
 
 It needs a running Ignite server reachable at `IGNITE_BASE_URL` (default
-`http://localhost:51337`) and `node` on `PATH`. On `git push`, it posts the
+`http://localhost:51337`) and `jq` on `PATH`. On `git push`, it posts the
 repo's absolute path to `/api/pipeline/validate-all`, blocks the push if any
 check fails, and prints the failing phase's logs so you don't have to open
 the UI just to see what broke:

@@ -6,11 +6,11 @@ sidebar_position: 5
 # Also an MCP server — bring these checks into your editor
 
 Beyond the web app, Ignite ships an [MCP](https://modelcontextprotocol.io)
-server (`mcp-server.js`) exposing the same guideline/security checks as
-tools an AI coding agent can call *during development* — not just at
-onboarding time. Point Claude Code, Claude Desktop, or any other MCP client
-at it (stdio, or Streamable HTTP — auto-started alongside `npm start` on
-`:51338/mcp`) to get:
+server (the `mcp-server` Rust binary, `rust/crates/mcp-server`) exposing the
+same guideline/security checks as tools an AI coding agent can call *during
+development* — not just at onboarding time. Point Claude Code, Claude
+Desktop, or any other MCP client at it (stdio, or Streamable HTTP — run with
+`MCP_TRANSPORT=http` on `:51338/mcp`) to get:
 
 - `list_guidelines` / `get_guideline` — browse the AI-governance/security/process guideline catalog itself, optionally filtered by category or severity.
 - `check_guidelines` / `check_project` — run the same regex/AST guideline checks against a snippet or a whole project directory, live, as you write code.
@@ -41,11 +41,11 @@ or `effectivate_project` needs an authenticated user behind it — the same
 attribution requirement the web UI's review gate has. Since no unattended
 agent can complete a browser login, mint a headless
 [API key](https://github.com/nunomcpereira/ignite#api-keys-headlessagent-auth)
-once (`node scripts/create-api-key.js you@example.com "ci-agent"`) and set
-`IGNITE_API_KEY` — `mcp-server.js` picks it up automatically and attaches it
-as a `Bearer` token on every proxied call.
+once (`./target/release/create-api-key you@example.com "ci-agent"`) and set
+`IGNITE_API_KEY` — the `mcp-server` binary picks it up automatically and
+attaches it as a `Bearer` token on every proxied call.
 
-There's also a plain CLI (`npx ignite scan`) and a `hooks/pre-push` git hook
+There's also a plain CLI (`ignite scan`) and a `hooks/pre-push` git hook
 for agents/CI that would rather not speak MCP at all — see the
 [README](https://github.com/nunomcpereira/ignite#cli-ignite-scan) for both.
 

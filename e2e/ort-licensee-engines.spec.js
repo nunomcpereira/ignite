@@ -15,7 +15,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
-const { makeFakeLicenseTools } = require('../test/helpers');
+const { makeFakeLicenseTools } = require('./helpers');
 
 const PORT = 3912;
 const BASE = `http://localhost:${PORT}`;
@@ -55,7 +55,7 @@ test.beforeAll(async () => {
     licenseeJson: { licenses: [{ spdx_id: 'MIT', similarity: 99 }] },
   });
 
-  serverProc = spawn('node', ['server.js'], {
+  serverProc = spawn(path.resolve(__dirname, '../rust/target/release/ignite-server'), [], {
     cwd: path.resolve(__dirname, '..'),
     env: {
       ...process.env,
@@ -63,7 +63,6 @@ test.beforeAll(async () => {
       PORT: String(PORT),
       LLM_SCAN_URL: 'http://127.0.0.1:9',
       LLM_SCAN_TRUSTED_ORIGINS: 'http://127.0.0.1:9',
-      MCP_AUTOSTART: 'false',
     },
     stdio: 'ignore',
   });
