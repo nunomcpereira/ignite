@@ -58,9 +58,30 @@ const config = {
     ],
   ],
 
+  // Full-resolution desktop screenshots (Studio, VS Code, the terminal)
+  // read as tiny, illegible thumbnails on a phone-width viewport with no
+  // way to inspect them closer - this wraps every doc image in a
+  // click/tap-to-zoom lightbox (see the `zoom` themeConfig block below for
+  // the actual selector/behavior).
+  plugins: ['docusaurus-plugin-image-zoom'],
+
   themeConfig:
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
+      zoom: {
+        selector: '.markdown img',
+        background: {
+          light: 'rgb(255, 255, 255)',
+          dark: 'rgb(20, 20, 20)',
+        },
+        // A larger fully-transparent margin than the plugin's own default
+        // is worth it here specifically because these screenshots are wide
+        // desktop UI - zoomed-in but still tightly cropped defeats the
+        // point of tapping in for a closer look.
+        config: {
+          margin: 24,
+        },
+      },
       image: 'img/social-card.png',
       colorMode: {
         defaultMode: 'light',

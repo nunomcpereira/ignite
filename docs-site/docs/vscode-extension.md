@@ -67,7 +67,7 @@ Palette's **Extensions: Install from VSIX...** action — pick the
 
 Point the extension at your Ignite server if it isn't the default (Command
 Palette → **Preferences: Open Settings** → search `ignite.baseUrl`), then
-run **Ignite: Scan Workspace**. See [How it works](./how-it-works#5-or-scan-straight-from-vs-code--no-upload-no-browser)
+run **Ignite: Scan Workspace**. See [How it works](./how-it-works#6-or-scan-straight-from-vs-code--no-upload-no-browser)
 for what the Findings tree, Problems panel, and other commands do, and the
 [extension's own README](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension#readme)
 for the full settings/commands reference.
