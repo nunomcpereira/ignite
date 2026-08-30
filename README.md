@@ -16,9 +16,9 @@ A single-page web app that acts as a compliance gate for onboarding code into a 
 
 ```
 ┌───────────────┐  multipart POST (dryRun?)   ┌──────────────────────────────────────────────┐
-│    Browser    │ ──────────────────────────▶ │  Express server (server.js)                    │
+│    Browser    │ ──────────────────────────▶ │  ignite-server (Rust, axum)                    │
 │  (index.html) │                              │                                                │
-│  NDJSON       │ ◀────────────────────────── │  1. multer buffers ZIP/folder →                │
+│  NDJSON       │ ◀────────────────────────── │  1. multipart upload buffered/streamed →       │
 │  pipeline UI  │  streamed events (log /      │     $TMPDIR/gatekeeper-uploads/<rand>          │
 └───────────────┘  status / review_required /  │  2. safe-extract (zip-slip + zip-bomb guards,  │
                     done)                      │     symlinks skipped) →                        │
@@ -36,9 +36,9 @@ A single-page web app that acts as a compliance gate for onboarding code into a 
         │ HTTP :51338/mcp                       │              soft-dependency external tools)    │
         ▼                                       │     Phase 5  Org governance CI (act + Docker)  │
 ┌───────────────┐                               │     Phase 6  (only if all green, not dryRun):  │
-│ mcp-server.js │  proxies every call over       │              git init/add/commit,               │
-│ (child proc,  │  plain HTTP - never touches    │              gh repo create --private,          │
-│  auto-started)│  git/gh itself                 │              git remote add + push              │
+│  mcp-server   │  proxies every call over       │              git init/add/commit,               │
+│ (Rust binary, │  plain HTTP - never touches    │              gh repo create --private,          │
+│  standalone)  │  git/gh itself                 │              git remote add + push              │
 └───────────────┘                               │  4. finally: rm -rf staging dir AND uploaded   │
                                                  │     ZIP - success or failure                    │
                                                  └──────────────────────┬──────────────────────────┘
@@ -52,7 +52,7 @@ A single-page web app that acts as a compliance gate for onboarding code into a 
                                                                  └─────────────┘
 ```
 
-Three request paths, one pipeline: the interactive browser upload (`POST /api/pipeline`, streaming NDJSON), the synchronous headless path used by the pre-push hook/CLI/CI (`POST /api/pipeline/validate-all`, phases 1-5 only, never ships), and the MCP path (`onboard_project`/`resolve_review_decision`/`effectivate_project`), which is a thin proxy from `mcp-server.js` to the same HTTP API - the MCP process itself never runs `git`/`gh`. All three share the exact same phase-check functions and the same issue/override model, so there's no "lighter" path for one caller versus another.
+Three request paths, one pipeline: the interactive browser upload (`POST /api/pipeline`, streaming NDJSON), the synchronous headless path used by the pre-push hook/CLI/CI (`POST /api/pipeline/validate-all`, phases 1-5 only, never ships), and the MCP path (`onboard_project`/`resolve_review_decision`/`effectivate_project`), which is a thin proxy from the standalone `mcp-server` binary to the same HTTP API - the MCP process itself never runs `git`/`gh`. All three share the exact same phase-check functions and the same issue/override model, so there's no "lighter" path for one caller versus another.
 
 **File lifecycle:** upload → temp ZIP (multer) → extracted staging directory (per-job UUID, isolated under the OS temp dir) → scanned in place → pushed from staging → **forcefully deleted in a `finally` block**, so no user code lingers on disk regardless of outcome.
 
@@ -224,7 +224,7 @@ Every pipeline run (interactive, `validate-all`, and `onboard`) scans dependency
 
 ## Codebase intelligence - closing the fallow.tools gap
 
-Four built-in, zero-external-tool checks (`checks/dead-code.js`, `checks/complexity-health.js`, `checks/boundaries.js`, `checks/css-dead-code.js`) close a JS/TS codebase-quality gap that Ignite's original secrets/governance/SAST focus didn't cover - the kind of signal tools like [fallow.tools](https://fallow.tools) surface. All four are heuristic (regex/bracket-depth parsing over `lib/module-graph.js`'s lightweight import graph, not a real type-checker or build system), so every finding is always advisory (`severity: 'warning'`) - a human confirms before deleting/restructuring, never a hard gate.
+Four built-in, zero-external-tool checks (`rust/crates/dead-code`, `rust/crates/complexity-health`, `rust/crates/boundaries`, `rust/crates/css-dead-code`) close a JS/TS codebase-quality gap that Ignite's original secrets/governance/SAST focus didn't cover - the kind of signal tools like [fallow.tools](https://fallow.tools) surface. All four are heuristic (regex/bracket-depth parsing over `rust/crates/module-graph`'s lightweight import graph, not a real type-checker or build system), so every finding is always advisory (`severity: 'warning'`) - a human confirms before deleting/restructuring, never a hard gate.
 
 | Gap (what a tool like fallow.tools flags) | Ignite's check | How it works | Default |
 |---|---|---|---|
@@ -237,7 +237,7 @@ Four built-in, zero-external-tool checks (`checks/dead-code.js`, `checks/complex
 | Layered/hexagonal architecture boundary violations | `checkBoundaries` - `boundary-violation` | Opt-in `preset` (`bulletproof` \| `layered` \| `hexagonal` \| `feature-sliced`) and/or custom `zones: [{ name, pattern, allow }]`; first-match-wins zone assignment, with single-`*` glob segments captured so sibling zone instances (e.g. `src/features/auth` vs `src/features/billing`) stay isolated from each other | **Off** - a default zone layout on a project that doesn't follow one is pure noise |
 | Dead CSS/Tailwind classes | `checkCssDeadCode` - `unused-css-class` | Flags a `.css`/`.scss`/`.less` class selector never referenced in any scanned `class`/`className` attribute; `is-`/`has-`/`js-`-prefixed classes excluded (commonly toggled via `classList`, never appearing as a literal string) | On |
 
-All four feed the same issue/override model as the external-tool checks (`collectPhase4Issues` in `override-engine.js`, categories `dead-code`/`complexity-health`/`architecture-boundary`/`css-dead-code`) - findings are addressable and overridable exactly like a secret or SAST finding, just always `severity: 'warning'`. Test file: `test/collect-phase4-codebase-intelligence.test.js`.
+All four feed the same issue/override model as the external-tool checks (`collect_phase4_issues` in `rust/crates/override-engine`, categories `dead-code`/`complexity-health`/`architecture-boundary`/`css-dead-code`) - findings are addressable and overridable exactly like a secret or SAST finding, just always `severity: 'warning'`.
 
 ## EU AI Act coverage
 
@@ -247,7 +247,7 @@ Ignite can only speak to the code-detectable slice of the EU AI Act - most of it
   - `ai-act-prohibited-practice` (Art. 5) - biometric-categorization/emotion-inference/social-scoring libraries and call sites. Unlike every other posture category, `DETECTED` here flags a **risk to review**, not a safeguard.
   - `ai-act-transparency-disclosure` (Art. 13/50) - user-facing "AI-generated"/"you're talking to an AI" disclosure strings.
   - `ai-act-ai-logging` (Art. 12) - MLflow/W&B/LangSmith-style model input/output/decision logging, distinct from the general-purpose `audit-logging` category.
-- **Document-presence scan** (`checkComplianceDocuments`, `checks/compliance-documents.js`, `CONFIG.compliance.euAiActDocuments`, `EU_AI_ACT_DOCS_ENABLED`) - a built-in, no-external-tool filename/path scan for the process-obligation documents the posture engine can't detect by code signature: risk-management-system doc (Art. 9), Annex IV technical documentation (Art. 11), an FRIA (Art. 27), a GPAI training-data summary/model card (Art. 53), a post-market monitoring plan (Art. 72). `DETECTED`/`MISSING` per category (no `PARTIAL` tier - there's no weak/strong distinction for "does this file exist"), attached as a downloadable `ai-act-documents-report.json` document. On by default; absence in this one repo's tree is not evidence the document doesn't exist org-wide (a GRC tool, a wiki, a separate compliance repo), so this is context for a human, never a gate.
+- **Document-presence scan** (`check_compliance_documents`, `rust/crates/compliance-documents`, `CONFIG.compliance.euAiActDocuments`, `EU_AI_ACT_DOCS_ENABLED`) - a built-in, no-external-tool filename/path scan for the process-obligation documents the posture engine can't detect by code signature: risk-management-system doc (Art. 9), Annex IV technical documentation (Art. 11), an FRIA (Art. 27), a GPAI training-data summary/model card (Art. 53), a post-market monitoring plan (Art. 72). `DETECTED`/`MISSING` per category (no `PARTIAL` tier - there's no weak/strong distinction for "does this file exist"), attached as a downloadable `ai-act-documents-report.json` document. On by default; absence in this one repo's tree is not evidence the document doesn't exist org-wide (a GRC tool, a wiki, a separate compliance repo), so this is context for a human, never a gate.
 
 **Advisory vs. enforced mode** (`CONFIG.compliance.euAiAct.reportAsFindings`, `EU_AI_ACT_REPORT_AS_FINDINGS`, **`false` by default**): controls whether the signals above stay purely descriptive in the two report documents, or actually surface as addressable/overridable issues in `collectPhase4Issues`:
 
@@ -259,13 +259,11 @@ Ignite can only speak to the code-detectable slice of the EU AI Act - most of it
 ```
 
 - **Advisory (default, `false`)**: the three `ai-act-*` posture categories and the document scan stay in `posture-report.json`/`ai-act-documents-report.json` only - visible in Ignite Studio and the downloadable reports, never blocking, never in the issues list.
-- **Enforced (`true`)**: `runPhase4Checks` (server.js) calls `deriveEuAiActFindings(posture, documents)`, turning the three `ai-act-*` posture matches and any `MISSING` document category into a `euAiAct` findings group fed through the same generic loop `deadCode`/`health`/`cssDeadCode`/`boundaries` use (category `ai-act-prohibited-practice`/`ai-act-transparency-disclosure`/`ai-act-ai-logging`/`ai-act-compliance-documents` in the issues list). Always `severity: 'warning'` regardless of the toggle - these are heuristic regex/filename signals, never promoted to a hard blocker, and still go through the normal justify-and-override flow like any other advisory finding.
-
-Test file: `test/eu-ai-act-documents.test.js`.
+- **Enforced (`true`)**: `run_phase4_checks` (`rust/crates/phase4-orchestrator`) calls `derive_eu_ai_act_findings(posture, documents)`, turning the three `ai-act-*` posture matches and any `MISSING` document category into a `euAiAct` findings group fed through the same generic loop `deadCode`/`health`/`cssDeadCode`/`boundaries` use (category `ai-act-prohibited-practice`/`ai-act-transparency-disclosure`/`ai-act-ai-logging`/`ai-act-compliance-documents` in the issues list). Always `severity: 'warning'` regardless of the toggle - these are heuristic regex/filename signals, never promoted to a hard blocker, and still go through the normal justify-and-override flow like any other advisory finding.
 
 ## CWE/OWASP tagging - audit-trail identifiers per finding
 
-Every Phase 3/4 issue (`collectPhase4Issues`/`collectDependencyVulnerabilityIssues` in `override-engine.js`) carries a `cwe` and `owasp` field alongside its own category label, for SOC2/ISO27001-style compliance reporting that expects a standard identifier rather than an Ignite-specific name. Three-tier precedence (`deriveCweOwasp`):
+Every Phase 3/4 issue (built in `rust/crates/override-engine`) carries a `cwe` and `owasp` field alongside its own category label, for SOC2/ISO27001-style compliance reporting that expects a standard identifier rather than an Ignite-specific name. Three-tier precedence:
 
 1. **Explicit per-finding data a tool already reports** - Semgrep's own rule metadata (`p/security-audit`/`p/owasp-top-ten` rules ship a `cwe`/`owasp` field per rule) and Bearer's `cwe_ids` are passed straight through - the most precise source, since it's tied to the exact rule that matched.
 2. **Keyword match on the finding's own summary text** - covers the LLM deep-scan's free-text findings, which carry no structured CWE of their own (e.g. an LLM finding whose text mentions "SQL injection" tags as CWE-89/A03:2021).
@@ -352,7 +350,7 @@ Per file, the persisted snippets are stitched together in line order; wherever t
 
 ## Configuration - `config.json`
 
-All settings live in `config.json` next to `server.js` (environment variables override it):
+All settings live in `config.json` at the repo root, read by `ignite-server` via `IGNITE_CONFIG_DIR` (environment variables override it):
 
 ```jsonc
 {
@@ -436,7 +434,7 @@ When any phase fails, Ignite emails a detailed report to `notifications.to`: tar
 
 ## Prerequisites
 
-1. **Node.js ≥ 22**
+1. **Rust** (stable toolchain — `rustup` is the easy path)
 2. **git** available on `PATH`
 3. **A way to authenticate to GitHub** - either works:
    - **GitHub CLI (`gh`)**, installed and authenticated:
@@ -482,8 +480,8 @@ Files are batched into ~24 KB chunks with numbered lines, and the model must ans
 ## Setup & Run
 
 ```bash
-npm install
-npm start
+cd rust && cargo build --release -p ignite-server
+IGNITE_CONFIG_DIR=.. ./target/release/ignite-server
 # → http://localhost:51337
 ```
 
@@ -585,10 +583,10 @@ curl -sS http://localhost:51337/api/pipeline/<jobId>/sarif | jq
 ## CLI (`ignite scan`)
 
 ```bash
-npx ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL]
+ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL]
 ```
 
-A thin wrapper around `validate-all` (`bin/ignite.js`) for agents/CI that
+A thin wrapper around `validate-all` (the `ignite-cli` crate, `rust/crates/cli`, binary name `ignite`) for agents/CI that
 want a plain command + exit code instead of the raw HTTP API. Always
 dry-run - `validate-all` never ships, so this needs no auth for its own
 sake. Exit codes: `0` passed, `1` blocking issues/validation failure, `2`
@@ -637,7 +635,7 @@ git config --global core.hooksPath ~/.git-hooks
 ```
 
 Requires a running Ignite server reachable at `IGNITE_BASE_URL` (default
-`http://localhost:51337`) and `node` on `PATH`. Off by default: `runLocalCi`
+`http://localhost:51337`) and `jq` on `PATH`. Off by default: `runLocalCi`
 (Phase 5's `act`/Docker governance CI - slow, belongs in real CI) and
 blocking on warnings (only `error`-severity findings gate the push). Both
 configurable via env vars documented at the top of the script
@@ -655,7 +653,7 @@ cd vscode-extension
 ./install.sh   # builds + installs the .vsix, reload window after
 ```
 
-Requires a running Ignite server (`npm start` in the repo root, default `http://localhost:51337`).
+Requires a running Ignite server (`./target/release/ignite-server` from `rust/`, default `http://localhost:51337`).
 
 Commands (Command Palette):
 
@@ -665,7 +663,7 @@ Commands (Command Palette):
 - **Ignite: Install Pre-Push Hook** - installs `hooks/pre-push` (above) into this repo's git hooks.
 - **Ignite: Open Review File** - opens `.ignite/acknowledgments.md` for filling in `Acknowledge:` justifications on blocking findings, same file/flow the pre-push hook uses.
 - **Ignite: Refresh Tools Status** - re-probes the optional external tools in a Tools Status tree.
-- **Ignite: Show License Compliance** / **Show SBOM** / **Show LOC Metrics** / **Show Compliance & Feature Posture** - on-demand report panels for the four non-issue Phase 4 artifacts, opened beside the editor. Backed by the same `projectPath` convention as `validate-all`: license compliance calls the existing `POST /api/dependencies/check`; SBOM/LOC/posture call the new standalone `POST /api/reports/{sbom,loc-metrics,posture}` endpoints (`routes/reports.js`) added specifically for the extension, since it only ever calls `validate-all` and has no `jobId`/review-gate state to hang a Studio request off of. Each renders as pretty-printed JSON in a reused webview panel (one per report kind) - the same data the web UI's Studio buttons show in full table form.
+- **Ignite: Show License Compliance** / **Show SBOM** / **Show LOC Metrics** / **Show Compliance & Feature Posture** - on-demand report panels for the four non-issue Phase 4 artifacts, opened beside the editor. Backed by the same `projectPath` convention as `validate-all`: license compliance calls the existing `POST /api/dependencies/check`; SBOM/LOC/posture call the new standalone `POST /api/reports/{sbom,loc-metrics,posture}` endpoints (`rust/crates/server/src/routes/reports.rs`) added specifically for the extension, since it only ever calls `validate-all` and has no `jobId`/review-gate state to hang a Studio request off of. Each renders as pretty-printed JSON in a reused webview panel (one per report kind) - the same data the web UI's Studio buttons show in full table form.
 
 Settings: `ignite.baseUrl` (default `http://localhost:51337`), `ignite.runLocalCi` (default `false`), `ignite.showOverriddenIssues` (default `false`). Full detail, dev/debug instructions, and building the `.vsix` for someone else without installing it: [`vscode-extension/README.md`](vscode-extension/README.md).
 
@@ -682,29 +680,25 @@ pipeline enforces) and a pure checks engine, so guidelines can be applied
 
 Two ways to run it:
 
-1. **Stdio** (one instance per client, no shared state):
+1. **Stdio** (one instance per client, no shared state — the default transport):
    ```bash
-   npm run guidelines:mcp
+   ./target/release/mcp-server
    ```
    Point any MCP client (Claude Code, Claude Desktop, etc.) at it directly - example `.mcp.json` entry:
    ```json
    {
      "mcpServers": {
        "ai-validation-guidelines": {
-         "command": "node",
-         "args": ["/absolute/path/to/ignite/mcp-server.js"]
+         "command": "/absolute/path/to/ignite/rust/target/release/mcp-server"
        }
      }
    }
    ```
-2. **Streamable HTTP, auto-started with the main server** - `node server.js` / `npm start` automatically spawns `mcp-server.js` as a child process in HTTP mode alongside the main app, listening on `http://localhost:51338/mcp` by default. No separate step needed; a client can just point at that URL. Controlled by `config.json`'s `mcp` section:
-   ```jsonc
-   "mcp": {
-     "autoStart": true,   // env: MCP_AUTOSTART=false to disable
-     "httpPort": 51338     // env: MCP_HTTP_PORT
-   }
+2. **Streamable HTTP** - run the same binary with `MCP_TRANSPORT=http`, listening on `http://localhost:51338/mcp` by default:
+   ```bash
+   MCP_TRANSPORT=http ./target/release/mcp-server
    ```
-   The child inherits the main process's stdout/stderr (its own logs are prefixed `[mcp]`) and is killed when the main server exits; if the port is already taken or the child otherwise fails to start, that's logged but never fatal to the main server. To run it standalone instead: `MCP_TRANSPORT=http npm run guidelines:mcp:http`.
+   Its own logs are prefixed `[mcp]`. Port via `MCP_HTTP_PORT`.
 
 Tools exposed:
 
@@ -721,7 +715,7 @@ Tools exposed:
   touches `git`/`gh`, it just calls the HTTP API. Set `dryRun: true` to run
   every check without pushing - the way to "see what would fail" from an
   agent loop before committing to a real push. Requires the Ignite server
-  running (`npm start`) and reachable at `IGNITE_BASE_URL` (env, default
+  running (`ignite-server`) and reachable at `IGNITE_BASE_URL` (env, default
   `http://localhost:51337`), with `gh` authenticated on that host.
 
 **Acknowledging findings via MCP:** a failed `onboard_project` call's
@@ -750,7 +744,7 @@ Two more tools cover flows that one-shot `onboard_project` call doesn't:
 ### REST API
 
 ```bash
-npm run guidelines:api   # listens on 127.0.0.1:8090 by default
+./target/release/guidelines-api   # listens on 127.0.0.1:8090 by default
 ```
 
 Binds to loopback only by default (`GUIDELINES_API_HOST`/`GUIDELINES_API_PORT`
@@ -764,7 +758,7 @@ so this is a local dev/CI tool, not meant for public exposure.
 
 Guidelines with `checkId: null` (e.g. `ai-governance-workflow-required`,
 `llm-deep-scan-required`) are process rules or covered by the LLM deep-scan in
-`server.js`, not mechanically checkable from a snippet alone.
+`rust/crates/llm-deep-scan`, not mechanically checkable from a snippet alone.
 
 ## Overriding flagged guideline checks - audit log & notification
 
@@ -849,88 +843,55 @@ ship. API keys close that gap:
    configured) and connect GitHub if you'll need real pushes.
 2. Mint a key for that account:
    ```bash
-   node scripts/create-api-key.js you@example.com "ci-agent"
+   ./target/release/create-api-key you@example.com "ci-agent"
    ```
    Prints the raw key exactly once (`ignite_<64 hex chars>`) - only its
    SHA-256 hash is stored, so save it now; it can't be recovered later.
 3. Send it as `Authorization: Bearer ignite_<key>` on any request. It
    resolves to the same `req.user` a session cookie would, so it works
-   everywhere attribution or `resolveGithubToken` is needed - `onboard_project`
-   with `dryRun: false`, `effectivate_project`, submitting overrides without
-   an explicit `actor`, etc. A session cookie takes priority if both are
-   present.
+   everywhere attribution or `resolve_effective_github_token` is needed -
+   `onboard_project` with `dryRun: false`, `effectivate_project`, submitting
+   overrides without an explicit `actor`, etc. A session cookie takes
+   priority if both are present.
 
-`mcp-server.js` (all its tools) and `bin/ignite.js` (`ignite scan`) both
-pick this up automatically from an `IGNITE_API_KEY` env var:
+The `mcp-server` binary (all its tools) and the `ignite` CLI (`ignite scan`)
+both pick this up automatically from an `IGNITE_API_KEY` env var:
 
 ```bash
-export IGNITE_API_KEY="<the key scripts/create-api-key.js printed>"
+export IGNITE_API_KEY="<the key create-api-key printed>"
 ```
 
-There's no revoke endpoint yet - `store.revokeApiKey(id)` in `db-store.js`
-works from a Node REPL/script against `ignite.db` in the meantime.
+There's no revoke endpoint yet - `store.revoke_api_key(id)` in
+`rust/crates/db-store` works from a one-off script against `ignite.db` in
+the meantime.
 
 ## Testing
 
 ```bash
-npm test
+cd rust && cargo test
 ```
 
-Runs the Node built-in test runner (`node --test`) over `test/*.test.js`.
-`test/secrets-scan.test.js` covers the secret-scan pipeline check: the
-regex baseline, that gitleaks stays off and unused by default, that
-enabling it supplements (never replaces) the regex findings, dedup against
-regex hits at the same file/line, and the soft-fail path when gitleaks is
-enabled but the binary is missing. A fake `gitleaks` CLI stand-in
-(`test/helpers.js`) is used so the suite doesn't require a real gitleaks
-install.
-
-`test/license-scan.test.js` covers the ORT/licensee integration the same
-way - `test/helpers.js`'s `makeFakeLicenseTools` writes fake `ort`/`licensee`
-CLIs onto a throwaway PATH so `runOrtAnalyze`/`runLicenseeDetect`/
-`scanDependencyLicenses` are exercised (parsing, tier classification, the
-`ort+fallback` merge when ORT only resolves some ecosystems, and soft-skip
-to the built-in fallback when both tools are missing/broken) without either
-tool actually installed.
-
-Each of the eleven IaC/supply-chain/SAST/metrics/API tools added on top of
-that has its own test file, following the same pattern (config/env wiring,
-fake-CLI parsing/dedup/soft-fail coverage, plus a real-binary end-to-end
-test that self-skips via `t.skip()` when the tool isn't installed rather
-than failing the suite):
-
-- `test/iac-scan.test.js` - trivy (primary), checkov (supplement), hadolint (supplement)
-- `test/sbom-scan.test.js` - syft
-- `test/cosign-scan.test.js` - cosign
-- `test/semgrep-scan.test.js` - semgrep
-- `test/bearer-scan.test.js` - bearer
-- `test/metrics-scan.test.js` - jscpd, gocloc
-- `test/spectral-scan.test.js` - spectral
-- `test/posture-scan.test.js` - Compliance & Feature Posture Engine (reuses semgrep; real end-to-end run is against the actual `ignite-posture-rules.yaml`, not a stand-in)
-- `test/guarddog-scan.test.js` - GuardDog malicious-dependency scan
-- `test/model-artifact-security.test.js` - picklescan malicious ML model artifact scan
-- `test/api-schema-drift.test.js` - oasdiff API breaking-change scan
-- `test/package-hallucination.test.js` - AI package-hallucination / slopsquat check (built-in, no external tool)
-- `test/codeql-scan.test.js` - CodeQL cross-file static analysis (real end-to-end case self-skips if `codeql` isn't installed)
-- `test/deps-version-resolution.test.js` - regression test (hits the real deps.dev API, self-skips if unreachable) for the range-floor-was-never-published false positive: proves `typescript@^5.6.0` and `@tanstack/react-table@^8.20.0` resolve to a real published version instead of a blocking "license unknown" finding, and that a genuinely nonexistent package is still correctly flagged.
-
-Agent-facing surfaces added on top of the above each have their own test file too:
-
-- `test/api-key-store.test.js` - `db-store.js`'s `api_keys` table (create/lookup/revoke/touch-last-used/list-per-user).
-- `test/api-key-auth.test.js` - `auth.js`'s `attachUser` Bearer-key branch (resolves `req.user`, ignores malformed/missing headers, rejects revoked keys).
-- `test/issue-filter.test.js` - `lib/issue-filter.js`'s `filterIssuesByChangedFiles`, backing `validate-all`'s `changedFiles` param.
-- `test/sarif-export.test.js` - `lib/sarif.js`'s issue→SARIF mapping and the `GET /api/pipeline/:jobId/sarif` route (live job, completed job, unknown job id).
-- `test/mcp-override-tools.test.js` - the `resolve_review_decision`/`effectivate_project` MCP tools and `proxyToIgnite`'s `IGNITE_API_KEY` header, against a fake HTTP server standing in for Ignite.
-- `test/cli-scan.test.js` - `bin/ignite.js` (`ignite scan`) end to end as a real child process: exit codes, `--json`, `--changed-files`, `IGNITE_API_KEY`, unreachable-server handling.
+Every crate has its own `#[cfg(test)] mod tests` alongside its source
+(`rust/crates/<name>/src/lib.rs`), following the same coverage pattern the
+Node test suite established: config/env wiring, fake-CLI parsing/dedup/
+soft-fail behavior for every soft-dependency external tool, and a real-binary
+end-to-end case that self-skips when the tool isn't installed on this
+machine rather than failing the suite (checked against the actual installed
+binaries, not just the fallback paths, per `rust/MIGRATION_STATUS.md`).
+Run a single crate's tests with `cargo test -p <crate-name>`.
 
 ### End-to-end (Playwright)
 
 ```bash
+cd rust && cargo build --release -p ignite-server && cd ..
+npm install   # once, for @playwright/test
 npm run test:e2e
 ```
 
-Spawns a real Ignite server on a throwaway port, uploads the
-`aigovernancedevops/vulnerable-app-multilang` fixture through the actual
+Spawns the compiled `ignite-server` binary on a throwaway port (built above
+— the e2e suite itself stays on Node/Playwright, same as `docs-site/` and
+`vscode-extension/`, but the thing it's testing is the Rust server), uploads
+the `aigovernancedevops/vulnerable-app-multilang` fixture through the actual
 browser UI, and drives it through Ignite Studio:
 
 - `e2e/studio-license-issues.spec.js` - proves license-compliance findings

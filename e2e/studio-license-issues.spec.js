@@ -51,7 +51,7 @@ test.beforeAll(async () => {
     stdio: 'ignore',
   });
 
-  serverProc = spawn('node', ['server.js'], {
+  serverProc = spawn(path.resolve(__dirname, '../rust/target/release/ignite-server'), [], {
     cwd: path.resolve(__dirname, '..'),
     env: {
       ...process.env,
@@ -61,10 +61,6 @@ test.beforeAll(async () => {
       // the run fast and deterministic.
       LLM_SCAN_URL: 'http://127.0.0.1:9',
       LLM_SCAN_TRUSTED_ORIGINS: 'http://127.0.0.1:9',
-      // This test doesn't need the MCP HTTP server, and spawning one would
-      // otherwise fight over the same default port with any other Ignite
-      // instance (or e2e run) already using it.
-      MCP_AUTOSTART: 'false',
     },
     stdio: 'ignore',
   });

@@ -327,7 +327,15 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                     logger.log(4, &format!("    ✗ [{}] {loc} — {}", issue.category, issue.summary));
                 }
                 let mut e = PipelineError::new(4, format!("Phase 4 has {} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.", result.unresolved_errors.len()));
-                e.issues = Some(result.unresolved_errors.into_iter().cloned().collect());
+                // Every error-severity issue the scan found, not just the
+                // still-unresolved ones - a caller (e.g. the pre-push hook)
+                // that regenerates a review file from this response needs
+                // to know a successfully-overridden finding is still
+                // reported by the scan, or it will drop that entry as if
+                // the finding had been fixed in source and never resubmit
+                // its justification on the next run, even though the
+                // underlying finding is unchanged.
+                e.issues = Some(owned);
                 return Err(e);
             }
         }
@@ -448,7 +456,17 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
 
             let phases = logger.phase_summary();
             let events = logger.events();
-            let failure_issues: Option<Vec<Value>> = e.issues.as_ref().map(|list| list.iter().map(|i| serde_json::to_value(i).unwrap()).collect());
+            let failure_issues: Option<Vec<Value>> = e.issues.as_ref().map(|list| {
+                list.iter()
+                    .map(|i| {
+                        let mut v = serde_json::to_value(i).unwrap();
+                        if overridden_ids.contains(&i.id) {
+                            v.as_object_mut().unwrap().insert("status".to_string(), json!("overridden"));
+                        }
+                        v
+                    })
+                    .collect()
+            });
             let mut response = json!({
                 "ok": false,
                 "mode": "validate-all",

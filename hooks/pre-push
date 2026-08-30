@@ -196,7 +196,7 @@ NOW_ISO="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 SNAPSHOT_TS="$(echo "$NOW_ISO" | tr ':' '-')"
 SNAPSHOT_FILE="$REPO_PATH/.ignite/scans/$SNAPSHOT_TS/findings.md"
 mkdir -p "$(dirname "$SNAPSHOT_FILE")"
-echo "$RESPONSE" | jq -r --arg now "$NOW_ISO" '
+echo "$RESPONSE" | jq -r --arg now "$NOW_ISO" --arg sha "$CURRENT_SHA" '
   def issue_lines(i; idx):
     ("## \(idx+1). [\(i.severity // "" | ascii_upcase)] \(i.category) - \(i.summary)"),
     "",
@@ -206,7 +206,7 @@ echo "$RESPONSE" | jq -r --arg now "$NOW_ISO" '
     (if i.status then "- Status: \(i.status)" else empty end),
     "";
   (.issues // []) as $all
-  | (["# Ignite scan findings — \($now)", ""]
+  | (["# Ignite scan findings — \($now)", "", "Scanned against commit: \($sha)", ""]
      + (if ($all|length) == 0 then ["No findings."]
         else [range(0; $all|length) as $idx | issue_lines($all[$idx]; $idx)]
         end))
@@ -225,6 +225,12 @@ echo "✗ Ignite checks failed - push blocked." >&2
 echo "$RESPONSE" | jq -r '(.phases // [])[] | select(.state=="failed") | "  Phase \(.phase) - \(.title)\n" + ((.logs // [])[-10:] | map("    " + .) | join("\n"))' >&2
 
 ISSUES_COUNT="$(echo "$RESPONSE" | jq '(.issues // []) | length')"
+# .issues on a failed run now carries every error-severity finding the scan
+# reported, including ones already resolved by an override this round
+# (status:"overridden") - UNRESOLVED_COUNT excludes those so the final
+# "N blocking finding(s)" message reports what actually still needs
+# attention, matching Phase 4's own per-run "unresolved blocking" count.
+UNRESOLVED_COUNT="$(echo "$RESPONSE" | jq '[(.issues // [])[] | select(.status != "overridden")] | length')"
 if [ "$ISSUES_COUNT" -eq 0 ]; then
   # Not the overridable Phase 4 issue-list case (e.g. raw .env files, a
   # failing unit test) - nothing to acknowledge from the CLI.
@@ -260,6 +266,7 @@ mkdir -p "$(dirname "$REVIEW_FILE")"
 # refer to a specific finding.
 
 HEADER
+  printf '# Scanned against commit: %s (working tree at push time - findings/justifications below reflect this commit'"'"'s code, not necessarily what ends up pushed if the tree changes after)\n\n' "$CURRENT_SHA"
   echo "$RESPONSE" | jq -r --arg existingText "$REVIEW_TEXT" '
     def trim: gsub("^\\s+|\\s+$"; "");
 
@@ -302,8 +309,18 @@ HEADER
 
     . as $r
     | ($existingText | parse_blocks(.)) as $existingParsed0
+    # The server now returns every error-severity issue the scan found on a
+    # failed run, not only the still-unresolved ones - a successfully
+    # overridden issue is tagged status:"overridden" here rather than
+    # omitted, specifically so this regeneration can tell "still reported,
+    # already resolved this round" apart from "genuinely fixed in source
+    # and gone." $currentIds below spans both so an already-justified entry
+    # is never dropped just because it happened to be overridden rather
+    # than left unresolved on this particular run; only issues actually
+    # missing from the scan (not present at all) count as fixed.
     | ($r.issues // []) as $issues
-    | (reduce $issues[] as $issue
+    | ($issues | map(select(.status != "overridden"))) as $unresolvedIssues
+    | (reduce $unresolvedIssues[] as $issue
         ({existing: $existingParsed0, blocks: []};
           if (any(.existing[]; .id == $issue.id)) then .
             else
@@ -320,15 +337,41 @@ HEADER
         )
       ) as $folded
     | ($issues | map(.id)) as $currentIds
-    | ( $folded.existing | map(select(.superseded==false and (.id as $i | $currentIds | index($i) != null))) | map(strip_issue_number(.raw)) ) as $existingBlocks
-    | ( $existingBlocks + $folded.blocks ) as $combined
+    # A finding id does not always encode every distinguishing detail of the
+    # underlying tool output (e.g. container-image-cve ids are keyed on
+    # category+CVE+package, not the exact vendored version string that
+    # appears in the description) - a real rebuild between runs can surface
+    # the same id with different description text without ever tripping
+    # the line-drift carry-forward match. Left undeduped, every such run
+    # appends another stale block sharing that id instead of replacing the
+    # old one, so entries are deduped by id here (preferring one already
+    # justified over a blank duplicate) before combining with the freshly
+    # built blocks for this run.
+    | ( $folded.existing
+        | map(select(.superseded==false and (.id as $i | $currentIds | index($i) != null)))
+        | sort_by(.justification == "")
+        | (reduce .[] as $e ({seen: {}, out: []}; if (.seen[$e.id] // false) then . else (.seen[$e.id] = true | .out += [$e]) end)).out
+        | map(strip_issue_number(.raw))
+      ) as $existingBlocks
+    | ( $existingBlocks + $folded.blocks ) as $combinedRaw
+    # A single scan can itself report the same id more than once (e.g. the
+    # same CVE against the same package name surfaces separately per
+    # vendoring binary inside the built image) - dedupe the combined list
+    # by the id embedded in each blocks own header line, keeping the
+    # first (existing/carried-forward beats freshly-built for the same id).
+    | ( reduce $combinedRaw[] as $b
+        ({seen: {}, out: []};
+          ($b | capture("^ID:\\s*(?<v>[^\\n]+)").v) as $bid
+          | if (.seen[$bid] // false) then . else (.seen[$bid] = true | .out += [$b]) end
+        )
+      ).out as $combined
     | ( [ range(0; $combined|length) as $i | ($combined[$i] | sub("^(?<h>ID: [^\\n]*)\\n"; "\(.h)\n# Issue #\($i+1)\n")) ] )
     | join("\n\n")
   '
 } > "$REVIEW_FILE"
 
 echo "" >&2
-echo "✗ $ISSUES_COUNT blocking finding(s) need a justification or a source fix." >&2
+echo "✗ $UNRESOLVED_COUNT blocking finding(s) need a justification or a source fix." >&2
 echo "  Edit $REVIEW_FILE, fill in \"Acknowledge:\" for whichever you want to" >&2
 echo "  override, then push again - or fix them in the source instead." >&2
 exit 1

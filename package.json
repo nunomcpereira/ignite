@@ -1,0 +1,11 @@
+{
+  "name": "ignite-e2e",
+  "private": true,
+  "description": "Playwright end-to-end suite for Ignite's web UI (e2e/) — the server itself is the Rust ignite-server binary, not Node; see README.md.",
+  "scripts": {
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.0"
+  }
+}

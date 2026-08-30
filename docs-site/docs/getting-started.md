@@ -7,7 +7,7 @@ sidebar_position: 6
 
 ## Prerequisites
 
-- **Node.js ≥ 22**
+- **Rust** (stable toolchain — `rustup` is the easy path)
 - **git** on `PATH`
 - **A way to authenticate to GitHub** — `gh` CLI is the easy path:
 
@@ -22,9 +22,9 @@ sidebar_position: 6
 
 ```bash
 git clone https://github.com/nunomcpereira/ignite.git
-cd ignite
-npm install
-npm start
+cd ignite/rust
+cargo build --release -p ignite-server
+IGNITE_CONFIG_DIR=.. ./target/release/ignite-server
 # → http://localhost:51337
 ```
 

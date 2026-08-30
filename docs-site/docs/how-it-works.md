@@ -116,3 +116,24 @@ flow the terminal-based hook uses, just without leaving VS Code. Works with
 VS Code, Cursor, or VS Code Insiders — see [Install](./vscode-extension) for
 setup steps, and the [extension's own README](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension#readme)
 for the full settings/commands reference.
+
+![VS Code - acknowledgments.md open beside the Problems panel](/img/screenshots/11-vscode-review-file.png)
+
+### 6. Or scan from the CLI — one command, no server config
+
+For agents and CI loops that just want pass/fail plus a findings list,
+`ignite scan [path]` wraps the same `validate-all` pipeline as a single
+command against a running Ignite server:
+
+```bash
+ignite scan /path/to/project [--changed-files a.js,b.py] [--json] [--fast]
+```
+
+Exit code `0` means the run passed, `1` means blocking findings need a
+justification or a source fix, `2` means the server wasn't reachable or the
+invocation was wrong — enough for a fix-verify loop to branch on without
+parsing anything. `--changed-files` narrows the printed list to just the
+files an agent just edited; `--fast` trades coverage for speed the same way
+the pre-push hook's lightning mode does.
+
+![ignite scan - terminal output listing blocking findings by file](/img/screenshots/10-cli-scan.png)
