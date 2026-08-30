@@ -97,12 +97,21 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
         let raw_deps: Vec<ManifestDep> = (spec.parse)(&content).into_iter().take(STUDIO_MAX_DEPS_PER_MANIFEST).collect();
 
-        let mut dependencies = Vec::new();
-        for dep in &raw_deps {
+        // One registry round-trip (or several, on the fallback paths below)
+        // per dependency — awaited one at a time here used to mean N deps
+        // cost N times a single request's latency; Node's equivalent
+        // (`Promise.all(rawDeps.map(...))`) fires every dependency's lookup
+        // concurrently instead. `join_all` matches that: each dep's whole
+        // per-dependency pipeline (primary lookup, best-published-version
+        // retry, npm-registry/SEE-LICENSE-IN fallbacks) becomes one future,
+        // all of them run concurrently, and results come back in the same
+        // order `raw_deps` was in — the push-based accumulation below is
+        // unchanged in every other way.
+        let dependencies: Vec<LicenseScanDependency> = futures::future::join_all(raw_deps.iter().map(|dep| async {
             let line = find_manifest_dep_line(&content, &dep.name, spec.ecosystem);
 
             if is_internal_dependency_ref(&dep.version_range) {
-                dependencies.push(LicenseScanDependency {
+                return LicenseScanDependency {
                     name: dep.name.clone(),
                     version_range: dep.version_range.clone(),
                     version: None,
@@ -110,12 +119,11 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                     licenses: vec![],
                     tier: DependencyLicenseTier::Internal,
                     reason: "Internal workspace/catalog reference, not an external package — nothing to license-check.".to_string(),
-                });
-                continue;
+                };
             }
 
             let Some(version) = best_effort_version(&dep.version_range) else {
-                dependencies.push(LicenseScanDependency {
+                return LicenseScanDependency {
                     name: dep.name.clone(),
                     version_range: dep.version_range.clone(),
                     version: None,
@@ -123,8 +131,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                     licenses: vec![],
                     tier: DependencyLicenseTier::Red,
                     reason: "Could not resolve an exact version to check (range/tag/git ref).".to_string(),
-                });
-                continue;
+                };
             };
 
             let mut licenses = client.fetch_licenses(spec.system, &dep.name, &version).await;
@@ -141,7 +148,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
             }
 
             let Some(mut licenses) = licenses else {
-                dependencies.push(LicenseScanDependency {
+                return LicenseScanDependency {
                     name: dep.name.clone(),
                     version_range: dep.version_range.clone(),
                     version: Some(version),
@@ -149,8 +156,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                     licenses: vec![],
                     tier: DependencyLicenseTier::Red,
                     reason: "License lookup failed (package/version not found upstream).".to_string(),
-                });
-                continue;
+                };
             };
 
             if spec.system == "NPM" && ignite_deps_dev_client::is_placeholder_license_list(&licenses) {
@@ -168,7 +174,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                 }
             }
 
-            dependencies.push(LicenseScanDependency {
+            LicenseScanDependency {
                 name: dep.name.clone(),
                 version_range: dep.version_range.clone(),
                 version: Some(resolved_version),
@@ -176,8 +182,9 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                 licenses,
                 tier,
                 reason,
-            });
-        }
+            }
+        }))
+        .await;
 
         manifests.push(LicenseScanManifest { file: file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"), ecosystem: spec.ecosystem, dependencies });
     }
@@ -223,32 +230,35 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
         let raw_deps: Vec<ManifestDep> = (spec.parse)(&content).into_iter().take(STUDIO_MAX_DEPS_PER_MANIFEST).collect();
 
-        let mut dependencies = Vec::new();
-        for dep in &raw_deps {
+        // Same fix as scan_dependency_licenses_fallback above: one future
+        // per dependency instead of one `.await` at a time in a for-loop —
+        // the per-dep network round-trips (package info, best-version
+        // retry, per-advisory fetches) now all happen concurrently across
+        // every dependency in the manifest, not just within one dependency's
+        // own advisory list as before.
+        let dependencies: Vec<VulnScanDependency> = futures::future::join_all(raw_deps.iter().map(|dep| async {
             let line = find_manifest_dep_line(&content, &dep.name, spec.ecosystem);
 
             if is_internal_dependency_ref(&dep.version_range) {
-                dependencies.push(VulnScanDependency {
+                return VulnScanDependency {
                     name: dep.name.clone(),
                     version_range: dep.version_range.clone(),
                     version: None,
                     line,
                     vulnerabilities: vec![],
                     note: Some("Internal workspace/catalog reference, not an external package — nothing to check.".to_string()),
-                });
-                continue;
+                };
             }
 
             let Some(version) = best_effort_version(&dep.version_range) else {
-                dependencies.push(VulnScanDependency {
+                return VulnScanDependency {
                     name: dep.name.clone(),
                     version_range: dep.version_range.clone(),
                     version: None,
                     line,
                     vulnerabilities: vec![],
                     note: Some("Could not resolve an exact version to check (range/tag/git ref).".to_string()),
-                });
-                continue;
+                };
             };
 
             let mut info = client.fetch_package_info(spec.system, &dep.name, &version).await;
@@ -265,15 +275,14 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
             }
 
             let Some(info) = info else {
-                dependencies.push(VulnScanDependency {
+                return VulnScanDependency {
                     name: dep.name.clone(),
                     version_range: dep.version_range.clone(),
                     version: Some(version),
                     line,
                     vulnerabilities: vec![],
                     note: Some("Vulnerability lookup failed (package/version not found upstream).".to_string()),
-                });
-                continue;
+                };
             };
 
             let advisories = futures::future::join_all(info.advisory_ids.iter().map(|id| client.fetch_advisory(id))).await;
@@ -293,8 +302,9 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
                 })
                 .collect();
 
-            dependencies.push(VulnScanDependency { name: dep.name.clone(), version_range: dep.version_range.clone(), version: Some(resolved_version), line, vulnerabilities, note: None });
-        }
+            VulnScanDependency { name: dep.name.clone(), version_range: dep.version_range.clone(), version: Some(resolved_version), line, vulnerabilities, note: None }
+        }))
+        .await;
 
         let with_findings: Vec<VulnScanDependency> = dependencies.into_iter().filter(|d| !d.vulnerabilities.is_empty() || d.note.is_some()).collect();
         if !with_findings.is_empty() {

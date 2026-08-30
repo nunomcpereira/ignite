@@ -266,7 +266,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
         } else {
             let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id));
-            let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config).await.map_err(|e| PipelineError::new(4, e.to_string()))?;
+            let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker).await.map_err(|e| PipelineError::new(4, e.to_string()))?;
             issues = output.issues;
             issues.extend(license_issues);
         }

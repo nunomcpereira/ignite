@@ -175,6 +175,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
 
     let mut project_root: Option<std::path::PathBuf> = None;
     let mut issues: Vec<Issue> = vec![];
+    let mut phase4_task_timings: Vec<(&'static str, u64)> = vec![];
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut project_id: i64 = 0;
 
@@ -278,10 +279,13 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                     v.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root_a, &client, move |m| l3b.log(3, m)).await);
                     v
                 }),
-                time_stage(&timings, "phase4Total", async move { ignite_phase4_orchestrator::run_phase4_checks(&root_b, &state_b.runner, &state_b.db, &config).await })
+                time_stage(&timings, "phase4Total", async move { ignite_phase4_orchestrator::run_phase4_checks(&root_b, &state_b.runner, &state_b.db, &config, &state_b.package_hallucination_checker).await })
             );
             match phase4_result {
-                Ok(output) => issues.extend(output.issues),
+                Ok(output) => {
+                    issues.extend(output.issues);
+                    phase4_task_timings.extend(output.task_timings);
+                }
                 Err(e) => return Err(PipelineError::new(4, e.to_string())),
             }
             issues.extend(license_issues);
@@ -375,7 +379,8 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
 
     let phases = logger.phase_summary();
     let events = logger.events();
-    let stage_timings: Vec<Value> = timings.into_inner().unwrap().into_iter().map(|t| json!({ "name": t.name, "ms": t.ms })).collect();
+    let mut stage_timings: Vec<Value> = timings.into_inner().unwrap().into_iter().map(|t| json!({ "name": t.name, "ms": t.ms })).collect();
+    stage_timings.extend(phase4_task_timings.into_iter().map(|(name, ms)| json!({ "name": format!("phase4:{name}"), "ms": ms })));
 
     ignite_fs_utils::invalidate_walk_cache(&staging_dir);
     if let Some(root) = &project_root {
@@ -512,6 +517,7 @@ mod phase_gating_tests {
             review_gate: crate::review_gate::ReviewGate::default(),
             llm_config: state::default_llm_config(),
             config,
+            package_hallucination_checker: state::default_package_hallucination_checker(),
         });
         (app_state, db_dir)
     }

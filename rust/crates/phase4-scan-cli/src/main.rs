@@ -109,10 +109,11 @@ async fn main() {
         codeql: ignite_codeql_cross_file::CodeqlConfig::default(),
     };
 
+    let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
     let (license_issues, vuln_issues, phase4_output) = tokio::join!(
         ignite_dependency_license_scan::run_license_compliance_check(&root, &runner, &deps_dev_client, &npm_http, |l| println!("{l}")),
         ignite_dependency_license_scan::run_dependency_vulnerability_check(&root, &deps_dev_client, |l| println!("{l}")),
-        async { ignite_phase4_orchestrator::run_phase4_checks(&root, &runner, &store, &config).await.unwrap() },
+        async { ignite_phase4_orchestrator::run_phase4_checks(&root, &runner, &store, &config, &hallucination_checker).await.unwrap() },
     );
 
     let elapsed = t0.elapsed();

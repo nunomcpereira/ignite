@@ -456,7 +456,7 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
             log.status(4, "running", None);
             let root = project_root.clone().unwrap();
             let config = default_phase4_config(state.as_ref(), &org, &repo, project_id);
-            match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config).await {
+            match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker).await {
                 Ok(output) => {
                     let issue_count = output.issues.len();
                     let blocking_count = output.issues.iter().filter(|i| i.severity == Severity::Error).count();
@@ -792,6 +792,7 @@ mod tests {
             review_gate: crate::review_gate::ReviewGate::default(),
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
+            package_hallucination_checker: state::default_package_hallucination_checker(),
         });
         let router = axum::Router::new().merge(router()).with_state(app_state.clone());
 

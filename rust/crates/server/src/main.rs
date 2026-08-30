@@ -58,6 +58,7 @@ async fn main() {
         review_gate: review_gate::ReviewGate::default(),
         llm_config: state::llm_config_from_config(&config),
         config,
+        package_hallucination_checker: state::default_package_hallucination_checker(),
     });
     let config_port = state.config.port;
     let app = build_router(state);
@@ -85,6 +86,7 @@ mod tests {
             review_gate: review_gate::ReviewGate::default(),
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
+            package_hallucination_checker: state::default_package_hallucination_checker(),
         });
         let app = build_router(state);
 

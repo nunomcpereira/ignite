@@ -525,6 +525,7 @@ mod tests {
             review_gate: ReviewGate::default(),
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
+            package_hallucination_checker: state::default_package_hallucination_checker(),
         });
         app_state.running_runs.lock().unwrap().insert(
             job_id.clone(),

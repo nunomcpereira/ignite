@@ -231,6 +231,7 @@ mod tests {
             review_gate: ReviewGate::default(),
             llm_config: crate::state::default_llm_config(),
             config,
+            package_hallucination_checker: crate::state::default_package_hallucination_checker(),
         })
     }
 

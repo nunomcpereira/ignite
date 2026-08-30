@@ -229,6 +229,7 @@ mod tests {
             review_gate: crate::review_gate::ReviewGate::default(),
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
+            package_hallucination_checker: state::default_package_hallucination_checker(),
         });
         (app_state, db_dir)
     }

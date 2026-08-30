@@ -52,6 +52,19 @@ pub struct AppState {
     /// reflect what's on disk instead of every check crate's hardcoded
     /// `::default()`.
     pub config: ignite_config::Config,
+    /// One instance for the server's whole lifetime, passed by reference
+    /// into every `run_phase4_checks` call. `PackageHallucinationChecker`
+    /// carries a "process-lifetime" existence cache by design (see its own
+    /// doc comment) — constructing a fresh one per request, as the
+    /// orchestrator used to, silently discarded that cache on every single
+    /// call and forced a full set of registry HTTP round-trips on every
+    /// scan, never actually caching anything across repeat scans of the
+    /// same repo the way Node's equivalent in-process cache does.
+    pub package_hallucination_checker: ignite_package_hallucination::PackageHallucinationChecker<ignite_package_hallucination::HttpRegistryChecker>,
+}
+
+pub fn default_package_hallucination_checker() -> ignite_package_hallucination::PackageHallucinationChecker<ignite_package_hallucination::HttpRegistryChecker> {
+    ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default())
 }
 
 /// Local-LLM provider pointed at `cfg.llm`'s resolved values — OpenAI

@@ -60,8 +60,21 @@ impl DepsDevClient {
             return cached.clone();
         }
         let url = format!("https://api.deps.dev/v3/systems/{}/packages/{}/versions/{}", system, urlencoding::encode(name), urlencoding::encode(version));
-        let result = async {
-            let res = self.http.get(&url).timeout(Duration::from_secs(5)).send().await.ok()?;
+        // `.timeout()` on the request builder only bounds `.send()` (up to
+        // response headers) — it does NOT cover the subsequent body read
+        // (`.json()`/`.text()`), which is a separate future with no timeout
+        // of its own. A connection that stalls mid-body after headers
+        // arrive hangs forever with no per-request bound at all. Hit for
+        // real: a full concurrent scan of a huge multi-manifest project
+        // (hundreds of dependencies fired at once, see
+        // `dependency-license-scan`'s `join_all`) stalled for 19-32 minutes
+        // on exactly this — one straggler connection with no timeout
+        // blocking the whole `join_all`. Wrapping the whole fetch (connect
+        // through body read) in one outer `tokio::time::timeout` closes
+        // that gap; a timeout here is just another lookup failure (`None`),
+        // same as any other soft-fail path in this client.
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let res = self.http.get(&url).send().await.ok()?;
             if !res.status().is_success() {
                 return None;
             }
@@ -73,8 +86,10 @@ impl DepsDevClient {
                 .map(|a| a.iter().filter_map(|k| k.get("id").and_then(|i| i.as_str()).map(String::from)).collect())
                 .unwrap_or_default();
             Some(DepsDevPackageInfo { licenses, advisory_ids })
-        }
-        .await;
+        })
+        .await
+        .ok()
+        .flatten();
         self.package_info_cache.lock().unwrap().insert(key, result.clone());
         result
     }
@@ -89,16 +104,18 @@ impl DepsDevClient {
             return cached.clone();
         }
         let url = format!("https://api.deps.dev/v3/systems/{}/packages/{}", system, urlencoding::encode(name));
-        let result = async {
-            let res = self.http.get(&url).timeout(Duration::from_secs(5)).send().await.ok()?;
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let res = self.http.get(&url).send().await.ok()?;
             if !res.status().is_success() {
                 return None;
             }
             let data: serde_json::Value = res.json().await.ok()?;
             let versions = data.get("versions").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.get("versionKey").and_then(|k| k.get("version")).and_then(|s| s.as_str()).map(String::from)).collect());
             versions
-        }
-        .await;
+        })
+        .await
+        .ok()
+        .flatten();
         self.version_list_cache.lock().unwrap().insert(key, result.clone());
         result
     }
@@ -108,15 +125,17 @@ impl DepsDevClient {
             return cached.clone();
         }
         let url = format!("https://api.deps.dev/v3/advisories/{}", urlencoding::encode(id));
-        let result = async {
-            let res = self.http.get(&url).timeout(Duration::from_secs(5)).send().await.ok()?;
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let res = self.http.get(&url).send().await.ok()?;
             if res.status().is_success() {
                 res.json::<serde_json::Value>().await.ok()
             } else {
                 None
             }
-        }
-        .await;
+        })
+        .await
+        .ok()
+        .flatten();
         self.advisory_cache.lock().unwrap().insert(id.to_string(), result.clone());
         result
     }
@@ -136,25 +155,30 @@ pub fn is_placeholder_license_list(licenses: &[String]) -> bool {
 /// registry itself for that exact version's declared `license` field.
 pub async fn fetch_npm_registry_license(client: &reqwest::Client, name: &str, version: &str) -> Option<Vec<String>> {
     let url = format!("https://registry.npmjs.org/{}/{}", urlencoding::encode(name).replace("%40", "@"), urlencoding::encode(version));
-    let res = client.get(&url).timeout(Duration::from_secs(5)).send().await.ok()?;
-    if !res.status().is_success() {
-        return None;
-    }
-    let data: serde_json::Value = res.json().await.ok()?;
-    if let Some(license) = data.get("license").and_then(|l| l.as_str()) {
-        if !license.trim().is_empty() {
-            return Some(vec![license.trim().to_string()]);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let res = client.get(&url).send().await.ok()?;
+        if !res.status().is_success() {
+            return None;
         }
-    }
-    if let Some(licenses) = data.get("licenses").and_then(|l| l.as_array()) {
-        if !licenses.is_empty() {
-            let list: Vec<String> = licenses.iter().filter_map(|l| l.as_str().map(String::from).or_else(|| l.get("type").and_then(|t| t.as_str()).map(String::from))).collect();
-            if !list.is_empty() {
-                return Some(list);
+        let data: serde_json::Value = res.json().await.ok()?;
+        if let Some(license) = data.get("license").and_then(|l| l.as_str()) {
+            if !license.trim().is_empty() {
+                return Some(vec![license.trim().to_string()]);
             }
         }
-    }
-    None
+        if let Some(licenses) = data.get("licenses").and_then(|l| l.as_array()) {
+            if !licenses.is_empty() {
+                let list: Vec<String> = licenses.iter().filter_map(|l| l.as_str().map(String::from).or_else(|| l.get("type").and_then(|t| t.as_str()).map(String::from))).collect();
+                if !list.is_empty() {
+                    return Some(list);
+                }
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 static SEE_LICENSE_IN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^SEE LICENSE IN\s+(.+)$").unwrap());
@@ -175,12 +199,17 @@ pub fn detect_license_text_spdx_id(content: &str) -> Option<&'static str> {
 pub async fn fetch_unpkg_file_text(client: &reqwest::Client, name: &str, version: &str, filename: &str) -> Option<String> {
     let filename = filename.trim_start_matches("./").trim_start_matches('/');
     let url = format!("https://unpkg.com/{}@{}/{}", urlencoding::encode(name).replace("%40", "@"), urlencoding::encode(version), filename);
-    let res = client.get(&url).timeout(Duration::from_secs(5)).send().await.ok()?;
-    if res.status().is_success() {
-        res.text().await.ok()
-    } else {
-        None
-    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let res = client.get(&url).send().await.ok()?;
+        if res.status().is_success() {
+            res.text().await.ok()
+        } else {
+            None
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 pub struct SeeLicenseResolution {

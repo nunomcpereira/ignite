@@ -1,5 +1,116 @@
 # Rust rewrite — migration status
 
+## Performance optimization session (2026-08-30) — IN PROGRESS, resume after reboot
+
+Migration itself is done (see below) — this was a follow-on effort to make
+the Rust port's wall-clock performance beat Node's on every benchmarked
+project, not just match its findings. Started from a full 5-project
+benchmark (tadone, IoC, career-ops, SolventAI, tradingfriend), 3 trials
+each, gated on exact `issues[]` parity every trial.
+
+**Three real bugs found and fixed, all release-built and test-verified:**
+
+1. **Phase 4 ran two sequential concurrency groups instead of one fan-out**
+   (`crates/phase4-orchestrator/src/lib.rs`) — a `tokio::join!` of 5 checks
+   followed by a `tokio::try_join!` of 13, with the second group never
+   starting until the first fully finished, even though nothing in group 2
+   depends on group 1's output. Node's `runPhase4Checks` runs all ~20
+   checks (including secrets/governance) in one `Promise.all`. Merged
+   Rust's 18 subprocess/network-bound checks into one `tokio::try_join!`
+   (secrets/governance and the handful of fast in-process
+   codebase-intelligence checks — dead-code, health, css-dead-code,
+   boundaries, file-encapsulation, EU AI Act docs — deliberately left
+   sequential: they're cheap, in-process, and merging them would need
+   `spawn_blocking` + cloning owned data across a 'static boundary for
+   little payoff). Also added per-check timing (`task_timings` on
+   `Phase4Output`, threaded into the API response as `phase4:<name>`
+   entries in `__stageTimings`) — this was the "not done yet" gap noted
+   below, now closed.
+2. **`PackageHallucinationChecker`'s cache never survived past one
+   request** — the checker (which the crate's own doc comment calls a
+   "process-lifetime cache") was constructed fresh inside
+   `run_phase4_checks` on every call, discarding its cache immediately.
+   Hoisted one instance onto `AppState` (`package_hallucination_checker`
+   field, `state::default_package_hallucination_checker()` helper) and
+   threaded it through `run_phase4_checks`'s new required parameter to
+   all 4 call sites (`pipeline_validate.rs`, `pipeline_onboard.rs`,
+   `pipeline_interactive.rs`, `phase4-scan-cli`) plus all 9
+   `AppState { ... }` construction sites across the server crate (test
+   helpers included). Verified directly: 4384ms → 0ms on a repeat scan of
+   the same project.
+3. **`dependency-license-scan`'s per-dependency registry lookups ran
+   sequentially** in a for-loop (`scan_dependency_licenses_fallback`,
+   `scan_dependency_vulnerabilities`) instead of concurrently — Node's
+   equivalent uses `Promise.all(rawDeps.map(...))`. Converted both to
+   `futures::future::join_all` over one future per dependency, preserving
+   order and every existing fallback branch (best-published-version
+   retry, npm-registry/SEE-LICENSE-IN fallbacks) unchanged. This was the
+   dominant, sometimes *entire*, wall-clock cost on career-ops (its
+   Phase 4 total was already ~3% off Node's before this fix; the license
+   scan alone was the whole +22% gap).
+   - **While verifying this fix, found and fixed a second, more serious
+     bug**: `reqwest`'s `.timeout()` on a request builder only bounds
+     `.send()` (through response headers) — it does NOT cover the
+     subsequent body read (`.json()`/`.text()`), a separate future with no
+     timeout of its own. A connection that stalls mid-body-transfer after
+     headers arrive hangs *forever*, no cap at all. This is almost
+     certainly what caused repeated 19-32 minute stalls on tadone (its
+     hundreds of dependencies across many manifests make hitting one
+     unlucky stalled connection much likelier once every dependency fires
+     concurrently). Fixed in `crates/deps-dev-client/src/lib.rs`: every
+     fetch (`fetch_package_info`, `fetch_version_list`, `fetch_advisory`,
+     `fetch_npm_registry_license`, `fetch_unpkg_file_text`) now wraps the
+     *whole* connect-through-body-read sequence in one outer
+     `tokio::time::timeout(Duration::from_secs(5), ...)`; a timeout is
+     just another soft lookup failure (`None`), same as every other
+     fail-soft path in this client. Required adding the `time` tokio
+     feature to `crates/deps-dev-client/Cargo.toml`.
+
+**Verified results after all three fixes (median of 3 trials each):**
+
+| Project | Node | Rust | Result |
+|---|---|---|---|
+| career-ops | 36.1s | 33.0s | **Rust wins** (−8.6%) |
+| tradingfriend | 144.1s | 49.6s | **Rust wins big** (−66%) |
+| IoC | 48.7s | 67.5s | Node wins (+39%) — **regressed vs. the pre-fix run** (was +28.6%), unexplained — likely system load, not a real regression, but not re-verified on a quiet system |
+| SolventAI | 28.7s | 33.4s | Node wins (+16%) |
+| tadone | — | — | **inconclusive, blocked** — see below |
+
+**Not resolved — genuinely blocked, don't re-chase without new evidence:**
+
+tadone hung for 19-32 minutes on *both* implementations, repeatedly, even
+after fix #3 above. One post-fix Rust run took 1303s total, but its own
+`__stageTimings` showed `phase4Total` at only 257s (exactly its normal
+range) — the missing ~17 minutes happened *outside every timed stage*,
+between the client issuing the request and the server actually processing
+it. That's not request-handling code in either implementation; it points
+to system-level contention (this machine had been running heavy builds,
+scans, and two long-lived servers for many hours straight across this
+session) rather than a fixable bug in the Rust codebase. No root cause
+found after real investigation — this is the specific thing to re-verify
+after a reboot, not to re-diagnose from scratch.
+
+**A separate, real finding — not a Rust bug, not blocking the goal
+above:** Node's own server crashed **4 times** this session, always via an
+identical unhandled `'error'` event on its HTTP/2 client (deps.dev/npm
+fetches) — `ETIMEDOUT` twice, `ECONNRESET` once, one silent stall ending
+in "Empty reply from server". Every crash happened specifically on
+tadone (its heaviest dependency-scan load). Rust's `reqwest`-based client
+handles the equivalent failure as an ordinary `Result::Err` and never
+crashed once, including through the identical stalls described above.
+This is a genuine Node-side robustness gap (worth a `server.js`/`undici`
+fix independent of anything here) — out of scope for "optimize Rust,"
+mentioned for completeness.
+
+**How to resume after a reboot:** see the resume prompt at the very
+bottom of this file — that's the trigger sentence. Everything the resumed
+session needs (which fixes are done, which projects are outstanding, and
+that tadone specifically needs one clean quiet-system re-run rather than
+fresh diagnosis) is in this section above; no other file needs to be
+read first.
+
+---
+
 Last updated: 2026-08-29. A real Node-vs-Rust scan comparison against the
 tadone project (see standing directive below) was finally run after the
 auth-mode work below, and it found two real Phase 4 orchestrator bugs on
@@ -362,3 +473,9 @@ against tadone has been run and passed (file:line-exact parity on every
 deterministic category — see top of this file). Remaining smaller gaps
 are the "Not done yet" list above; none block relying on the Rust port
 for onboarding-gate use.
+
+**Performance optimization is mid-flight — see the top section of this
+file ("Performance optimization session (2026-08-30)").** After a reboot,
+resume with this sentence:
+
+> Continue the Rust performance optimization loop from `rust/MIGRATION_STATUS.md` — re-run the full 5-project benchmark now that the system is quiet, focusing on getting a clean tadone number and re-checking IoC's regression.
