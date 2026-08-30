@@ -31,6 +31,11 @@ const config = {
 
   onBrokenLinks: 'throw',
 
+  // See src/clientModules/eagerImages.js - native loading="lazy" and the
+  // image-zoom plugin below don't play well together (an image already in
+  // the viewport when medium-zoom attaches never fires its load event).
+  clientModules: [require.resolve('./src/clientModules/eagerImages.js')],
+
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
   // may want to replace "en" with "zh-Hans".
