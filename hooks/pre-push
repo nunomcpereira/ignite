@@ -12,8 +12,8 @@
 #        mkdir -p ~/.git-hooks && cp hooks/pre-push ~/.git-hooks/
 #        git config --global core.hooksPath ~/.git-hooks
 #
-# Requires: a running Ignite server (`npm start` in the ignite repo) reachable
-# at IGNITE_BASE_URL (default http://localhost:51337), and `node` on PATH.
+# Requires: a running ignite-server (Rust) reachable at IGNITE_BASE_URL
+# (default http://localhost:51337), and `jq` on PATH.
 #
 # CLI acknowledgment: on a blocking finding, this hook writes/appends to a
 # .ignite/acknowledgments.md file (repo root) listing each one with a blank
@@ -84,6 +84,11 @@ if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
   exit 0
 fi
 
+if ! command -v jq > /dev/null 2>&1; then
+  echo "✗ jq is required by this hook but isn't on PATH (brew install jq)." >&2
+  exit 2
+fi
+
 IGNITE_URL="${IGNITE_BASE_URL:-http://localhost:51337}"
 REPO_PATH="$(git rev-parse --show-toplevel)"
 REVIEW_FILE="${IGNITE_REVIEW_FILE:-$REPO_PATH/.ignite/acknowledgments.md}"
@@ -110,8 +115,8 @@ for attempt in 1 2 3; do
 done
 if [ "$REACHABLE" != true ]; then
   echo "✗ Ignite isn't reachable at $IGNITE_URL." >&2
-  echo "  Start it with 'npm start' in the ignite repo, set IGNITE_BASE_URL to" >&2
-  echo "  point elsewhere, or set IGNITE_PREPUSH_SKIP=true to skip this push." >&2
+  echo "  Start ignite-server, set IGNITE_BASE_URL to point elsewhere, or" >&2
+  echo "  set IGNITE_PREPUSH_SKIP=true to skip this push." >&2
   exit 1
 fi
 
@@ -130,211 +135,200 @@ if [ "${IGNITE_FORCE_FULL_CHECK:-}" != "true" ] && [ -f "$STATE_FILE" ]; then
   fi
 fi
 
+REVIEW_TEXT=""
+[ -f "$REVIEW_FILE" ] && REVIEW_TEXT="$(cat "$REVIEW_FILE")"
+
 # Turn any already-justified entries in the local review file into the
-# overrides array validate-all expects. Prints "[]" if the file doesn't
-# exist or has nothing filled in yet.
-OVERRIDES_JSON="$(node -e '
-  const fs = require("fs");
-  const path = process.argv[1];
-  let text = "";
-  try { text = fs.readFileSync(path, "utf8"); } catch { console.log("[]"); process.exit(0); }
-  const overrides = [];
-  const blocks = text.split(/\n(?=ID: )/);
-  for (const block of blocks) {
-    const idMatch = block.match(/^ID:\s*(.+)$/m);
-    const ackMatch = block.match(/^Acknowledge:\s*(.*)$/m);
-    if (!idMatch) continue;
-    const justification = (ackMatch ? ackMatch[1] : "").trim();
-    if (justification) overrides.push({ issueId: idMatch[1].trim(), justification });
-  }
-  console.log(JSON.stringify(overrides));
-' "$REVIEW_FILE")"
+# overrides array validate-all expects. "[]" if the file doesn't exist or
+# has nothing filled in yet.
+OVERRIDES_JSON="$(jq -n --arg text "$REVIEW_TEXT" '
+  def trim: gsub("^\\s+|\\s+$"; "");
+  [$text | splits("\n(?=ID: )")]
+  | map(select(test("^ID:")))
+  | map({
+      id: (capture("^ID:\\s*(?<v>[^\\n]+)").v),
+      ack: (((capture("Acknowledge:\\s*(?<v>[^\\n]*)").v) // "") | trim)
+    })
+  | map(select(.ack | length > 0))
+  | map({issueId: .id, justification: .ack})
+')"
 
 echo "→ Running Ignite checks against $REPO_PATH ..."
 if [ "$OVERRIDES_JSON" != "[]" ]; then
-  COUNT="$(node -e "console.log(JSON.parse(process.argv[1]).length)" "$OVERRIDES_JSON")"
+  COUNT="$(echo "$OVERRIDES_JSON" | jq 'length')"
   echo "  (resubmitting $COUNT justification(s) from $REVIEW_FILE)"
 fi
 
-REQUEST_BODY="$(node -e '
-  const [projectPath, org, repo, runLocalCi, warningDecision, overridesJson, actorEmail, actorName, fastScan] = process.argv.slice(1);
-  const body = {
-    projectPath, org, repo,
+REQUEST_BODY="$(jq -n \
+  --arg projectPath "$REPO_PATH" \
+  --arg org "$ORG" \
+  --arg repo "$REPO" \
+  --arg runLocalCi "$RUN_LOCAL_CI" \
+  --arg warningDecision "$WARNING_DECISION" \
+  --argjson overrides "$OVERRIDES_JSON" \
+  --arg actorEmail "$ACTOR_EMAIL" \
+  --arg actorName "$ACTOR_NAME" \
+  --arg fastScan "$FAST_SCAN" \
+  '{
+    projectPath: $projectPath, org: $org, repo: $repo,
     gxp: false,
-    runLocalCi: runLocalCi === "true",
-    warningDecision,
-    overrides: JSON.parse(overridesJson),
-    fast: fastScan === "true",
-  };
-  if (actorEmail) body.actor = { email: actorEmail, name: actorName || actorEmail };
-  console.log(JSON.stringify(body));
-' "$REPO_PATH" "$ORG" "$REPO" "$RUN_LOCAL_CI" "$WARNING_DECISION" "$OVERRIDES_JSON" "$ACTOR_EMAIL" "$ACTOR_NAME" "$FAST_SCAN")"
+    runLocalCi: ($runLocalCi == "true"),
+    warningDecision: $warningDecision,
+    overrides: $overrides,
+    fast: ($fastScan == "true")
+  }
+  | if $actorEmail != "" then .actor = {email: $actorEmail, name: (if $actorName != "" then $actorName else $actorEmail end)} else . end
+  ')"
 
 RESPONSE="$(curl -sS -X POST "$IGNITE_URL/api/pipeline/validate-all" \
   -H 'Content-Type: application/json' \
   -d "$REQUEST_BODY")"
 
-node -e '
-  const fs = require("fs");
-  const path = require("path");
-  const reviewFile = process.argv[1];
-  const repoPath = process.argv[2];
-  let d = "";
-  process.stdin.on("data", (c) => (d += c));
-  process.stdin.on("end", () => {
-    let r;
-    try { r = JSON.parse(d); } catch {
-      console.error("✗ Ignite returned a non-JSON response:", d.slice(0, 500));
-      process.exit(1);
-    }
-    // Point-in-time snapshot of every reported finding, separate from the
-    // refreshed-every-run acknowledgments.md - one folder per run, never edited.
-    const now = new Date();
-    const ts = now.toISOString().replace(/:/g, "-").replace(/\.\d+Z$/, "Z");
-    const snapshotFile = path.join(repoPath, ".ignite", "scans", ts, "findings.md");
-    const allIssues = Array.isArray(r.issues) ? r.issues : [];
-    const snapshotLines = [`# Ignite scan findings — ${now.toISOString()}`, ""];
-    if (allIssues.length === 0) {
-      snapshotLines.push("No findings.");
-    } else {
-      allIssues.forEach((issue, i) => {
-        const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
-        snapshotLines.push(`## ${i + 1}. [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`, "");
-        snapshotLines.push(`- ID: \`${issue.id}\``, `- Location: ${loc}`, `- Score: ${issue.score}`);
-        if (issue.status) snapshotLines.push(`- Status: ${issue.status}`);
-        snapshotLines.push("");
-      });
-    }
-    fs.mkdirSync(path.dirname(snapshotFile), { recursive: true });
-    fs.writeFileSync(snapshotFile, snapshotLines.join("\n"));
-    console.error(`  Findings snapshot: ${snapshotFile}`);
-    if (r.ok) {
-      console.log("✓ Ignite checks passed.");
-      process.exit(0);
-    }
-    console.error("✗ Ignite checks failed - push blocked.");
-    for (const p of r.phases || []) {
-      if (p.state === "failed") {
-        console.error(`  Phase ${p.phase} - ${p.title}`);
-        (p.logs || []).slice(-10).forEach((l) => console.error("    " + l));
-      }
-    }
-    const issues = Array.isArray(r.issues) ? r.issues : [];
-    if (issues.length === 0) {
-      // Not the overridable Phase 4 issue-list case (e.g. raw .env files,
-      // a failing unit test) - nothing to acknowledge from the CLI.
-      console.error("");
-      console.error("This failure isn'\''t something a justification can override - fix it in the source and push again.");
-      process.exit(1);
-    }
-    // Refreshed every run: this file always reflects the CURRENT scan
-    // findings, not a permanent ledger - an id whose finding is no longer
-    // reported (fixed in source, or genuinely resolved) is dropped instead
-    // of lingering forever. A justification already written for an id
-    // still being reported is preserved as-is (see existingBlocks below);
-    // only ids not already present get a fresh blank entry appended.
-    let existing = "";
-    try { existing = fs.readFileSync(reviewFile, "utf8"); } catch { /* first run */ }
-    const existingIds = new Set();
-    // Parsed alongside the raw block text so a pure line-number drift (an
-    // unrelated edit elsewhere in the file shifting every line below it)
-    // can be told apart from a genuinely new finding: same category+file,
-    // and the flagged line own source text (# Code:) unchanged, even
-    // though the id (which embeds the line number) is now different.
-    const existingParsed = [];
-    for (const block of existing.split(/\n(?=ID: )/)) {
-      const idMatch = block.match(/^ID:\s*(.+)$/m);
-      if (!idMatch) continue;
-      const id = idMatch[1].trim();
-      existingIds.add(id);
-      const locMatch = block.match(/^#\s+(\S+?)(?::(\d+))?$/m);
-      const codeMatch = block.match(/^# Code:\s*(.*)$/m);
-      const ackMatch = block.match(/^Acknowledge:\s*(.*)$/m);
-      existingParsed.push({
-        id,
-        category: id.split("::")[0],
-        file: locMatch ? locMatch[1] : null,
-        code: codeMatch ? codeMatch[1].trim() : null,
-        justification: (ackMatch ? ackMatch[1] : "").trim(),
-        raw: block.replace(/\n+$/, ""),
-        superseded: false,
-      });
-    }
-    const codeForIssue = (issue) => {
-      const s = issue.snippet;
-      if (!s || !Array.isArray(s.lines)) return null;
-      const hit = s.lines.find((l) => l.number === s.highlightLine);
-      return hit ? hit.text.trim() : null;
-    };
-    const newBlocks = [];
-    for (const issue of issues) {
-      if (existingIds.has(issue.id)) continue;
-      const loc = issue.file ? issue.file + (issue.line ? ":" + issue.line : "") : "(no file)";
-      const code = codeForIssue(issue);
-      // Carry-forward: an already-justified entry, same category+file, whose
-      // recorded flagged-line text is byte-identical to this "new" issue -
-      // the id only changed because something above it in the file shifted
-      // line numbers. Reuse its justification instead of asking for the
-      // same review again; the old entry is dropped (superseded) so the
-      // file does not accumulate a duplicate for every edit that touches it.
-      const match = code
-        ? existingParsed.find((e) => !e.superseded && e.justification && e.category === issue.category && e.file === issue.file && e.code === code)
-        : null;
-      if (match) match.superseded = true;
-      const ackLine = match
-        ? `Acknowledge: ${match.justification} (auto-carried-forward from ${match.id} - pure line-number drift, flagged code unchanged)`
-        : "Acknowledge: ";
-      newBlocks.push([
-        `ID: ${issue.id}`,
-        `# [${String(issue.severity || "").toUpperCase()}] ${issue.category} - ${issue.summary}`,
-        `#   ${loc}`,
-        ...(code ? [`# Code: ${code}`] : []),
-        ackLine,
-      ].join("\n"));
-    }
-    // Existing blocks may already carry a "# Issue #N" line from the last
-    // write - stripped here and re-added fresh below so numbers always
-    // reflect the current order/count instead of accumulating duplicates.
-    const stripIssueNumberLine = (raw) => raw.replace(/^(ID: [^\n]*)\n# Issue #\d+\n/, "$1\n");
-    // Only keep an existing block if its id is still among the current
-    // findings - a match.superseded=true entry got folded into a newBlocks
-    // carry-forward above and is dropped here either way, but an id that is
-    // simply gone (fixed, or the finding no longer applies) is dropped too,
-    // rather than kept forever.
-    const currentIssueIds = new Set(issues.map((i) => i.id));
-    const existingBlocks = existingParsed
-      .filter((e) => !e.superseded && currentIssueIds.has(e.id))
-      .map((e) => stripIssueNumberLine(e.raw));
-    const combinedBlocks = [...existingBlocks, ...newBlocks].map((block, i) =>
-      block.replace(/^(ID: [^\n]*)\n/, `$1\n# Issue #${i + 1}\n`)
-    );
-    const header = [
-      "# Ignite pre-push acknowledgments - meant to be committed: a filled-in",
-      "# justification is a real audit record, reviewable like code.",
-      "#",
-      "# Fill in a justification after \"Acknowledge:\" for any issue below you want",
-      "# to override, save, then `git push` again. Blank = stays blocking.",
-      "# Refreshed every run: only entries for findings still reported by the",
-      "# current scan are kept - a filled-in justification survives as long",
-      "# as its finding does, but once the underlying issue is fixed (or a",
-      "# pure line-number shift carries its justification to a new id), the",
-      "# stale entry is dropped rather than kept forever.",
-      "# A `# Code:` line, when present, is the flagged source line own text -",
-      "# used to auto-carry-forward this justification if an unrelated edit",
-      "# elsewhere in the file later shifts its line number. Do not hand-edit it.",
-      "# The `# Issue #N` line is just a running count of entries in this file",
-      "# - recomputed on every push, not a stable id. Use the `ID:` line to",
-      "# refer to a specific finding.",
-      "",
-    ].join("\n");
-    fs.mkdirSync(path.dirname(reviewFile), { recursive: true });
-    fs.writeFileSync(reviewFile, header + combinedBlocks.join("\n\n") + "\n");
-    console.error("");
-    console.error(`✗ ${issues.length} blocking finding(s) need a justification or a source fix.`);
-    console.error(`  Edit ${reviewFile}, fill in "Acknowledge:" for whichever you want to`);
-    console.error("  override, then push again - or fix them in the source instead.");
-    process.exit(1);
-  });
-' "$REVIEW_FILE" "$REPO_PATH" <<< "$RESPONSE"
+if ! echo "$RESPONSE" | jq -e . > /dev/null 2>&1; then
+  echo "✗ Ignite returned a non-JSON response: $(echo "$RESPONSE" | head -c 500)" >&2
+  exit 1
+fi
 
-echo -n "$CURRENT_SHA" > "$STATE_FILE"
+NOW_ISO="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+# Point-in-time snapshot of every reported finding, separate from the
+# refreshed-every-run acknowledgments.md - one folder per run, never edited.
+SNAPSHOT_TS="$(echo "$NOW_ISO" | tr ':' '-')"
+SNAPSHOT_FILE="$REPO_PATH/.ignite/scans/$SNAPSHOT_TS/findings.md"
+mkdir -p "$(dirname "$SNAPSHOT_FILE")"
+echo "$RESPONSE" | jq -r --arg now "$NOW_ISO" '
+  def issue_lines(i; idx):
+    ("## \(idx+1). [\(i.severity // "" | ascii_upcase)] \(i.category) - \(i.summary)"),
+    "",
+    "- ID: `\(i.id)`",
+    "- Location: \(if i.file then i.file + (if i.line then ":\(i.line)" else "" end) else "(no file)" end)",
+    "- Score: \(i.score)",
+    (if i.status then "- Status: \(i.status)" else empty end),
+    "";
+  (.issues // []) as $all
+  | (["# Ignite scan findings — \($now)", ""]
+     + (if ($all|length) == 0 then ["No findings."]
+        else [range(0; $all|length) as $idx | issue_lines($all[$idx]; $idx)]
+        end))
+  | join("\n")
+' > "$SNAPSHOT_FILE"
+echo "  Findings snapshot: $SNAPSHOT_FILE"
+
+OK="$(echo "$RESPONSE" | jq -r '.ok // false')"
+if [ "$OK" = "true" ]; then
+  echo "✓ Ignite checks passed."
+  echo -n "$CURRENT_SHA" > "$STATE_FILE"
+  exit 0
+fi
+
+echo "✗ Ignite checks failed - push blocked." >&2
+echo "$RESPONSE" | jq -r '(.phases // [])[] | select(.state=="failed") | "  Phase \(.phase) - \(.title)\n" + ((.logs // [])[-10:] | map("    " + .) | join("\n"))' >&2
+
+ISSUES_COUNT="$(echo "$RESPONSE" | jq '(.issues // []) | length')"
+if [ "$ISSUES_COUNT" -eq 0 ]; then
+  # Not the overridable Phase 4 issue-list case (e.g. raw .env files, a
+  # failing unit test) - nothing to acknowledge from the CLI.
+  echo "" >&2
+  echo "This failure isn't something a justification can override - fix it in the source and push again." >&2
+  exit 1
+fi
+
+# Refreshed every run: this file always reflects the CURRENT scan findings,
+# not a permanent ledger - an id whose finding is no longer reported (fixed
+# in source, or genuinely resolved) is dropped instead of lingering
+# forever. A justification already written for an id still being reported
+# is preserved as-is; only ids not already present get a fresh blank entry
+# appended.
+mkdir -p "$(dirname "$REVIEW_FILE")"
+{
+  cat <<'HEADER'
+# Ignite pre-push acknowledgments - meant to be committed: a filled-in
+# justification is a real audit record, reviewable like code.
+#
+# Fill in a justification after "Acknowledge:" for any issue below you want
+# to override, save, then `git push` again. Blank = stays blocking.
+# Refreshed every run: only entries for findings still reported by the
+# current scan are kept - a filled-in justification survives as long
+# as its finding does, but once the underlying issue is fixed (or a
+# pure line-number shift carries its justification to a new id), the
+# stale entry is dropped rather than kept forever.
+# A `# Code:` line, when present, is the flagged source line own text -
+# used to auto-carry-forward this justification if an unrelated edit
+# elsewhere in the file later shifts its line number. Do not hand-edit it.
+# The `# Issue #N` line is just a running count of entries in this file
+# - recomputed on every push, not a stable id. Use the `ID:` line to
+# refer to a specific finding.
+
+HEADER
+  echo "$RESPONSE" | jq -r --arg existingText "$REVIEW_TEXT" '
+    def trim: gsub("^\\s+|\\s+$"; "");
+
+    def parse_blocks(text):
+      ([text | splits("\n(?=ID: )")])
+      | map(select(test("^ID:")))
+      | map(
+          . as $block
+          | ($block | rtrimstr("\n")) as $raw
+          | {
+              id: ($block | capture("^ID:\\s*(?<v>[^\\n]+)").v),
+              file: ($block | ((capture("(?m)^#\\s+(?<v>\\S+?)(?::\\d+)?$").v) // null)),
+              code: ($block | ((capture("(?m)^# Code:\\s*(?<v>[^\\n]*)").v) // null)),
+              justification: ($block | ((capture("Acknowledge:\\s*(?<v>[^\\n]*)").v) // "") | trim),
+              raw: $raw
+            }
+          | .category = (.id | split("::")[0])
+          | .superseded = false
+        );
+
+    def code_for_issue(issue):
+      if (issue.snippet? and (issue.snippet.lines? // null) != null) then
+        ((issue.snippet.lines | map(select(.number == issue.snippet.highlightLine)) | first | .text?) // null | if . then trim else null end)
+      else null end;
+
+    def issue_loc(issue):
+      if issue.file then issue.file + (if issue.line then ":\(issue.line)" else "" end) else "(no file)" end;
+
+    def build_new_block(issue; matchOrNull):
+      ( "ID: \(issue.id)"
+      + "\n# [\(issue.severity // "" | ascii_upcase)] \(issue.category) - \(issue.summary)"
+      + "\n#   \(issue_loc(issue))"
+      + ( (code_for_issue(issue)) as $code | if $code then "\n# Code: \($code)" else "" end )
+      + "\n"
+      + (if matchOrNull then "Acknowledge: \(matchOrNull.justification) (auto-carried-forward from \(matchOrNull.id) - pure line-number drift, flagged code unchanged)" else "Acknowledge: " end)
+      );
+
+    def strip_issue_number(raw):
+      raw | sub("^(?<h>ID: [^\\n]*)\\n# Issue #[0-9]+\\n"; "\(.h)\n");
+
+    . as $r
+    | ($existingText | parse_blocks(.)) as $existingParsed0
+    | ($r.issues // []) as $issues
+    | (reduce $issues[] as $issue
+        ({existing: $existingParsed0, blocks: []};
+          if (any(.existing[]; .id == $issue.id)) then .
+            else
+              ( code_for_issue($issue) ) as $code
+              | ( if $code then
+                    ( .existing | map(select(.superseded==false and (.justification|length)>0 and .category==$issue.category and .file==$issue.file and .code==$code)) | first )
+                  else null end
+                ) as $match
+              | .existing = ( if $match then
+                    (.existing | map(if .id == $match.id then .superseded = true else . end))
+                  else .existing end )
+              | .blocks += [ build_new_block($issue; $match) ]
+            end
+        )
+      ) as $folded
+    | ($issues | map(.id)) as $currentIds
+    | ( $folded.existing | map(select(.superseded==false and (.id as $i | $currentIds | index($i) != null))) | map(strip_issue_number(.raw)) ) as $existingBlocks
+    | ( $existingBlocks + $folded.blocks ) as $combined
+    | ( [ range(0; $combined|length) as $i | ($combined[$i] | sub("^(?<h>ID: [^\\n]*)\\n"; "\(.h)\n# Issue #\($i+1)\n")) ] )
+    | join("\n\n")
+  '
+} > "$REVIEW_FILE"
+
+echo "" >&2
+echo "✗ $ISSUES_COUNT blocking finding(s) need a justification or a source fix." >&2
+echo "  Edit $REVIEW_FILE, fill in \"Acknowledge:\" for whichever you want to" >&2
+echo "  override, then push again - or fix them in the source instead." >&2
+exit 1

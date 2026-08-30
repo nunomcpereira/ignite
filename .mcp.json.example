@@ -1,8 +1,7 @@
 {
   "mcpServers": {
     "ai-validation-guidelines": {
-      "command": "node",
-      "args": ["/absolute/path/to/ignite/mcp-server.js"],
+      "command": "/absolute/path/to/ignite/rust/target/release/mcp-server",
       "env": {
         "IGNITE_BASE_URL": "http://localhost:51337"
       }

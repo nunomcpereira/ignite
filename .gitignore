@@ -5,6 +5,7 @@ config.json
 .env
 ignite.db
 ignite.db-*
+db-backups/
 **/*.log
 test-results/
 playwright-report/
