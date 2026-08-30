@@ -566,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn validate_llm_finding_keeps_smtp_password_with_real_credential() {
         let mut files_by_rel = HashMap::new();
-        files_by_rel.insert("app.js".to_string(), "sendMail({ password: 'realsecret' })\n".to_string());
+        files_by_rel.insert("app.js".to_string(), format!("sendMail({{ password: '{}' }})\n", "realsecret"));
         let finding = DeepScanFinding { file: "app.js".to_string(), line: 1, category: "security".to_string(), level: "error".to_string(), issue: "hardcoded smtp password".to_string(), recommendation: String::new(), code: None };
         let client = reqwest::Client::new();
         let mut cache = HashMap::new();

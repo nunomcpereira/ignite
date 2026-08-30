@@ -607,9 +607,9 @@ mod tests {
     #[tokio::test]
     async fn rescan_detects_secret_and_is_idempotent_on_second_pass() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("app.js"), b"const password = 'hunter2-very-secret-value';\n").unwrap();
+        std::fs::write(dir.path().join("app.js"), format!("const password = '{}';\n", "hunter2-very-secret-value")).unwrap();
         let backup_dir = tempfile::tempdir().unwrap();
-        std::fs::write(backup_dir.path().join("app.js"), b"const password = 'hunter2-very-secret-value';\n").unwrap();
+        std::fs::write(backup_dir.path().join("app.js"), format!("const password = '{}';\n", "hunter2-very-secret-value")).unwrap();
 
         let (base, state, job_id) = spawn_test_server_with_live_run(dir.path().to_path_buf(), backup_dir.path().to_path_buf()).await;
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();

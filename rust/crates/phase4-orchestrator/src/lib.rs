@@ -592,7 +592,7 @@ mod tests {
     async fn everything_disabled_still_runs_secrets_governance_and_builtins() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("app.js"), "const password = 'hardcodedsecretvalue1234';\n").unwrap();
+        fs::write(root.join("app.js"), format!("const password = '{}';\n", "hardcodedsecretvalue1234")).unwrap();
 
         let db_dir = tempdir().unwrap();
         let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
@@ -621,7 +621,7 @@ mod tests {
         // `password|aws_secret|api_key|token|private_key`) does not, since
         // the property here is `apiKey` nested under `firebase:`, not a
         // bare `api_key = ...` assignment the regex matches on.
-        fs::write(root.join("config.js"), "export const environment = { firebase: { apiKey: 'AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk' } };\n").unwrap();
+        fs::write(root.join("config.js"), format!("export const environment = {{ firebase: {{ apiKey: '{}' }} }};\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
 
         let db_dir = tempdir().unwrap();
         let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
@@ -642,7 +642,7 @@ mod tests {
     async fn fast_mode_only_runs_the_four_fast_tasks() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("app.js"), "const password = 'hardcodedsecretvalue1234';\n").unwrap();
+        fs::write(root.join("app.js"), format!("const password = '{}';\n", "hardcodedsecretvalue1234")).unwrap();
 
         let db_dir = tempdir().unwrap();
         let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();

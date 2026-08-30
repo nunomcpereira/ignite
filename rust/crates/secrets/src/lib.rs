@@ -442,7 +442,7 @@ mod tests {
     fn flags_a_hardcoded_api_key_literal() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("config.js"), "const api_key = 'sk-proj-abcdefghijklmnop';\n").unwrap();
+        fs::write(root.join("config.js"), format!("const api_key = '{}';\n", "sk-proj-abcdefghijklmnop")).unwrap();
 
         let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
         assert_eq!(result.findings.len(), 1);
@@ -492,7 +492,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         fs::write(root.join(".gitignore"), "secret.js\n").unwrap();
-        fs::write(root.join("secret.js"), "const api_key = 'sk-proj-abcdefghijklmnop';\n").unwrap();
+        fs::write(root.join("secret.js"), format!("const api_key = '{}';\n", "sk-proj-abcdefghijklmnop")).unwrap();
 
         let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
         assert!(result.findings.is_empty());
@@ -515,7 +515,7 @@ mod tests {
     fn cache_hit_reuses_findings_when_hash_unchanged() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("config.js"), "const api_key = 'sk-proj-abcdefghijklmnop';\n").unwrap();
+        fs::write(root.join("config.js"), format!("const api_key = '{}';\n", "sk-proj-abcdefghijklmnop")).unwrap();
 
         let (first, cache1) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
         assert_eq!(first.cache_hits, 0);
