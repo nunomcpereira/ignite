@@ -64,6 +64,36 @@ fn write_temp_upload(bytes: &[u8]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Matches server.js's multer config exactly (server.js:161-164:
+/// `{ fileSize: MAX_ZIP_BYTES, files: 100000 }`) — `fileSize` bounds each
+/// individual file *part*, `files` bounds the file-part *count*. Neither is
+/// a whole-request-body cap: a folder upload with many small files can
+/// total well over 1GB as long as no single file exceeds it, same as Node.
+/// Enforced by streaming each file field via `.chunk()` instead of
+/// `.bytes()` (which would buffer past the limit before we could reject),
+/// with the whole-body `DefaultBodyLimit` disabled on this route (see
+/// `router()` below) so it can't impose its own, different cap underneath
+/// this one.
+const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_FILES: usize = 100_000;
+
+async fn read_field_bytes_limited(field: &mut axum::extract::multipart::Field<'_>) -> Result<Vec<u8>, (StatusCode, Value)> {
+    read_field_bytes_limited_to(field, MAX_FILE_BYTES).await
+}
+
+/// `max_bytes`-parameterized core so tests can exercise real rejection
+/// behavior at a small scale instead of needing an actual 1GB upload.
+async fn read_field_bytes_limited_to(field: &mut axum::extract::multipart::Field<'_>, max_bytes: u64) -> Result<Vec<u8>, (StatusCode, Value)> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = field.chunk().await.map_err(|e| (StatusCode::BAD_REQUEST, json!({ "error": e.to_string() })))? {
+        if buf.len() as u64 + chunk.len() as u64 > max_bytes {
+            return Err((StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": format!("File too large (max {max_bytes} bytes per file).") })));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
 struct ParsedUpload {
     org: String,
     repo: String,
@@ -91,8 +121,13 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<ParsedUpload, (Stat
     let mut dir_file_names: Vec<String> = Vec::new();
     let mut gxp_doc_files: Vec<(String, Option<String>, Vec<u8>)> = Vec::new();
     let mut temp_paths_to_clean: Vec<PathBuf> = Vec::new();
+    // Mirrors multer's `files: 100000` — only file-bearing fields
+    // (archive/files/gxpDocs) count toward this, not text fields like
+    // org/repo/dryRun, matching multer's own "max number of file fields"
+    // semantics.
+    let mut file_field_count: usize = 0;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| bad(e.to_string()))? {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| bad(e.to_string()))? {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "org" => org = field.text().await.unwrap_or_default().trim().to_string(),
@@ -102,16 +137,24 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<ParsedUpload, (Stat
             "gxpLinks" => gxp_links_raw = field.text().await.unwrap_or_else(|_| "[]".to_string()),
             "paths" => rel_paths_raw = field.text().await.unwrap_or_else(|_| "[]".to_string()),
             "archive" => {
+                file_field_count += 1;
+                if file_field_count > MAX_FILES {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": format!("Too many files (max {MAX_FILES}).") })));
+                }
                 let fname = field.file_name().unwrap_or("archive.zip").to_string();
-                let bytes = field.bytes().await.map_err(|e| bad(e.to_string()))?;
+                let bytes = read_field_bytes_limited(&mut field).await?;
                 let size = bytes.len() as u64;
                 let path = write_temp_upload(&bytes).map_err(|e| bad(e.to_string()))?;
                 temp_paths_to_clean.push(path.clone());
                 archive = Some((path, fname, size));
             }
             "files" => {
+                file_field_count += 1;
+                if file_field_count > MAX_FILES {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": format!("Too many files (max {MAX_FILES}).") })));
+                }
                 let fname = field.file_name().unwrap_or("").to_string();
-                let bytes = field.bytes().await.map_err(|e| bad(e.to_string()))?;
+                let bytes = read_field_bytes_limited(&mut field).await?;
                 let size = bytes.len() as u64;
                 let path = write_temp_upload(&bytes).map_err(|e| bad(e.to_string()))?;
                 temp_paths_to_clean.push(path.clone());
@@ -119,10 +162,14 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<ParsedUpload, (Stat
                 dir_files.push(UploadFile { temp_path: path, rel_path: String::new(), size });
             }
             "gxpDocs" => {
+                file_field_count += 1;
+                if file_field_count > MAX_FILES {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": format!("Too many files (max {MAX_FILES}).") })));
+                }
                 let fname = field.file_name().unwrap_or("document").to_string();
                 let mime = field.content_type().map(|c| c.to_string());
-                let bytes = field.bytes().await.map_err(|e| bad(e.to_string()))?;
-                gxp_doc_files.push((fname, mime, bytes.to_vec()));
+                let bytes = read_field_bytes_limited(&mut field).await?;
+                gxp_doc_files.push((fname, mime, bytes));
             }
             _ => {
                 let _ = field.bytes().await;
@@ -498,14 +545,14 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
                 let server_token = ignite_github_api::resolve_server_github_token();
                 let log_5 = log.clone();
                 let result: Result<(), String> = async {
-                    let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, "nunomcpereira/ai-guardrails-orchestrator", "ai-guardrails-orchestrator.yml", &server_token, {
+                    let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &server_token, {
                         let l = log_5.clone();
                         move |m| l.log(5, m)
                     })
                     .await
                     .map_err(|e| e.to_string())?;
-                    log_5.log(5, "Executing org governance workflows locally with act (event: push).");
-                    ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: "push".to_string(), act_timeout_min: 20 }, {
+                    log_5.log(5, &format!("Executing org governance workflows locally with act (event: {}).", state.config.governance.event));
+                    ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: state.config.governance.event.clone(), act_timeout_min: state.config.governance.timeout_minutes as u64 }, {
                         let l = log_5.clone();
                         move |m| l.log(5, m)
                     })
@@ -772,7 +819,20 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
 }
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/api/pipeline", post(pipeline)).route("/api/pipeline/:jobId/review-decision", post(review_decision))
+    Router::new()
+        // Axum's `Multipart` extractor otherwise enforces its own default
+        // 2MB whole-body limit (`DefaultBodyLimit`) — disabled here because
+        // `parse_multipart`/`read_field_bytes_limited` now enforce the real
+        // per-file/per-field-count limits matching server.js's multer
+        // config exactly (MAX_FILE_BYTES/MAX_FILES above), which a single
+        // whole-body cap can't express (a folder upload with many small
+        // files can legitimately total well over 1GB in Node as long as no
+        // single file exceeds it). Scoped to just this route, not the
+        // whole router, so JSON endpoints elsewhere keep axum's smaller
+        // stock default, closer to server.js's separate
+        // `express.json({ limit: '1mb' })` cap on those.
+        .route("/api/pipeline", post(pipeline).layer(axum::extract::DefaultBodyLimit::disable()))
+        .route("/api/pipeline/:jobId/review-decision", post(review_decision))
 }
 
 #[cfg(test)]
@@ -862,6 +922,80 @@ mod tests {
         assert_eq!(done["ok"], false);
         assert_eq!(done["phase"], 6);
         assert!(done["error"].as_str().unwrap().contains("interrupted"));
+    }
+
+    /// Real end-to-end test of `read_field_bytes_limited_to`'s streaming
+    /// rejection, against a genuine `axum::extract::Multipart` `Field`
+    /// (not a mock) — a tiny standalone route lets this run at a 10-byte
+    /// scale instead of needing an actual 1GB upload to exercise the
+    /// production `MAX_FILE_BYTES` constant. Regression coverage for the
+    /// multer-parity fix: a per-file limit enforced by streaming `.chunk()`
+    /// calls and rejecting mid-stream, not by buffering the whole field
+    /// first (which would defeat the point of a size limit).
+    #[tokio::test]
+    async fn read_field_bytes_limited_to_rejects_mid_stream_and_accepts_within_limit() {
+        async fn probe(mut mp: Multipart) -> String {
+            let Some(mut field) = mp.next_field().await.unwrap() else { return "none".into() };
+            match read_field_bytes_limited_to(&mut field, 10).await {
+                Ok(bytes) => format!("ok:{}", bytes.len()),
+                Err((status, _)) => format!("rejected:{}", status.as_u16()),
+            }
+        }
+        let app = axum::Router::new().route("/probe", post(probe));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+
+        let over_limit = Form::new().part("f", Part::bytes(vec![0u8; 25]).file_name("big.bin"));
+        let res = client.post(format!("{base}/probe")).multipart(over_limit).send().await.unwrap();
+        assert_eq!(res.text().await.unwrap(), "rejected:413");
+
+        let within_limit = Form::new().part("f", Part::bytes(vec![0u8; 5]).file_name("small.bin"));
+        let res = client.post(format!("{base}/probe")).multipart(within_limit).send().await.unwrap();
+        assert_eq!(res.text().await.unwrap(), "ok:5");
+    }
+
+    #[tokio::test]
+    async fn accepts_upload_larger_than_axum_default_body_limit() {
+        // Axum's `Multipart` extractor enforces its own default 2 MB
+        // whole-body limit unless disabled per-route; server.js's multer
+        // config bounds each *file* to 1 GB (MAX_ZIP_BYTES) with no
+        // whole-body cap at all. Proves the `DefaultBodyLimit::disable()`
+        // on this route actually takes effect by sending a real multipart
+        // body over 2 MB — incompressible filler bytes, so zip deflate
+        // can't shrink the wire size back under the old limit.
+        let (base, state) = spawn_test_server().await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let mut filler = vec![0u8; 3 * 1024 * 1024];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut filler);
+        let zip = zip_bytes(&[("app.js", b"console.log(1);"), ("package.json", b"{\"name\":\"fixture\"}"), ("filler.bin", &filler)]);
+        assert!(zip.len() > 2 * 1024 * 1024, "fixture must exceed the old 2MB default to actually exercise the override, got {} bytes", zip.len());
+        let form = Form::new().text("org", "-bad-").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
+
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+
+        let job_id = loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let running = state.running_runs.lock().unwrap();
+            if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
+                break id.clone();
+            }
+            drop(running);
+        };
+        let resolved = state.review_gate.resolve(
+            &job_id,
+            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
+        );
+        assert!(resolved);
+
+        let res = handle.await.unwrap();
+        // A 413/400 here would mean the body-limit override didn't take —
+        // 200 with real phase-1 events means multipart parsing succeeded.
+        assert_eq!(res.status(), 200);
+        let events = read_ndjson(res).await;
+        assert!(events.iter().any(|e| e["type"] == "status" && e["phase"] == 1));
     }
 
     // Ignored by default: this route has no `runLocalCi`/`fast` toggle

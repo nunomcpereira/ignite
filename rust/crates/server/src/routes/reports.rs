@@ -26,7 +26,7 @@ async fn sbom(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Re
         Err(r) => return r,
     };
     let manifests = ignite_package_hallucination::default_manifests();
-    match ignite_sbom::generate_sbom(&project_path, &state.runner, true, &manifests, 1000).await {
+    match ignite_sbom::generate_sbom(&project_path, &state.runner, state.config.sbom.syft.enabled, &manifests, 1000).await {
         Ok(result) => Json(json!({ "ok": true, "projectPath": project_path, "engine": result.engine, "sbom": result.sbom })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
@@ -37,7 +37,7 @@ async fn loc_metrics(State(state): State<Arc<AppState>>, Json(body): Json<Value>
         Ok(p) => p,
         Err(r) => return r,
     };
-    let result = ignite_loc_metrics::generate_loc_metrics(&project_path, &state.runner, true).await;
+    let result = ignite_loc_metrics::generate_loc_metrics(&project_path, &state.runner, state.config.metrics.gocloc.enabled).await;
     Json(json!({ "ok": true, "projectPath": project_path, "engine": result.engine, "metrics": result.metrics })).into_response()
 }
 
@@ -46,7 +46,11 @@ async fn posture(State(state): State<Arc<AppState>>, Json(body): Json<Value>) ->
         Ok(p) => p,
         Err(r) => return r,
     };
-    let config = ignite_feature_posture::FeaturePostureConfig { enabled: true, ruleset: String::new(), max_scan_file_bytes: 1_000_000 };
+    // See studio.rs's posture handler: an empty ruleset makes semgrep run
+    // "successfully" with zero rules, silently reporting every category
+    // MISSING instead of the real read — reuse the config-resolved
+    // absolute ignite-posture-rules.yaml path instead.
+    let config = ignite_feature_posture::FeaturePostureConfig { enabled: state.config.compliance.posture.enabled, ruleset: state.config.compliance.posture.ruleset.clone(), max_scan_file_bytes: 1_000_000 };
     match ignite_feature_posture::check_feature_posture(&project_path, &state.runner, &config).await {
         Ok(result) => Json(json!({ "ok": true, "projectPath": project_path, "engine": result.engine, "posture": result.posture })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),

@@ -7,13 +7,27 @@ mod auth;
 mod phase4_config;
 mod review_gate;
 mod routes;
+mod security;
 mod state;
 
 use state::AppState;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use tower_http::services::ServeDir;
 
-fn build_router(state: Arc<AppState>) -> axum::Router {
+/// Mirrors server.js's `app.use(express.static(path.join(__dirname,
+/// 'public')))`: static assets — including `public/index.html`, the
+/// single-file SPA — are served for any request path that doesn't match
+/// one of the API routes above. Mounted as a `fallback_service` (checked
+/// only after every other route fails to match), same effective ordering
+/// as Express's static-middleware-before-routes, since none of the API
+/// routes ever collide with a static asset path. The security-headers and
+/// `/api` rate-limit middlewares (server.js:77-104) are layered on last so
+/// they wrap the fallback static service too, matching Express mounting
+/// both before every route including the static one.
+fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
+    let rate_limiter = Arc::new(security::RateLimiter::default());
     axum::Router::new()
         .merge(auth::router())
         .merge(routes::tools_status::router())
@@ -34,6 +48,9 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
         .merge(routes::studio::router())
         .merge(routes::effectivate::router())
         .with_state(state)
+        .fallback_service(ServeDir::new(public_dir))
+        .layer(axum::middleware::from_fn_with_state(rate_limiter, security::rate_limit_middleware))
+        .layer(axum::middleware::from_fn(security::security_headers_middleware))
 }
 
 #[tokio::main]
@@ -61,13 +78,14 @@ async fn main() {
         package_hallucination_checker: state::default_package_hallucination_checker(),
     });
     let config_port = state.config.port;
-    let app = build_router(state);
+    let public_dir = config_dir.join("public");
+    let app = build_router(state, &public_dir);
 
     // Mirrors server.js: `process.env.PORT || CONFIG.port`.
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config_port);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("failed to bind port");
     tracing::info!("Ignite (Rust) listening on http://0.0.0.0:{port}");
-    axum::serve(listener, app).await.expect("server error");
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.expect("server error");
 }
 
 #[cfg(test)]
@@ -88,16 +106,37 @@ mod tests {
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
         });
-        let app = build_router(state);
+        let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
+        let app = build_router(state, &public_dir);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
         });
         // leak the tempdir so the db file survives for the life of the test process
         std::mem::forget(db_dir);
         format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn root_serves_spa_index_html() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(&base).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let content_type = res.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+        assert!(content_type.contains("text/html"), "unexpected content-type: {content_type}");
+        let body = res.text().await.unwrap();
+        assert!(body.contains("<html"), "expected real index.html content, got: {}", &body[..body.len().min(200)]);
+    }
+
+    #[tokio::test]
+    async fn unknown_path_falls_through_to_404() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/definitely-not-a-real-asset.xyz")).send().await.unwrap();
+        assert_eq!(res.status(), 404);
     }
 
     #[tokio::test]

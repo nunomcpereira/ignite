@@ -451,8 +451,15 @@ async fn sbom(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) ->
         Err(r) => return r,
     };
     let manifests = ignite_package_hallucination::default_manifests();
-    match ignite_sbom::generate_sbom(&ctx.root, &state.runner, true, &manifests, 1000).await {
-        Ok(result) => Json(json!({ "ok": true, "sbom": result })).into_response(),
+    // routes/studio.js's equivalent spreads the check result's own fields
+    // (`{ engine, sbom }`/`{ engine, metrics }`/`{ engine, posture }`) into
+    // the top-level JSON object (`res.json({ ok: true, ...result })`), not
+    // nested under a same-named key — the frontend's render* functions read
+    // `data.engine`/`data.sbom` directly. Nesting here (as this route
+    // previously did) doubled up the key (`data.sbom.sbom`) and left every
+    // field the frontend actually reads undefined.
+    match ignite_sbom::generate_sbom(&ctx.root, &state.runner, state.config.sbom.syft.enabled, &manifests, 1000).await {
+        Ok(result) => Json(json!({ "ok": true, "engine": result.engine, "sbom": result.sbom })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -462,8 +469,8 @@ async fn loc_metrics(State(state): State<Arc<AppState>>, Path(job_id): Path<Stri
         Ok(c) => c,
         Err(r) => return r,
     };
-    let result = ignite_loc_metrics::generate_loc_metrics(&ctx.root, &state.runner, true).await;
-    Json(json!({ "ok": true, "metrics": result })).into_response()
+    let result = ignite_loc_metrics::generate_loc_metrics(&ctx.root, &state.runner, state.config.metrics.gocloc.enabled).await;
+    Json(json!({ "ok": true, "engine": result.engine, "metrics": result.metrics })).into_response()
 }
 
 async fn posture(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
@@ -471,9 +478,15 @@ async fn posture(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
         Ok(c) => c,
         Err(r) => return r,
     };
-    let config = ignite_feature_posture::FeaturePostureConfig { enabled: true, ruleset: String::new(), max_scan_file_bytes: 1_000_000 };
+    // Reuses the real config-resolved ruleset path (absolute path to
+    // ignite-posture-rules.yaml next to config.json — see
+    // ignite_config::load_config), not a hardcoded empty string: an empty
+    // `--config` still runs semgrep "successfully" with zero rules loaded,
+    // silently producing an all-MISSING report instead of a real posture
+    // read — wrong, not just unavailable.
+    let config = ignite_feature_posture::FeaturePostureConfig { enabled: state.config.compliance.posture.enabled, ruleset: state.config.compliance.posture.ruleset.clone(), max_scan_file_bytes: 1_000_000 };
     match ignite_feature_posture::check_feature_posture(&ctx.root, &state.runner, &config).await {
-        Ok(result) => Json(json!({ "ok": true, "posture": result })).into_response(),
+        Ok(result) => Json(json!({ "ok": true, "engine": result.engine, "posture": result.posture })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -627,11 +640,30 @@ mod tests {
         let (base, _state, job_id) = spawn_test_server_with_live_run(dir.path().to_path_buf(), dir.path().to_path_buf()).await;
         let client = reqwest::Client::new();
 
+        // Regression test for a real shape bug: these three responses must
+        // spread the check result's own fields at the top level (`engine`,
+        // `sbom`/`metrics`/`posture` as siblings of `ok`), matching
+        // routes/studio.js's `res.json({ ok: true, ...result })`. Nesting
+        // under a same-named key instead (`data.sbom.sbom`) leaves every
+        // field the frontend's renderStudio* functions actually read
+        // (`data.engine`, `data.sbom`, etc.) undefined — this is exactly
+        // what caused a "Cannot read properties of undefined" crash and
+        // blank SBOM/LOC/Posture panels in the real browser UI.
+        let sbom: Value = client.get(format!("{base}/api/pipeline/{job_id}/studio/sbom")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(sbom["ok"], true);
+        assert!(sbom.get("engine").is_some(), "engine must be a top-level sibling of ok, not nested under sbom: {sbom}");
+        assert!(sbom.get("sbom").is_some(), "sbom field missing: {sbom}");
+        assert!(sbom["sbom"].get("sbom").is_none(), "sbom must not be double-nested (data.sbom.sbom): {sbom}");
+
         let loc: Value = client.get(format!("{base}/api/pipeline/{job_id}/studio/loc-metrics")).send().await.unwrap().json().await.unwrap();
         assert_eq!(loc["ok"], true);
+        assert!(loc.get("engine").is_some(), "engine must be top-level, not nested under metrics: {loc}");
+        assert!(loc["metrics"].get("metrics").is_none(), "metrics must not be double-nested: {loc}");
 
         let posture: Value = client.get(format!("{base}/api/pipeline/{job_id}/studio/posture")).send().await.unwrap().json().await.unwrap();
         assert_eq!(posture["ok"], true);
+        assert!(posture.get("engine").is_some(), "engine must be top-level, not nested under posture: {posture}");
+        assert!(posture["posture"].get("posture").is_none(), "posture must not be double-nested: {posture}");
 
         let prov: Value = client.get(format!("{base}/api/pipeline/{job_id}/studio/provenance")).send().await.unwrap().json().await.unwrap();
         assert_eq!(prov["ok"], true);

@@ -13,3 +13,8 @@ docs
 test
 scripts
 *.md
+# Rust build output - regenerated fresh inside the rust-builder stage on
+# every image build; shipping the host's own target/ (tens of GB, and the
+# wrong platform's object files whenever the build host and the Docker
+# build platform differ) would balloon the build context for no benefit.
+rust/target

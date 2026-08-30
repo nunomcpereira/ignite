@@ -1,5 +1,188 @@
 # Rust rewrite — migration status
 
+## MCP HTTP transport bound to loopback only — found via live docker-compose testing, fixed (2026-08-30)
+
+`crates/mcp-server/src/main.rs`'s `run_http` hardcoded
+`TcpListener::bind(("127.0.0.1", port))`. mcp-server.js's real behavior is
+`app.listen(port, ...)` with **no host argument** — plain Express/Node
+`listen(port)` binds all interfaces by default, same as any bare
+`http.Server.listen(port)`. This was a real regression, not a match: found
+by actually running the rebuilt `mcp-server` binary inside the live
+docker-compose container (the same one `docker-compose.yml` already
+exposes port 51338 from) and driving a real MCP JSON-RPC handshake from
+the host — `curl` connected successfully but got "Connection reset by
+peer" on every request, because the process itself was refusing every
+connection arriving through Docker's port-forward NAT (which doesn't
+appear to the process as literally `127.0.0.1`). Unlike
+`guidelines-api.js`/its Rust port, which *deliberately* binds 127.0.0.1
+loopback-only plus its own defense-in-depth per-request middleware (see
+`crates/guidelines-api/src/main.rs`), mcp-server.js has no such
+loopback-only design — it's meant to be reachable however deployed.
+
+Fixed: bind to `0.0.0.0` instead. Verified with real running processes
+end to end, not just the existing unit test (which only ever exercised a
+same-process ephemeral-port connection and so never would have caught
+this): (1) **stdio transport** — piped a real `initialize` →
+`notifications/initialized` → `tools/list` JSON-RPC sequence into the
+actual release binary via stdin, got back the real `serverInfo`
+(`rmcp`/3.1.4) and the full real list of all 9 tools. (2) **HTTP transport,
+bare-metal** — started the rebuilt binary standalone, curled it from the
+host over real IPv4, got a real session id and the same 9-tool list, plus
+a real `tools/call` against `list_guidelines` returning real guideline
+data (not a mock). (3) **HTTP transport, inside the live container** —
+exec'd the rebuilt `mcp-server` binary into the already-running
+docker-compose container and confirmed the same handshake now succeeds
+from the host through the real Docker port-forward, where it previously
+reset the connection. Docker image rebuilt with the fix.
+
+## Two more real gaps found via live browser testing, fixed (2026-08-30)
+
+**Governance CI (Phase 5) ignored config.json's real repo/workflow/event/
+timeout entirely.** All three pipeline entry points
+(`pipeline_validate.rs`, `pipeline_onboard.rs`, `pipeline_interactive.rs`)
+hardcoded a literal `"nunomcpereira/ai-guardrails-orchestrator"` /
+`"ai-guardrails-orchestrator.yml"` / `act_event: "push"` / `act_timeout_min:
+20` instead of reading `state.config.governance.{repo,workflow,event,
+timeout_minutes}` — apparent leftover dev-testing values that never got
+wired to the real config, silently ignoring `config.json`'s actual
+`governance.repo`/`workflow`/`event`/`timeoutMinutes` for every deployment
+except the one org/repo those hardcoded strings happened to name. Caught
+live: a real onboarding run in the browser failed Phase 5 with `gh: Not
+Found (HTTP 404)` fetching that hardcoded repo, which doesn't exist under
+this user's GitHub account — Node's `server.js` (lines 818-819) reads
+`GOVERNANCE_REPO`/`GOVERNANCE_WORKFLOW` env vars falling back to
+`CONFIG.governance.repo`/`workflow`; the Rust `GovernanceConfig` struct and
+its `config.json` defaults already existed and were correct
+(`ignite-config`), just never actually read by any call site. Fixed all
+three call sites, and added the missing `GOVERNANCE_REPO`/
+`GOVERNANCE_WORKFLOW`/`ACT_EVENT`/`ACT_TIMEOUT_MIN` env-var overrides to
+`ignite-config`'s `apply_env_overrides` (Node has these; Rust didn't). New
+test `governance_config_json_and_env_overrides_both_take_effect` in
+`ignite-config` proves both config.json and env-var overrides actually
+reach `Config.governance`.
+
+**Multer per-file-size semantics gap, previously left as a documented
+"deliberately not fixed" limitation, now actually closed.** The prior
+multipart-upload fix (see below) capped the *whole request body* at 1GB via
+`DefaultBodyLimit::max`; server.js's real multer config
+(`{ fileSize: MAX_ZIP_BYTES, files: 100000 }`) instead bounds each
+individual file *part* to 1GB with no whole-body cap, and separately caps
+file-part *count* at 100,000 — a folder upload with many small files
+summing past 1GB is valid in Node but was rejected in Rust. Fixed in
+`pipeline_interactive.rs`: `DefaultBodyLimit::disable()`'d on the route,
+replaced with real streaming enforcement — `read_field_bytes_limited_to`
+reads each file field via `.chunk()` (not `.bytes()`, which would buffer
+past the limit before rejection is possible) and rejects mid-stream past
+`MAX_FILE_BYTES` (1GB), while `file_field_count` rejects past `MAX_FILES`
+(100,000) — counting only file-bearing fields (archive/files/gxpDocs), not
+text fields (org/repo/dryRun/...), matching multer's own "file fields only"
+semantics for its `files` limit. New test
+`read_field_bytes_limited_to_rejects_mid_stream_and_accepts_within_limit`
+proves real rejection/acceptance behavior against a genuine
+`axum::extract::Multipart` `Field` (a tiny standalone probe route with a
+10-byte test limit, not a 1GB upload) — real streaming behavior verified at
+a scale a test suite can actually run.
+
+Both fixes verified: `cargo test --release --workspace` (excluding the two
+`bench-*` micro-benchmark crates) — clean, exit 0, no failures. Docker
+image rebuilt and redeployed with both fixes.
+
+## Static frontend serving — found missing, fixed (2026-08-30)
+
+Despite this file's prior "nothing structural remains" claim, `ignite-server`
+never served `public/index.html` (or any static asset) at all — `GET /`
+returned a bare 404, `content-length: 0`. Node's `server.js` does this with
+one line, `app.use(express.static(path.join(__dirname, 'public')))`
+(server.js:122); no equivalent existed anywhere in `crates/server`. Found by
+manually loading the running Rust server in a browser — every API route
+worked (`/api/tools/status` etc.), only the frontend was unreachable, so this
+had gone undetected by the route-level tests, which never hit `/`.
+
+**Two more real gaps found the same way, same session:** `helmet`'s
+security-header middleware (server.js:77-92 — CSP, COOP/CORP,
+Referrer-Policy, HSTS, X-Frame-Options, etc., with `crossOriginEmbedderPolicy`
+deliberately disabled) and the coarse `express-rate-limit` backstop on `/api`
+(server.js:99-104, 300 req/60s per IP) had no Rust equivalent anywhere.
+Ported both into new `crates/server/src/security.rs`: `security_headers_middleware`
+(an `axum::middleware::from_fn` setting the same header set/values helmet's
+defaults produce, plus the custom CSP directives and the intentional absence
+of `Cross-Origin-Embedder-Policy`) and `RateLimiter`/`rate_limit_middleware`
+(a fixed-window per-IP counter behind `axum::middleware::from_fn_with_state`,
+gated to paths starting with `/api`, emitting the same `RateLimit-Limit`/
+`RateLimit-Remaining`/`RateLimit-Reset` headers `standardHeaders: true` +
+`legacyHeaders: false` produces). Required switching `main()`'s
+`axum::serve` (both the real binary and the test harness) to
+`app.into_make_service_with_connect_info::<SocketAddr>()` so the rate
+limiter can key on the real client IP.
+
+**A fourth gap, found via a live user-reported failure in the same
+session:** uploading a real 5.2 MB project folder through the browser UI
+failed at phase 1 with "Error parsing `multipart/form-data` request" —
+axum's `Multipart` extractor enforces its own default 2 MB body limit
+(`DefaultBodyLimit`) unless overridden per-route, and nothing in
+`pipeline_interactive.rs` had ever set one, unlike server.js's multer
+config (`MAX_ZIP_BYTES = 1024*1024*1024`, a real 1 GB cap). Fixed by adding
+`.layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BYTES))` scoped to
+just the `POST /api/pipeline` route (not the whole router — JSON endpoints
+elsewhere keep axum's smaller stock default, closer to server.js's separate
+`express.json({ limit: '1mb' })` cap on those). New test
+`accepts_upload_larger_than_axum_default_body_limit` sends a real >2 MB
+multipart body with incompressible filler bytes (so zip deflate can't
+shrink the wire size back under the old limit) and asserts phase 1 actually
+runs rather than getting a 413/400 — this is a regression test for exactly
+the failure mode the user hit.
+
+All four fixes verified: `cargo test -p ignite-server --release` — 85
+passed, 1 pre-existing `#[ignore]`d (needs real Docker/`act`), 0 failed.
+Also verified live against the actual running binary: a real >2MB
+multipart upload that previously 400'd now streams real phase 1-3 NDJSON
+events end to end.
+
+**Full audit after these four, since the status file's prior "nothing
+structural remains" claim had already been proven wrong once this
+session:** cross-referenced every `app.use(...)` in server.js (6 total —
+helmet, rate-limit, express.json, attachUser, auth.router, express.static —
+all 6 now have a Rust equivalent) and every route across all 17
+`routes/*.js` files plus `auth.js`'s 12 endpoints against
+`crates/server/src/routes/*.rs` and `crates/server/src/auth*`, path by path
+— full 1:1 match, nothing missing. Also checked `guidelines-api.js`'s
+per-request loopback-only guard (defense-in-depth on top of binding to
+127.0.0.1) — already correctly ported in `crates/guidelines-api/src/main.rs`.
+
+**One narrow, real, deliberately-not-fixed gap found in this pass:**
+`multer`'s config (server.js:161-164) is `{ fileSize: MAX_ZIP_BYTES,
+files: 100000 }` — `fileSize` limits each individual multipart *part* to
+1GB, `files` caps the part *count* at 100000; a folder upload with many
+small files can total well over 1GB in Node as long as no single file
+exceeds it. The Rust fix above (`DefaultBodyLimit::max`) instead caps the
+*whole request body* at 1GB — a real semantic difference for very large
+folder uploads (many-small-files summing past 1GB), though every
+realistically-sized project upload (the case this session's actual bug
+report was about) is unaffected. Not fixed here: axum's `Multipart`
+extractor has no built-in per-part byte counter or part-count limit to
+hook the same way `DefaultBodyLimit` hooks the whole-body case; doing this
+faithfully means hand-tracking bytes-per-field and field-count inside
+`parse_multipart`'s existing `while let Some(field) = ...` loop. Flagged
+here rather than silently left, per this file's own standing practice of
+disclosing gaps honestly instead of overclaiming completeness.
+
+Fixed in `crates/server/src/main.rs`: `build_router` now takes a `public_dir:
+&Path` and mounts `tower_http::services::ServeDir::new(public_dir)` as
+`.fallback_service(...)` — checked only after every API route fails to
+match, the same effective ordering Express gets from mounting static
+middleware before its route handlers (none of Ignite's API paths collide
+with a static asset name, so this is behaviorally identical). `main()` passes
+`config_dir.join("public")`, mirroring `express.static(path.join(__dirname,
+'public'))`'s directory convention. Required adding tower-http's `fs`
+feature (`Cargo.toml`) alongside the existing `trace` feature. 2 new tests:
+`root_serves_spa_index_html` (real GET `/` against the actual `public/`
+directory, asserts `text/html` + real `<html` content, not just a 200) and
+`unknown_path_falls_through_to_404` (an unmatched path still 404s rather
+than the fallback swallowing everything). Verified live: killed and
+restarted the actual running `ignite-server` binary, confirmed `curl -o
+/dev/null -w "%{http_code}" http://localhost:51337/` returns `200`, and
+loaded it in a real browser — full Ignite Studio UI renders.
+
 ## Performance optimization session (2026-08-30) — IN PROGRESS, resume after reboot
 
 Migration itself is done (see below) — this was a follow-on effort to make
@@ -89,6 +272,85 @@ scans, and two long-lived servers for many hours straight across this
 session) rather than a fixable bug in the Rust codebase. No root cause
 found after real investigation — this is the specific thing to re-verify
 after a reboot, not to re-diagnose from scratch.
+
+---
+
+## Post-reboot re-run (2026-08-30, quiet system)
+
+Re-ran the 5-project benchmark per the resume prompt below, immediately
+after a reboot (load average 1.78/4.75/5.41 at start — Spotlight
+reindexing + Dropbox resync settling, no heavy competing process).
+career-ops/tradingfriend/IoC/SolventAI got the full 3-trial median
+treatment; tadone got a single trial per implementation instead of three
+— its own scans run 5-16+ minutes each, and 3×2 of those wasn't worth the
+wall-clock cost for what turned out to be a data-integrity-limited
+comparison anyway (see below).
+
+| Project | Node (median) | Rust (median) | Result |
+|---|---|---|---|
+| career-ops | 117s | 31s | **Rust wins big** (−73%) |
+| tradingfriend | 1s | 0s | parity (0 issues either side, both near-instant) |
+| IoC | 142s | 69s | **Rust wins** (−51%) — but see parity note below |
+| SolventAI | 2s | 0s | parity (0 issues either side, both near-instant) |
+| tadone | 983s (1 trial) | 332s (1 trial) | **not a valid comparison** — see below |
+
+Rust wins on every project with real work to do, by a wider margin than
+the pre-reboot numbers — consistent with a quiet system removing the
+contention that made IoC/SolventAI look like Node wins last time.
+
+**IoC issue-count mismatch (22 Node vs. 28 Rust) — root-caused, not a
+Rust bug:** the extra 6 are all `pii-dataflow` (Bearer) findings in
+`backend/app/services/smtp_client.py`. The real `/Users/nuno/tests/IoC`
+checkout has an untracked `.ignite-review.md`/`.ignite/` left over from a
+prior scan, so `resolveBearerDiffBase`/`resolve_bearer_diff_base` (identical
+logic on both sides) sees a dirty working tree and both implementations
+fall back to Bearer's slow full scan instead of `--diff`. Node's Bearer
+subprocess ran past the shared 120s `runTool` default and was killed;
+the failure was swallowed by `checkPiiDataFlow`'s fail-soft catch and
+misleadingly logged as `✓ Check 8 skipped — bearer disabled or not
+installed`. Rust's invocation finished under the same 120s budget and
+returned the real findings. Confirmed via the response `events[]` log on
+the Node side — not a timeout config difference (both default to
+120,000ms), a wall-clock race under full-scan mode. Net effect: Node's
+142s IoC number is for an *incomplete* scan; Rust's 69s number is for the
+complete one. The timing win is real and probably understated once Node
+is made to actually finish this check.
+
+**tadone (1 trial each) — same failure class, worse, makes this trial
+unusable as a timing data point:** Node's single run hit *three* separate
+subprocess timeouts under the 20-way Phase 4 concurrent fan-out — a real
+`gitleaks detect` (600s), `spectral lint` (120s), and `semgrep`
+semantic-SAST (600s) — each silently degrading to zero findings via the
+same fail-soft pattern as the Bearer case above. Result: Node reported
+only 6 issues (`iac-security` 3, `license-compliance` 2,
+`dependency-vulnerability` 1) — missing the `secret` (16),
+`semantic-sast` (2), and `api-schema-lint` (4) categories entirely. Rust's
+single run reported 28 issues across exactly those same six categories
+with the same per-category counts (16/3/4/2/1 core five plus 2
+semantic-sast) that the prior full scan-comparison in this file already
+verified as file:line-exact parity against Node — i.e. Rust did the
+complete job in 332s; Node's 983s is the wall-clock cost of a run that
+never finished three of its checks. **Not a Rust regression and not
+evidence Rust is 3x faster on tadone specifically** — it's evidence
+Node's per-subprocess timeouts (120s/600s, unchanged from the original
+Node design) are too tight for tadone's real scan cost when run
+concurrently with everything else Phase 4 fires at once, especially
+sharing a machine with a second long-running server and other load. A
+fair tadone timing comparison would need Node's timeouts raised (or the
+machine dedicated to just that one run) so both sides actually complete
+the same work — not attempted here.
+
+**Separate, real Node robustness finding (not new — same category as the
+4 Node server crashes already logged below for tadone):** the fail-soft
+pattern that turns "subprocess timed out" into "tool skipped/disabled" is
+doing real harm here — three different checks degraded silently with a
+misleading log line, rather than surfacing as a distinguishable
+"timed out, findings incomplete" signal. Worth fixing in `server.js`
+independent of the Rust work (raise the specific timeouts that matter for
+large-repo full scans, and/or make the swallowed-timeout log line say
+"timed out" instead of implying the tool isn't installed) — out of scope
+for this performance-optimization pass, flagged for whoever picks up
+Node-side hardening next.
 
 **A separate, real finding — not a Rust bug, not blocking the goal
 above:** Node's own server crashed **4 times** this session, always via an
@@ -453,8 +715,6 @@ this list ever named is ported and tested. What's left is only the
 smaller gaps already noted inline in doc comments across the routes
 above — none of them block correctness or the scan comparison:
 - GxP document persistence as real files (currently in-memory/report-only).
-- Per-Phase-4-task timing breakdown (aggregate timing exists; per-task
-  doesn't).
 - No SMTP transport wired anywhere in the Rust port (override-email
   notifications and the `create-api-key` owner-notification email are
   both built via `ignite-notifications`'s real HTML builders and honestly
@@ -474,8 +734,19 @@ deterministic category — see top of this file). Remaining smaller gaps
 are the "Not done yet" list above; none block relying on the Rust port
 for onboarding-gate use.
 
-**Performance optimization is mid-flight — see the top section of this
-file ("Performance optimization session (2026-08-30)").** After a reboot,
-resume with this sentence:
+**Performance optimization's core question is answered: Rust beats Node
+on every project with real work to do** (career-ops −73%, IoC −51% even
+with Node's scan incomplete, tradingfriend/SolventAI at parity with
+near-zero work). See "Post-reboot re-run (2026-08-30, quiet system)" in
+the top section for the full numbers and the two root-caused issue-count
+mismatches (both Node-side subprocess timeouts under concurrent load,
+not Rust bugs).
 
-> Continue the Rust performance optimization loop from `rust/MIGRATION_STATUS.md` — re-run the full 5-project benchmark now that the system is quiet, focusing on getting a clean tadone number and re-checking IoC's regression.
+**What's left, if picked back up:** a clean tadone timing number needs
+Node's `runTool` subprocess timeouts (120s/600s, shared default across
+gitleaks/spectral/semgrep/bearer) raised enough that Node actually
+finishes all its Phase 4 checks on a repo tadone's size — right now
+Node's tadone number is for an incomplete scan, so it's not a fair
+comparison point. That's a Node-side change, not a Rust one. Resume with:
+
+> Continue the Rust performance optimization loop from `rust/MIGRATION_STATUS.md` — the post-reboot re-run is done and Rust wins are verified; if a clean tadone timing number is still wanted, raise Node's per-subprocess timeouts first so its scan actually completes, then re-run tadone on both sides.

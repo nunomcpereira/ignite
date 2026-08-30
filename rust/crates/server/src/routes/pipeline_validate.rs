@@ -348,14 +348,14 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                 let root = project_root.clone().unwrap();
                 let l5 = logger.clone();
                 let wf_result = time_stage(&timings, "fetchGovernanceWorkflow", async {
-                    ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, "nunomcpereira/ai-guardrails-orchestrator", "ai-guardrails-orchestrator.yml", &gh_token, move |m| l5.log(5, m)).await
+                    ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &gh_token, move |m| l5.log(5, m)).await
                 })
                 .await;
                 match wf_result {
                     Ok(wf_file) => {
-                        logger.log(5, "Executing org governance workflows locally with act (event: push).");
+                        logger.log(5, &format!("Executing org governance workflows locally with act (event: {}).", state.config.governance.event));
                         let l5b = logger.clone();
-                        let run_result = time_stage(&timings, "runActionsLocally", async { ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: "push".to_string(), act_timeout_min: 20 }, move |m| l5b.log(5, m)).await }).await;
+                        let run_result = time_stage(&timings, "runActionsLocally", async { ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: state.config.governance.event.clone(), act_timeout_min: state.config.governance.timeout_minutes as u64 }, move |m| l5b.log(5, m)).await }).await;
                         match run_result {
                             Ok(_) => {
                                 logger.log(5, "✓ All org governance jobs passed locally.");

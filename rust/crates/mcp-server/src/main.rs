@@ -317,6 +317,18 @@ fn mcp_http_port() -> u16 {
     std::env::var("MCP_HTTP_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(51338)
 }
 
+/// Pulled out as its own function so a test can pin this regression
+/// directly: `run_http` previously hardcoded `"127.0.0.1"` inline, which
+/// silently broke every connection arriving through Docker's port-forward
+/// NAT (see the module-level comment on the real `TcpListener::bind` call
+/// below) — a bug no unit test caught because the existing HTTP-transport
+/// test builds its own listener/router rather than calling `run_http`
+/// itself. mcp-server.js's real behavior (`app.listen(port)`, no host
+/// argument) binds all interfaces by default.
+fn mcp_http_bind_host() -> &'static str {
+    "0.0.0.0"
+}
+
 async fn run_http() -> anyhow::Result<()> {
     let port = mcp_http_port();
     let session_manager = std::sync::Arc::new(
@@ -328,8 +340,19 @@ async fn run_http() -> anyhow::Result<()> {
         Default::default(),
     );
     let app = axum::Router::new().route_service("/mcp", AxumStreamableHttp(service));
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    eprintln!("[mcp] ai-validation-guidelines listening on http://localhost:{port}/mcp (Streamable HTTP)");
+    // mcp-server.js's `app.listen(port, ...)` (no host argument) binds all
+    // interfaces by default, same as any bare Express `listen(port)` call —
+    // unlike guidelines-api.js, which deliberately binds 127.0.0.1 and adds
+    // its own loopback-only request middleware as defense in depth (see
+    // crates/guidelines-api/src/main.rs). Binding to 127.0.0.1 here instead
+    // was a real regression: found via a live docker-compose deployment
+    // (the same container docker-compose.yml already exposes port 51338
+    // from) where an external client got "Connection reset by peer" — the
+    // process was refusing every connection arriving through Docker's
+    // port-forward NAT because it wasn't listening on any interface that
+    // traffic actually arrives on.
+    let listener = tokio::net::TcpListener::bind((mcp_http_bind_host(), port)).await?;
+    eprintln!("[mcp] ai-validation-guidelines listening on http://{}:{port}/mcp (Streamable HTTP)", mcp_http_bind_host());
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -353,6 +376,17 @@ async fn main() -> anyhow::Result<()> {
 mod http_transport_tests {
     use super::*;
     use serde_json::json;
+
+    /// Pins the real regression: `run_http` used to hardcode
+    /// `TcpListener::bind(("127.0.0.1", port))`, which refused every
+    /// connection arriving through Docker's port-forward NAT — confirmed
+    /// live against the actual docker-compose container (see
+    /// MIGRATION_STATUS.md). mcp-server.js's real behavior
+    /// (`app.listen(port)`, no host argument) binds all interfaces.
+    #[test]
+    fn http_transport_binds_all_interfaces_not_loopback_only() {
+        assert_eq!(mcp_http_bind_host(), "0.0.0.0", "must bind all interfaces like mcp-server.js's app.listen(port) with no host argument, not loopback-only");
+    }
 
     /// Real end-to-end JSON-RPC handshake over Streamable HTTP: spawns the
     /// actual server on an ephemeral port, does initialize + tools/list +

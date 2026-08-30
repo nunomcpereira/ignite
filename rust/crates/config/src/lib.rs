@@ -675,6 +675,10 @@ fn apply_env_overrides(merged: &mut Config) {
             merged.notifications.smtp.pass = Some(v);
         }
     }
+    if let Some(v) = env_str("GOVERNANCE_REPO") { merged.governance.repo = v; }
+    if let Some(v) = env_str("GOVERNANCE_WORKFLOW") { merged.governance.workflow = v; }
+    if let Some(v) = env_str("ACT_EVENT") { merged.governance.event = v; }
+    if let Some(v) = env_num::<u32>("ACT_TIMEOUT_MIN") { merged.governance.timeout_minutes = v; }
     if let Some(v) = env_str("AUTH_MODE") { merged.auth.mode = v; }
     if let Some(v) = env_str("OIDC_CLIENT_SECRET") { merged.auth.oidc.client_secret = v; }
     if let Some(v) = env_bool("GITLEAKS_ENABLED") { merged.security.gitleaks.enabled = v; }
@@ -761,6 +765,7 @@ mod tests {
         for (k, _) in env::vars() {
             if k == "IGNITE_CONFIG_PATH" || k.ends_with("_ENABLED") || k.ends_with("_BINARY")
                 || k.starts_with("SEMGREP_") || k.starts_with("CODEQL_") || k.starts_with("AUTH_MODE")
+                || k.starts_with("GOVERNANCE_") || k.starts_with("ACT_")
             {
                 env::remove_var(k);
             }
@@ -828,6 +833,37 @@ mod tests {
         assert_eq!(cfg.security.codeql.languages, vec!["javascript", "python"]);
         env::remove_var("SEMGREP_ENABLED");
         env::remove_var("CODEQL_LANGUAGES");
+    }
+
+    #[test]
+    fn governance_config_json_and_env_overrides_both_take_effect() {
+        // Regression test: three server routes (pipeline_validate.rs,
+        // pipeline_onboard.rs, pipeline_interactive.rs) used to hardcode a
+        // literal "nunomcpereira/ai-guardrails-orchestrator" repo/workflow
+        // instead of reading these fields at all, silently ignoring
+        // config.json's real governance.repo/workflow/event/timeoutMinutes
+        // for every deployment. This proves the config values those routes
+        // now read are themselves wired correctly end to end.
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_test_env();
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{ "governance": { "repo": "acme/gov", "workflow": "ci.yml", "event": "push", "timeoutMinutes": 15 } }"#).unwrap();
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.governance.repo, "acme/gov");
+        assert_eq!(cfg.governance.workflow, "ci.yml");
+        assert_eq!(cfg.governance.event, "push");
+        assert_eq!(cfg.governance.timeout_minutes, 15);
+
+        env::set_var("GOVERNANCE_REPO", "other-org/other-repo");
+        env::set_var("GOVERNANCE_WORKFLOW", "other.yml");
+        env::set_var("ACT_EVENT", "workflow_dispatch");
+        env::set_var("ACT_TIMEOUT_MIN", "45");
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.governance.repo, "other-org/other-repo");
+        assert_eq!(cfg.governance.workflow, "other.yml");
+        assert_eq!(cfg.governance.event, "workflow_dispatch");
+        assert_eq!(cfg.governance.timeout_minutes, 45);
+        clear_test_env();
     }
 
     #[test]

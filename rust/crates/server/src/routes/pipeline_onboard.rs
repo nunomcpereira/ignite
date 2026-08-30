@@ -322,10 +322,10 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                 let gh_api = ignite_github_api::GithubApi::new(&state.runner);
                 let server_token = ignite_github_api::resolve_server_github_token();
                 let l5 = logger.clone();
-                let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, "nunomcpereira/ai-guardrails-orchestrator", "ai-guardrails-orchestrator.yml", &server_token, move |m| l5.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
-                logger.log(5, "Executing org governance workflows locally with act (event: push).");
+                let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &server_token, move |m| l5.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
+                logger.log(5, &format!("Executing org governance workflows locally with act (event: {}).", state.config.governance.event));
                 let l5b = logger.clone();
-                ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: "push".to_string(), act_timeout_min: 20 }, move |m| l5b.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
+                ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: state.config.governance.event.clone(), act_timeout_min: state.config.governance.timeout_minutes as u64 }, move |m| l5b.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
                 logger.log(5, "✓ All org governance jobs passed locally.");
                 logger.status(5, "success", None);
             }
