@@ -1,0 +1,45 @@
+[package]
+name = "ignite-phase4-orchestrator"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-fs-utils = { path = "../fs-utils" }
+ignite-tool-runner = { path = "../tool-runner" }
+ignite-db-store = { path = "../db-store" }
+ignite-override-engine = { path = "../override-engine" }
+ignite-ai-governance = { path = "../ai-governance" }
+ignite-secrets = { path = "../secrets" }
+ignite-llm-deep-scan = { path = "../llm-deep-scan" }
+ignite-llm-client = { path = "../llm-client" }
+ignite-iac-security = { path = "../iac-security" }
+ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }
+ignite-sbom = { path = "../sbom" }
+ignite-provenance = { path = "../provenance" }
+ignite-image-provenance = { path = "../image-provenance" }
+ignite-semantic-sast = { path = "../semantic-sast" }
+ignite-pii-dataflow = { path = "../pii-dataflow" }
+ignite-code-duplication = { path = "../code-duplication" }
+ignite-file-encapsulation = { path = "../file-encapsulation" }
+ignite-loc-metrics = { path = "../loc-metrics" }
+ignite-api-schema = { path = "../api-schema" }
+ignite-api-schema-drift = { path = "../api-schema-drift" }
+ignite-malicious-dependencies = { path = "../malicious-dependencies" }
+ignite-model-artifact-security = { path = "../model-artifact-security" }
+ignite-package-hallucination = { path = "../package-hallucination" }
+ignite-feature-posture = { path = "../feature-posture" }
+ignite-compliance-documents = { path = "../compliance-documents" }
+ignite-dead-code = { path = "../dead-code" }
+ignite-complexity-health = { path = "../complexity-health" }
+ignite-css-dead-code = { path = "../css-dead-code" }
+ignite-boundaries = { path = "../boundaries" }
+ignite-igniteignore = { path = "../igniteignore" }
+ignite-codeql-cross-file = { path = "../codeql-cross-file" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"

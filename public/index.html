@@ -1989,11 +1989,14 @@
       ['studioDepsBtn', 'studioRescanBtn', 'studioCodeqlBtn', 'studioCodeqlQueryBtn'].forEach((id) => {
         $(id).classList.toggle('hidden', isHistorical);
       });
-      if (isHistorical) {
-        ['studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioProvenanceBtn'].forEach((id) => {
-          $(id).classList.add('hidden');
-        });
-      }
+      // Historical mode hides all four up front; openHistoricalStudio then
+      // selectively un-hides just the ones with a persisted document. Live
+      // mode must symmetrically un-hide them here — otherwise, once a page
+      // session has opened one historical Studio view, these buttons stay
+      // hidden.add()-only forever, even for a live run opened afterward.
+      ['studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioProvenanceBtn'].forEach((id) => {
+        $(id).classList.toggle('hidden', isHistorical);
+      });
     }
 
     // Fetches the raw JSON blob behind a persisted report document

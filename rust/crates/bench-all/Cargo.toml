@@ -1,0 +1,14 @@
+[package]
+name = "bench-all"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-dead-code = { path = "../dead-code" }
+ignite-boundaries = { path = "../boundaries" }
+ignite-css-dead-code = { path = "../css-dead-code" }
+ignite-complexity-health = { path = "../complexity-health" }
+ignite-secrets = { path = "../secrets" }
+ignite-ai-governance = { path = "../ai-governance" }
+ignite-file-encapsulation = { path = "../file-encapsulation" }
+ignite-compliance-documents = { path = "../compliance-documents" }

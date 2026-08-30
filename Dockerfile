@@ -1,13 +1,32 @@
-# Ignite, self-contained: the app plus every optional external tool it soft-
-# depends on (see README's "External tools" table / scripts/install-tools.sh
-# for the same list installed natively). Nothing here is required - Ignite
-# runs and soft-skips to a fallback with none of it - this image just saves
-# reproducing that install tax by hand.
+# Ignite, self-contained: the Rust server/CLI/MCP binaries plus every
+# optional external tool they soft-depend on (see README's "External tools"
+# table / scripts/install-tools.sh for the same list installed natively).
+# Nothing here is required - Ignite runs and soft-skips to a fallback with
+# none of it - this image just saves reproducing that install tax by hand.
 #
 # Build-time ARGs (default to installing everything) let you slim the image:
 #   docker build --build-arg INSTALL_ORT=false --build-arg INSTALL_GOCLOC=false .
 # ORT (JVM, ~700MB with its JRE) and the Go/JVM toolchains used only to fetch
 # static binaries below are the biggest single contributors to image size.
+
+# --- Stage 1: build the Rust binaries -------------------------------------
+# Bookworm-based to match the final stage's glibc (avoids musl/static-link
+# complexity) - a real `cargo build --release` of the whole workspace, not
+# a vendored/prebuilt binary. No dependency-manifest-only pre-copy step for
+# better layer caching: the workspace's "crates/*" member glob means that
+# would mean copying every crate's Cargo.toml individually anyway, not
+# meaningfully simpler than just copying the whole tree up front.
+FROM rust:1-bookworm AS rust-builder
+WORKDIR /build/rust
+COPY rust/ .
+# lto = true, codegen-units = 1 (workspace Cargo.toml's [profile.release])
+# make this a genuinely slow build in exchange for the smaller/faster
+# binaries that matter for a long-lived server process - a one-time image-
+# build cost, not a per-request one.
+RUN cargo build --release \
+      -p ignite-server -p ignite-mcp-server -p ignite-guidelines-api \
+      -p ignite-cli -p ignite-create-api-key
+
 FROM node:24-bookworm-slim
 
 ARG TARGETARCH
@@ -235,9 +254,25 @@ RUN chmod -R o+rwX /opt/pipx \
     && useradd -m -u 10001 -g 10001 -G docker -s /bin/bash ignite
 
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
-COPY . .
+# The app itself is the Rust binaries below - Node.js stays installed in
+# this base image only as a *runtime* dependency for two of the external
+# tools above: jscpd and @stoplight/spectral-cli are npm packages whose
+# installed executables are `#!/usr/bin/env node` scripts (verified via
+# `file`/shebang against the actual installed binaries, not assumed) - they
+# need a real `node` on PATH to run at scan time, same as any other
+# soft-dependency binary this image bakes in. Every other tool here (Bearer
+# included - a Go binary, not an npm package, despite the name association)
+# is a native executable with no Node.js runtime dependency at all.
+COPY --from=rust-builder /build/rust/target/release/ignite-server /build/rust/target/release/mcp-server /build/rust/target/release/guidelines-api /build/rust/target/release/ignite /build/rust/target/release/create-api-key /usr/local/bin/
+# Runtime assets the Rust binaries read from IGNITE_CONFIG_DIR (defaults to
+# cwd, i.e. /app) at startup: public/ is served directly (no Node app
+# source, no node_modules - there's no more Node app to hold them), and the
+# two ruleset YAMLs are resolved by path from config.json's
+# compliance.posture.ruleset/api.spectral.ruleset defaults (see
+# ignite-config's load_config). config.json itself is bind-mounted by
+# docker-compose.yml, not copied here.
+COPY public/ ./public/
+COPY ignite-posture-rules.yaml spectral-default-ruleset.yaml config.example.json ./
 # /app/data is where docker-compose.yml points IGNITE_DB_PATH and mounts a
 # named volume - created+owned here so the volume inherits that ownership
 # the first time Docker populates it (mounting over a path with no prior
@@ -247,6 +282,5 @@ RUN mkdir -p /app/data && chown -R ignite:ignite /app
 
 USER ignite
 ENV PATH="/home/ignite/.local/bin:${PATH}"
-ENV NODE_ENV=production
 EXPOSE 51337 51338
-CMD ["node", "server.js"]
+CMD ["ignite-server"]

@@ -1,0 +1,11 @@
+[package]
+name = "ignite-fs-utils"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

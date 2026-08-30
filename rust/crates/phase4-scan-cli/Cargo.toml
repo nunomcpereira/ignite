@@ -1,0 +1,40 @@
+[package]
+name = "phase4-scan-cli"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "phase4-scan"
+path = "src/main.rs"
+
+[dependencies]
+ignite-fs-utils = { path = "../fs-utils" }
+ignite-tool-runner = { path = "../tool-runner" }
+ignite-db-store = { path = "../db-store" }
+ignite-phase4-orchestrator = { path = "../phase4-orchestrator" }
+ignite-staging = { path = "../staging" }
+ignite-dependency-license-scan = { path = "../dependency-license-scan" }
+ignite-deps-dev-client = { path = "../deps-dev-client" }
+ignite-secrets = { path = "../secrets" }
+ignite-iac-security = { path = "../iac-security" }
+ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }
+ignite-image-provenance = { path = "../image-provenance" }
+ignite-semantic-sast = { path = "../semantic-sast" }
+ignite-pii-dataflow = { path = "../pii-dataflow" }
+ignite-code-duplication = { path = "../code-duplication" }
+ignite-file-encapsulation = { path = "../file-encapsulation" }
+ignite-api-schema = { path = "../api-schema" }
+ignite-api-schema-drift = { path = "../api-schema-drift" }
+ignite-malicious-dependencies = { path = "../malicious-dependencies" }
+ignite-model-artifact-security = { path = "../model-artifact-security" }
+ignite-feature-posture = { path = "../feature-posture" }
+ignite-dead-code = { path = "../dead-code" }
+ignite-complexity-health = { path = "../complexity-health" }
+ignite-css-dead-code = { path = "../css-dead-code" }
+ignite-boundaries = { path = "../boundaries" }
+ignite-codeql-cross-file = { path = "../codeql-cross-file" }
+ignite-package-hallucination = { path = "../package-hallucination" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

@@ -1,0 +1,79 @@
+[package]
+name = "ignite-server"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "ignite-server"
+path = "src/main.rs"
+
+[dependencies]
+ignite-tool-runner = { path = "../tool-runner" }
+ignite-dependency-license-scan = { path = "../dependency-license-scan" }
+ignite-secrets = { path = "../secrets" }
+ignite-iac-security = { path = "../iac-security" }
+ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }
+ignite-image-provenance = { path = "../image-provenance" }
+ignite-semantic-sast = { path = "../semantic-sast" }
+ignite-pii-dataflow = { path = "../pii-dataflow" }
+ignite-code-duplication = { path = "../code-duplication" }
+ignite-api-schema = { path = "../api-schema" }
+ignite-api-schema-drift = { path = "../api-schema-drift" }
+ignite-malicious-dependencies = { path = "../malicious-dependencies" }
+ignite-model-artifact-security = { path = "../model-artifact-security" }
+ignite-loc-metrics = { path = "../loc-metrics" }
+ignite-sbom = { path = "../sbom" }
+ignite-feature-posture = { path = "../feature-posture" }
+ignite-package-hallucination = { path = "../package-hallucination" }
+ignite-github-api = { path = "../github-api" }
+ignite-llm-client = { path = "../llm-client" }
+ignite-config = { path = "../config" }
+once_cell = "1"
+regex = "1"
+sha2 = "0.10"
+ignite-scheduled-rechecks = { path = "../scheduled-rechecks" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+urlencoding = "2"
+ignite-override-engine = { path = "../override-engine" }
+ignite-staging = { path = "../staging" }
+ignite-unit-test-runner = { path = "../unit-test-runner" }
+ignite-governance-ci = { path = "../governance-ci" }
+ignite-auth = { path = "../auth" }
+ignite-fs-utils = { path = "../fs-utils" }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+ignite-phase4-orchestrator = { path = "../phase4-orchestrator" }
+ignite-complexity-health = { path = "../complexity-health" }
+ignite-boundaries = { path = "../boundaries" }
+ignite-file-encapsulation = { path = "../file-encapsulation" }
+ignite-css-dead-code = { path = "../css-dead-code" }
+ignite-shipping = { path = "../shipping" }
+jsonwebtoken = "9"
+ignite-codeql-cross-file = { path = "../codeql-cross-file" }
+ignite-db-store = { path = "../db-store" }
+ignite-sarif = { path = "../sarif" }
+ignite-github-annotations = { path = "../github-annotations" }
+ignite-runtime-coverage = { path = "../runtime-coverage" }
+ignite-auto-fix = { path = "../auto-fix" }
+ignite-dead-code = { path = "../dead-code" }
+ignite-ai-governance = { path = "../ai-governance" }
+ignite-deps-dev-client = { path = "../deps-dev-client" }
+ignite-provenance = { path = "../provenance" }
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-http = { version = "0.5", features = ["trace", "fs"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tower = { version = "0.4", features = ["util"] }
+rsa = "0.9"
+rand = "0.8"
+base64 = "0.22"

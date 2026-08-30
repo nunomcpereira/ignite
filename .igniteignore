@@ -1,0 +1,14 @@
+# Local build/runtime artifacts excluded from Ignite's own self-scan.
+# .gitignore syntax. Must be committed (Ignite blocks an uncommitted
+# .igniteignore as a silent scan bypass) — see CLAUDE.md's
+# "checkIgniteIgnoreCommitted" section.
+rust/target/
+node_modules/
+db-backups/
+ignite.db
+ignite.db-*
+.fallow/
+test-results/
+playwright-report/
+docs/ux/
+docs/_site/

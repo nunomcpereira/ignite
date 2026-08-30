@@ -1,0 +1,7 @@
+[package]
+name = "bench-walk"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-fs-utils = { path = "../fs-utils" }

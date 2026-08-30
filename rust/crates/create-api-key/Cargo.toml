@@ -1,0 +1,17 @@
+[package]
+name = "ignite-create-api-key"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "create-api-key"
+path = "src/main.rs"
+
+[dependencies]
+ignite-auth = { path = "../auth" }
+ignite-db-store = { path = "../db-store" }
+ignite-config = { path = "../config" }
+ignite-notifications = { path = "../notifications" }
+
+[dev-dependencies]
+tempfile = "3"

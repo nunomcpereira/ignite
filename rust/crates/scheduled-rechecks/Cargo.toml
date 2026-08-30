@@ -1,0 +1,8 @@
+[package]
+name = "ignite-scheduled-rechecks"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-db-store = { path = "../db-store" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
