@@ -2975,6 +2975,16 @@
         await studioRescan();
         renderStudioIssueListForFile(studioState.currentPath);
         $('studioDownloadBtn').classList.remove('hidden');
+        // studioRescan() only rebuilds the file tree - it doesn't know this
+        // save came from the editor, so it never returns Studio to view
+        // mode. Without this, the textarea (and the now-stale "Save +
+        // rescan" button) stayed on screen forever after every save, with
+        // no way back to the read-only, issue-highlighted view short of
+        // navigating to a different file and back.
+        studioState.editing = false;
+        renderStudioCodeView(studioState.originalContent);
+        $('studioEditBtn').classList.remove('hidden');
+        $('studioSaveBtn').classList.add('hidden');
       } catch (e) {
         studioShowError(e.message);
       } finally {

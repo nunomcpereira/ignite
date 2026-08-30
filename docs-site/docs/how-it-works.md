@@ -12,7 +12,7 @@ there's no "lighter" mode for one audience:
 - **For humans:** drag a ZIP or folder onto the web app and watch phases
   stream live (below); install the [pre-push git hook](./pre-push-hook) so
   `git push` is gated with no separate upload step; or run the
-  [VS Code extension](#5-or-scan-straight-from-vs-code--no-upload-no-browser)
+  [VS Code extension](#6-or-scan-straight-from-vs-code--no-upload-no-browser)
   for Problems-panel diagnostics right in the editor.
 - **For agents:** call the same checks as [MCP tools](./mcp-server) —
   `check_guidelines`, `check_project`, `onboard_project` — from Claude Code,
@@ -90,7 +90,31 @@ turn it green.
 
 ![Studio - Compliance & Feature Posture](/img/screenshots/07-studio-posture.png)
 
-### 5. Or scan straight from VS Code — no upload, no browser
+### 5. Edit in place, then run CodeQL against the staged project
+
+A finding doesn't have to leave Studio to get fixed: click **Edit** on any
+open file, make the change, and **Save + rescan** persists it to the staged
+project and re-runs Phase 4's fast checks (secrets, AI-governance,
+file-encapsulation, semgrep) against the new content — the file tree and
+issue counts update immediately, no re-upload.
+
+![Studio - editing a file, unsaved changes pending](/img/screenshots/12-studio-edit-code.png)
+
+For the deeper cross-file gap Semgrep's single-file engine can't cover,
+**🔎 Run CodeQL** builds a real CodeQL database for every language detected
+in the project and runs the `security-extended` query suite against it,
+streaming progress into the Output panel below the editor.
+
+![Studio - Run CodeQL streaming database build progress](/img/screenshots/13-studio-run-codeql.png)
+
+Once a database exists, **Custom Query** lets you write and run your own
+`.ql` query against it directly — no rebuild — with results in a table
+you can jump straight from into the flagged line, and a shortcut to narrow
+the file tree to just the files your query's rows point at.
+
+![Studio - Custom CodeQL query with results](/img/screenshots/14-studio-codeql-custom-query.png)
+
+### 6. Or scan straight from VS Code — no upload, no browser
 
 For people who don't want the web UI, the [VS Code extension](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension)
 runs the same `validate-all` pipeline against whatever folder you have
@@ -119,7 +143,7 @@ for the full settings/commands reference.
 
 ![VS Code - acknowledgments.md open beside the Problems panel](/img/screenshots/11-vscode-review-file.png)
 
-### 6. Or scan from the CLI — one command, no server config
+### 7. Or scan from the CLI — one command, no server config
 
 For agents and CI loops that just want pass/fail plus a findings list,
 `ignite scan [path]` wraps the same `validate-all` pipeline as a single
