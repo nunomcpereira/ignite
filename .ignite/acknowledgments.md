@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: e40783597424cea1eae11cf083370db0067e44b0 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: 2ea5d8b13e4613b2929383fa596037f81f650bb6 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -29,20 +29,14 @@ ID: secret::rust/crates/pii-dataflow/src/lib.rs::335
 #   rust/crates/pii-dataflow/src/lib.rs:335
 Acknowledge: Fake GCP API key literal used as test input to verify the secret scanner's own detection, not a real credential.
 
-ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::624
-# Issue #3
-# [ERROR] secret - Hardcoded gcp-api-key
-#   rust/crates/phase4-orchestrator/src/lib.rs:624
-Acknowledge: Fake GCP API key written to a scratch fixture file within a unit test, not a real credential.
-
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1031
-# Issue #4
+# Issue #3
 # [ERROR] secret - Hardcoded aws-access-token
 #   rust/crates/server/src/routes/pipeline_interactive.rs:1031
 Acknowledge: Fake AWS access key ID embedded in an in-memory test-zip fixture used to verify the pipeline's own secret detection, not a real credential.
 
-ID: pii-dataflow::vscode-extension/src/panels/reportPanel.ts::4
-# Issue #5
-# [ERROR] pii-dataflow - Usage of manual HTML sanitization (XSS)
-#   vscode-extension/src/panels/reportPanel.ts:4
-Acknowledge: 
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::660
+# Issue #4
+# [ERROR] secret - Hardcoded gcp-api-key
+#   rust/crates/phase4-orchestrator/src/lib.rs:660
+Acknowledge: Fake GCP API key literal written to a scratch fixture file within a unit test, not a real credential.
