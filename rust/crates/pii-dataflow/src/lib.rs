@@ -5,7 +5,7 @@
 //! relevant via `category_groups` — everything else is Semgrep's job
 //! (`checkSemanticSast`) and would otherwise double up here mislabeled.
 
-use ignite_fs_utils::{build_snippet, skip_dirs, Snippet, SnippetOptions};
+use ignite_fs_utils::{build_snippet, relative_to_root, skip_dirs, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -75,21 +75,7 @@ fn relative(root: &Path, name: &str) -> String {
     if name.is_empty() {
         return String::new();
     }
-    let resolved = if Path::new(name).is_absolute() { std::path::PathBuf::from(name) } else { root.join(name) };
-    let target_components: Vec<_> = resolved.components().collect();
-    let base_components: Vec<_> = root.components().collect();
-    let mut common = 0;
-    while common < target_components.len() && common < base_components.len() && target_components[common] == base_components[common] {
-        common += 1;
-    }
-    let mut result = std::path::PathBuf::new();
-    for _ in common..base_components.len() {
-        result.push("..");
-    }
-    for comp in &target_components[common..] {
-        result.push(comp.as_os_str());
-    }
-    result.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
+    relative_to_root(root, name).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
 }
 
 fn line_at(content: Option<&str>, line: usize) -> String {
@@ -320,6 +306,38 @@ mod tests {
         let mut binaries = HashMap::new();
         binaries.insert("bearer", "bearer".to_string());
         ToolRunner::new(binaries)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_resolves_a_bearer_reported_path_through_a_symlinked_root() {
+        // Bearer (like Spectral) canonicalizes symlinks in its own reported
+        // paths - macOS stages jobs under /tmp, which is itself a symlink to
+        // /private/tmp, so Bearer's `full_filename` comes back rooted at
+        // /private/... even though the pipeline's own `root` variable is the
+        // unresolved /tmp/... path it was given. A naive component-diff (the
+        // bug this replaces) never finds a common prefix between the two and
+        // emits a useless multi-`../` path, so the later snippet read against
+        // that bogus path silently fails and the finding ships with no code
+        // snippet - exactly what this test would catch.
+        let real_dir = tempdir().unwrap();
+        let real_root = fs::canonicalize(real_dir.path()).unwrap();
+        fs::create_dir_all(real_root.join("backend/app/services")).unwrap();
+        fs::write(real_root.join("backend/app/services/email_service.py"), "line1\nline2\n").unwrap();
+
+        let symlink_root = real_dir.path().parent().unwrap().join("symlinked-root-alias");
+        std::os::unix::fs::symlink(&real_root, &symlink_root).unwrap();
+
+        // `root` is the unresolved symlink path (as the pipeline would pass
+        // it); the reported name is the tool's own canonicalized absolute path.
+        let reported = real_root.join("backend/app/services/email_service.py");
+        let rel = relative(&symlink_root, reported.to_str().unwrap());
+        assert_eq!(rel, "backend/app/services/email_service.py");
+
+        let content = fs::read_to_string(symlink_root.join(&rel)).unwrap();
+        assert_eq!(content, "line1\nline2\n");
+
+        let _ = fs::remove_file(&symlink_root);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! message. No built-in fallback — duplicate-block detection needs the
 //! real tool.
 
-use ignite_fs_utils::{build_snippet, Snippet, SnippetOptions};
+use ignite_fs_utils::{build_snippet, relative_to_root, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -64,25 +64,7 @@ fn relative(root: &Path, name: &str) -> String {
     if name.is_empty() {
         return String::new();
     }
-    let resolved = if Path::new(name).is_absolute() { std::path::PathBuf::from(name) } else { root.join(name) };
-    pathdiff(&resolved, root)
-}
-
-fn pathdiff(target: &Path, base: &Path) -> String {
-    let target_components: Vec<_> = target.components().collect();
-    let base_components: Vec<_> = base.components().collect();
-    let mut common = 0;
-    while common < target_components.len() && common < base_components.len() && target_components[common] == base_components[common] {
-        common += 1;
-    }
-    let mut result = std::path::PathBuf::new();
-    for _ in common..base_components.len() {
-        result.push("..");
-    }
-    for comp in &target_components[common..] {
-        result.push(comp.as_os_str());
-    }
-    result.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
+    relative_to_root(root, name).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
 }
 
 fn parse_jscpd_report(root: &Path, data: &serde_json::Value, min_lines: u32) -> Vec<CodeDuplicationFinding> {
@@ -210,6 +192,32 @@ mod tests {
         ToolRunner::new(binaries)
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn relative_resolves_a_tool_reported_path_through_a_symlinked_root() {
+        // Same class of bug fixed in pii-dataflow: a naive component-diff
+        // never finds a common prefix between an uncanonicalized `root` and
+        // a tool-reported path that canonicalizes symlinks (e.g. macOS
+        // /tmp -> /private/tmp), so the resulting "relative" path is a
+        // useless multi-`../` string that doesn't resolve back to the file.
+        let real_dir = tempdir().unwrap();
+        let real_root = fs::canonicalize(real_dir.path()).unwrap();
+        fs::create_dir_all(real_root.join("src")).unwrap();
+        fs::write(real_root.join("src/a.js"), "line1\nline2\n").unwrap();
+
+        let symlink_root = real_dir.path().parent().unwrap().join("symlinked-root-alias-jscpd");
+        std::os::unix::fs::symlink(&real_root, &symlink_root).unwrap();
+
+        let reported = real_root.join("src/a.js");
+        let rel = relative(&symlink_root, reported.to_str().unwrap());
+        assert_eq!(rel, "src/a.js");
+
+        let content = fs::read_to_string(symlink_root.join(&rel)).unwrap();
+        assert_eq!(content, "line1\nline2\n");
+
+        let _ = fs::remove_file(&symlink_root);
+    }
+
     fn sample_report() -> serde_json::Value {
         serde_json::json!({
             "duplicates": [{
@@ -229,6 +237,7 @@ mod tests {
             content.push_str(&format!("const x{} = {};\n", i, i));
         }
         fs::write(root.join("a.js"), &content).unwrap();
+        fs::write(root.join("b.js"), &content).unwrap();
 
         let findings = parse_jscpd_report(root, &sample_report(), 5);
         assert_eq!(findings.len(), 1);
