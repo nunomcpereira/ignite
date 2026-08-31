@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Rust rewrite in progress
 
-There's an in-progress Rust port of this codebase under `rust/` (73 crates so far, on branch `rust-rewrite`). At the start of a session, check `rust/MIGRATION_STATUS.md` for what's done and what's left, and ask the user if they want to resume the migration before doing anything else Rust-related. Standing rule from the user (stated multiple times): keep converting piece by piece with real tests; do not run a scan-comparison benchmark against the Node implementation until the migration status file says everything is converted.
+There's an in-progress Rust port of this codebase under `rust/` (73 crates so far, on branch `rust-rewrite`). Check `rust/MIGRATION_STATUS.md` for status when doing Rust-related work. Standing rule from the user (stated multiple times): keep converting piece by piece with real tests; do not run a scan-comparison benchmark against the Node implementation until the migration status file says everything is converted.
 
 ## What this is
 
