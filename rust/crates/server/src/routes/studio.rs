@@ -330,7 +330,7 @@ async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<Strin
                     message: Some(f.message.clone()),
                     snippet: f.snippet.as_ref().and_then(|s| serde_json::to_value(s).ok()),
                     cross_file: f.cross_file,
-                    chain: None,
+                    chain: f.chain.as_ref().and_then(|c| serde_json::to_value(c).ok()),
                     cwe: f.cwe.clone(),
                 })
                 .collect(),

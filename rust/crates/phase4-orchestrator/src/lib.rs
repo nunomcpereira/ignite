@@ -17,6 +17,20 @@ fn snippet_json<T: serde::Serialize>(snippet: &Option<T>) -> Option<serde_json::
     snippet.as_ref().and_then(|s| serde_json::to_value(s).ok())
 }
 
+fn to_oe_codeql_finding(f: &ignite_codeql_cross_file::CodeqlFinding) -> OeCodeqlFinding {
+    OeCodeqlFinding {
+        file: Some(f.file.clone()),
+        line: Some(f.line as i64),
+        kind: Some(f.kind.clone()),
+        severity: Some(f.severity.clone()),
+        message: Some(f.message.clone()),
+        snippet: snippet_json(&f.snippet),
+        cross_file: f.cross_file,
+        chain: snippet_json(&f.chain),
+        cwe: f.cwe.clone(),
+    }
+}
+
 pub struct Phase4Config {
     pub fast: bool,
     pub org: String,
@@ -475,11 +489,7 @@ pub async fn run_phase4_checks(
     });
 
     let codeql_check = Some(CodeqlResult {
-        findings: codeql_result
-            .findings
-            .iter()
-            .map(|f| OeCodeqlFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), snippet: snippet_json(&f.snippet), cross_file: f.cross_file, chain: None, cwe: None })
-            .collect(),
+        findings: codeql_result.findings.iter().map(to_oe_codeql_finding).collect(),
     });
 
     let inputs = Phase4Inputs {
@@ -553,6 +563,32 @@ mod tests {
     use std::collections::HashMap as StdHashMap;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn to_oe_codeql_finding_carries_chain_and_cwe_through() {
+        let finding = ignite_codeql_cross_file::CodeqlFinding {
+            file: "src/fileService.js".to_string(),
+            line: 8,
+            kind: "js/path-injection".to_string(),
+            tool: "codeql".to_string(),
+            language: "javascript".to_string(),
+            severity: "error".to_string(),
+            message: "This path depends on a user-provided value.".to_string(),
+            snippet: None,
+            cross_file: true,
+            chain: Some(vec![
+                ignite_codeql_cross_file::FlowStep { file: "src/routes.js".to_string(), line: 7, message: Some("req.query.name".to_string()) },
+                ignite_codeql_cross_file::FlowStep { file: "src/fileService.js".to_string(), line: 8, message: Some("fullPath".to_string()) },
+            ]),
+            cwe: Some("CWE-22".to_string()),
+        };
+        let oe = to_oe_codeql_finding(&finding);
+        assert!(oe.cross_file);
+        assert_eq!(oe.cwe.as_deref(), Some("CWE-22"));
+        let chain = oe.chain.expect("chain should not be dropped");
+        assert_eq!(chain.as_array().unwrap().len(), 2);
+        assert_eq!(chain[0]["file"], serde_json::json!("src/routes.js"));
+    }
 
     fn test_config(project_id: Option<i64>) -> Phase4Config {
         Phase4Config {
