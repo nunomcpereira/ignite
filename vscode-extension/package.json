@@ -9,47 +9,122 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Linters", "Other"],
+  "categories": [
+    "Linters",
+    "Other"
+  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
-      { "command": "ignite.scanWorkspace", "title": "Ignite: Scan Workspace", "icon": "$(shield)" },
-      { "command": "ignite.showOutput", "title": "Ignite: Show Output" },
-      { "command": "ignite.openReviewFile", "title": "Ignite: Open Review File" },
-      { "command": "ignite.acknowledgeIssue", "title": "Ignite: Acknowledge in .ignite/acknowledgments.md" },
-      { "command": "ignite.acknowledgeSelected", "title": "Ignite: Acknowledge Selected", "icon": "$(check)" },
-      { "command": "ignite.toggleFindingGrouping", "title": "Ignite: Toggle Findings Grouping (Finding / Phase)", "icon": "$(list-tree)" },
-      { "command": "ignite.installPrePushHook", "title": "Ignite: Install Pre-Push Hook" },
-      { "command": "ignite.refreshToolsStatus", "title": "Ignite: Refresh Tools Status", "icon": "$(refresh)" },
-      { "command": "ignite.showLicenseCompliance", "title": "Ignite: Show License Compliance" },
-      { "command": "ignite.showSbom", "title": "Ignite: Show SBOM" },
-      { "command": "ignite.showLocMetrics", "title": "Ignite: Show LOC Metrics" },
-      { "command": "ignite.showPosture", "title": "Ignite: Show Compliance & Feature Posture" }
+      {
+        "command": "ignite.scanWorkspace",
+        "title": "Ignite: Scan Workspace",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "ignite.showOutput",
+        "title": "Ignite: Show Output"
+      },
+      {
+        "command": "ignite.openReviewFile",
+        "title": "Ignite: Open Review File"
+      },
+      {
+        "command": "ignite.acknowledgeIssue",
+        "title": "Ignite: Acknowledge in .ignite/acknowledgments.md"
+      },
+      {
+        "command": "ignite.acknowledgeSelected",
+        "title": "Ignite: Acknowledge Selected",
+        "icon": "$(check)"
+      },
+      {
+        "command": "ignite.toggleFindingGrouping",
+        "title": "Ignite: Toggle Findings Grouping (Finding / Phase)",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "ignite.installPrePushHook",
+        "title": "Ignite: Install Pre-Push Hook"
+      },
+      {
+        "command": "ignite.refreshToolsStatus",
+        "title": "Ignite: Refresh Tools Status",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ignite.showLicenseCompliance",
+        "title": "Ignite: Show License Compliance"
+      },
+      {
+        "command": "ignite.showSbom",
+        "title": "Ignite: Show SBOM"
+      },
+      {
+        "command": "ignite.showLocMetrics",
+        "title": "Ignite: Show LOC Metrics"
+      },
+      {
+        "command": "ignite.showPosture",
+        "title": "Ignite: Show Compliance & Feature Posture"
+      }
     ],
     "menus": {
       "commandPalette": [
-        { "command": "ignite.acknowledgeIssue", "when": "false" },
-        { "command": "ignite.acknowledgeSelected", "when": "false" }
+        {
+          "command": "ignite.acknowledgeIssue",
+          "when": "false"
+        },
+        {
+          "command": "ignite.acknowledgeSelected",
+          "when": "false"
+        }
       ],
       "view/title": [
-        { "command": "ignite.scanWorkspace", "when": "view == igniteFindings", "group": "navigation" },
-        { "command": "ignite.toggleFindingGrouping", "when": "view == igniteFindings", "group": "navigation" },
-        { "command": "ignite.refreshToolsStatus", "when": "view == igniteToolsStatus", "group": "navigation" }
+        {
+          "command": "ignite.scanWorkspace",
+          "when": "view == igniteFindings",
+          "group": "navigation"
+        },
+        {
+          "command": "ignite.toggleFindingGrouping",
+          "when": "view == igniteFindings",
+          "group": "navigation"
+        },
+        {
+          "command": "ignite.refreshToolsStatus",
+          "when": "view == igniteToolsStatus",
+          "group": "navigation"
+        }
       ],
       "view/item/context": [
-        { "command": "ignite.acknowledgeSelected", "when": "view == igniteFindings && (viewItem == igniteFindingGroup || viewItem == igniteUnresolvedIssue)", "group": "inline" }
+        {
+          "command": "ignite.acknowledgeSelected",
+          "when": "view == igniteFindings && (viewItem == igniteFindingGroup || viewItem == igniteUnresolvedIssue)",
+          "group": "inline"
+        }
       ]
     },
     "viewsContainers": {
       "activitybar": [
-        { "id": "ignite", "title": "Ignite", "icon": "resources/ignite.svg" }
+        {
+          "id": "ignite",
+          "title": "Ignite",
+          "icon": "resources/ignite.svg"
+        }
       ]
     },
     "views": {
       "ignite": [
-        { "id": "igniteFindings", "name": "Findings" },
-        { "id": "igniteToolsStatus", "name": "Tools Status" }
+        {
+          "id": "igniteFindings",
+          "name": "Findings"
+        },
+        {
+          "id": "igniteToolsStatus",
+          "name": "Tools Status"
+        }
       ]
     },
     "configuration": {
@@ -80,8 +155,12 @@
     "test": "tsc -p ./ && node --test dist/*.test.js"
   },
   "devDependencies": {
+    "@types/he": "^1.2.3",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "he": "^1.2.0"
   }
 }

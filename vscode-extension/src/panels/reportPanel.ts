@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
+import { encode } from 'he';
 
 function escapeHtml(s: unknown): string {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  return encode(String(s ?? ''), { useNamedReferences: true });
 }
 
 const SHARED_STYLE = `
