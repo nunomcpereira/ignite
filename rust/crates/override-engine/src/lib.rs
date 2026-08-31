@@ -173,6 +173,7 @@ pub fn derive_cwe_owasp(category: &str, summary: &str, explicit: &CweOwaspHint) 
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Issue {
     pub id: String,
     pub category: String,
@@ -841,6 +842,30 @@ mod tests {
 
     fn finding(file: &str, line: i64) -> RawFinding {
         RawFinding { file: Some(file.to_string()), line: Some(line), ..Default::default() }
+    }
+
+    #[test]
+    fn issue_json_uses_camel_case_keys_the_frontend_expects() {
+        let issue = Issue {
+            id: "codeql-sast::src/fileService.js::8".to_string(),
+            category: "codeql-sast".to_string(),
+            severity: Severity::Error,
+            score: 8,
+            summary: "This path depends on a user-provided value.".to_string(),
+            file: Some("src/fileService.js".to_string()),
+            line: Some(8),
+            snippet: None,
+            cross_file: true,
+            chain: None,
+            duplicate_ref: Some(serde_json::json!({ "file": "src/routes.js", "line": 6 })),
+            cwe: None,
+            owasp: None,
+        };
+        let json = serde_json::to_value(&issue).unwrap();
+        assert_eq!(json["crossFile"], serde_json::json!(true));
+        assert_eq!(json["duplicateRef"]["file"], serde_json::json!("src/routes.js"));
+        assert!(json.get("cross_file").is_none());
+        assert!(json.get("duplicate_ref").is_none());
     }
 
     #[test]

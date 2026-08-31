@@ -353,6 +353,7 @@ pub struct IssueInput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IssueRow {
     pub id: String,
     pub phase: Option<i64>,
@@ -1533,6 +1534,12 @@ mod tests {
         assert_eq!(codeql.status, "open");
         assert!(codeql.cross_file);
         assert!(codeql.chain.is_some());
+
+        // The frontend (public/index.html) reads issue.crossFile, not
+        // issue.cross_file - the API-facing JSON must use camelCase.
+        let json = serde_json::to_value(codeql).unwrap();
+        assert_eq!(json["crossFile"], serde_json::json!(true));
+        assert!(json.get("cross_file").is_none());
     }
 
     #[test]

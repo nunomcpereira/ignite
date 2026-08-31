@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: e5f107b2e958fdb090eef71c0608d1de5f112f1c (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: e40783597424cea1eae11cf083370db0067e44b0 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -40,3 +40,9 @@ ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1031
 # [ERROR] secret - Hardcoded aws-access-token
 #   rust/crates/server/src/routes/pipeline_interactive.rs:1031
 Acknowledge: Fake AWS access key ID embedded in an in-memory test-zip fixture used to verify the pipeline's own secret detection, not a real credential.
+
+ID: pii-dataflow::vscode-extension/src/panels/reportPanel.ts::4
+# Issue #5
+# [ERROR] pii-dataflow - Usage of manual HTML sanitization (XSS)
+#   vscode-extension/src/panels/reportPanel.ts:4
+Acknowledge: 
