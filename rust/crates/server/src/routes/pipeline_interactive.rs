@@ -45,10 +45,15 @@ use tokio_stream::StreamExt as _;
 static GITHUB_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$").unwrap());
 static REPO_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
 
-/// A run is retained for later "Effectivate" (or just Studio browsing) up
-/// to this many most-recently-completed jobs that made it through Phase 3
-/// staging — mirrors server.js's `listEvictableRetainedSources(5)`.
-const RETAINED_PROJECTS_KEEP: i64 = 5;
+/// A run is retained with its full source tree for later "Effectivate" (or
+/// Studio browsing) for this many most-recently-completed jobs that made
+/// it through Phase 3 staging.
+const RETAINED_FULL_KEEP: i64 = 5;
+/// Beyond `RETAINED_FULL_KEEP`, a retained project's source is pruned down
+/// to only the files that have findings (see `prune_retained_source_to_findings`)
+/// rather than evicted outright, up to this many most-recently-completed
+/// jobs total (full + pruned combined). Anything older is evicted entirely.
+const RETAINED_TOTAL_KEEP: i64 = 10;
 
 pub(crate) fn ignite_data_dir() -> PathBuf {
     std::env::var("IGNITE_DATA_DIR").map(PathBuf::from).unwrap_or_else(|_| dirs_home().join(".ignite"))
@@ -56,6 +61,36 @@ pub(crate) fn ignite_data_dir() -> PathBuf {
 
 fn dirs_home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Deletes every file under `dir` whose path relative to `dir` isn't in
+/// `flagged_rel_paths`, then removes any directory left empty by that -
+/// turns a full retained-source copy into a "flagged files only" one.
+/// `dir`'s own files are already rooted under `dir` (this walks a copy
+/// Ignite made itself, not an external tool's differently-rooted report),
+/// so a plain `strip_prefix` is enough - no path canonicalization needed.
+fn prune_retained_source_to_findings(dir: &std::path::Path, flagged_rel_paths: &std::collections::HashSet<String>) {
+    let Ok(files) = ignite_fs_utils::walk_files(dir) else { return };
+    for f in &files {
+        let rel: String = f.strip_prefix(dir).unwrap_or(f).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+        if !flagged_rel_paths.contains(&rel) {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+    remove_empty_dirs(dir);
+}
+
+/// Post-order removal of any directory left empty after pruning - never
+/// removes `root` itself, even if everything under it was pruned away.
+fn remove_empty_dirs(root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            remove_empty_dirs(&path);
+            let _ = std::fs::remove_dir(&path); // no-op (fails silently) if not actually empty
+        }
+    }
 }
 
 fn write_temp_upload(bytes: &[u8]) -> std::io::Result<PathBuf> {
@@ -444,6 +479,26 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
             log.log(3, "Created immutable source snapshot for final publish phase.");
             snapshot_ready = true;
             project_root_ready = true;
+
+            // Same `git rev-parse HEAD` call generate_provenance already makes
+            // against the staged root - most uploads (raw zip/folder, no
+            // .git) simply have no commit to record, which is expected and
+            // not an error; recorded here too (not just in the provenance
+            // document) so it's a queryable project column for retention
+            // reproduction once this run's source tree ages out (see
+            // RETAINED_TOTAL_KEEP below).
+            if let Some(pid) = project_id {
+                let source_commit_sha = state
+                    .runner
+                    .run_tool("git", &["rev-parse".to_string(), "HEAD".to_string()], &root.to_string_lossy(), ignite_tool_runner::RunToolOptions::default())
+                    .await
+                    .ok()
+                    .map(|o| o.stdout.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if let Some(sha) = source_commit_sha {
+                    state.db.set_project_commit_shas(pid, Some(&sha), None);
+                }
+            }
             if let Some(live) = state.running_runs.lock().unwrap().get_mut(&job_id) {
                 live.project_root = Some(root.clone());
                 live.source_backup_dir = Some(source_backup_dir.clone());
@@ -708,6 +763,20 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
                 shipped_for_real = true;
                 if let Some(pid) = project_id {
                     state.db.finish_project("success", None, Some(&ship_result.repo_url), ship_result.pr_url.as_deref(), pid);
+                    // publish_dir still has the just-pushed commit checked
+                    // out - this is the durable "checkout this to reproduce
+                    // the scanned code" reference once this run's retained
+                    // source ages past RETAINED_TOTAL_KEEP.
+                    let shipped_commit_sha = state
+                        .runner
+                        .run_tool("git", &["rev-parse".to_string(), "HEAD".to_string()], &publish_dir.to_string_lossy(), ignite_tool_runner::RunToolOptions::default())
+                        .await
+                        .ok()
+                        .map(|o| o.stdout.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    if let Some(sha) = shipped_commit_sha {
+                        state.db.set_project_commit_shas(pid, None, Some(&sha));
+                    }
                 }
                 log.send(json!({ "type": "done", "ok": true, "dryRun": dry_run, "repoUrl": ship_result.repo_url, "prUrl": ship_result.pr_url, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id }));
                 Ok(())
@@ -750,8 +819,26 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
             if std::fs::create_dir_all(&retained_root).is_ok() {
                 let _ = std::fs::remove_dir_all(&retained_dir);
                 if ignite_staging::clone_directory_without_symlinks(&source_backup_dir, &retained_dir).is_ok() {
-                    state.db.retain_project_source(pid, &retained_dir.to_string_lossy());
-                    for evicted in state.db.list_evictable_retained_sources(RETAINED_PROJECTS_KEEP) {
+                    state.db.retain_project_source(pid, &retained_dir.to_string_lossy(), "full");
+
+                    // Re-rank every retained project by recency: anything
+                    // that just aged from a top-5 "full" slot into ranks
+                    // 6-10 gets pruned down to only the files that have
+                    // findings (still on disk and Studio-browsable, just
+                    // not the whole tree) rather than evicted outright -
+                    // full eviction is reserved for rank 11+.
+                    let ranked = state.db.list_retained_sources();
+                    for (rank, row) in ranked.iter().enumerate() {
+                        let rank = rank as i64 + 1;
+                        if row.tier == "full" && rank > RETAINED_FULL_KEEP && rank <= RETAINED_TOTAL_KEEP {
+                            let flagged: std::collections::HashSet<String> =
+                                state.db.get_project_issues(row.project_id).into_iter().filter_map(|i| i.file).collect();
+                            prune_retained_source_to_findings(std::path::Path::new(&row.dir_path), &flagged);
+                            state.db.set_retained_source_tier(row.project_id, "pruned");
+                        }
+                    }
+
+                    for evicted in state.db.list_evictable_retained_sources(RETAINED_TOTAL_KEEP) {
                         let _ = std::fs::remove_dir_all(&evicted.dir_path);
                         let _ = std::fs::remove_dir_all(ignite_data_dir().join("codeql-dbs").join(evicted.project_id.to_string()));
                         state.db.delete_retained_source(evicted.project_id);
@@ -850,6 +937,31 @@ mod tests {
     use crate::state;
     use reqwest::multipart::{Form, Part};
 
+    #[test]
+    fn prune_retained_source_to_findings_keeps_only_flagged_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("flagged.js"), b"x").unwrap();
+        std::fs::write(dir.path().join("clean.js"), b"y").unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("nested/also-clean.js"), b"z").unwrap();
+
+        let flagged: std::collections::HashSet<String> = ["flagged.js".to_string()].into_iter().collect();
+        prune_retained_source_to_findings(dir.path(), &flagged);
+
+        assert!(dir.path().join("flagged.js").exists());
+        assert!(!dir.path().join("clean.js").exists());
+        assert!(!dir.path().join("nested").exists(), "the now-empty nested/ dir should be cleaned up too");
+    }
+
+    #[test]
+    fn remove_empty_dirs_never_removes_the_root_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        remove_empty_dirs(dir.path());
+        assert!(dir.path().exists());
+        assert!(!dir.path().join("a").exists());
+    }
+
     async fn spawn_test_server() -> (String, Arc<AppState>) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
@@ -931,6 +1043,96 @@ mod tests {
         assert_eq!(done["ok"], false);
         assert_eq!(done["phase"], 6);
         assert!(done["error"].as_str().unwrap().contains("interrupted"));
+    }
+
+    /// Zips a real directory tree (including a `.git` if present) into an
+    /// in-memory archive, recursively — unlike `zip_bytes` (a flat list of
+    /// synthetic files), this preserves whatever's actually on disk so a
+    /// real `git init`+commit survives the round trip through the upload.
+    fn zip_dir(root: &std::path::Path) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut writer = zip::ZipWriter::new(cursor);
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            for path in ignite_fs_utils::walk_files(root).unwrap() {
+                // walk_files skips .git itself (it's not a project source
+                // file) - add it back in by hand so the fixture keeps its
+                // real commit history through the zip round trip.
+                let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+                writer.start_file(&rel, opts.clone()).unwrap();
+                std::io::Write::write_all(&mut writer, &std::fs::read(&path).unwrap()).unwrap();
+            }
+            for git_file in walkdir_git(&root.join(".git")) {
+                let rel = git_file.strip_prefix(root).unwrap().to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+                writer.start_file(&rel, opts.clone()).unwrap();
+                std::io::Write::write_all(&mut writer, &std::fs::read(&git_file).unwrap()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    fn walkdir_git(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else { return out };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walkdir_git(&path));
+            } else {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn source_commit_sha_is_captured_from_a_real_git_repo_in_the_upload() {
+        let mut check = std::process::Command::new("git");
+        check.arg("--version");
+        if check.output().map(|o| !o.status.success()).unwrap_or(true) {
+            eprintln!("skipping: git not installed on PATH");
+            return;
+        }
+
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("app.js"), b"console.log(1);\n").unwrap();
+        std::fs::write(src.path().join("package.json"), b"{\"name\":\"fixture\"}").unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(src.path())
+                .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "init"]);
+        let expected_sha = String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(src.path()).output().unwrap().stdout).unwrap().trim().to_string();
+        ignite_fs_utils::invalidate_walk_cache(src.path());
+
+        let (base, state) = spawn_test_server().await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let zip = zip_dir(src.path());
+        let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
+
+        // This fixture is clean (no secrets/governance/etc. findings), so
+        // unlike the sibling tests above it never reaches the review gate
+        // (review_active only flips true when a review pause actually
+        // happens) - it just runs straight through to `done`.
+        let res = client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let events = read_ndjson(res).await;
+        let done = events.iter().find(|e| e["type"] == "done").unwrap();
+        assert_eq!(done["ok"], true);
+        let job_id = events.iter().find_map(|e| e.get("jobId").and_then(|v| v.as_str())).unwrap();
+
+        let project_id = state.db.get_project_id_by_job_id(job_id).unwrap();
+        let project = state.db.get_project(project_id).unwrap();
+        assert_eq!(project.source_commit_sha.as_deref(), Some(expected_sha.as_str()));
     }
 
     /// Real end-to-end test of `read_field_bytes_limited_to`'s streaming

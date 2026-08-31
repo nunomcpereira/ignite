@@ -220,6 +220,9 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE projects ADD COLUMN last_scheduled_error TEXT",
     "ALTER TABLE api_keys ADD COLUMN created_by TEXT",
     "ALTER TABLE api_keys ADD COLUMN created_via TEXT NOT NULL DEFAULT 'cli'",
+    "ALTER TABLE projects ADD COLUMN source_commit_sha TEXT",
+    "ALTER TABLE projects ADD COLUMN shipped_commit_sha TEXT",
+    "ALTER TABLE retained_sources ADD COLUMN tier TEXT NOT NULL DEFAULT 'full'",
 ];
 
 pub struct DbStore {
@@ -246,6 +249,9 @@ pub struct ProjectListRow {
     pub doc_count: i64,
     pub issue_count: i64,
     pub retained: bool,
+    pub retained_tier: Option<String>,
+    pub source_commit_sha: Option<String>,
+    pub shipped_commit_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -262,6 +268,8 @@ pub struct Project {
     pub pr_url: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
+    pub source_commit_sha: Option<String>,
+    pub shipped_commit_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -426,6 +434,7 @@ pub struct WorkflowCacheEntry {
 pub struct RetainedSourceRow {
     pub project_id: i64,
     pub dir_path: String,
+    pub tier: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -577,7 +586,9 @@ impl DbStore {
                         p.created_at, p.finished_at,
                         (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS doc_count,
                         (SELECT COUNT(*) FROM issues i WHERE i.project_id = p.id) AS issue_count,
-                        (SELECT 1 FROM retained_sources r WHERE r.project_id = p.id) AS retained
+                        (SELECT 1 FROM retained_sources r WHERE r.project_id = p.id) AS retained,
+                        (SELECT r.tier FROM retained_sources r WHERE r.project_id = p.id) AS retained_tier,
+                        p.source_commit_sha, p.shipped_commit_sha
                  FROM projects p ORDER BY p.id DESC LIMIT 100",
             )
             .unwrap();
@@ -599,6 +610,9 @@ impl DbStore {
                 doc_count: row.get(13)?,
                 issue_count: row.get(14)?,
                 retained: row.get::<_, Option<i64>>(15)?.unwrap_or(0) != 0,
+                retained_tier: row.get(16)?,
+                source_commit_sha: row.get(17)?,
+                shipped_commit_sha: row.get(18)?,
             })
         })
         .unwrap()
@@ -608,7 +622,7 @@ impl DbStore {
 
     fn get_project_row(conn: &Connection, project_id: i64) -> Option<Project> {
         conn.query_row(
-            "SELECT id, org, repo, gxp, source, scan_location, status, error, repo_url, pr_url, created_at, finished_at FROM projects WHERE id = ?",
+            "SELECT id, org, repo, gxp, source, scan_location, status, error, repo_url, pr_url, created_at, finished_at, source_commit_sha, shipped_commit_sha FROM projects WHERE id = ?",
             params![project_id],
             |row| {
                 Ok(Project {
@@ -624,6 +638,8 @@ impl DbStore {
                     pr_url: row.get(9)?,
                     created_at: row.get(10)?,
                     finished_at: row.get(11)?,
+                    source_commit_sha: row.get(12)?,
+                    shipped_commit_sha: row.get(13)?,
                 })
             },
         )
@@ -724,14 +740,19 @@ impl DbStore {
 
     // ---------------- retained sources ----------------
 
-    pub fn retain_project_source(&self, project_id: i64, dir_path: &str) {
+    pub fn retain_project_source(&self, project_id: i64, dir_path: &str, tier: &str) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO retained_sources (project_id, dir_path, retained_at) VALUES (?, ?, datetime('now'))
-             ON CONFLICT(project_id) DO UPDATE SET dir_path = excluded.dir_path, retained_at = excluded.retained_at",
-            params![project_id, dir_path],
+            "INSERT INTO retained_sources (project_id, dir_path, retained_at, tier) VALUES (?, ?, datetime('now'), ?)
+             ON CONFLICT(project_id) DO UPDATE SET dir_path = excluded.dir_path, retained_at = excluded.retained_at, tier = excluded.tier",
+            params![project_id, dir_path, tier],
         )
         .unwrap();
+    }
+
+    pub fn set_retained_source_tier(&self, project_id: i64, tier: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE retained_sources SET tier = ? WHERE project_id = ?", params![tier, project_id]).unwrap();
     }
 
     pub fn get_retained_source(&self, project_id: i64) -> Option<String> {
@@ -743,8 +764,8 @@ impl DbStore {
 
     pub fn list_retained_sources(&self) -> Vec<RetainedSourceRow> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached("SELECT project_id, dir_path FROM retained_sources ORDER BY retained_at DESC").unwrap();
-        stmt.query_map([], |row| Ok(RetainedSourceRow { project_id: row.get(0)?, dir_path: row.get(1)? }))
+        let mut stmt = conn.prepare_cached("SELECT project_id, dir_path, tier FROM retained_sources ORDER BY retained_at DESC").unwrap();
+        stmt.query_map([], |row| Ok(RetainedSourceRow { project_id: row.get(0)?, dir_path: row.get(1)?, tier: row.get(2)? }))
             .unwrap()
             .map(|r| r.unwrap())
             .collect()
@@ -755,9 +776,9 @@ impl DbStore {
     pub fn list_evictable_retained_sources(&self, keep: i64) -> Vec<RetainedSourceRow> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare_cached("SELECT project_id, dir_path FROM retained_sources ORDER BY retained_at DESC LIMIT -1 OFFSET ?")
+            .prepare_cached("SELECT project_id, dir_path, tier FROM retained_sources ORDER BY retained_at DESC LIMIT -1 OFFSET ?")
             .unwrap();
-        stmt.query_map(params![keep], |row| Ok(RetainedSourceRow { project_id: row.get(0)?, dir_path: row.get(1)? }))
+        stmt.query_map(params![keep], |row| Ok(RetainedSourceRow { project_id: row.get(0)?, dir_path: row.get(1)?, tier: row.get(2)? }))
             .unwrap()
             .map(|r| r.unwrap())
             .collect()
@@ -766,6 +787,15 @@ impl DbStore {
     pub fn delete_retained_source(&self, project_id: i64) {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM retained_sources WHERE project_id = ?", params![project_id]).unwrap();
+    }
+
+    pub fn set_project_commit_shas(&self, project_id: i64, source_commit_sha: Option<&str>, shipped_commit_sha: Option<&str>) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE projects SET source_commit_sha = COALESCE(?, source_commit_sha), shipped_commit_sha = COALESCE(?, shipped_commit_sha) WHERE id = ?",
+            params![source_commit_sha, shipped_commit_sha, project_id],
+        )
+        .unwrap();
     }
 
     // ---------------- auth: users + sessions ----------------
@@ -1458,6 +1488,47 @@ mod tests {
         assert_eq!(project.status, "success");
         assert_eq!(project.repo_url.as_deref(), Some("https://github.com/acme/widgets"));
         assert!(project.finished_at.is_some());
+    }
+
+    #[test]
+    fn set_project_commit_shas_coalesces_and_does_not_clobber() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-commit", "acme", "widgets", false, "ui", None);
+        store.set_project_commit_shas(id, Some("abc123"), None);
+        let project = store.get_project(id).unwrap();
+        assert_eq!(project.source_commit_sha.as_deref(), Some("abc123"));
+        assert_eq!(project.shipped_commit_sha, None);
+
+        store.set_project_commit_shas(id, None, Some("def456"));
+        let project = store.get_project(id).unwrap();
+        assert_eq!(project.source_commit_sha.as_deref(), Some("abc123"));
+        assert_eq!(project.shipped_commit_sha.as_deref(), Some("def456"));
+    }
+
+    #[test]
+    fn retain_project_source_defaults_full_and_updates_tier() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-retain", "acme", "widgets", false, "ui", None);
+        store.retain_project_source(id, "/tmp/retained/1", "full");
+        let rows = store.list_retained_sources();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tier, "full");
+
+        store.set_retained_source_tier(id, "pruned");
+        let rows = store.list_retained_sources();
+        assert_eq!(rows[0].tier, "pruned");
+    }
+
+    #[test]
+    fn list_evictable_retained_sources_respects_keep_across_tiers() {
+        let (_dir, store) = open_test_db();
+        for i in 0..12 {
+            let id = store.create_project(&format!("job-evict-{i}"), "acme", "widgets", false, "ui", None);
+            let tier = if i < 5 { "full" } else { "pruned" };
+            store.retain_project_source(id, &format!("/tmp/retained/{i}"), tier);
+        }
+        let evictable = store.list_evictable_retained_sources(10);
+        assert_eq!(evictable.len(), 2, "expected exactly 2 rows beyond the 10 most recently retained");
     }
 
     #[test]

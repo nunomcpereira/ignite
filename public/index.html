@@ -299,12 +299,18 @@
         Every run first executes as a simulation — every check runs, nothing is created on GitHub. Once it passes, you'll get an option to provision &amp; push for real.
       </p>
 
-      <button id="startBtn" disabled
-        class="mt-4 w-full py-3 rounded-xl text-sm font-semibold transition-all
-               disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none
-               bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25">
-        Initiate Onboarding Pipeline
-      </button>
+      <div class="mt-4 flex gap-2">
+        <button id="startBtn" disabled
+          class="flex-1 py-3 rounded-xl text-sm font-semibold transition-all
+                 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none
+                 bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25">
+          Initiate Onboarding Pipeline
+        </button>
+        <button id="newScanBtn" type="button" title="Clear this view and start a new scan — any other extraction still running keeps running untouched"
+          class="py-3 px-4 rounded-xl text-sm font-semibold transition-all border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:bg-slate-100">
+          New scan
+        </button>
+      </div>
 
       <!-- Shown from the moment the upload starts until the server's first
            NDJSON event arrives — the gap where a large ZIP/folder upload
@@ -469,6 +475,15 @@
         <div class="w-full sm:w-64 shrink-0 max-h-48 sm:max-h-none border-b sm:border-b-0 sm:border-r border-slate-200 bg-white overflow-y-auto flex flex-col">
           <div class="sticky top-0 bg-white border-b border-slate-100">
             <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Explorer</p>
+            <!-- The 5 most-recent extractions keep their full source tree
+                 browsable here (tier "full"); the next 5 (rank 6-10) are
+                 pruned down to just the files that had findings (tier
+                 "pruned") rather than evicted outright — this dropdown lets
+                 you jump straight to any of those 10 without leaving Studio.
+                 Populated from GET /api/projects, filtered client-side to
+                 rows carrying a retained_tier (see renderStudioRecentSwitcher). -->
+            <select id="studioRecentSwitcher" class="w-[calc(100%-1.5rem)] mx-3 mt-2 text-[11px] px-2 py-1 rounded border border-slate-200 bg-white"></select>
+            <p id="studioPrunedBanner" class="hidden mx-3 mt-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">Older extraction — only files with findings are available, not the full tree.</p>
             <input id="studioTreeFilter" type="text" placeholder="Filter files…" class="w-[calc(100%-1.5rem)] mx-3 my-2 text-[11px] px-2 py-1 rounded border border-slate-200" />
             <p class="px-3 pb-2 text-[10px] text-slate-400" title="Jump to the next file with an error / with an error-or-warning / back to where you jumped from">
               <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono">e</kbd> next error
@@ -610,6 +625,140 @@
 
     // payload: { kind: 'zip', file } | { kind: 'dir', entries: [{file, rel}], name, size }
     const state = { payload: null, running: false, phases: {}, gxp: false, gxpFiles: [], gxpLinks: [], jobId: null };
+
+    /* ------------------------------------------------------------ */
+    /* Multi-job tracking — survives a page refresh and lets the     */
+    /* user switch the main pipeline card between 2+ concurrently    */
+    /* running extractions. `state.phases`/`state.jobId` above stay  */
+    /* the "currently viewed job"'s mirror; `trackedJobs` is the      */
+    /* superset of every job this browser has seen, keyed by jobId.  */
+    /* ------------------------------------------------------------ */
+    // jobId -> { org, repo, running, startedAt, phases }
+    const trackedJobs = new Map();
+    let activeJobId = null;
+    // The job this tab's own in-flight xhr (if any) actually belongs to —
+    // deliberately separate from state.jobId/activeJobId, which "New scan"
+    // and switching the view both reassign. Every incoming NDJSON event
+    // is routed by this, not by whatever's currently displayed, so a
+    // still-streaming background job's events land in its own trackedJobs
+    // entry instead of overwriting a "New scan" blank view or a
+    // switched-to different job's view.
+    let currentXhrJobId = null;
+    const pollTimers = new Map(); // jobId -> setInterval handle
+    const TRACKED_JOBS_STORAGE_KEY = 'ignite:trackedJobs';
+    const JOB_POLL_INTERVAL_MS = 4000;
+
+    function persistTrackedJobs() {
+      try {
+        const rows = [...trackedJobs.entries()].map(([jobId, j]) => ({ jobId, org: j.org, repo: j.repo, running: j.running, startedAt: j.startedAt }));
+        window.localStorage.setItem(TRACKED_JOBS_STORAGE_KEY, JSON.stringify(rows));
+      } catch { /* localStorage unavailable (private mode, quota) — reconnect-on-refresh just won't have anything to restore */ }
+    }
+
+    function restoreTrackedJobsFromStorage() {
+      try {
+        const raw = window.localStorage.getItem(TRACKED_JOBS_STORAGE_KEY);
+        if (!raw) return [];
+        const rows = JSON.parse(raw);
+        if (!Array.isArray(rows)) return [];
+        return rows.filter((r) => r && r.jobId);
+      } catch { return []; }
+    }
+
+    // Shared by loadHistoryRunIntoMain (read-only past-run view) and
+    // rehydrateJob (live/finished reconnect) — both just remap a
+    // project's persisted `steps` into the {phase: {state, logs, ...}}
+    // shape handleEvent's 'status'/'log' branches already build live.
+    function stepsToPhases(steps) {
+      const stepsByPhase = new Map((steps || []).map((s) => [s.phase, s]));
+      const phases = {};
+      PHASES.forEach((ph) => {
+        const s = stepsByPhase.get(ph.id);
+        phases[ph.id] = { state: s ? s.state : 'pending', logs: s && s.logs ? s.logs.split('\n') : [], startedAt: null, endedAt: null };
+      });
+      return phases;
+    }
+
+    // Reconnect-by-polling: fetches the durable phase/log snapshot for a
+    // job this tab either lost track of (refresh) or never originated
+    // (switched to from the history drawer). Returns false if the job is
+    // unknown to the server (evicted/never existed).
+    async function rehydrateJob(jobId) {
+      let data;
+      try {
+        data = await (await fetch(`/api/pipeline/${encodeURIComponent(jobId)}/status`)).json();
+      } catch {
+        return false;
+      }
+      if (!data || !data.ok) { trackedJobs.delete(jobId); persistTrackedJobs(); return false; }
+      const existing = trackedJobs.get(jobId) || {};
+      trackedJobs.set(jobId, {
+        org: (data.project && data.project.org) || existing.org || '',
+        repo: (data.project && data.project.repo) || existing.repo || '',
+        running: !!data.running,
+        reviewActive: !!data.reviewActive,
+        startedAt: existing.startedAt || Date.now(),
+        phases: stepsToPhases(data.steps),
+      });
+      persistTrackedJobs();
+      return true;
+    }
+
+    function startPollingLoop(jobId) {
+      if (pollTimers.has(jobId)) return;
+      const timer = setInterval(async () => {
+        const ok = await rehydrateJob(jobId);
+        const job = trackedJobs.get(jobId);
+        if (!ok || !job || !job.running) {
+          stopPollingLoop(jobId);
+          loadProjects();
+        }
+        if (jobId === activeJobId && job) {
+          state.phases = job.phases;
+          renderPipeline();
+        }
+      }, JOB_POLL_INTERVAL_MS);
+      pollTimers.set(jobId, timer);
+    }
+
+    function stopPollingLoop(jobId) {
+      const timer = pollTimers.get(jobId);
+      if (timer) { clearInterval(timer); pollTimers.delete(jobId); }
+    }
+
+    // Switches the main pipeline card to show a different tracked job —
+    // used by the history drawer's running-row click and by the reconnect
+    // path at load. Starts polling it if this tab isn't already the one
+    // driving its live NDJSON stream.
+    async function switchToJob(jobId) {
+      if (!trackedJobs.has(jobId)) {
+        const ok = await rehydrateJob(jobId);
+        if (!ok) return;
+      }
+      activeJobId = jobId;
+      const job = trackedJobs.get(jobId);
+      state.jobId = jobId;
+      state.phases = job.phases || {};
+      state.historyView = null;
+      $('historyViewBanner').classList.add('hidden');
+      // Otherwise a still-visible "Scan Passed"/"Scan Failed" banner from
+      // whichever job this view was previously showing would stick around
+      // next to the newly-switched-to job's (possibly still-running) phases.
+      resultBanner.classList.add('hidden');
+      resultBanner.innerHTML = '';
+      renderPipeline();
+      if (job.running && !pollTimers.has(jobId)) startPollingLoop(jobId);
+      // Paused at the review gate, waiting on a proceed/stop decision — the
+      // original in-page modal from handleReviewRequired doesn't survive a
+      // refresh (it's just DOM state), so reconstruct it from the same
+      // /issues endpoint the review modal itself already fetches from.
+      if (job.reviewActive) {
+        try {
+          const data = await (await fetch(`/api/pipeline/${encodeURIComponent(jobId)}/issues`)).json();
+          if (data.ok) handleReviewRequired({ jobId, phase: 6, issues: data.issues || [] });
+        } catch { /* best-effort — the job stays paused server-side either way */ }
+      }
+    }
 
     /* ------------------------------------------------------------ */
     /* Auth — standalone (email/password) or company IdP (OIDC)      */
@@ -768,7 +917,7 @@
     const dropzone = $('dropzone'), fileInput = $('fileInput');
     let orgInput = $('orgInput');
     const repoInput = $('repoInput');
-    const startBtn = $('startBtn'), pipelineEl = $('pipeline'), resultBanner = $('resultBanner');
+    const startBtn = $('startBtn'), newScanBtn = $('newScanBtn'), pipelineEl = $('pipeline'), resultBanner = $('resultBanner');
 
     /* ------------------------------------------------------------ */
     /* Rendering                                                     */
@@ -1070,8 +1219,15 @@
     }
 
     function resetPhases() {
+      // A fresh object, not an in-place mutation of the old one — the old
+      // `state.phases` may still be aliased by a trackedJobs entry (the job
+      // this view was just showing, if it's still running in the
+      // background); mutating it here would silently corrupt that job's
+      // tracked state instead of just clearing the current view.
+      state.phases = {};
       PHASES.forEach((p) => { state.phases[p.id] = { state: 'pending', logs: [], startedAt: null, endedAt: null }; });
       state.jobId = null;
+      activeJobId = null;
       state.historyView = null;
       state.lastReviewIssues = [];
       $('historyViewBanner').classList.add('hidden');
@@ -2049,9 +2205,35 @@
       el.classList.remove('hidden');
     }
 
+    // Populates the Explorer's "recent extractions" switcher with the ≤10
+    // projects that still have a retained source on disk (5 full + up to
+    // 5 pruned-to-flagged-files — see RETAINED_FULL_KEEP/RETAINED_TOTAL_KEEP
+    // server-side). Selecting one just re-opens Studio for that job id —
+    // the tree/file endpoints already transparently serve whatever's
+    // physically on disk, full or pruned, with zero server-side changes
+    // needed for this to work.
+    async function renderStudioRecentSwitcher(activeJobId) {
+      const select = $('studioRecentSwitcher');
+      let projects = [];
+      try {
+        projects = await (await fetch('/api/projects')).json();
+      } catch { select.innerHTML = ''; return; }
+      const recent = projects.filter((p) => p.retained_tier && p.job_id);
+      if (recent.length === 0) { select.classList.add('hidden'); return; }
+      select.classList.remove('hidden');
+      select.innerHTML = recent.map((p) => `<option value="${escapeAttr(p.job_id)}" ${p.job_id === activeJobId ? 'selected' : ''}>${escapeHtml(p.org)}/${escapeHtml(p.repo)} — ${p.retained_tier === 'pruned' ? 'flagged files only' : 'full'}</option>`).join('');
+      const active = recent.find((p) => p.job_id === activeJobId);
+      $('studioPrunedBanner').classList.toggle('hidden', !active || active.retained_tier !== 'pruned');
+    }
+    $('studioRecentSwitcher').addEventListener('change', (ev) => {
+      const jobId = ev.target.value;
+      if (jobId) openStudio(jobId, null);
+    });
+
     async function openStudio(jobId, issue, { fromReview = false } = {}) {
       if (!jobId) return;
       setStudioHistoricalUi(false);
+      renderStudioRecentSwitcher(jobId);
       studioState.jobId = jobId;
       studioState.fromReview = fromReview;
       studioState.currentPath = null;
@@ -2128,6 +2310,7 @@
     async function openHistoricalStudio(projectId, org, repo) {
       if (!projectId) return;
       setStudioHistoricalUi(true);
+      renderStudioRecentSwitcher(null);
       studioState.jobId = null;
       studioState.historicalProjectId = projectId;
       studioState.fromReview = false;
@@ -4013,6 +4196,13 @@
       updateButton();
     }
 
+    function showIdle() {
+      $('dropError').classList.add('hidden');
+      $('dropReady').classList.add('hidden');
+      $('dropIdle').classList.remove('hidden');
+      updateButton();
+    }
+
     /* Auto-propose the repository name from the uploaded ZIP/folder name.
        Only fills the field while it's empty or still holding a previous
        proposal — never overwrites something the user typed. */
@@ -4384,6 +4574,21 @@
       }
     });
 
+    // Clears the current view for a new upload — does NOT touch any other
+    // tracked job (its own trackedJobs entry, and this tab's xhr if it's
+    // still the one driving that job in the background, are both left
+    // alone; see currentXhrJobId in ensurePhaseState/handleEvent). If this
+    // tab's own upload is still in flight, the Start button stays disabled
+    // (state.running) until it finishes — a truly simultaneous second
+    // upload from the very same tab isn't supported, but the view no
+    // longer shows the old run's data while that finishes in the background.
+    newScanBtn.addEventListener('click', () => {
+      state.payload = null;
+      showIdle();
+      resetPhases();
+      updateButton();
+    });
+
     // Phases the server always runs (e.g. Phase 2/GxP, when config-disabled,
     // still gets an explicit 'skipped' status + log line from the backend —
     // it isn't shown, checked, or blocking, but the event stream still
@@ -4391,13 +4596,24 @@
     // PHASES was filtered down to only the enabled/displayed ones. Lazily
     // create a throwaway bucket rather than crashing the whole run on a
     // phase id the UI isn't rendering.
+    // Targets the job this specific xhr event stream actually belongs to
+    // (currentXhrJobId), not whichever job happens to be displayed right
+    // now — that's what lets a background run keep updating its own
+    // tracked state correctly even after "New scan" or switching the view
+    // away from it.
     function ensurePhaseState(phase) {
-      return (state.phases[phase] ??= { state: 'pending', logs: [], startedAt: null, endedAt: null });
+      const job = trackedJobs.get(currentXhrJobId);
+      const target = job ? job.phases : state.phases;
+      return (target[phase] ??= { state: 'pending', logs: [], startedAt: null, endedAt: null });
     }
 
     function handleEvent(ev) {
       if (ev.type === 'job') {
+        currentXhrJobId = ev.jobId;
         state.jobId = ev.jobId;
+        activeJobId = ev.jobId;
+        trackedJobs.set(ev.jobId, { org: (orgInput.value || '').trim(), repo: (repoInput.value || '').trim(), running: true, startedAt: Date.now(), phases: state.phases });
+        persistTrackedJobs();
         updateViewIssuesButton();
         updateViewChecksReportButton();
         prependOptimisticRunningProject(ev.jobId);
@@ -4418,18 +4634,19 @@
           ph.endedAt = Date.now();
         }
       } else if (ev.type === 'insight') {
-        showInsight(ev.state, ev.text);
+        if (currentXhrJobId === activeJobId) showInsight(ev.state, ev.text);
       } else if (ev.type === 'review_required') {
         const errorCount = (ev.issues || []).filter((i) => i.severity === 'error').length;
-        state.phases[ev.phase].logs.push(`⚠ Final review: ${ev.issues?.length || 0} flagged issue(s) across the run (${errorCount} blocking). Awaiting user decision...`);
+        ensurePhaseState(ev.phase).logs.push(`⚠ Final review: ${ev.issues?.length || 0} flagged issue(s) across the run (${errorCount} blocking). Awaiting user decision...`);
         handleReviewRequired(ev);
       } else if (ev.type === 'done') {
-        showResult(ev.ok, ev);
-        renderPipeline();
+        const job = trackedJobs.get(currentXhrJobId);
+        if (job) { job.running = false; persistTrackedJobs(); }
+        if (currentXhrJobId === activeJobId) { showResult(ev.ok, ev); renderPipeline(); }
         loadProjects();
         return true;
       }
-      renderPipeline();
+      if (currentXhrJobId === activeJobId) renderPipeline();
       return false;
     }
 
@@ -4557,14 +4774,29 @@
               <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
             </button>
             <div class="flex items-center gap-3 flex-wrap">
+              ${p.status === 'running' && p.job_id ? `<button type="button" class="hist-switch-to-job text-[11px] font-semibold text-emerald-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="Switch the main view to this still-running extraction">▶ Switch to this run</button>` : ''}
               <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
-              ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${p.retained ? 'Full Ignite Studio — source retained for this run (Dependencies/SBOM/LOC/Posture/CodeQL/Rescan all available)' : 'Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)'}">${p.retained ? '🧪 Studio (full)' : '🧪 Studio'}</button>` : ''}
+              ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${p.retained ? 'Full Ignite Studio — source retained for this run (Dependencies/SBOM/LOC/Posture/CodeQL/Rescan all available)' : 'Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)'}">${p.retained ? `🧪 Studio${p.retained_tier === 'pruned' ? ' (flagged files only)' : ' (full)'}` : '🧪 Studio'}</button>` : ''}
               ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
               <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold ml-auto" data-id="${p.id}" title="Delete this project">✕</button>
             </div>
           </div>
           <div class="hist-detail hidden px-5 pb-4"></div>
         </div>`).join('');
+
+      historyList.querySelectorAll('.hist-switch-to-job').forEach((btn) => {
+        btn.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (state.running && btn.dataset.jobId !== state.jobId) {
+            alert('This tab is still uploading/streaming its own run — switch to a different job once that reaches the review gate or finishes.');
+            return;
+          }
+          await switchToJob(btn.dataset.jobId);
+          closeHistoryDrawer();
+          pipelineEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      });
 
       historyList.querySelectorAll('.hist-open-studio').forEach((btn) => {
         btn.addEventListener('click', (ev) => {
@@ -4786,6 +5018,8 @@
         </button>
         ${p.repo_url ? `<a href="${escapeHtml(p.repo_url)}" target="_blank" rel="noopener" class="block text-[11px] font-mono text-brand-600 hover:text-brand-800 underline underline-offset-2 truncate mb-2">${escapeHtml(p.repo_url)}</a>` : ''}
         ${p.scan_location ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="${escapeAttr(p.scan_location)}"><span class="font-semibold text-slate-400">Scanned from:</span> <span class="font-mono">${escapeHtml(p.scan_location)}</span></p>` : ''}
+        ${p.source_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="Reproduce this exact scan once its retained source ages out: git checkout ${escapeAttr(p.source_commit_sha)} in the original repo"><span class="font-semibold text-slate-400">Source commit:</span> <span class="font-mono">${escapeHtml(p.source_commit_sha)}</span></p>` : ''}
+        ${p.shipped_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="The commit pushed to GitHub for this run"><span class="font-semibold text-slate-400">Shipped commit:</span> <span class="font-mono">${escapeHtml(p.shipped_commit_sha)}</span></p>` : ''}
         ${(p.status === 'failed' || p.status === 'aborted') && p.error ? `<p class="text-[11px] text-rose-600 mb-2">✗ ${escapeHtml(p.error)}</p>` : ''}
         <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Pipeline steps</p>
         <div class="space-y-1.5 mb-3">${stepsHtml || '<p class="text-[11px] text-slate-400">No step history recorded.</p>'}</div>
@@ -4862,11 +5096,35 @@
 
     /* Initial render */
     resetPhases();
-    applyServerConfig();
     loadAuthState();
     loadToolsStatus();
     loadProjects();
     loadEffectivated();
+
+    // Reconnect-on-refresh: rebuild every job this browser was tracking
+    // (localStorage) from the server's durable steps snapshot, so a page
+    // refresh mid-run doesn't lose visibility into it. PHASES must reflect
+    // the real server phase list first (applyServerConfig), or
+    // stepsToPhases would build against the placeholder default list.
+    (async () => {
+      await applyServerConfig();
+      const rows = restoreTrackedJobsFromStorage();
+      let mostRecentRunning = null;
+      for (const row of rows) {
+        const ok = await rehydrateJob(row.jobId);
+        if (!ok) continue;
+        const job = trackedJobs.get(row.jobId);
+        if (job.running) {
+          startPollingLoop(row.jobId);
+          if (!mostRecentRunning || (row.startedAt || 0) > (mostRecentRunning.startedAt || 0)) {
+            mostRecentRunning = { jobId: row.jobId, startedAt: row.startedAt };
+          }
+        }
+      }
+      if (mostRecentRunning) await switchToJob(mostRecentRunning.jobId);
+    })();
+
+    window.addEventListener('beforeunload', persistTrackedJobs);
   </script>
 </body>
 </html>
