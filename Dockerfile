@@ -78,7 +78,7 @@ ARG INSTALL_DOCKER_CLI=true
 # docker-compose.yml's `group_add` does this for you already. Docker
 # Desktop (macOS/Windows) sockets are typically reachable regardless.
 ARG DOCKER_GID=999
-ARG ORT_VERSION=91.1.0
+ARG ORT_VERSION=92.5.0
 
 # pipx defaults to installing under $HOME (/root at this point in the build,
 # readable only by root) - point it at a shared, world-readable location up

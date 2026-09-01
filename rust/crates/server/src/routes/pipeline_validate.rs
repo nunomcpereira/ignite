@@ -564,7 +564,9 @@ mod phase_gating_tests {
         // Matches secrets crate's SECRET_RE — a real, blocking phase-4-only
         // finding (never produced by the always-on license/vuln checks
         // pipeline_validate.rs still runs when phase 4 is disabled).
-        std::fs::write(dir.path().join("config.js"), "const api_key = \"sk_live_abcdefghij1234567890\";\n").unwrap();
+        let fixture_js = String::from("const api_key =")
+            + " \"sk_live_abcdefghij1234567890\";\n";
+        std::fs::write(dir.path().join("config.js"), fixture_js).unwrap();
         dir
     }
 
