@@ -180,3 +180,11 @@ reaches your org's GitHub — whether or not whoever (or whatever) wrote the
 code knew to ask for it.
 
 [View the full technical README on GitHub »](https://github.com/nunomcpereira/ignite#readme)
+
+## Executive summary
+
+For a board- or leadership-level view — why this gate exists, how it fits
+next to GitHub Advanced Security, and what it costs to run — see the
+one-page executive briefing:
+
+📄 **[Executive summary (PDF)](/files/ignite-executive-briefing.pdf)**

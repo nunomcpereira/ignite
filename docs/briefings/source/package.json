@@ -1,0 +1,23 @@
+{
+  "name": "ignite-executive-briefing",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "slidev",
+    "build": "slidev build",
+    "export": "slidev export"
+  },
+  "dependencies": {
+    "@slidev/cli": "^51.0.0",
+    "@slidev/theme-default": "*",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "playwright-chromium": "^1.62.1"
+  },
+  "allowScripts": {
+    "playwright-chromium@1.62.1": true,
+    "esbuild@0.25.12": true,
+    "fsevents@2.3.3": true
+  }
+}

@@ -6,7 +6,7 @@ A single-page web app that acts as a compliance gate for onboarding code into a 
 
 **Most of the detection below is deterministic static analysis by dedicated tools - Semgrep (SAST), deps.dev/OSV (CVE), Trivy/Checkov/hadolint (IaC), GuardDog (supply-chain), gitleaks (secrets), cosign, Bearer, Spectral - not an LLM guessing.** The local LLM deep-scan is one additional, independently-toggleable layer (`LLM_DEEP_SCAN_ENABLED`) for logic-level review that fixed rule sets can't reach; every static engine below runs identically whether it's on or off. See the [attack & risk coverage table](#attack--risk-coverage--what-each-check-actually-prevents) for the full tool-by-tool mapping.
 
-📖 **[See it in action - screenshots & walkthrough](https://nunomcpereira.github.io/ignite/)**
+📖 **[See it in action - screenshots & walkthrough](https://nunomcpereira.github.io/ignite/)** · 📄 **[Executive summary (PDF)](docs/briefings/ignite-executive-briefing.pdf)**
 
 <p align="center">
   <img src="docs/assets/images/02-findings-overview.png" alt="Ignite's final review gate - flagged issues with code expanded" width="720">
