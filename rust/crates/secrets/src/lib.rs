@@ -556,9 +556,13 @@ mod tests {
     fn flags_a_password_embedded_in_a_connection_string() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        // example.com is IANA/RFC 2606-reserved for documentation - never a
+        // real host - and the password is labeled as a placeholder outright,
+        // so this can't be mistaken for a live credential by a scanner (ours
+        // or a third party's) that only sees the string, not this comment.
         fs::write(
             root.join("config.py"),
-            "DATABASE_URL = \"postgresql://dbadmin:P@ssw0rd2024!ProdSecure@db.internal.corp:5432/main_production\"\n",
+            "DATABASE_URL = \"postgresql://testuser:not-a-real-pw@x@example.com:5432/testdb\"\n",
         )
         .unwrap();
 
