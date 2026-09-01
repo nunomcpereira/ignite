@@ -20,9 +20,24 @@ use std::path::Path;
 
 // Captures the quote char (if any) separately from the value so callers
 // can tell a string literal from a bare identifier/property-access
-// reference.
+// reference. `[a-z0-9_]*` after the keyword lets it match inside a longer
+// compound identifier (`AWS_SECRET_ACCESS_KEY`, `JWT_SECRET_KEY`) instead of
+// requiring the keyword to sit immediately before `=`/`:` — the original
+// pattern missed exactly those because "aws_secret"/"secret" was followed
+// by more identifier characters, not straight into the separator. The
+// value charset also allows `/` and `+` (base64/AWS-secret alphabet).
 static SECRET_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?i)(password|aws_secret|api_key|token|private_key)\s*[:=]\s*(['"]?)([a-zA-Z0-9_\-.~]{10,})"#).unwrap());
+    Lazy::new(|| Regex::new(r#"(?i)(password|passwd|pwd|secret|aws_secret|access_key|api_key|apikey|token|private_key|credential|jwt)[a-z0-9_]*\s*[:=]\s*(['"]?)([a-zA-Z0-9_\-.~/+]{10,})"#).unwrap());
+
+// A connection-string's embedded `user:password@host` userinfo carries a
+// real credential regardless of what the surrounding variable is named
+// (`DATABASE_URL` matches none of SECRET_RE's keywords) — checked
+// independently of SECRET_RE for exactly that reason. Both `[^...]*` groups
+// are greedy so a password that itself contains `@` (e.g.
+// `P@ssw0rd@host`) still resolves to the *last* `@` as the userinfo/host
+// boundary, matching how a real URI parser reads it.
+static URI_CREDENTIAL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)[a-z][a-z0-9+.\-]*://([^\s'"/@]+):([^\s'"]{6,})@"#).unwrap());
 
 static SECRET_SCAN_PATH_SKIP_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^(?:\.ignite-review\.md|(?:\.claude|\.github)/skills/.*\.md)$").unwrap());
@@ -30,6 +45,11 @@ static PLACEHOLDER_SECRET_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bghp_x{6,}\b|\bsecret-key-here\b|fcm-token-[a-z0-9-]*\.\.\.").unwrap());
 static IDENTIFIER_CHAIN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$").unwrap());
 static COMMENT_CODE_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*#\s*Code:\s*").unwrap());
+
+/// Bump this whenever `scan_file_for_secrets`'s detection logic changes in
+/// a way that could produce different findings for the same file bytes —
+/// see the comment where it's used in `check_secrets`.
+const SECRET_DETECTOR_VERSION: &str = "v2";
 
 fn normalize_rel_path(rel_path: &str) -> String {
     rel_path.replace('\\', "/")
@@ -193,28 +213,53 @@ fn scan_file_for_secrets(
 ) -> Vec<SecretFinding> {
     let mut findings = Vec::new();
     for (i, line) in content.split('\n').enumerate() {
-        let Some(m) = SECRET_RE.captures(line) else { continue };
-        let keyword = &m[1];
-        let quote = m.get(2).map(|g| g.as_str()).unwrap_or("");
-        let value = &m[3];
-        if !is_likely_secret_value(quote, ext) {
+        if let Some(m) = SECRET_RE.captures(line) {
+            let keyword = &m[1];
+            let quote = m.get(2).map(|g| g.as_str()).unwrap_or("");
+            let value = &m[3];
+            if !is_likely_secret_value(quote, ext) {
+                continue;
+            }
+            if is_allowlisted(allowlist, rel, line) {
+                continue;
+            }
+            if should_ignore_secret_line(known_public_key_patterns, rel, line, IgnoreLineArgs { quote, value }) {
+                continue;
+            }
+            let whole = m.get(0).unwrap();
+            let line_no = i + 1;
+            findings.push(SecretFinding {
+                file: rel.to_string(),
+                line: line_no,
+                kind: keyword.to_lowercase(),
+                tool: "built-in".to_string(),
+                code: build_snippet(content, line_no, SnippetOptions { col_start: Some(whole.start()), col_end: Some(whole.end()), ..Default::default() }),
+            });
             continue;
         }
-        if is_allowlisted(allowlist, rel, line) {
-            continue;
+
+        // No `keyword = value` match on this line — still check for a
+        // connection-string's embedded userinfo credential, which
+        // SECRET_RE can never catch since the variable holding it (e.g.
+        // `DATABASE_URL`) carries none of its keywords.
+        if let Some(m) = URI_CREDENTIAL_RE.captures(line) {
+            let value = &m[2];
+            if is_allowlisted(allowlist, rel, line) {
+                continue;
+            }
+            if should_ignore_secret_line(known_public_key_patterns, rel, line, IgnoreLineArgs { quote: "\"", value }) {
+                continue;
+            }
+            let whole = m.get(0).unwrap();
+            let line_no = i + 1;
+            findings.push(SecretFinding {
+                file: rel.to_string(),
+                line: line_no,
+                kind: "connection-string credential".to_string(),
+                tool: "built-in".to_string(),
+                code: build_snippet(content, line_no, SnippetOptions { col_start: Some(whole.start()), col_end: Some(whole.end()), ..Default::default() }),
+            });
         }
-        if should_ignore_secret_line(known_public_key_patterns, rel, line, IgnoreLineArgs { quote, value }) {
-            continue;
-        }
-        let whole = m.get(0).unwrap();
-        let line_no = i + 1;
-        findings.push(SecretFinding {
-            file: rel.to_string(),
-            line: line_no,
-            kind: keyword.to_lowercase(),
-            tool: "built-in".to_string(),
-            code: build_snippet(content, line_no, SnippetOptions { col_start: Some(whole.start()), col_end: Some(whole.end()), ..Default::default() }),
-        });
     }
     findings
 }
@@ -262,7 +307,14 @@ pub fn check_secrets(
             continue;
         }
         scanned += 1;
-        let hash = hash_buffer(&buffer);
+        // Folding SECRET_DETECTOR_VERSION into the stored hash means a
+        // detection-logic change (a broadened SECRET_RE, a new pattern like
+        // URI_CREDENTIAL_RE) invalidates every previously cached entry
+        // automatically — a pure content hash can't tell "this file is
+        // unchanged" from "this file is unchanged, but we'd now flag more
+        // in it", and a cache hit would otherwise keep serving pre-fix
+        // results (missing findings) forever until the file itself edits.
+        let hash = format!("{}:{SECRET_DETECTOR_VERSION}", hash_buffer(&buffer));
 
         let file_findings = if let Some(cached) = prev_cache.get(&rel) {
             if cached.hash == hash {
@@ -471,6 +523,48 @@ mod tests {
 
         let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
         assert_eq!(result.findings.len(), 1);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    /// Real gap: `AWS_SECRET_ACCESS_KEY`/`JWT_SECRET_KEY`-shaped compound
+    /// identifiers weren't flagged at all — the keyword had to sit
+    /// immediately before `=`, so anything after "aws_secret"/"secret" in
+    /// the variable name (`_ACCESS_KEY`, `_KEY`) broke the match.
+    #[test]
+    fn flags_compound_identifiers_with_trailing_keyword_suffix() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("config.py"),
+            "AWS_SECRET_ACCESS_KEY = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"\nJWT_SECRET_KEY = \"super_secret_production_signing_key_do_not_share_12345\"\n",
+        )
+        .unwrap();
+
+        let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
+        assert_eq!(result.findings.len(), 2);
+        assert_eq!(result.findings[0].kind, "aws_secret");
+        assert_eq!(result.findings[1].kind, "jwt");
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    /// Real gap: a connection string's embedded `user:password@host`
+    /// carries a real credential regardless of what the variable is named
+    /// (`DATABASE_URL` matches none of SECRET_RE's keywords) — including
+    /// when the password itself contains an `@`, which must resolve to the
+    /// *last* `@` as the userinfo/host boundary, same as a real URI parser.
+    #[test]
+    fn flags_a_password_embedded_in_a_connection_string() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("config.py"),
+            "DATABASE_URL = \"postgresql://dbadmin:P@ssw0rd2024!ProdSecure@db.internal.corp:5432/main_production\"\n",
+        )
+        .unwrap();
+
+        let (result, _) = check_secrets(root, &cfg(), &empty_cache()).unwrap();
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind, "connection-string credential");
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 

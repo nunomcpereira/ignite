@@ -292,7 +292,7 @@ impl EventLog {
 
 fn new_issue(id: String, phase: i64, category: &str, severity: Severity, summary: String, file: Option<String>, line: Option<i64>) -> Issue {
     let _ = phase;
-    Issue { id, category: category.to_string(), severity, score: score_for_issue(category, severity), summary, file, line, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None }
+    Issue { id, category: category.to_string(), severity, score: score_for_issue(category, severity), summary, file, line, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None, tool: None, references: ignite_override_engine::IssueReferences::default() }
 }
 
 fn resolve_actor_from_body(actor_value: &Value) -> Option<Actor> {

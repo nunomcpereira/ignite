@@ -72,6 +72,11 @@ pub struct LicenseScanManifest {
     pub file: String,
     pub ecosystem: &'static str,
     pub dependencies: Vec<LicenseScanDependency>,
+    /// Which engine actually resolved this manifest's dependency graph —
+    /// "ORT" (real lockfile analysis) or "deps.dev" (the manifest-parser +
+    /// registry-lookup fallback) — surfaced per-finding so a reviewer knows
+    /// which tool to trust/re-run.
+    pub source: &'static str,
 }
 
 fn tier_to_str(tier: &LicenseTier) -> &'static str {
@@ -202,7 +207,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
         }))
         .await;
 
-        manifests.push(LicenseScanManifest { file: file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"), ecosystem: spec.ecosystem, dependencies });
+        manifests.push(LicenseScanManifest { file: file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"), ecosystem: spec.ecosystem, dependencies, source: "deps.dev" });
     }
     Ok(manifests)
 }
@@ -613,7 +618,7 @@ async fn run_ort_analyze_inner(root: &Path, runner: &ToolRunner, out_dir: &Path)
         let Some(ecosystem) = map_ort_ecosystem(&pkg_type) else { continue };
         let real_path = path_by_type.get(&pkg_type).cloned().flatten();
         let Some(real_path) = real_path else {
-            manifests.push(LicenseScanManifest { file: format!("(ORT: {ecosystem})"), ecosystem, dependencies });
+            manifests.push(LicenseScanManifest { file: format!("(ORT: {ecosystem})"), ecosystem, dependencies, source: "ORT" });
             continue;
         };
         // Resolve each dependency's declaration line the same way the
@@ -623,7 +628,7 @@ async fn run_ort_analyze_inner(root: &Path, runner: &ToolRunner, out_dir: &Path)
             Ok(content) => dependencies.into_iter().map(|mut dep| { dep.line = find_manifest_dep_line(&content, &dep.name, ecosystem); dep }).collect(),
             Err(_) => dependencies,
         };
-        manifests.push(LicenseScanManifest { file: real_path, ecosystem, dependencies });
+        manifests.push(LicenseScanManifest { file: real_path, ecosystem, dependencies, source: "ORT" });
     }
 
     Ok(Some(manifests))
@@ -757,8 +762,10 @@ pub fn collect_license_issues(manifests: &[LicenseScanManifest], license_files: 
                 cross_file: false,
                 chain: None,
                 duplicate_ref: None,
+                references: ignite_override_engine::IssueReferences::default(),
                 cwe: None,
                 owasp: None,
+                tool: Some(manifest.source.to_string()),
             });
         }
     }
@@ -777,8 +784,13 @@ pub fn collect_license_issues(manifests: &[LicenseScanManifest], license_files: 
             cross_file: false,
             chain: None,
             duplicate_ref: None,
+            references: ignite_override_engine::IssueReferences::default(),
             cwe: None,
             owasp: None,
+            // A raw root LICENSE/LICENSE.txt file's own text, classified by
+            // Ignite's built-in scanner directly — not a per-dependency
+            // manifest lookup, so neither ORT nor deps.dev produced this one.
+            tool: Some("built-in".to_string()),
         });
     }
 
@@ -805,14 +817,34 @@ pub fn collect_dependency_vulnerability_issues(manifests: &[VulnScanManifest]) -
                 // CVE/GHSA id itself.
                 let cwe_alias = vuln.aliases.iter().find(|a| CWE_ALIAS_RE.is_match(a)).cloned();
                 let hint = derive_cwe_owasp(category, vuln.title.as_deref().unwrap_or(""), &CweOwaspHint { cwe: cwe_alias, owasp: None });
+                // A GHSA/PYSEC advisory id is deps.dev's own identifier, not
+                // necessarily the CVE — the real CVE (when one was ever
+                // assigned) shows up as one of the advisory's aliases
+                // instead, so surface it separately rather than dropping it.
+                let cve_alias = vuln.aliases.iter().find(|a| a.starts_with("CVE-")).cloned();
 
                 let mut summary = format!("{}@{} — {}", dep.name, dep.version.clone().unwrap_or_else(|| if dep.version_range.is_empty() { "?".to_string() } else { dep.version_range.clone() }), advisory_id);
                 if let Some(title) = &vuln.title {
                     summary.push_str(&format!(": {title}"));
                 }
+                if let Some(cve) = &cve_alias {
+                    if advisory_id != *cve {
+                        summary.push_str(&format!(" ({cve})"));
+                    }
+                }
                 if let Some(score) = vuln.cvss3_score {
                     summary.push_str(&format!(" (CVSS {score})"));
                 }
+
+                // Every id this one advisory carries, sorted into its
+                // CVE/CWE/PySec/RustSec/Go/GHSA bucket — an OSV record
+                // routinely lists more than one of each (multiple CVEs
+                // assigned to the same root cause, several CWE tags, cross-
+                // references to the same flaw under another ecosystem's
+                // database), which `hint.cwe`/`cve_alias` above (kept for
+                // the plain-text summary and the singular `cwe` field) can't
+                // represent on their own.
+                let references = ignite_override_engine::build_references(std::iter::once(advisory_id.as_str()).chain(vuln.aliases.iter().map(|s| s.as_str())));
 
                 let id = format!("{}::{}::{}", build_issue_id(BuildIssueIdArgs { category, file: Some(&manifest.file), line: dep.line.map(|l| l as i64), discriminator: None }), dep.name, advisory_id);
                 issues.push(Issue {
@@ -827,8 +859,10 @@ pub fn collect_dependency_vulnerability_issues(manifests: &[VulnScanManifest]) -
                     cross_file: false,
                     chain: None,
                     duplicate_ref: None,
+                    references,
                     cwe: hint.cwe,
                     owasp: hint.owasp,
+                    tool: Some("deps.dev".to_string()),
                 });
             }
         }
@@ -884,6 +918,7 @@ mod tests {
                 LicenseScanDependency { name: "@acme/internal-lib".to_string(), version_range: "*".to_string(), version: None, line: Some(6), licenses: vec![], tier: DependencyLicenseTier::Internal, reason: "internal".to_string() },
                 LicenseScanDependency { name: "shady-pkg".to_string(), version_range: "^1.0.0".to_string(), version: Some("1.0.0".to_string()), line: Some(7), licenses: vec!["Commercial".to_string()], tier: DependencyLicenseTier::Red, reason: "Commercial license".to_string() },
             ],
+            source: "deps.dev",
         };
         let issues = collect_license_issues(&[manifest], &[]);
         assert_eq!(issues.len(), 1);
@@ -923,6 +958,49 @@ mod tests {
         assert!(issues[0].summary.contains("GHSA-qwcr-r2fm-qrc7"));
         assert!(issues[0].summary.contains("CVSS 7.5"));
         assert!(issues[0].id.ends_with("body-parser::GHSA-qwcr-r2fm-qrc7"));
+        assert_eq!(issues[0].tool.as_deref(), Some("deps.dev"));
+        assert_eq!(issues[0].references.ghsa, vec!["GHSA-qwcr-r2fm-qrc7"]);
+        assert_eq!(issues[0].references.cve, vec!["CVE-2024-1234"]);
+    }
+
+    /// Real case hit against deps.dev live data: one advisory carries
+    /// several CVE aliases and several PYSEC cross-references at once —
+    /// every one of them must survive into `references`, not just the
+    /// first of each.
+    #[test]
+    fn collect_dependency_vulnerability_issues_captures_every_alias_of_each_kind() {
+        let manifest = VulnScanManifest {
+            file: "requirements.txt".to_string(),
+            ecosystem: "pypi",
+            dependencies: vec![VulnScanDependency {
+                name: "starlette".to_string(),
+                version_range: "0.35.1".to_string(),
+                version: Some("0.35.1".to_string()),
+                line: Some(19),
+                vulnerabilities: vec![VulnFinding {
+                    id: Some("GHSA-82w8-qh3p-5jfq".to_string()),
+                    title: Some("Starlette: request.form() limits silently ignored".to_string()),
+                    aliases: vec![
+                        "CVE-2026-54283".to_string(),
+                        "CVE-2026-48818".to_string(),
+                        "PYSEC-2026-249".to_string(),
+                        "PYSEC-2026-3037".to_string(),
+                        "CWE-770".to_string(),
+                    ],
+                    cvss3_score: Some(7.5),
+                    severity: "error",
+                    url: None,
+                }],
+                note: None,
+            }],
+        };
+        let issues = collect_dependency_vulnerability_issues(&[manifest]);
+        assert_eq!(issues.len(), 1);
+        let refs = &issues[0].references;
+        assert_eq!(refs.ghsa, vec!["GHSA-82w8-qh3p-5jfq"]);
+        assert_eq!(refs.cve, vec!["CVE-2026-54283", "CVE-2026-48818"]);
+        assert_eq!(refs.pysec, vec!["PYSEC-2026-249", "PYSEC-2026-3037"]);
+        assert_eq!(refs.cwe, vec!["CWE-770"]);
     }
 
     #[test]

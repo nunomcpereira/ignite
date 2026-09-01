@@ -87,6 +87,28 @@ fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
                 "pip install --quiet --no-input --disable-pip-version-check pytest",
                 "(test -f requirements.txt && pip install --quiet --no-input --disable-pip-version-check -r requirements.txt || true)",
                 "(test -f pyproject.toml -o -f setup.py && pip install --quiet --no-input --disable-pip-version-check -e . || true)",
+                // `uv export --no-dev` (the header this project's own
+                // requirements.txt carries) deliberately drops test-only
+                // deps like httpx, and a plain `pip install -e .` installs
+                // no extras either — so anything declared under
+                // [project.optional-dependencies] (dev/test/tests/testing)
+                // never lands, and pytest fails on import for a project
+                // that's otherwise fine. Best-effort: an absent extra
+                // group just no-ops rather than failing the run.
+                "(test -f pyproject.toml && pip install --quiet --no-input --disable-pip-version-check -e '.[dev,test,tests,testing]' 2>/dev/null || true)",
+                // A PEP 735 [dependency-groups] "dev"/"test" table (the
+                // uv/pip-tools-native way to declare test-only deps, and
+                // what a plain `dependencies = [...]` project most often
+                // uses instead of optional-dependencies) isn't installable
+                // via `-e .[group]` at all — it's a separate mechanism, not
+                // an extra. `pip install --group` only exists from pip
+                // 25.1 on, and python:3.12-slim ships 25.0.1, so that flag
+                // silently doesn't exist here — read the table directly
+                // with the stdlib's own `tomllib` (3.11+) instead and feed
+                // the plain dependency-spec strings to pip as a
+                // requirements file.
+                "(test -f pyproject.toml && python3 -c 'import tomllib; d = tomllib.load(open(\"pyproject.toml\", \"rb\")); g = d.get(\"dependency-groups\", {}); deps = [dep for n in (\"dev\", \"test\", \"tests\", \"testing\") for dep in g.get(n, []) if isinstance(dep, str)]; open(\"/tmp/_ignite_dev_deps.txt\", \"w\").write(chr(10).join(deps))' 2>/dev/null || true)",
+                "(test -s /tmp/_ignite_dev_deps.txt && pip install --quiet --no-input --disable-pip-version-check -r /tmp/_ignite_dev_deps.txt || true)",
                 "pytest",
             ]
             .join(" && "),

@@ -16,10 +16,10 @@ fn with_enabled(mut v: Value, enabled: bool) -> Value {
     v
 }
 
-/// Every probe run concurrently, each result annotated with its "on by
-/// default" enabled flag (see project CLAUDE.md: everything here defaults
-/// to `true` except jscpd and trivyImage). ORT/licensee/gitleaks are
-/// always-on (no disable toggle in the JS original either).
+/// Every probe run concurrently, each result annotated with its configured
+/// enabled flag. jscpd/trivyImage read the live config (both default off,
+/// see config.json); the rest are always-on or have no disable toggle in
+/// the JS original either.
 async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
     let r = &state.runner;
     let (ort, licensee, gitleaks, trivy, trivy_image, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql, picklescan, oasdiff) = tokio::join!(
@@ -48,14 +48,14 @@ async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
         "licensee": with_enabled(bool_probe(licensee), true),
         "gitleaks": with_enabled(bool_probe(gitleaks), true),
         "trivy": with_enabled(bool_probe(trivy), true),
-        "trivyImage": with_enabled(serde_json::to_value(&trivy_image).unwrap(), false),
+        "trivyImage": with_enabled(serde_json::to_value(&trivy_image).unwrap(), state.config.security.trivy_image.enabled),
         "checkov": with_enabled(bool_probe(checkov), true),
         "hadolint": with_enabled(bool_probe(hadolint), true),
         "syft": with_enabled(serde_json::to_value(&syft).unwrap(), true),
         "cosign": with_enabled(bool_probe(cosign), true),
         "semgrep": with_enabled(serde_json::to_value(&semgrep).unwrap(), true),
         "bearer": with_enabled(bool_probe(bearer), true),
-        "jscpd": with_enabled(bool_probe(jscpd), false),
+        "jscpd": with_enabled(bool_probe(jscpd), state.config.metrics.jscpd.enabled),
         "gocloc": with_enabled(bool_probe(gocloc), true),
         "spectral": with_enabled(bool_probe(spectral), true),
         "guarddog": with_enabled(serde_json::to_value(&guarddog).unwrap(), true),

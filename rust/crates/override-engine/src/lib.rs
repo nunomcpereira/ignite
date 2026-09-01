@@ -5,7 +5,7 @@
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -172,6 +172,74 @@ pub fn derive_cwe_owasp(category: &str, summary: &str, explicit: &CweOwaspHint) 
     category_cwe_owasp().get(category).cloned().unwrap_or_default()
 }
 
+/// Every distinct advisory/weakness identifier that applies to one issue,
+/// grouped by database — a single dependency-vulnerability advisory
+/// routinely carries more than one of each (an OSV record's `aliases` list
+/// can hold several CVE ids and several CWE tags at once, plus its own id
+/// cross-referenced under another ecosystem's database), so a single
+/// `cwe`/`owasp` string can't represent it. The advisory-id buckets are
+/// split per ecosystem database (PyPI's PYSEC, Cargo's RUSTSEC, Go's GO-,
+/// and GHSA for everything else, npm/Maven included) since a reviewer
+/// looks each one up on a different site.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueReferences {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cve: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cwe: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pysec: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rustsec: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub go: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ghsa: Vec<String>,
+}
+
+impl IssueReferences {
+    pub fn is_empty(&self) -> bool {
+        self.cve.is_empty() && self.cwe.is_empty() && self.pysec.is_empty() && self.rustsec.is_empty() && self.go.is_empty() && self.ghsa.is_empty()
+    }
+}
+
+/// Sorts every id (a primary advisory id plus its OSV `aliases`, in any
+/// order/mix) into the right `IssueReferences` bucket by its own prefix —
+/// the one piece of the id that's a reliable database signal across every
+/// ecosystem deps.dev aggregates. Dedupes and drops anything unrecognized
+/// (a bare "GHSA"-less internal id, etc.) rather than inventing a bucket
+/// for it.
+pub fn build_references<S: AsRef<str>>(ids: impl IntoIterator<Item = S>) -> IssueReferences {
+    let mut refs = IssueReferences::default();
+    for raw in ids {
+        let id = raw.as_ref().trim();
+        if id.is_empty() {
+            continue;
+        }
+        let upper = id.to_ascii_uppercase();
+        let bucket = if upper.starts_with("CVE-") {
+            &mut refs.cve
+        } else if upper.starts_with("CWE-") {
+            &mut refs.cwe
+        } else if upper.starts_with("PYSEC-") {
+            &mut refs.pysec
+        } else if upper.starts_with("RUSTSEC-") {
+            &mut refs.rustsec
+        } else if upper.starts_with("GHSA-") {
+            &mut refs.ghsa
+        } else if upper.starts_with("GO-") {
+            &mut refs.go
+        } else {
+            continue;
+        };
+        if !bucket.iter().any(|existing| existing == id) {
+            bucket.push(id.to_string());
+        }
+    }
+    refs
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Issue {
@@ -192,6 +260,18 @@ pub struct Issue {
     pub duplicate_ref: Option<serde_json::Value>,
     pub cwe: Option<String>,
     pub owasp: Option<String>,
+    /// The scanner/tool that actually produced this finding (e.g. "trivy",
+    /// "semgrep", "bearer", "codeql", "deps.dev") — surfaced so a reviewer
+    /// looking at one finding in isolation (Studio, SARIF, an override
+    /// justification) knows which engine to trust/re-run, not just which
+    /// category it landed in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// Structured, multi-valued breakdown of `cwe`/`owasp` above (kept for
+    /// backward compat) plus every CVE/PySec/RustSec/Go/GHSA id that
+    /// applies — see `IssueReferences`.
+    #[serde(skip_serializing_if = "IssueReferences::is_empty")]
+    pub references: IssueReferences,
 }
 
 /// One shape covers every check's raw finding here (mirrors the loosely-
@@ -308,8 +388,10 @@ pub fn collect_codeql_issues(codeql: &CodeqlResult) -> Vec<Issue> {
                 cross_file: f.cross_file,
                 chain: f.chain.clone(),
                 duplicate_ref: None,
+                references: build_references(cwe.iter()),
                 cwe,
                 owasp,
+                tool: Some("codeql".to_string()),
             }
         })
         .collect()
@@ -394,8 +476,10 @@ fn push_simple(
         cross_file: false,
         chain: None,
         duplicate_ref: f.duplicate_ref.clone(),
+        references: build_references(f.cwe.iter()),
         cwe: f.cwe.clone(),
         owasp: f.owasp.clone(),
+        tool: f.tool.clone(),
     });
 }
 
@@ -562,8 +646,10 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                     cross_file: false,
                     chain: None,
                     duplicate_ref: None,
+                    references: IssueReferences::default(),
                     cwe: None,
                     owasp: None,
+                    tool: Some("llm-deep-scan".to_string()),
                 });
             }
         }
@@ -597,6 +683,8 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                 duplicate_ref: None,
                 cwe: None,
                 owasp: None,
+                tool: f.tool.clone(),
+                references: IssueReferences::default(),
             });
         }
     }
@@ -621,6 +709,8 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                 duplicate_ref: None,
                 cwe: None,
                 owasp: None,
+                tool: f.tool.clone(),
+                references: IssueReferences::default(),
             });
         }
     }
@@ -633,6 +723,15 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
         let resolved = derive_cwe_owasp(&issue.category, &issue.summary, &hint);
         issue.cwe = resolved.cwe;
         issue.owasp = resolved.owasp;
+        // A category-specific push site (dependency-vulnerability, CodeQL)
+        // already populated `references` with every alias it found; only
+        // backfill from the singular `cwe` here for everything else, so a
+        // richer multi-CWE breakdown is never clobbered by this generic pass.
+        if issue.references.cwe.is_empty() {
+            if let Some(cwe) = &issue.cwe {
+                issue.references.cwe.push(cwe.clone());
+            }
+        }
     }
 
     issues
@@ -694,6 +793,8 @@ pub fn collect_license_issues(manifests: &[LicenseManifest], license_files: &[Li
                 duplicate_ref: None,
                 cwe: None,
                 owasp: None,
+                tool: None,
+                references: IssueReferences::default(),
             });
         }
     }
@@ -714,6 +815,8 @@ pub fn collect_license_issues(manifests: &[LicenseManifest], license_files: &[Li
             duplicate_ref: None,
             cwe: None,
             owasp: None,
+            tool: None,
+            references: IssueReferences::default(),
         });
     }
 
@@ -787,8 +890,10 @@ pub fn collect_dependency_vulnerability_issues(manifests: &[VulnManifest]) -> Ve
                     cross_file: false,
                     chain: None,
                     duplicate_ref: None,
+                    references: build_references(std::iter::once(advisory_id.as_str()).chain(vuln.aliases.iter().map(|s| s.as_str()))),
                     cwe: resolved.cwe,
                     owasp: resolved.owasp,
+                    tool: Some("deps.dev".to_string()),
                 });
             }
         }
@@ -845,6 +950,35 @@ mod tests {
     }
 
     #[test]
+    fn build_references_sorts_mixed_ids_into_their_own_buckets_and_dedupes() {
+        let refs = build_references([
+            "GHSA-82w8-qh3p-5jfq",
+            "CVE-2026-54283",
+            "CVE-2026-48818",
+            "CWE-770",
+            "CWE-400",
+            "PYSEC-2026-249",
+            "PYSEC-2026-3037",
+            "CVE-2026-54283", // duplicate, should not repeat
+        ]);
+        assert_eq!(refs.ghsa, vec!["GHSA-82w8-qh3p-5jfq"]);
+        assert_eq!(refs.cve, vec!["CVE-2026-54283", "CVE-2026-48818"]);
+        assert_eq!(refs.cwe, vec!["CWE-770", "CWE-400"]);
+        assert_eq!(refs.pysec, vec!["PYSEC-2026-249", "PYSEC-2026-3037"]);
+        assert!(refs.rustsec.is_empty());
+        assert!(refs.go.is_empty());
+    }
+
+    #[test]
+    fn build_references_recognizes_rustsec_and_go_ids() {
+        let refs = build_references(["RUSTSEC-2023-0001", "GO-2023-1234", "not-an-advisory-id"]);
+        assert_eq!(refs.rustsec, vec!["RUSTSEC-2023-0001"]);
+        assert_eq!(refs.go, vec!["GO-2023-1234"]);
+        assert!(refs.is_empty() == false);
+        assert!(refs.cve.is_empty() && refs.cwe.is_empty() && refs.ghsa.is_empty() && refs.pysec.is_empty());
+    }
+
+    #[test]
     fn issue_json_uses_camel_case_keys_the_frontend_expects() {
         let issue = Issue {
             id: "codeql-sast::src/fileService.js::8".to_string(),
@@ -860,6 +994,8 @@ mod tests {
             duplicate_ref: Some(serde_json::json!({ "file": "src/routes.js", "line": 6 })),
             cwe: None,
             owasp: None,
+            tool: Some("codeql".to_string()),
+            references: IssueReferences::default(),
         };
         let json = serde_json::to_value(&issue).unwrap();
         assert_eq!(json["crossFile"], serde_json::json!(true));

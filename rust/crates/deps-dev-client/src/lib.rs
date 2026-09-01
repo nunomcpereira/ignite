@@ -291,13 +291,46 @@ pub fn classify_vulnerability_severity(cvss3_score: Option<f64>) -> &'static str
 /// Best-effort 1-based line of a dependency's declaration inside its
 /// manifest, so a license finding can highlight the exact line in the
 /// Studio editor instead of a file-level "line ?".
+///
+/// Skips comment lines outright — `pip-compile`/`uv export` annotate every
+/// resolved package with `# via <parent-package>` lines, and a plain
+/// substring search matches the dependency's own name inside one of those
+/// *before* ever reaching its real declaration line further down the file
+/// (e.g. `anyio==4.14.2` immediately followed by `# via starlette` would
+/// otherwise misattribute `starlette`'s finding to that comment, several
+/// lines above where `starlette==0.35.1` is actually declared).
 pub fn find_manifest_dep_line(content: &str, dep_name: &str, ecosystem: &str) -> Option<usize> {
-    let needle = match ecosystem {
-        "maven" => format!("<artifactId>{}<", dep_name.split(':').nth(1).unwrap_or(dep_name)),
-        "npm" => format!("\"{}\"", dep_name),
-        _ => dep_name.to_string(),
-    };
-    content.split('\n').position(|l| l.contains(&needle)).map(|i| i + 1)
+    match ecosystem {
+        "maven" => {
+            let needle = format!("<artifactId>{}<", dep_name.split(':').nth(1).unwrap_or(dep_name));
+            content.split('\n').position(|l| !l.trim_start().starts_with("<!--") && l.contains(&needle)).map(|i| i + 1)
+        }
+        "npm" => {
+            let needle = format!("\"{}\"", dep_name);
+            content.split('\n').position(|l| !l.trim_start().starts_with("//") && l.contains(&needle)).map(|i| i + 1)
+        }
+        "pypi" => {
+            // A real declaration line starts (after whitespace) with the
+            // package name — case-insensitive, `-`/`_`/`.` interchangeable
+            // per PEP 503 — followed by a version/extras/comment separator
+            // or end of line, never by more identifier characters (so
+            // "starlette" doesn't match a "starlette-extra" line).
+            let normalize = |s: &str| s.to_lowercase().replace(['_', '.'], "-");
+            let target = normalize(dep_name);
+            content
+                .split('\n')
+                .position(|l| {
+                    let trimmed = l.trim_start();
+                    if trimmed.starts_with('#') {
+                        return false;
+                    }
+                    let normalized = normalize(trimmed);
+                    normalized.strip_prefix(target.as_str()).is_some_and(|rest| rest.is_empty() || !rest.chars().next().unwrap().is_alphanumeric() && rest.chars().next() != Some('-'))
+                })
+                .map(|i| i + 1)
+        }
+        _ => content.split('\n').position(|l| !l.trim_start().starts_with('#') && l.contains(dep_name)).map(|i| i + 1),
+    }
 }
 
 #[cfg(test)]
@@ -336,6 +369,34 @@ mod tests {
 
         let pom = "<project>\n  <dependencies>\n    <dependency>\n      <artifactId>guava</artifactId>\n    </dependency>\n  </dependencies>\n</project>\n";
         assert_eq!(find_manifest_dep_line(pom, "com.google.guava:guava", "maven"), Some(4));
+    }
+
+    /// Real bug hit against a live `uv export`-generated requirements.txt:
+    /// `anyio==4.14.2` is immediately followed by a `# via starlette`
+    /// annotation comment, several lines above starlette's own real
+    /// declaration — a plain substring search matched that comment first
+    /// and misattributed starlette's finding to line 2 instead of line 4.
+    #[test]
+    fn find_manifest_dep_line_pypi_skips_via_comments_and_matches_real_declaration() {
+        let reqs = "annotated-types==0.8.0\nanyio==4.14.2\n    # via starlette\nstarlette==0.35.1\n    # via fastapi\n";
+        assert_eq!(find_manifest_dep_line(reqs, "starlette", "pypi"), Some(4));
+        assert_eq!(find_manifest_dep_line(reqs, "anyio", "pypi"), Some(2));
+    }
+
+    /// Word-boundary check: "starlette" must not match a line declaring a
+    /// different package that merely starts with the same prefix.
+    #[test]
+    fn find_manifest_dep_line_pypi_requires_word_boundary() {
+        let reqs = "starlette-extra==1.0.0\nstarlette==0.35.1\n";
+        assert_eq!(find_manifest_dep_line(reqs, "starlette", "pypi"), Some(2));
+    }
+
+    /// PEP 503 normalization: `-`/`_`/`.` are interchangeable, matching
+    /// should be case-insensitive.
+    #[test]
+    fn find_manifest_dep_line_pypi_normalizes_name_per_pep_503() {
+        let reqs = "Typing_Extensions==4.16.0\n";
+        assert_eq!(find_manifest_dep_line(reqs, "typing-extensions", "pypi"), Some(1));
     }
 
     #[test]

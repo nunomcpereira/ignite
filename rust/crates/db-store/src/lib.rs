@@ -116,6 +116,9 @@ CREATE TABLE IF NOT EXISTS issues (
   cross_file   INTEGER NOT NULL DEFAULT 0,
   chain_json   TEXT,
   cwe          TEXT,
+  owasp        TEXT,
+  tool         TEXT,
+  references_json TEXT,
   status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','overridden')),
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -223,6 +226,9 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE projects ADD COLUMN source_commit_sha TEXT",
     "ALTER TABLE projects ADD COLUMN shipped_commit_sha TEXT",
     "ALTER TABLE retained_sources ADD COLUMN tier TEXT NOT NULL DEFAULT 'full'",
+    "ALTER TABLE issues ADD COLUMN owasp TEXT",
+    "ALTER TABLE issues ADD COLUMN tool TEXT",
+    "ALTER TABLE issues ADD COLUMN references_json TEXT",
 ];
 
 pub struct DbStore {
@@ -358,6 +364,12 @@ pub struct IssueInput {
     pub cross_file: bool,
     pub chain: Option<serde_json::Value>,
     pub cwe: Option<String>,
+    pub owasp: Option<String>,
+    pub tool: Option<String>,
+    /// Serialized `ignite_override_engine::IssueReferences` — kept as a
+    /// loose JSON blob here (same as `snippet`/`chain`) so db-store doesn't
+    /// need a dependency on override-engine's types just to round-trip them.
+    pub references: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -375,6 +387,9 @@ pub struct IssueRow {
     pub cross_file: bool,
     pub chain: Option<serde_json::Value>,
     pub cwe: Option<String>,
+    pub owasp: Option<String>,
+    pub tool: Option<String>,
+    pub references: Option<serde_json::Value>,
     pub status: String,
     pub created_at: String,
 }
@@ -1238,14 +1253,15 @@ impl DbStore {
         for issue in issues {
             let snippet_json = issue.snippet.as_ref().map(|s| serde_json::to_string(s).unwrap());
             let chain_json = issue.chain.as_ref().map(|c| serde_json::to_string(c).unwrap());
+            let references_json = issue.references.as_ref().map(|r| serde_json::to_string(r).unwrap());
             let status = if overridden_ids.contains(&issue.id) { "overridden" } else { "open" };
             tx.execute(
-                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     project_id, issue.id, issue.phase, issue.category, issue.severity, issue.score,
                     issue.summary, issue.file, issue.line, snippet_json, issue.cross_file as i64, chain_json,
-                    issue.cwe, status,
+                    issue.cwe, issue.owasp, issue.tool, references_json, status,
                 ],
             )
             .unwrap();
@@ -1257,13 +1273,14 @@ impl DbStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, status, created_at
+                "SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, status, created_at
                  FROM issues WHERE project_id = ? ORDER BY id",
             )
             .unwrap();
         stmt.query_map(params![project_id], |row| {
             let snippet_json: Option<String> = row.get(8)?;
             let chain_json: Option<String> = row.get(10)?;
+            let references_json: Option<String> = row.get(14)?;
             Ok(IssueRow {
                 id: row.get(0)?,
                 phase: row.get(1)?,
@@ -1277,8 +1294,11 @@ impl DbStore {
                 cross_file: row.get::<_, i64>(9)? != 0,
                 chain: chain_json.map(|c| serde_json::from_str(&c).unwrap()),
                 cwe: row.get(11)?,
-                status: row.get(12)?,
-                created_at: row.get(13)?,
+                owasp: row.get(12)?,
+                tool: row.get(13)?,
+                references: references_json.map(|r| serde_json::from_str(&r).unwrap()),
+                status: row.get(15)?,
+                created_at: row.get(16)?,
             })
         })
         .unwrap()
@@ -1576,6 +1596,9 @@ mod tests {
                 cross_file: false,
                 chain: None,
                 cwe: Some("CWE-798".into()),
+                owasp: Some("A02:2021 - Cryptographic Failures".into()),
+                tool: Some("built-in".into()),
+                references: Some(serde_json::json!({"cwe": ["CWE-798"]})),
             },
             IssueInput {
                 id: "codeql-sast::b.js::10".into(),
@@ -1590,6 +1613,9 @@ mod tests {
                 cross_file: true,
                 chain: Some(serde_json::json!([{"file": "a.js", "line": 1}])),
                 cwe: None,
+                owasp: None,
+                tool: Some("codeql".into()),
+                references: None,
             },
         ];
         let mut overridden = HashSet::new();
@@ -1601,10 +1627,14 @@ mod tests {
         let secret = rows.iter().find(|r| r.id == "secret::a.js::3").unwrap();
         assert_eq!(secret.status, "overridden");
         assert!(secret.snippet.is_some());
+        assert_eq!(secret.tool.as_deref(), Some("built-in"));
+        assert_eq!(secret.owasp.as_deref(), Some("A02:2021 - Cryptographic Failures"));
+        assert_eq!(secret.references, Some(serde_json::json!({"cwe": ["CWE-798"]})));
         let codeql = rows.iter().find(|r| r.id == "codeql-sast::b.js::10").unwrap();
         assert_eq!(codeql.status, "open");
         assert!(codeql.cross_file);
         assert!(codeql.chain.is_some());
+        assert_eq!(codeql.tool.as_deref(), Some("codeql"));
 
         // The frontend (public/index.html) reads issue.crossFile, not
         // issue.cross_file - the API-facing JSON must use camelCase.

@@ -124,7 +124,7 @@ impl PipelineError {
 }
 
 pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
-    ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone() }
+    ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone(), owasp: i.owasp.clone(), tool: i.tool.clone(), references: if i.references.is_empty() { None } else { Some(serde_json::to_value(&i.references).unwrap()) } }
 }
 
 /// Builds the real Phase4Config from `state.config` (config.json + env

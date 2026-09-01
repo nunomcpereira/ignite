@@ -56,7 +56,7 @@ struct StudioContext {
 }
 
 fn issue_row_to_input(r: &IssueRow) -> IssueInput {
-    IssueInput { id: r.id.clone(), phase: r.phase, category: r.category.clone(), severity: r.severity.clone(), score: r.score, summary: r.summary.clone(), file: r.file.clone(), line: r.line, snippet: r.snippet.clone(), cross_file: r.cross_file, chain: r.chain.clone(), cwe: r.cwe.clone() }
+    IssueInput { id: r.id.clone(), phase: r.phase, category: r.category.clone(), severity: r.severity.clone(), score: r.score, summary: r.summary.clone(), file: r.file.clone(), line: r.line, snippet: r.snippet.clone(), cross_file: r.cross_file, chain: r.chain.clone(), cwe: r.cwe.clone(), owasp: r.owasp.clone(), tool: r.tool.clone(), references: r.references.clone() }
 }
 
 fn get_issues(state: &AppState, job_id: &str, ctx: &StudioContext) -> Vec<IssueRow> {

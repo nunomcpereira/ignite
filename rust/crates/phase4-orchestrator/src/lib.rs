@@ -156,7 +156,7 @@ pub async fn run_phase4_checks(
     task_timings.push(("governance", ms_governance));
     log(&format!("✓ governance done ({} finding(s), {ms_governance}ms)", governance_result.findings.len()));
     let governance_check =
-        CheckResult { findings: governance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), raw_snippet_text: Some(f.snippet.clone()), ..Default::default() }).collect(), engine: Some("built-in".to_string()) };
+        CheckResult { findings: governance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), raw_snippet_text: Some(f.snippet.clone()), tool: Some("ai-governance".to_string()), ..Default::default() }).collect(), engine: Some("built-in".to_string()) };
 
     if config.fast {
         // FAST_MODE_TASKS = secrets, governance, semanticSast, fileEncapsulation
