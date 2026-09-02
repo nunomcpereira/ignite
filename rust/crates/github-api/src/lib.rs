@@ -309,6 +309,25 @@ impl<'a> GithubApi<'a> {
             .ok_or_else(|| GithubApiError::ApiFailed { method: "GET".to_string(), path: format!("repos/{full_name}"), status: 0, detail: "response had no default_branch field".to_string() })
     }
 
+    /// The current HEAD commit SHA of `branch` on `full_name`, per
+    /// `GET repos/{full_name}/commits/{branch}`. Same gh-CLI-first /
+    /// token-fallback shape as `default_branch` — used to get the exact
+    /// commit a fresh clone landed on without depending on that clone's
+    /// own `.git` history (works the same for a shallow clone).
+    pub async fn head_sha(&self, full_name: &str, branch: &str, token: &str) -> Result<String, GithubApiError> {
+        let value = if self.is_gh_cli_available().await {
+            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}/commits/{branch}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            serde_json::from_str::<Value>(&out.stdout)?
+        } else {
+            self.github_api_request(token, "GET", &format!("/repos/{full_name}/commits/{branch}"), None, None).await?.unwrap_or(Value::Null)
+        };
+        value
+            .get("sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| GithubApiError::ApiFailed { method: "GET".to_string(), path: format!("repos/{full_name}/commits/{branch}"), status: 0, detail: "response had no sha field".to_string() })
+    }
+
     /// Shallow-clones `full_name` at `branch` (typically the repo's current
     /// default branch, from `default_branch`) into `dest_dir`. Same
     /// gh-CLI-first / token-fallback shape as `gh_clone_repo`, but takes an
@@ -405,6 +424,53 @@ exit 1
         let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&script_path, perms).unwrap();
+    }
+
+    fn make_fake_gh_repo_lookup(dir: &std::path::Path) {
+        let script_path = dir.join("gh");
+        let script = r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh version 2.0.0 fake"; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/widgets" ]; then echo '{"default_branch":"main"}'; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/widgets/commits/main" ]; then echo '{"sha":"deadbeef1234567890"}'; exit 0; fi
+echo "unexpected args: $@" >&2
+exit 1
+"#;
+        std::fs::write(&script_path, script).unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+    }
+
+    #[tokio::test]
+    async fn default_branch_resolves_via_gh_cli() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let fake_gh_dir = tempfile::tempdir().unwrap();
+        make_fake_gh_repo_lookup(fake_gh_dir.path());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", fake_gh_dir.path().display(), original_path));
+
+        let runner = ToolRunner::new(HashMap::new());
+        let api = GithubApi::new(&runner);
+        let branch = api.default_branch("acme/widgets", "tok").await.unwrap();
+
+        std::env::set_var("PATH", &original_path);
+        assert_eq!(branch, "main");
+    }
+
+    #[tokio::test]
+    async fn head_sha_resolves_via_gh_cli() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let fake_gh_dir = tempfile::tempdir().unwrap();
+        make_fake_gh_repo_lookup(fake_gh_dir.path());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", fake_gh_dir.path().display(), original_path));
+
+        let runner = ToolRunner::new(HashMap::new());
+        let api = GithubApi::new(&runner);
+        let sha = api.head_sha("acme/widgets", "main", "tok").await.unwrap();
+
+        std::env::set_var("PATH", &original_path);
+        assert_eq!(sha, "deadbeef1234567890");
     }
 
     #[tokio::test]
