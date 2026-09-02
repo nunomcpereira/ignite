@@ -46,9 +46,16 @@ exit 1
 struct FakeServerState {
     github_check_calls: Arc<Mutex<Vec<Value>>>,
     issues_to_return: Arc<Mutex<Vec<Value>>>,
+    simulate_structural_failure: Arc<Mutex<bool>>,
 }
 
 async fn fake_validate_all(axum::extract::State(state): axum::extract::State<FakeServerState>) -> Json<Value> {
+    if *state.simulate_structural_failure.lock().unwrap() {
+        // Matches a real pipeline_validate.rs failure response: `ok: false`,
+        // `issues: null` (not `[]`) — e.g. raw .env files found, a broken
+        // unit test, a Phase 4 crash. Never the same thing as "issues: []".
+        return Json(json!({ "ok": false, "jobId": "fake-job-1", "error": "Raw environment files detected (1). Remove them before validation.", "failedPhase": 3, "issues": Value::Null }));
+    }
     let issues = state.issues_to_return.lock().unwrap().clone();
     Json(json!({ "ok": true, "jobId": "fake-job-1", "issues": issues }))
 }
@@ -117,6 +124,36 @@ async fn rescan_one_is_a_noop_when_no_issues_found() {
     std::env::set_var("PATH", &original_path);
 
     assert!(outcome.error.is_none());
+    assert_eq!(outcome.issue_count, 0);
+    assert!(!outcome.posted);
+    assert!(state.github_check_calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn rescan_one_reports_error_not_silent_clean_on_structural_pipeline_failure() {
+    let _guard = PATH_LOCK.lock().unwrap();
+    let fake_gh_dir = tempfile::tempdir().unwrap();
+    make_fake_gh(fake_gh_dir.path());
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var("PATH", format!("{}:{}", fake_gh_dir.path().display(), original_path));
+
+    let state = FakeServerState { simulate_structural_failure: Arc::new(Mutex::new(true)), ..Default::default() };
+    let base = spawn_fake_server(state.clone()).await;
+
+    let runner = default_runner();
+    let http = reqwest::Client::new();
+    let target = RescanTarget { org: "acme".to_string(), repo: "widgets".to_string() };
+    let outcome = rescan_one(&runner, &http, &base, "tok", &target).await;
+
+    std::env::set_var("PATH", &original_path);
+
+    // The critical assertion: a structural failure (ok:false, issues:null)
+    // must NOT be reported as "clean, no findings" — that would silently
+    // hide a real failure from an unattended scheduled job.
+    assert!(outcome.error.is_some(), "structural pipeline failure was silently treated as clean");
+    let err = outcome.error.unwrap();
+    assert!(err.contains("phase 3"), "expected failed phase in error, got: {err}");
+    assert!(err.contains("Raw environment files"), "expected server error message in error, got: {err}");
     assert_eq!(outcome.issue_count, 0);
     assert!(!outcome.posted);
     assert!(state.github_check_calls.lock().unwrap().is_empty());

@@ -124,6 +124,28 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
     let issues = body.get("issues").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let issue_count = issues.len();
 
+    // A structural pipeline failure (raw .env files, a broken unit test, a
+    // Phase 4 crash) comes back as `ok: false` with `issues` frequently
+    // `null` — never conflate that with "issues: []" (a clean scan).
+    // Reporting it as an error, not a silent no-op, matters exactly
+    // because this job runs unattended.
+    let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+    if !ok && issues.is_empty() {
+        let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("validate-all reported ok:false with no error message");
+        let failed_phase = body.get("failedPhase").and_then(|v| v.as_i64());
+        return RescanOutcome {
+            org: target.org.clone(),
+            repo: target.repo.clone(),
+            job_id: Some(job_id),
+            issue_count: 0,
+            posted: false,
+            error: Some(match failed_phase {
+                Some(p) => format!("pipeline failed at phase {p}: {error}"),
+                None => format!("pipeline failed: {error}"),
+            }),
+        };
+    }
+
     if !should_post_github_check(&issues) {
         return RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: false, error: None };
     }
