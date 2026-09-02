@@ -19,8 +19,6 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-static GITHUB_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$").unwrap());
-static REPO_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
 static SHA_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^[0-9a-f]{7,40}$").unwrap());
 const MAX_LISTED_ISSUES: usize = 15;
 
@@ -81,10 +79,10 @@ async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
     let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let pr_number = body.get("prNumber").and_then(|v| v.as_i64());
 
-    if !GITHUB_NAME_RE.is_match(&owner) {
+    if !ignite_github_api::is_valid_github_owner(&owner) {
         return err(StatusCode::BAD_REQUEST, format!("Invalid GitHub owner/org: \"{owner}\""));
     }
-    if !REPO_NAME_RE.is_match(&repo) {
+    if !ignite_github_api::is_valid_github_repo(&repo) {
         return err(StatusCode::BAD_REQUEST, format!("Invalid repository name: \"{repo}\""));
     }
     if !SHA_RE.is_match(&sha) {

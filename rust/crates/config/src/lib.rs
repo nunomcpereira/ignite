@@ -291,19 +291,35 @@ pub struct CodeqlConfig {
     pub enabled: bool,
     pub binary: String,
     pub languages: Vec<String>,
+    /// Per-language query pack, pinned to an explicit `@version` (e.g.
+    /// `codeql/javascript-queries@2.4.4:...`) rather than an unpinned
+    /// `security-extended` reference, so the ruleset used for every scan
+    /// is reproducible and only moves when a human bumps it here. Re-pin
+    /// by checking the versions bundled with the installed CodeQL CLI
+    /// (`codeql pack download codeql/<lang>-queries`, or
+    /// `~/.codeql/packages/codeql/<lang>-queries`) and bump
+    /// `last_reviewed_at` in the same change.
     pub query_suites: std::collections::BTreeMap<String, String>,
     pub threads: i64,
     #[serde(rename = "ramMB")]
     pub ram_mb: i64,
     pub timeout_ms: u64,
+    /// How often the pinned query-suite versions in `query_suites` above
+    /// should be manually reviewed and re-pinned — dropping GHAS means
+    /// losing GitHub's continuously-updated CodeQL packs, so this ruleset
+    /// is now static until a human bumps it. See `is_codeql_review_overdue`.
+    pub review_cadence_days: i64,
+    /// ISO 8601 date (or `None`) of the last time a human confirmed the
+    /// pinned query-suite versions in `query_suites` are still current.
+    pub last_reviewed_at: Option<String>,
 }
 impl Default for CodeqlConfig {
     fn default() -> Self {
         let mut query_suites = std::collections::BTreeMap::new();
-        query_suites.insert("javascript".into(), "codeql/javascript-queries:codeql-suites/javascript-security-extended.qls".into());
-        query_suites.insert("python".into(), "codeql/python-queries:codeql-suites/python-security-extended.qls".into());
-        query_suites.insert("java".into(), "codeql/java-queries:codeql-suites/java-security-extended.qls".into());
-        query_suites.insert("go".into(), "codeql/go-queries:codeql-suites/go-security-extended.qls".into());
+        query_suites.insert("javascript".into(), "codeql/javascript-queries@2.4.4:codeql-suites/javascript-security-extended.qls".into());
+        query_suites.insert("python".into(), "codeql/python-queries@1.8.9:codeql-suites/python-security-extended.qls".into());
+        query_suites.insert("java".into(), "codeql/java-queries@1.11.9:codeql-suites/java-security-extended.qls".into());
+        query_suites.insert("go".into(), "codeql/go-queries@1.6.9:codeql-suites/go-security-extended.qls".into());
         CodeqlConfig {
             enabled: true,
             binary: "codeql".into(),
@@ -312,8 +328,23 @@ impl Default for CodeqlConfig {
             threads: 0,
             ram_mb: 0,
             timeout_ms: 20 * 60_000,
+            review_cadence_days: 90,
+            last_reviewed_at: None,
         }
     }
+}
+
+/// Pure decision logic for the server-startup CodeQL query-suite review
+/// warning: overdue when there's no recorded review date at all, or when
+/// the recorded date is further in the past than `cadence_days`. `now` and
+/// `last_reviewed_at` are both plain `YYYY-MM-DD` dates (or a full RFC3339
+/// timestamp — only the date portion is parsed) so a config author never
+/// needs to think about time zones for this.
+pub fn is_codeql_review_overdue(last_reviewed_at: Option<&str>, cadence_days: i64, now: chrono::NaiveDate) -> bool {
+    let Some(raw) = last_reviewed_at else { return true };
+    let date_part = raw.split('T').next().unwrap_or(raw);
+    let Ok(last) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") else { return true };
+    (now - last).num_days() > cadence_days
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -718,6 +749,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_num::<i64>("CODEQL_THREADS") { merged.security.codeql.threads = v; }
     if let Some(v) = env_num::<i64>("CODEQL_RAM_MB") { merged.security.codeql.ram_mb = v; }
     if let Some(v) = env_num::<u64>("CODEQL_TIMEOUT_MS") { merged.security.codeql.timeout_ms = v; }
+    if let Some(v) = env_num::<i64>("CODEQL_REVIEW_CADENCE_DAYS") { merged.security.codeql.review_cadence_days = v; }
+    if let Some(v) = env_str("CODEQL_LAST_REVIEWED_AT") { merged.security.codeql.last_reviewed_at = Some(v); }
     if let Some(v) = env_bool("DEAD_CODE_ENABLED") { merged.code_intelligence.dead_code.enabled = v; }
     if let Some(v) = env_bool("HEALTH_ENABLED") { merged.code_intelligence.health.enabled = v; }
     if let Some(v) = env_bool("CSS_DEAD_CODE_ENABLED") { merged.code_intelligence.css_dead_code.enabled = v; }
@@ -887,5 +920,47 @@ mod tests {
         assert!(cfg.compliance.posture.ruleset.ends_with("ignite-posture-rules.yaml"));
         assert!(cfg.compliance.posture.ruleset.starts_with(dir.path().to_str().unwrap()));
         env::remove_var("IGNITE_CONFIG_PATH");
+    }
+
+    #[test]
+    fn codeql_review_overdue_when_never_reviewed() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+        assert!(is_codeql_review_overdue(None, 90, now));
+    }
+
+    #[test]
+    fn codeql_review_overdue_when_past_cadence() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+        assert!(is_codeql_review_overdue(Some("2026-05-01"), 90, now));
+    }
+
+    #[test]
+    fn codeql_review_not_overdue_within_cadence() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+        assert!(!is_codeql_review_overdue(Some("2026-08-15"), 90, now));
+    }
+
+    #[test]
+    fn codeql_review_accepts_rfc3339_timestamp_date_portion() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+        assert!(!is_codeql_review_overdue(Some("2026-08-15T10:00:00Z"), 90, now));
+    }
+
+    #[test]
+    fn codeql_review_overdue_when_unparseable() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+        assert!(is_codeql_review_overdue(Some("not-a-date"), 90, now));
+    }
+
+    #[test]
+    fn codeql_env_overrides_review_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        env::set_var("CODEQL_REVIEW_CADENCE_DAYS", "30");
+        env::set_var("CODEQL_LAST_REVIEWED_AT", "2026-01-01");
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.security.codeql.review_cadence_days, 30);
+        assert_eq!(cfg.security.codeql.last_reviewed_at.as_deref(), Some("2026-01-01"));
+        env::remove_var("CODEQL_REVIEW_CADENCE_DAYS");
+        env::remove_var("CODEQL_LAST_REVIEWED_AT");
     }
 }

@@ -67,6 +67,14 @@ async fn main() {
     let config_dir = std::env::var("IGNITE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::current_dir().expect("cwd"));
     let config = ignite_config::load_config(&config_dir).expect("failed to load config.json");
 
+    // Dropping GHAS means losing GitHub's continuously-updated CodeQL query
+    // packs — security.codeql's querySuites are now pinned by hand
+    // (config.example.json). Non-blocking: just nudges an operator to
+    // re-pin, never fails startup or gates a run.
+    if ignite_config::is_codeql_review_overdue(config.security.codeql.last_reviewed_at.as_deref(), config.security.codeql.review_cadence_days, chrono::Utc::now().date_naive()) {
+        tracing::warn!("CodeQL query suite review overdue, last reviewed: {}", config.security.codeql.last_reviewed_at.as_deref().unwrap_or("never"));
+    }
+
     let state = Arc::new(AppState {
         runner: phase4_config::runner_from_config(&config),
         db,

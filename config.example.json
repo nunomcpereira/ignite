@@ -102,14 +102,16 @@
       "binary": "codeql",
       "languages": ["javascript", "python", "java", "go"],
       "querySuites": {
-        "javascript": "codeql/javascript-queries:codeql-suites/javascript-security-extended.qls",
-        "python": "codeql/python-queries:codeql-suites/python-security-extended.qls",
-        "java": "codeql/java-queries:codeql-suites/java-security-extended.qls",
-        "go": "codeql/go-queries:codeql-suites/go-security-extended.qls"
+        "javascript": "codeql/javascript-queries@2.4.4:codeql-suites/javascript-security-extended.qls",
+        "python": "codeql/python-queries@1.8.9:codeql-suites/python-security-extended.qls",
+        "java": "codeql/java-queries@1.11.9:codeql-suites/java-security-extended.qls",
+        "go": "codeql/go-queries@1.6.9:codeql-suites/go-security-extended.qls"
       },
       "threads": 0,
       "ramMB": 0,
-      "timeoutMs": 1200000
+      "timeoutMs": 1200000,
+      "reviewCadenceDays": 90,
+      "lastReviewedAt": "2026-09-02"
     }
   },
   "compliance": {

@@ -39,6 +39,39 @@ pub enum GithubApiError {
 static PR_URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https://github\.com/\S+/pull/\d+").unwrap());
 static PR_NUMBER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"/pull/(\d+)").unwrap());
 
+/// GitHub's own username/org naming rule: alphanumeric, single hyphens,
+/// cannot begin/end with a hyphen, max 39 chars. Shared single source of
+/// truth for every call site that validates an owner before shelling out
+/// to `gh`/`git` (routes/github_pr_status.rs, scripts that take an
+/// `org/repo` argument) — previously duplicated ad hoc per call site.
+static GITHUB_OWNER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$").unwrap());
+/// GitHub's repository naming rule: alphanumeric plus `.`/`_`/`-`, 1-100 chars.
+static GITHUB_REPO_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
+
+pub fn is_valid_github_owner(owner: &str) -> bool {
+    GITHUB_OWNER_RE.is_match(owner)
+}
+
+pub fn is_valid_github_repo(repo: &str) -> bool {
+    GITHUB_REPO_RE.is_match(repo)
+}
+
+/// Parses an `org/repo` string, validating both halves against GitHub's
+/// real naming rules. Returns `Err` with a human-readable reason on the
+/// first invalid part.
+pub fn parse_org_repo(spec: &str) -> Result<(String, String), String> {
+    let Some((owner, repo)) = spec.split_once('/') else {
+        return Err(format!("Expected \"org/repo\", got \"{spec}\""));
+    };
+    if !is_valid_github_owner(owner) {
+        return Err(format!("Invalid GitHub owner/org: \"{owner}\""));
+    }
+    if !is_valid_github_repo(repo) {
+        return Err(format!("Invalid repository name: \"{repo}\""));
+    }
+    Ok((owner.to_string(), repo.to_string()))
+}
+
 pub fn resolve_server_github_token() -> String {
     std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).unwrap_or_default()
 }
@@ -258,6 +291,61 @@ impl<'a> GithubApi<'a> {
         Ok(())
     }
 
+    /// The repo's current default branch, per `GET repos/{full_name}`.
+    /// Prefers the `gh` CLI (same dual-path convention as `gh_api_write`),
+    /// falling back to a token-only REST call. Read-only — safe to call
+    /// even from a dry-run.
+    pub async fn default_branch(&self, full_name: &str, token: &str) -> Result<String, GithubApiError> {
+        let value = if self.is_gh_cli_available().await {
+            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            serde_json::from_str::<Value>(&out.stdout)?
+        } else {
+            self.github_api_request(token, "GET", &format!("/repos/{full_name}"), None, None).await?.unwrap_or(Value::Null)
+        };
+        value
+            .get("default_branch")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| GithubApiError::ApiFailed { method: "GET".to_string(), path: format!("repos/{full_name}"), status: 0, detail: "response had no default_branch field".to_string() })
+    }
+
+    /// The current HEAD commit SHA of `branch` on `full_name`, per
+    /// `GET repos/{full_name}/commits/{branch}`. Same gh-CLI-first /
+    /// token-fallback shape as `default_branch` — used to get the exact
+    /// commit a fresh clone landed on without depending on that clone's
+    /// own `.git` history (works the same for a shallow clone).
+    pub async fn head_sha(&self, full_name: &str, branch: &str, token: &str) -> Result<String, GithubApiError> {
+        let value = if self.is_gh_cli_available().await {
+            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}/commits/{branch}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            serde_json::from_str::<Value>(&out.stdout)?
+        } else {
+            self.github_api_request(token, "GET", &format!("/repos/{full_name}/commits/{branch}"), None, None).await?.unwrap_or(Value::Null)
+        };
+        value
+            .get("sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| GithubApiError::ApiFailed { method: "GET".to_string(), path: format!("repos/{full_name}/commits/{branch}"), status: 0, detail: "response had no sha field".to_string() })
+    }
+
+    /// Shallow-clones `full_name` at `branch` (typically the repo's current
+    /// default branch, from `default_branch`) into `dest_dir`. Same
+    /// gh-CLI-first / token-fallback shape as `gh_clone_repo`, but takes an
+    /// explicit branch instead of hardcoding `main`.
+    pub async fn gh_clone_repo_branch(&self, full_name: &str, branch: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
+        if self.is_gh_cli_available().await {
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            return Ok(());
+        }
+        if token.is_empty() {
+            return Err(GithubApiError::NoToken);
+        }
+        self.runner
+            .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "clone".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
+            .await?;
+        Ok(())
+    }
+
     pub async fn gh_clone_repo(&self, full_name: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
             self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
@@ -283,6 +371,32 @@ mod tests {
 
     // Serializes tests that mutate the process-global PATH env var.
     static PATH_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn parse_org_repo_accepts_valid_spec() {
+        assert_eq!(parse_org_repo("my-org/my-repo.name_1"), Ok(("my-org".to_string(), "my-repo.name_1".to_string())));
+    }
+
+    #[test]
+    fn parse_org_repo_rejects_missing_slash() {
+        assert!(parse_org_repo("no-slash-here").is_err());
+    }
+
+    #[test]
+    fn parse_org_repo_rejects_invalid_owner() {
+        assert!(parse_org_repo("-bad-owner/repo").unwrap_err().contains("Invalid GitHub owner/org"));
+    }
+
+    #[test]
+    fn parse_org_repo_rejects_invalid_repo() {
+        assert!(parse_org_repo("org/bad repo name").unwrap_err().contains("Invalid repository name"));
+    }
+
+    #[test]
+    fn owner_validator_rejects_too_long() {
+        assert!(!is_valid_github_owner(&"a".repeat(40)));
+        assert!(is_valid_github_owner(&"a".repeat(39)));
+    }
 
     fn make_fake_gh(dir: &std::path::Path, call_log_path: &std::path::Path) {
         let script_path = dir.join("gh");
@@ -310,6 +424,53 @@ exit 1
         let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&script_path, perms).unwrap();
+    }
+
+    fn make_fake_gh_repo_lookup(dir: &std::path::Path) {
+        let script_path = dir.join("gh");
+        let script = r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh version 2.0.0 fake"; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/widgets" ]; then echo '{"default_branch":"main"}'; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/widgets/commits/main" ]; then echo '{"sha":"deadbeef1234567890"}'; exit 0; fi
+echo "unexpected args: $@" >&2
+exit 1
+"#;
+        std::fs::write(&script_path, script).unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+    }
+
+    #[tokio::test]
+    async fn default_branch_resolves_via_gh_cli() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let fake_gh_dir = tempfile::tempdir().unwrap();
+        make_fake_gh_repo_lookup(fake_gh_dir.path());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", fake_gh_dir.path().display(), original_path));
+
+        let runner = ToolRunner::new(HashMap::new());
+        let api = GithubApi::new(&runner);
+        let branch = api.default_branch("acme/widgets", "tok").await.unwrap();
+
+        std::env::set_var("PATH", &original_path);
+        assert_eq!(branch, "main");
+    }
+
+    #[tokio::test]
+    async fn head_sha_resolves_via_gh_cli() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let fake_gh_dir = tempfile::tempdir().unwrap();
+        make_fake_gh_repo_lookup(fake_gh_dir.path());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", fake_gh_dir.path().display(), original_path));
+
+        let runner = ToolRunner::new(HashMap::new());
+        let api = GithubApi::new(&runner);
+        let sha = api.head_sha("acme/widgets", "main", "tok").await.unwrap();
+
+        std::env::set_var("PATH", &original_path);
+        assert_eq!(sha, "deadbeef1234567890");
     }
 
     #[tokio::test]
