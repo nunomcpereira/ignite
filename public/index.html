@@ -2732,7 +2732,15 @@
       'https-tls': 'HTTPS / TLS', 'backups-dr': 'Backups & Disaster Recovery',
       'encryption-at-rest': 'Encryption at Rest', 'rate-limiting': 'Rate Limiting & Throttling',
       'mfa-2fa': 'MFA / 2FA', 'secrets-management': 'Secrets Management',
+      'ai-act-prohibited-practice': 'EU AI Act: Prohibited Practice (Art. 5)',
+      'ai-act-transparency-disclosure': 'EU AI Act: Transparency Disclosure (Art. 13/50)',
+      'ai-act-ai-logging': 'EU AI Act: AI Decision Logging (Art. 12)',
     };
+    // Unlike every other category, DETECTED here flags a *risk to review*
+    // (a possible EU AI Act Art. 5 prohibited/restricted practice), not a
+    // safeguard to add — MISSING is the clean state, DETECTED/PARTIAL need
+    // a human look. See ignite-feature-posture's doc comment.
+    const STUDIO_POSTURE_INVERTED = new Set(['ai-act-prohibited-practice']);
     // What each category's scanner is actually looking for, and the
     // concrete change that would flip it to DETECTED — a representative
     // "strong" call site from ignite-posture-rules.yaml, not an exhaustive
@@ -2748,22 +2756,31 @@
       'rate-limiting': 'Looks for rate-limiting middleware actually instantiated (e.g. rateLimit({...}), new RateLimiterRedis(...), Rack::Attack.throttle(...), @ratelimit(...)) — not just the package installed. To go green: attach a rate-limiter to public/authenticated endpoints, especially auth and write routes.',
       'mfa-2fa': 'Looks for a TOTP/MFA code actually being verified at login/challenge (e.g. speakeasy.totp.verify(...), pyotp.TOTP(...), authenticator.verify(...)) — not just a TOTP library imported. To go green: require a second factor at login and verify it server-side via one of these.',
       'secrets-management': 'Looks for a secret actually fetched at runtime from a managed vault/secrets manager (e.g. vault.read(...), secretsManagerClient.getSecretValue(...), secretmanager.accessSecretVersion(...)) — not just a vault client imported, and not env vars/.env files. To go green: read sensitive credentials from a secrets manager/vault client instead of plain environment variables.',
+      'ai-act-prohibited-practice': "Looks for biometric-categorization/emotion-inference/social-scoring library usage actually called (e.g. face-api.js/face_recognition emotion detection, rekognition.compareFaces(...), a socialScore/creditworthiness_score computation from biometric data) — a potential EU AI Act Art. 5 prohibited/restricted practice. DETECTED or PARTIAL here means review, not fix-and-ship: confirm the use case isn't one of the Act's banned categories (real-time remote biometric ID in public spaces, social scoring, emotion inference in workplaces/schools, etc.) before shipping.",
+      'ai-act-transparency-disclosure': "Looks for a real user-facing AI-disclosure string actually rendered (e.g. \"you're talking to an AI\", \"this response was AI-generated\") — not just a disclosure-library import. To go green: surface a plain-language AI-disclosure notice wherever the app exposes an AI system directly to end users (EU AI Act Art. 13/50).",
+      'ai-act-ai-logging': 'Looks for an explicit model input/output/decision logging call (e.g. mlflow.log_metric(...), wandb.log(...), langsmith.trace(...), a custom logDecision(...)/logPrediction(...)) — not just an MLOps client imported. To go green: log AI model inputs/outputs/decisions through one of these instead of relying on generic app logs (EU AI Act Art. 12).',
     };
 
     function renderStudioPosture(data) {
       const posture = data.posture || {};
       const badge = studioEngineBadge(data.engine, 'Semgrep CLI (Posture)');
       const cardsHtml = Object.entries(posture).map(([category, { status, matches }]) => {
-        const meta = STUDIO_POSTURE_STATUS_META[status] || STUDIO_POSTURE_STATUS_META.MISSING;
+        const inverted = STUDIO_POSTURE_INVERTED.has(category);
+        // For an inverted category DETECTED/PARTIAL is the risk state and
+        // MISSING is clean — style it against the opposite status's chip
+        // so it doesn't read as green-means-safe like every other card.
+        const metaKey = inverted ? (status === 'MISSING' ? 'DETECTED' : 'PARTIAL') : status;
+        const meta = STUDIO_POSTURE_STATUS_META[metaKey] || STUDIO_POSTURE_STATUS_META.MISSING;
         const matchesHtml = matches.slice(0, 5).map((m) => `<button type="button" class="studio-posture-match block w-full text-left px-2 py-1 rounded hover:bg-slate-50 font-mono text-[10px] text-slate-500" data-path="${escapeAttr(m.file)}" data-line="${m.line}">${escapeHtml(m.file)}:${m.line} <span class="text-slate-400">(${escapeHtml(m.tier)})</span></button>`).join('');
         const hint = STUDIO_POSTURE_HINTS[category];
+        const showHint = hint && (inverted ? status !== 'MISSING' : status === 'MISSING');
         return `<div class="rounded-lg border ${meta.chip} p-3">
           <div class="flex items-center justify-between">
             <span class="text-xs font-semibold text-slate-700">${escapeHtml(STUDIO_POSTURE_LABELS[category] || category)}</span>
-            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip}">${meta.icon} ${meta.label}</span>
+            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip}">${meta.icon} ${escapeHtml(status)}</span>
           </div>
           ${matches.length > 0 ? `<div class="mt-2">${matchesHtml}</div>` : ''}
-          ${status === 'MISSING' && hint ? `<p class="mt-2 text-[11px] text-slate-500 leading-snug">${escapeHtml(hint)}</p>` : ''}
+          ${showHint ? `<p class="mt-2 text-[11px] text-slate-500 leading-snug">${escapeHtml(hint)}</p>` : ''}
         </div>`;
       }).join('');
       $('studioCodeWrap').innerHTML = `<div class="p-4">
