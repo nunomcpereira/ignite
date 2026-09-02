@@ -55,6 +55,7 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
             checkov_enabled: sec.checkov.enabled,
             hadolint_enabled: sec.hadolint.enabled,
         },
+        gha_security: ignite_gha_security::GhaSecurityConfig { enabled: sec.zizmor.enabled },
         container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig {
             enabled: sec.trivy_image.enabled,
             severity_threshold: sec.trivy_image.severity_threshold.clone(),
@@ -129,6 +130,7 @@ pub fn runner_from_config(cfg: &ignite_config::Config) -> ignite_tool_runner::To
         ("picklescan", sec.picklescan.binary.clone()),
         ("oasdiff", cfg.api.oasdiff.binary.clone()),
         ("gitleaks", sec.gitleaks.binary.clone()),
+        ("zizmor", sec.zizmor.binary.clone()),
         ("rm", "rm".to_string()),
     ]
     .into_iter()

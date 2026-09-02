@@ -19,6 +19,7 @@ fn bin(name: &'static str) -> (&'static str, String) {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
     let mut args = std::env::args().skip(1);
     let source = args.next().expect("usage: phase4-scan <root> [posture-ruleset] [spectral-ruleset]");
     let ignite_root = args.next().map(PathBuf::from);
@@ -41,6 +42,7 @@ async fn main() {
         bin("picklescan"),
         bin("oasdiff"),
         bin("gitleaks"),
+        bin("zizmor"),
         bin("licensee"),
         bin("rm"),
     ]
@@ -85,6 +87,7 @@ async fn main() {
         secrets: ignite_secrets::SecretsConfig::default(),
         llm: None,
         iac: ignite_iac_security::IacSecurityConfig::default(),
+        gha_security: ignite_gha_security::GhaSecurityConfig::default(),
         container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig::default(),
         sbom_enabled: true,
         image_provenance: ignite_image_provenance::ImageProvenanceConfig::default(),

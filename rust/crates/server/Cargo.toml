@@ -12,6 +12,7 @@ ignite-tool-runner = { path = "../tool-runner" }
 ignite-dependency-license-scan = { path = "../dependency-license-scan" }
 ignite-secrets = { path = "../secrets" }
 ignite-iac-security = { path = "../iac-security" }
+ignite-gha-security = { path = "../gha-security" }
 ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }
 ignite-image-provenance = { path = "../image-provenance" }
 ignite-semantic-sast = { path = "../semantic-sast" }

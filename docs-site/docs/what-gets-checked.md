@@ -7,7 +7,7 @@ sidebar_position: 3
 
 Six phases, always run in the same order, always locally. Phases 1, 3, and
 6 can't be turned off. Everything downstream depends on them. Phase 2 is
-off by default (most projects aren't GxP-regulated). Fifteen+ optional
+off by default (most projects aren't GxP-regulated). Sixteen+ optional
 external-tool integrations live inside Phase 4 and Phase 5, all soft
 dependencies, so Ignite runs (and falls back to a built-in check where one
 exists) even with none of them installed.
@@ -188,6 +188,11 @@ the project's own test suite, auto-detected by ecosystem (Node/Go/Rust
   <text x="273.0" y="386.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Diffs OpenAPI/AsyncAPI specs</text>
   <text x="273.0" y="399.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">against the prior git revision</text>
   <text x="273.0" y="416.0" font-family="system-ui, sans-serif" font-size="10" fill="var(--ifm-color-emphasis-500)">oasdiff</text>
+  <rect x="507.0" y="349.0" width="232.0" height="87" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
+  <text x="519.0" y="367.0" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="var(--ifm-color-emphasis-900)">CI workflow security</text>
+  <text x="519.0" y="386.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">Flags pwn requests, script injection,</text>
+  <text x="519.0" y="399.0" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-700)">and other GitHub Actions risks</text>
+  <text x="519.0" y="416.0" font-family="system-ui, sans-serif" font-size="10" fill="var(--ifm-color-emphasis-500)">zizmor</text>
   <line x1="15" y1="453" x2="985" y2="453" stroke="var(--ifm-color-emphasis-300)"/>
   <text x="500" y="469" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="var(--ifm-color-emphasis-600)">Findings merge into one issue list. A blocking one needs a source fix or a justified, attributed override.</text>
   <g transform="translate(0,477)">
@@ -337,6 +342,7 @@ installed* (Ignite still runs, and falls back where it can, if it isn't).
 | A poisoned ML model weight file (`.pkl`/`.pt`/`.pth`/`.ckpt`) executing arbitrary code on load via an unsafe pickle global import | Scans every discovered model artifact for dangerous pickle global imports (opcode-level, not a regex heuristic) | picklescan | Check skipped entirely — no fallback (needs picklescan's real pickle parser) |
 | An AI coding agent silently removing/breaking an existing API endpoint — a shadow change no one reviewed | Diffs every discovered OpenAPI/AsyncAPI file against its own previous git revision, flagging breaking changes | oasdiff | Check skipped entirely — no fallback; also contributes nothing on a fresh upload with no prior git history to diff against |
 | AI package hallucination ("slopsquatting") — an LLM invents a plausible but non-existent package name, which an attacker can then register and ship malware through | Checks every manifest dependency name against its ecosystem's real public registry (npm, PyPI, crates.io); a 404 is flagged (advisory) | Built-in package-hallucination check | N/A — built-in, no external tool involved (always advisory: a private/internal package looks identical to a hallucinated one from a public-registry lookup alone) |
+| A malicious/vulnerable GitHub Actions workflow shipped alongside the code it's meant to gate — pwn requests (`pull_request_target` running PR-head code with secrets/write access), script injection via untrusted `${{ }}` expansions in a `run:` step, over-broad `permissions:`, unpinned third-party actions | Parses every `.github/workflows/*.yml` with zizmor's real workflow-expression engine, not a regex approximation | zizmor | Check skipped entirely (and never invoked at all if the repo has no workflow files) — no fallback |
 
 Full details, install instructions, and the on/off default for every tool: see the [README's tool table](https://github.com/nunomcpereira/ignite#external-tools).
 

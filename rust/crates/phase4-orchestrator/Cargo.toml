@@ -13,6 +13,7 @@ ignite-secrets = { path = "../secrets" }
 ignite-llm-deep-scan = { path = "../llm-deep-scan" }
 ignite-llm-client = { path = "../llm-client" }
 ignite-iac-security = { path = "../iac-security" }
+ignite-gha-security = { path = "../gha-security" }
 ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }
 ignite-sbom = { path = "../sbom" }
 ignite-provenance = { path = "../provenance" }

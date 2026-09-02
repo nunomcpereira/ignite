@@ -39,6 +39,7 @@ pub struct Phase4Config {
     pub secrets: ignite_secrets::SecretsConfig,
     pub llm: Option<ignite_llm_deep_scan::LlmDeepScanConfig>,
     pub iac: ignite_iac_security::IacSecurityConfig,
+    pub gha_security: ignite_gha_security::GhaSecurityConfig,
     pub container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig,
     pub sbom_enabled: bool,
     pub image_provenance: ignite_image_provenance::ImageProvenanceConfig,
@@ -190,6 +191,7 @@ pub async fn run_phase4_checks(
             governance: governance_check,
             llm: None,
             iac: None,
+            gha_security: None,
             image_vulnerabilities: None,
             image_provenance: None,
             semantic_sast: Some(semantic_sast_check),
@@ -261,6 +263,7 @@ pub async fn run_phase4_checks(
         (igniteignore_result, ms_igniteignore),
         (llm_result, ms_llm),
         (iac_result, ms_iac),
+        (gha_security_result, ms_gha_security),
         (image_vuln_result, ms_image_vuln),
         (sbom_result, ms_sbom),
         (provenance_result, ms_provenance),
@@ -280,6 +283,7 @@ pub async fn run_phase4_checks(
         timed("igniteIgnore", log, igniteignore_fut),
         timed("llm", log, llm_fut),
         timed("iac", log, ignite_iac_security::check_iac_security(root, runner, &config.iac)),
+        timed("ghaSecurity", log, async { Ok::<_, std::io::Error>(ignite_gha_security::check_gha_security(root, runner, &config.gha_security).await) }),
         timed("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities)),
         timed("sbom", log, ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000)),
         timed("provenance", log, provenance_fut),
@@ -300,6 +304,7 @@ pub async fn run_phase4_checks(
         ("igniteIgnore", ms_igniteignore),
         ("llm", ms_llm),
         ("iac", ms_iac),
+        ("ghaSecurity", ms_gha_security),
         ("imageVulnerabilities", ms_image_vuln),
         ("sbom", ms_sbom),
         ("provenance", ms_provenance),
@@ -325,6 +330,11 @@ pub async fn run_phase4_checks(
     let iac_check = Some(CheckResult {
         findings: iac_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(iac_result.engine),
+    });
+
+    let gha_security_check = Some(CheckResult {
+        findings: gha_security_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        engine: Some(gha_security_result.engine.to_string()),
     });
 
     let image_vuln_check = Some(CheckResult {
@@ -497,6 +507,7 @@ pub async fn run_phase4_checks(
         governance: governance_check,
         llm: llm_check,
         iac: iac_check,
+        gha_security: gha_security_check,
         image_vulnerabilities: image_vuln_check,
         image_provenance: image_provenance_check,
         semantic_sast: semantic_sast_check,
@@ -599,6 +610,7 @@ mod tests {
             secrets: ignite_secrets::SecretsConfig::default(),
             llm: None,
             iac: ignite_iac_security::IacSecurityConfig { trivy_enabled: false, checkov_enabled: false, hadolint_enabled: false },
+            gha_security: ignite_gha_security::GhaSecurityConfig { enabled: false },
             container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig { enabled: false, ..Default::default() },
             sbom_enabled: false,
             image_provenance: ignite_image_provenance::ImageProvenanceConfig { enabled: false, ..Default::default() },

@@ -22,7 +22,7 @@ fn with_enabled(mut v: Value, enabled: bool) -> Value {
 /// the JS original either.
 async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
     let r = &state.runner;
-    let (ort, licensee, gitleaks, trivy, trivy_image, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql, picklescan, oasdiff) = tokio::join!(
+    let (ort, licensee, gitleaks, trivy, trivy_image, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql, picklescan, oasdiff, zizmor) = tokio::join!(
         ignite_dependency_license_scan::ort_tooling(r),
         ignite_dependency_license_scan::licensee_tooling(r),
         ignite_secrets::gitleaks_tooling(r),
@@ -41,6 +41,7 @@ async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
         ignite_codeql_cross_file::codeql_tooling(r),
         ignite_model_artifact_security::picklescan_tooling(r),
         ignite_api_schema_drift::oasdiff_tooling(r),
+        ignite_gha_security::zizmor_tooling(r),
     );
 
     Json(json!({
@@ -62,6 +63,7 @@ async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
         "codeql": with_enabled(serde_json::to_value(&codeql).unwrap(), true),
         "picklescan": with_enabled(bool_probe(picklescan), true),
         "oasdiff": with_enabled(serde_json::to_value(&oasdiff).unwrap(), true),
+        "zizmor": with_enabled(bool_probe(zizmor), state.config.security.zizmor.enabled),
     }))
 }
 
