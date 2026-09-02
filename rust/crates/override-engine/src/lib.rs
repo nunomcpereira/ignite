@@ -71,7 +71,7 @@ fn category_scores() -> &'static HashMap<&'static str, i32> {
             ("secret", 10), ("ai-governance", 7), ("security", 8), ("dependency", 7),
             ("encapsulation", 3), ("quality", 2), ("structure-audit", 8), ("gxp-documents", 5),
             ("governance-ci", 7), ("input-validation", 4), ("security-scan", 6),
-            ("license-compliance", 6), ("iac-security", 6), ("container-image-cve", 8),
+            ("license-compliance", 6), ("iac-security", 6), ("container-image-cve", 8), ("gha-security", 8),
             ("image-provenance", 4), ("semantic-sast", 7), ("pii-dataflow", 7),
             ("code-duplication", 2), ("code-structure", 2), ("api-schema-lint", 4),
             ("api-breaking-change", 6), ("dependency-vulnerability", 8),
@@ -114,6 +114,7 @@ fn category_cwe_owasp() -> &'static HashMap<&'static str, CweOwaspHint> {
             ("secret", e("CWE-798", Some("A07:2021 - Identification and Authentication Failures"))),
             ("ai-governance", e("CWE-400", Some("A04:2021 - Insecure Design"))),
             ("iac-security", e("CWE-16", Some("A05:2021 - Security Misconfiguration"))),
+            ("gha-security", e("CWE-829", Some("A08:2021 - Software and Data Integrity Failures"))),
             ("container-image-cve", e("CWE-1104", Some("A06:2021 - Vulnerable and Outdated Components"))),
             ("image-provenance", e("CWE-345", Some("A08:2021 - Software and Data Integrity Failures"))),
             ("pii-dataflow", e("CWE-359", None)),
@@ -433,6 +434,7 @@ pub struct Phase4Inputs {
     pub governance: CheckResult,
     pub llm: Option<LlmResult>,
     pub iac: Option<CheckResult>,
+    pub gha_security: Option<CheckResult>,
     pub image_vulnerabilities: Option<CheckResult>,
     pub image_provenance: Option<CheckResult>,
     pub semantic_sast: Option<CheckResult>,
@@ -516,6 +518,13 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                 summary.push_str(" (built-in fallback check — trivy not installed)");
             }
             push_simple(&mut issues, "iac-security", severity, summary, f, None);
+        }
+    }
+
+    if let Some(gha) = &input.gha_security {
+        for f in &gha.findings {
+            let severity = if f.severity.as_deref() == Some("error") { Severity::Error } else { Severity::Warning };
+            push_simple(&mut issues, "gha-security", severity, message_or_kind(f), f, None);
         }
     }
 

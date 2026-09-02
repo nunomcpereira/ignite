@@ -246,6 +246,7 @@ tool_toggle!(GuardDogConfig, true, "guarddog");
 tool_toggle!(SyftConfig, true, "syft");
 tool_toggle!(GoclocConfig, true, "gocloc");
 tool_toggle!(OasdiffConfig, true, "oasdiff");
+tool_toggle!(ZizmorConfig, true, "zizmor");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -408,6 +409,7 @@ pub struct SecurityConfig {
     pub trivy_image: TrivyImageConfig,
     pub picklescan: PicklescanConfig,
     pub package_hallucination: PackageHallucinationConfig,
+    pub zizmor: ZizmorConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -731,6 +733,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("PICKLESCAN_ENABLED") { merged.security.picklescan.enabled = v; }
     if let Some(v) = env_str("PICKLESCAN_BINARY") { merged.security.picklescan.binary = v; }
     if let Some(v) = env_bool("PACKAGE_HALLUCINATION_ENABLED") { merged.security.package_hallucination.enabled = v; }
+    if let Some(v) = env_bool("ZIZMOR_ENABLED") { merged.security.zizmor.enabled = v; }
+    if let Some(v) = env_str("ZIZMOR_BINARY") { merged.security.zizmor.binary = v; }
     if let Some(v) = env_bool("SEMGREP_ENABLED") { merged.security.semgrep.enabled = v; }
     if let Some(v) = env_str("SEMGREP_BINARY") { merged.security.semgrep.binary = v; }
     if let Some(v) = env_str("SEMGREP_CONFIG") { merged.security.semgrep.config = v; }

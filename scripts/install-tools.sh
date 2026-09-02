@@ -111,6 +111,20 @@ picklescan_install() {
 install INSTALL_PICKLESCAN "command -v picklescan" "picklescan" picklescan_install
 install INSTALL_OASDIFF    "command -v oasdiff"    "oasdiff"    'brew_install() { brew install oasdiff; }; brew_install'
 
+# --- GitHub Actions workflow security (zizmor, Trail of Bits) ---
+zizmor_install() {
+  if command -v pipx >/dev/null 2>&1; then
+    pipx install zizmor
+  elif $HAS_BREW; then
+    brew install pipx && pipx install zizmor
+  elif $HAS_PIP; then
+    pip3 install --user --break-system-packages zizmor
+  else
+    return 1
+  fi
+}
+install INSTALL_ZIZMOR "command -v zizmor" "zizmor" zizmor_install
+
 # --- CodeQL (cross-file static analysis) - on by default in CONFIG, same as
 # the rest of Phase 4 (measured to add only ~3s to Phase 4's wall time, its
 # database build finishing inside whichever other tool is the long pole).

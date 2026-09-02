@@ -119,6 +119,7 @@ fn default_runner() -> ToolRunner {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let parsed = match parse_args(&raw) {
         Ok(p) => p,

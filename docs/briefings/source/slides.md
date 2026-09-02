@@ -217,6 +217,7 @@ layout: default
   <div class="card"><div style="font-weight:700;font-size:13px;">⚖ Compliance &amp; Posture Engine <span class="tag mono">IGNITE, ON SEMGREP</span></div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Classifies SSO / RBAC / audit-logging / encryption posture, plus EU AI Act Art. 5, 12, 13 &amp; 50 signals.</div></div>
 </div>
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🕸 CodeQL Cross-File Analysis <span class="tag mono">GITHUB / MICROSOFT</span></div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">The <code style="font-family:'JetBrains Mono',monospace;font-size:11px;">security-extended</code> query suite, applied whole-project — closing the gap when a tainted-data chain spans a controller, a service layer, and a template.</div></div>
+<div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">⚙ zizmor <span class="tag mono">TRAIL OF BITS</span></div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Audits every committed GitHub Actions workflow for pwn requests, script injection via untrusted <code style="font-family:'JetBrains Mono',monospace;font-size:11px;">${{ }}</code> expansions, and over-broad permissions — the CI-pipeline supply-chain risk a source-code scanner never sees.</div></div>
 
 <div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">06 · CONFIDENTIAL</span></div>
 

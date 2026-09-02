@@ -20,7 +20,7 @@ pub fn allowed_commands() -> &'static [&'static str] {
     &[
         "git", "gh", "act", "docker", "gitleaks", "licensee", "ort", "trivy", "checkov",
         "hadolint", "syft", "cosign", "semgrep", "bearer", "jscpd", "gocloc", "spectral",
-        "guarddog", "codeql", "picklescan", "oasdiff",
+        "guarddog", "codeql", "picklescan", "oasdiff", "zizmor",
     ]
 }
 
@@ -207,6 +207,28 @@ pub struct ToolOutput {
     pub stderr: String,
 }
 
+/// Cap on how much of a tool's stdout/stderr gets written to the log per
+/// invocation — full output can run to megabytes (Semgrep/Bearer JSON
+/// dumps), and this is an audit trail, not a copy of the report.
+const LOG_OUTPUT_LIMIT: usize = 4000;
+
+fn log_preview(s: &str) -> String {
+    if s.len() <= LOG_OUTPUT_LIMIT {
+        return s.to_string();
+    }
+    // Back off to the nearest char boundary so we never split inside a
+    // multi-byte UTF-8 sequence.
+    let mut cut = LOG_OUTPUT_LIMIT;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!(
+        "{}... [truncated, {} more bytes]",
+        &s[..cut],
+        s.len() - cut
+    )
+}
+
 #[derive(Default)]
 pub struct RunToolOptions {
     pub env: HashMap<String, String>,
@@ -269,6 +291,14 @@ impl ToolRunner {
 
         let binary = self.resolve_binary(&safe_tool)?;
 
+        tracing::info!(
+            tool = %safe_tool,
+            binary = %binary,
+            args = %safe_args.join(" "),
+            cwd = %safe_cwd,
+            "tool-runner: invoking"
+        );
+
         let mut command = Command::new(&binary);
         command
             .args(&safe_args)
@@ -292,6 +322,12 @@ impl ToolRunner {
         let output = match tokio::time::timeout(Duration::from_millis(timeout_ms), run).await {
             Ok(result) => result?,
             Err(_) => {
+                tracing::warn!(
+                    tool = %safe_tool,
+                    args = %safe_args.join(" "),
+                    timeout_ms,
+                    "tool-runner: timed out"
+                );
                 return Err(ToolError::Failed {
                     command: binary,
                     args: safe_args.join(" "),
@@ -304,6 +340,16 @@ impl ToolRunner {
         let code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        tracing::info!(
+            tool = %safe_tool,
+            args = %safe_args.join(" "),
+            cwd = %safe_cwd,
+            exit_code = code,
+            stdout = %log_preview(stdout.trim()),
+            stderr = %log_preview(stderr.trim()),
+            "tool-runner: completed"
+        );
 
         if code != 0 && !allowed_exit_codes.contains(&code) {
             let detail = if !stderr.trim().is_empty() {
@@ -342,6 +388,14 @@ impl ToolRunner {
         let safe_cwd = sanitize_cwd(cwd)?;
         let env = self.build_env(env_overrides);
         let binary = self.resolve_binary(&safe_tool)?;
+
+        tracing::info!(
+            tool = %safe_tool,
+            binary = %binary,
+            args = %safe_args.join(" "),
+            cwd = %safe_cwd,
+            "tool-runner: invoking (streaming)"
+        );
 
         let mut command = Command::new(&binary);
         command
@@ -397,6 +451,12 @@ impl ToolRunner {
         match wait_result {
             Err(_) => {
                 let _ = child.kill().await;
+                tracing::warn!(
+                    tool = %safe_tool,
+                    args = %safe_args.join(" "),
+                    timeout_ms,
+                    "tool-runner: timed out (streaming)"
+                );
                 return Err(ToolError::TimedOut(binary, timeout_ms as f64 / 60_000.0));
             }
             Ok(Err(e)) => return Err(e),
@@ -405,6 +465,14 @@ impl ToolRunner {
 
         let status = child.wait().await?;
         let code = status.code().unwrap_or(-1);
+        tracing::info!(
+            tool = %safe_tool,
+            args = %safe_args.join(" "),
+            cwd = %safe_cwd,
+            exit_code = code,
+            output = %log_preview(&captured_lines.join("\n")),
+            "tool-runner: completed (streaming)"
+        );
         if code == 0 {
             return Ok(());
         }

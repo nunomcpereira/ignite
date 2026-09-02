@@ -97,6 +97,10 @@
     "packageHallucination": {
       "enabled": true
     },
+    "zizmor": {
+      "enabled": true,
+      "binary": "zizmor"
+    },
     "codeql": {
       "enabled": true,
       "binary": "codeql",

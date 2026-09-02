@@ -1720,6 +1720,7 @@
       'secret':             { label: 'Hardcoded secrets (regex + gitleaks)', area: 'Security', always: true },
       'ai-governance':      { label: 'AI governance (LangChain/LangGraph recursion_limit)', area: 'Security', always: true },
       'iac-security':       { label: 'IaC/container misconfiguration (Trivy/Checkov/hadolint)', area: 'Security', always: true },
+      'gha-security':       { label: 'GitHub Actions workflow security (zizmor)', area: 'Security', always: true },
       'container-image-cve': { label: 'Container image CVEs (Trivy image scan)', area: 'Security', always: false },
       'image-provenance':   { label: 'Base-image signature/provenance (Cosign)', area: 'Security', always: true },
       'semantic-sast':      { label: 'Semantic SAST (Semgrep)', area: 'Security', always: true },
@@ -2067,6 +2068,10 @@
         label: 'oasdiff',
         info: 'API breaking-change / shadow-endpoint scan — diffs each discovered OpenAPI/AsyncAPI file against its own previous git revision (a removed endpoint, a field that became required, a changed response type). Only active when there’s real git history to diff against; a fresh upload with no prior commit contributes nothing. On by default; no built-in fallback. Toggle via api.oasdiff.enabled.',
       },
+      zizmor: {
+        label: 'zizmor',
+        info: 'GitHub Actions workflow security (Trail of Bits) — flags pwn-request patterns (pull_request_target running PR-head code with secrets/write access), script injection via untrusted ${{ }} expansions in run: steps, excessive permissions:, and unpinned actions in every .github/workflows/*.yml. Skipped entirely on a repo with no workflow files. On by default; no built-in fallback. Toggle via security.zizmor.enabled.',
+      },
     };
 
     function renderToolsBar(status) {
@@ -2405,6 +2410,7 @@
     // actually produces a finding.
     const STUDIO_TOOL_CATEGORIES = [
       { slug: 'iac-security', label: 'IaC (Trivy/Checkov/hadolint)' },
+      { slug: 'gha-security', label: 'GitHub Actions security (zizmor)' },
       { slug: 'image-provenance', label: 'Image provenance (Cosign)' },
       { slug: 'semantic-sast', label: 'Semantic SAST (Semgrep)' },
       { slug: 'pii-dataflow', label: 'PII/GDPR (Bearer)' },

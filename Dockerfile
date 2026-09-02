@@ -59,6 +59,7 @@ ARG INSTALL_SEMGREP=true
 ARG INSTALL_BEARER=true
 ARG INSTALL_GUARDDOG=true
 ARG INSTALL_PICKLESCAN=true
+ARG INSTALL_ZIZMOR=true
 ARG INSTALL_OASDIFF=true
 ARG INSTALL_CODEQL=true
 ARG INSTALL_JSCPD=true
@@ -168,6 +169,7 @@ RUN if [ "$INSTALL_BEARER" = "true" ]; then \
     fi
 RUN if [ "$INSTALL_GUARDDOG" = "true" ]; then pipx install guarddog && pipx ensurepath; fi
 RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan && pipx ensurepath; fi
+RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor && pipx ensurepath; fi
 RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
       ver="$(echo "$OASDIFF_VERSION" | tr -d v)"; \
