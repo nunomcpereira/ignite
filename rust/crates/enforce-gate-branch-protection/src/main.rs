@@ -88,22 +88,10 @@ pub struct PlannedCall {
     pub body: Value,
 }
 
-async fn resolve_default_branch(runner: &ToolRunner, full_name: &str) -> Result<String, String> {
-    let out = runner
-        .run_tool("gh", &["api".to_string(), format!("repos/{full_name}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
-        .await
-        .map_err(|e| format!("Failed to look up {full_name}: {e}"))?;
-    let parsed: Value = serde_json::from_str(&out.stdout).map_err(|e| format!("Failed to parse `gh api repos/{full_name}` response: {e}"))?;
-    parsed
-        .get("default_branch")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("`gh api repos/{full_name}` response had no default_branch field"))
-}
-
 async fn plan_for_repo(runner: &ToolRunner, org: &str, repo: &str) -> Result<PlannedCall, String> {
     let full_name = format!("{org}/{repo}");
-    let default_branch = resolve_default_branch(runner, &full_name).await?;
+    let api = ignite_github_api::GithubApi::new(runner);
+    let default_branch = api.default_branch(&full_name, &ignite_github_api::resolve_server_github_token()).await.map_err(|e| format!("Failed to look up {full_name}: {e}"))?;
     let body = protection_payload();
     let argv = vec!["gh".to_string(), "api".to_string(), "-X".to_string(), "PUT".to_string(), format!("repos/{full_name}/branches/{default_branch}/protection"), "--input".to_string(), "<tmpfile: see JSON body below>".to_string()];
     Ok(PlannedCall { full_name, default_branch, argv, body })

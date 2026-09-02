@@ -291,6 +291,42 @@ impl<'a> GithubApi<'a> {
         Ok(())
     }
 
+    /// The repo's current default branch, per `GET repos/{full_name}`.
+    /// Prefers the `gh` CLI (same dual-path convention as `gh_api_write`),
+    /// falling back to a token-only REST call. Read-only — safe to call
+    /// even from a dry-run.
+    pub async fn default_branch(&self, full_name: &str, token: &str) -> Result<String, GithubApiError> {
+        let value = if self.is_gh_cli_available().await {
+            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            serde_json::from_str::<Value>(&out.stdout)?
+        } else {
+            self.github_api_request(token, "GET", &format!("/repos/{full_name}"), None, None).await?.unwrap_or(Value::Null)
+        };
+        value
+            .get("default_branch")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| GithubApiError::ApiFailed { method: "GET".to_string(), path: format!("repos/{full_name}"), status: 0, detail: "response had no default_branch field".to_string() })
+    }
+
+    /// Shallow-clones `full_name` at `branch` (typically the repo's current
+    /// default branch, from `default_branch`) into `dest_dir`. Same
+    /// gh-CLI-first / token-fallback shape as `gh_clone_repo`, but takes an
+    /// explicit branch instead of hardcoding `main`.
+    pub async fn gh_clone_repo_branch(&self, full_name: &str, branch: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
+        if self.is_gh_cli_available().await {
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            return Ok(());
+        }
+        if token.is_empty() {
+            return Err(GithubApiError::NoToken);
+        }
+        self.runner
+            .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "clone".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
+            .await?;
+        Ok(())
+    }
+
     pub async fn gh_clone_repo(&self, full_name: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
             self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
