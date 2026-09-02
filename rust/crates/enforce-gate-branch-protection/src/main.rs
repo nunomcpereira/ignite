@@ -166,6 +166,11 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serializes tests that mutate the process-global PATH env var — same
+    // guard ignite-github-api's own PATH-mutating tests use.
+    static PATH_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parse_args_defaults_to_dry_run() {
@@ -237,6 +242,7 @@ exit 1
 
     #[tokio::test]
     async fn plan_for_repo_resolves_default_branch_via_fake_gh_and_never_mutates() {
+        let _guard = PATH_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         make_fake_gh(dir.path());
         let old_path = std::env::var("PATH").unwrap_or_default();

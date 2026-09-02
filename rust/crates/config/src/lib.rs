@@ -291,15 +291,23 @@ pub struct CodeqlConfig {
     pub enabled: bool,
     pub binary: String,
     pub languages: Vec<String>,
+    /// Per-language query pack, pinned to an explicit `@version` (e.g.
+    /// `codeql/javascript-queries@2.4.4:...`) rather than an unpinned
+    /// `security-extended` reference, so the ruleset used for every scan
+    /// is reproducible and only moves when a human bumps it here. Re-pin
+    /// by checking the versions bundled with the installed CodeQL CLI
+    /// (`codeql pack download codeql/<lang>-queries`, or
+    /// `~/.codeql/packages/codeql/<lang>-queries`) and bump
+    /// `last_reviewed_at` in the same change.
     pub query_suites: std::collections::BTreeMap<String, String>,
     pub threads: i64,
     #[serde(rename = "ramMB")]
     pub ram_mb: i64,
     pub timeout_ms: u64,
-    /// How often the pinned query-suite versions below should be manually
-    /// reviewed and re-pinned — dropping GHAS means losing GitHub's
-    /// continuously-updated CodeQL packs, so this ruleset is now static
-    /// until a human bumps it. See `is_review_overdue`.
+    /// How often the pinned query-suite versions in `query_suites` above
+    /// should be manually reviewed and re-pinned — dropping GHAS means
+    /// losing GitHub's continuously-updated CodeQL packs, so this ruleset
+    /// is now static until a human bumps it. See `is_codeql_review_overdue`.
     pub review_cadence_days: i64,
     /// ISO 8601 date (or `None`) of the last time a human confirmed the
     /// pinned query-suite versions in `query_suites` are still current.

@@ -16,6 +16,15 @@
 //! in spirit — this binary only ever calls `list_projects`, never writes.
 //! `GH_TOKEN`/`GITHUB_TOKEN` authenticates both the clone and (if the `gh`
 //! CLI isn't on PATH) the direct GitHub API calls.
+//!
+//! `IGNITE_SCHEDULED_RESCAN_TIMEOUT_SECS` (default 1800 = 30 min) bounds
+//! each project's `validate-all` HTTP call. A real full Phase 4 sweep on a
+//! large repo can legitimately take well past 10 minutes — see
+//! `rust/MIGRATION_STATUS.md`'s tadone benchmark notes (5-16+ minutes
+//! normally, observed stalls to 19-32 minutes under heavy concurrent
+//! system load) — so this defaults much higher than a typical HTTP
+//! client's timeout to avoid a scheduled sweep spuriously failing on
+//! exactly the large/slow repos this job most needs to cover.
 
 use ignite_scheduled_rescan::{default_runner, dedupe_projects, open_db, rescan_one};
 
@@ -42,8 +51,9 @@ async fn main() {
     }
     println!("Re-scanning {} onboarded project(s) against {server_base}...", targets.len());
 
+    let timeout_secs: u64 = std::env::var("IGNITE_SCHEDULED_RESCAN_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(1800);
     let runner = default_runner();
-    let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600)).build().expect("failed to build http client");
+    let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs)).build().expect("failed to build http client");
     let mut had_error = false;
 
     for target in &targets {

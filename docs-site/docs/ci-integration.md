@@ -152,6 +152,11 @@ API, the same pattern `scripts/create-api-key` already uses for its own
 db access. This job is not wired into anything automatically; it's an
 opt-in schedule an operator adds once they want continuous coverage.
 
+Each project's `validate-all` call is bounded by
+`IGNITE_SCHEDULED_RESCAN_TIMEOUT_SECS` (default 1800 = 30 min, well past a
+typical HTTP client default) — a real full Phase 4 sweep on a large repo
+can legitimately run well past 10 minutes.
+
 ## Keep GitHub's secret push-protection even without full GHAS
 
 If you're dropping GitHub Advanced Security in favor of Ignite's gate
