@@ -1115,7 +1115,12 @@ mod tests {
         ignite_fs_utils::invalidate_walk_cache(src.path());
 
         let (base, state) = spawn_test_server().await;
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        // A real Phase 4 run against this fixture normally finishes in well
+        // under a minute, but under heavy concurrent load (e.g. other
+        // `cargo test` processes competing for CPU) it's been observed to
+        // exceed a 120s client timeout — 240s gives real headroom without
+        // masking an actual hang (that would still fail, just later).
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(240)).build().unwrap();
         let zip = zip_dir(src.path());
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 

@@ -34,6 +34,8 @@ mod tests {
             duplicate_ref: None,
             cwe: None,
             owasp: None,
+            tool: None,
+            references: Default::default(),
         }
     }
 

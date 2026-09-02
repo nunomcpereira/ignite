@@ -63,6 +63,9 @@ mod tests {
             cross_file: false,
             chain: None,
             cwe: None,
+            owasp: None,
+            tool: None,
+            references: None,
             status: status.to_string(),
             created_at: String::new(),
         }

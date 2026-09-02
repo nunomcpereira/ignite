@@ -22,7 +22,7 @@ mod tests {
     use ignite_override_engine::Severity;
 
     fn issue(id: &str) -> Issue {
-        Issue { id: id.to_string(), category: "test".to_string(), severity: Severity::Warning, score: 0, summary: "x".to_string(), file: None, line: None, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None }
+        Issue { id: id.to_string(), category: "test".to_string(), severity: Severity::Warning, score: 0, summary: "x".to_string(), file: None, line: None, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None, tool: None, references: Default::default() }
     }
 
     #[test]

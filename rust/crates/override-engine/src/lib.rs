@@ -389,7 +389,13 @@ pub fn collect_codeql_issues(codeql: &CodeqlResult) -> Vec<Issue> {
                 cross_file: f.cross_file,
                 chain: f.chain.clone(),
                 duplicate_ref: None,
-                references: build_references(cwe.iter()),
+                // Same generic "feed kind through in case it's ever a real
+                // advisory id" as push_simple below — harmless no-op today
+                // (CodeQL's `kind` is a query rule id like `js/sql-
+                // injection`, never CVE/GHSA-shaped), kept consistent so a
+                // future CodeQL query that does tag a real CVE isn't
+                // silently dropped.
+                references: build_references(cwe.iter().chain(f.kind.iter())),
                 cwe,
                 owasp,
                 tool: Some("codeql".to_string()),
@@ -478,7 +484,15 @@ fn push_simple(
         cross_file: false,
         chain: None,
         duplicate_ref: f.duplicate_ref.clone(),
-        references: build_references(f.cwe.iter()),
+        // `f.kind` is usually just a short machine label (a rule/check id),
+        // but for a handful of checks (container-image-cve's Trivy
+        // VulnerabilityID, most notably) it's the tool's own real
+        // CVE/GHSA/PYSEC/RUSTSEC/GO- advisory id — `build_references`
+        // already silently drops anything without one of those exact
+        // prefixes, so feeding `kind` through it here is a no-op for every
+        // other category and free CVE association for the ones that do
+        // carry one, with no per-category special-casing needed.
+        references: build_references(f.cwe.iter().chain(f.kind.iter())),
         cwe: f.cwe.clone(),
         owasp: f.owasp.clone(),
         tool: f.tool.clone(),
@@ -1095,6 +1109,24 @@ mod tests {
         assert_eq!(issues.len(), 2);
         assert_ne!(issues[0].id, issues[1].id);
         assert!(issues[0].id.contains("CVE-2024-1@openssl"));
+    }
+
+    #[test]
+    fn container_image_cve_finding_associates_its_real_cve_id() {
+        let mut input = Phase4Inputs::default();
+        let mut iv = CheckResult::default();
+        iv.findings.push(RawFinding { kind: Some("CVE-2024-1".into()), pkg_name: Some("openssl".into()), severity: Some("critical".into()), ..finding("Dockerfile", 1) });
+        input.image_vulnerabilities = Some(iv);
+        let issues = collect_phase4_issues(&input);
+        assert_eq!(issues[0].references.cve, vec!["CVE-2024-1".to_string()]);
+    }
+
+    #[test]
+    fn push_simple_findings_ignore_non_advisory_shaped_kind() {
+        let mut input = Phase4Inputs::default();
+        input.secrets.findings.push(RawFinding { kind: Some("aws_secret_key".into()), severity: Some("error".into()), ..finding("config.js", 3) });
+        let issues = collect_phase4_issues(&input);
+        assert!(issues[0].references.cve.is_empty());
     }
 
     #[test]

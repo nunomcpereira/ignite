@@ -95,6 +95,14 @@ fn to_sarif_result(issue: &IssueRow) -> SarifResult {
     if let Some(cwe) = &issue.cwe {
         properties.insert("cwe".to_string(), Value::String(cwe.clone()));
     }
+    // `references.cve` (and its sibling advisory-id buckets) is only ever
+    // non-empty when the underlying scanner reported a real published
+    // advisory id — surfaced here so a SARIF consumer (e.g. GitHub code
+    // scanning) sees the actual CVE, not just the generic CWE weakness
+    // classification every issue gets.
+    if let Some(cve) = issue.references.as_ref().and_then(|r| r.get("cve")).filter(|c| c.as_array().is_some_and(|a| !a.is_empty())) {
+        properties.insert("cve".to_string(), cve.clone());
+    }
 
     let locations = issue.file.as_ref().map(|file| {
         vec![Location {
@@ -203,6 +211,9 @@ mod tests {
             cross_file: false,
             chain: None,
             cwe: None,
+            owasp: None,
+            tool: None,
+            references: None,
             status: status.to_string(),
             created_at: String::new(),
         }
@@ -247,6 +258,24 @@ mod tests {
         assert_eq!(result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "src/app.js");
         assert_eq!(result["locations"][0]["physicalLocation"]["region"]["startLine"], 12);
         assert_eq!(result["partialFingerprints"]["igniteIssueId"], "secret::src/app.js::12");
+    }
+
+    #[test]
+    fn cve_reference_surfaces_as_a_sarif_property() {
+        let mut issue = make_issue("open", "error");
+        issue.references = Some(serde_json::json!({ "cve": ["CVE-2024-1"], "ghsa": ["GHSA-xxxx"] }));
+        let doc = build_sarif(&[issue]);
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["runs"][0]["results"][0]["properties"]["cve"], serde_json::json!(["CVE-2024-1"]));
+    }
+
+    #[test]
+    fn empty_cve_reference_list_is_omitted() {
+        let mut issue = make_issue("open", "error");
+        issue.references = Some(serde_json::json!({ "cve": [] }));
+        let doc = build_sarif(&[issue]);
+        let v = serde_json::to_value(&doc).unwrap();
+        assert!(v["runs"][0]["results"][0]["properties"].get("cve").is_none());
     }
 
     #[test]
