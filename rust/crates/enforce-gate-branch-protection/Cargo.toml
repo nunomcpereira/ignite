@@ -12,6 +12,4 @@ ignite-github-api = { path = "../github-api" }
 ignite-tool-runner = { path = "../tool-runner" }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-
-[dev-dependencies]
 tempfile = "3"
