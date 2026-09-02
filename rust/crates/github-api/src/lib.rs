@@ -39,6 +39,39 @@ pub enum GithubApiError {
 static PR_URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https://github\.com/\S+/pull/\d+").unwrap());
 static PR_NUMBER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"/pull/(\d+)").unwrap());
 
+/// GitHub's own username/org naming rule: alphanumeric, single hyphens,
+/// cannot begin/end with a hyphen, max 39 chars. Shared single source of
+/// truth for every call site that validates an owner before shelling out
+/// to `gh`/`git` (routes/github_pr_status.rs, scripts that take an
+/// `org/repo` argument) — previously duplicated ad hoc per call site.
+static GITHUB_OWNER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$").unwrap());
+/// GitHub's repository naming rule: alphanumeric plus `.`/`_`/`-`, 1-100 chars.
+static GITHUB_REPO_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
+
+pub fn is_valid_github_owner(owner: &str) -> bool {
+    GITHUB_OWNER_RE.is_match(owner)
+}
+
+pub fn is_valid_github_repo(repo: &str) -> bool {
+    GITHUB_REPO_RE.is_match(repo)
+}
+
+/// Parses an `org/repo` string, validating both halves against GitHub's
+/// real naming rules. Returns `Err` with a human-readable reason on the
+/// first invalid part.
+pub fn parse_org_repo(spec: &str) -> Result<(String, String), String> {
+    let Some((owner, repo)) = spec.split_once('/') else {
+        return Err(format!("Expected \"org/repo\", got \"{spec}\""));
+    };
+    if !is_valid_github_owner(owner) {
+        return Err(format!("Invalid GitHub owner/org: \"{owner}\""));
+    }
+    if !is_valid_github_repo(repo) {
+        return Err(format!("Invalid repository name: \"{repo}\""));
+    }
+    Ok((owner.to_string(), repo.to_string()))
+}
+
 pub fn resolve_server_github_token() -> String {
     std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).unwrap_or_default()
 }
@@ -283,6 +316,32 @@ mod tests {
 
     // Serializes tests that mutate the process-global PATH env var.
     static PATH_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn parse_org_repo_accepts_valid_spec() {
+        assert_eq!(parse_org_repo("my-org/my-repo.name_1"), Ok(("my-org".to_string(), "my-repo.name_1".to_string())));
+    }
+
+    #[test]
+    fn parse_org_repo_rejects_missing_slash() {
+        assert!(parse_org_repo("no-slash-here").is_err());
+    }
+
+    #[test]
+    fn parse_org_repo_rejects_invalid_owner() {
+        assert!(parse_org_repo("-bad-owner/repo").unwrap_err().contains("Invalid GitHub owner/org"));
+    }
+
+    #[test]
+    fn parse_org_repo_rejects_invalid_repo() {
+        assert!(parse_org_repo("org/bad repo name").unwrap_err().contains("Invalid repository name"));
+    }
+
+    #[test]
+    fn owner_validator_rejects_too_long() {
+        assert!(!is_valid_github_owner(&"a".repeat(40)));
+        assert!(is_valid_github_owner(&"a".repeat(39)));
+    }
 
     fn make_fake_gh(dir: &std::path::Path, call_log_path: &std::path::Path) {
         let script_path = dir.join("gh");

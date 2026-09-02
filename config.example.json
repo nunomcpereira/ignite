@@ -101,15 +101,19 @@
       "enabled": true,
       "binary": "codeql",
       "languages": ["javascript", "python", "java", "go"],
+      "_comment_querySuites": "Pinned to the query-pack versions bundled with CodeQL CLI 2.26.3 (the version installed when this pin was last set) rather than an unpinned 'security-extended' pack reference, so the ruleset used for every scan is reproducible and only moves when a human bumps it here. Re-pin by running the CLI's own `codeql pack download codeql/<lang>-queries` (or checking ~/.codeql/packages/codeql/<lang>-queries) after upgrading the CLI, and bump security.codeql.lastReviewedAt below in the same change.",
       "querySuites": {
-        "javascript": "codeql/javascript-queries:codeql-suites/javascript-security-extended.qls",
-        "python": "codeql/python-queries:codeql-suites/python-security-extended.qls",
-        "java": "codeql/java-queries:codeql-suites/java-security-extended.qls",
-        "go": "codeql/go-queries:codeql-suites/go-security-extended.qls"
+        "javascript": "codeql/javascript-queries@2.4.4:codeql-suites/javascript-security-extended.qls",
+        "python": "codeql/python-queries@1.8.9:codeql-suites/python-security-extended.qls",
+        "java": "codeql/java-queries@1.11.9:codeql-suites/java-security-extended.qls",
+        "go": "codeql/go-queries@1.6.9:codeql-suites/go-security-extended.qls"
       },
       "threads": 0,
       "ramMB": 0,
-      "timeoutMs": 1200000
+      "timeoutMs": 1200000,
+      "_comment_reviewCadence": "Dropping GHAS means losing GitHub's continuously-updated CodeQL query packs — this ruleset is now static until a human re-pins it. reviewCadenceDays is how often that re-pin should be revisited; lastReviewedAt is stamped by whoever last did that review. The server logs a one-line startup warning (non-blocking) when this is unset or stale.",
+      "reviewCadenceDays": 90,
+      "lastReviewedAt": "2026-09-02"
     }
   },
   "compliance": {
