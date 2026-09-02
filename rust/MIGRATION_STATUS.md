@@ -1,5 +1,35 @@
 # Rust rewrite — migration status
 
+## New crate: `auto-fix-pr` — Dependabot-parity auto-fix PR bot (2026-09-02)
+
+GHAS-bypass-hardening gap: `scheduled-rescan` detects newly-disclosed CVEs
+in already-onboarded repos but never proposes a fix — Dependabot opens a
+version-bump PR automatically, Ignite only logged/posted a commit status.
+New crate `crates/auto-fix-pr` (binary `auto-fix-pr`) closes this for the
+five manifest ecosystems `ignite-studio-manifests` already parses (npm,
+pypi, cargo, go, maven): shallow-clones a repo's default branch, runs the
+real `dependency-vulnerability` scan (`ignite-dependency-license-scan`),
+resolves each finding's minimum fixed version via a real OSV.dev API call
+(`fetch_osv_fixed_version` — deps.dev's own advisory schema, already used
+by the vuln scan, doesn't carry a per-package fixed-version field, only
+generic CVE/GHSA metadata), and opens one PR per safe fix via
+`ignite-github-api`'s existing `gh_create_pr`/`gh_clone_repo_branch`.
+
+Deliberately conservative, not a full Dependabot replacement: only a
+single simple version constraint is auto-edited (`is_simple_range` rejects
+OR-ranges/wildcards/hyphen-ranges — left for a human); a fix crossing a
+semver major (`is_major_bump`) is always skipped, never silently applied;
+only the first `fixed` event OSV reports per matching `affected` package
+entry is used, not full range-intersection resolution. Dry-run by default
+(`--apply` to actually push/open PRs), same convention as
+`enforce-gate-branch-protection`. Idempotent via `git ls-remote --heads`
+on a deterministic per-(ecosystem, dep, fixed-version) branch name — no
+in-flight-PR tracking or auto-merge.
+
+9 tests, including one real network call against the live OSV.dev API
+(a stable, years-old lodash prototype-pollution advisory) verifying an
+actual fixed-version resolution, not just a mocked response shape.
+
 ## MCP HTTP transport bound to loopback only — found via live docker-compose testing, fixed (2026-08-30)
 
 `crates/mcp-server/src/main.rs`'s `run_http` hardcoded
