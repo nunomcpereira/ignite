@@ -94,3 +94,100 @@ output back and forth:
 
 Nothing here is new API surface — it's the existing `validate-all`/
 `onboard_project` response shape, used in a loop instead of a single call.
+
+## Scheduled re-scans — Dependabot-equivalent continuous coverage
+
+Ignite's dependency/CVE checks (Trivy, package-hallucination, GuardDog, and
+the rest of Phase 4) only run when a scan is *triggered* — a push, or
+someone running the CLI. Unlike Dependabot, nothing re-checks an already
+onboarded repo's unchanged code against a CVE disclosed *after* the last
+scan. The `scheduled-rescan` binary (`rust/crates/scheduled-rescan`) closes
+that gap: it iterates every onboarded `(org, repo)` pair already known to
+Ignite (`db-store`'s `projects` table), shallow-clones each one's current
+GitHub default branch, runs it through a real `POST
+/api/pipeline/validate-all`, and — only if that run actually found
+something — posts the result back via the same `POST
+/api/pipeline/:jobId/github-check` this page already covers. A clean scan
+is a no-op: nothing is posted, it's just logged.
+
+Run it by hand (or from cron/systemd) against a running Ignite server:
+
+```bash
+IGNITE_SERVER_URL=http://ignite.internal:51337 \
+IGNITE_DB_PATH=/path/to/ignite.db \
+GH_TOKEN=$GH_TOKEN \
+  ./target/release/scheduled-rescan
+```
+
+Or on a GitHub Actions `schedule:` trigger, from a runner that can reach
+the Ignite server and has a working directory to clone into:
+
+```yaml
+name: Ignite scheduled re-scan
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # daily at 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  rescan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Ignite scheduled-rescan
+        env:
+          IGNITE_SERVER_URL: ${{ vars.IGNITE_BASE_URL }}
+          IGNITE_DB_PATH: ${{ vars.IGNITE_DB_PATH }}
+          GH_TOKEN: ${{ secrets.IGNITE_SCHEDULED_RESCAN_TOKEN }}
+        run: |
+          curl -fsSL https://github.com/<org>/ignite/releases/latest/download/scheduled-rescan -o scheduled-rescan
+          chmod +x scheduled-rescan
+          ./scheduled-rescan
+```
+
+`IGNITE_DB_PATH` needs to point at the *same* database the Ignite server
+itself uses (a shared volume, or this job running on the same host) —
+`scheduled-rescan` reads project records directly rather than through an
+API, the same pattern `scripts/create-api-key` already uses for its own
+db access. This job is not wired into anything automatically; it's an
+opt-in schedule an operator adds once they want continuous coverage.
+
+## Keep GitHub's secret push-protection even without full GHAS
+
+If you're dropping GitHub Advanced Security in favor of Ignite's gate
+(this scheduled re-scan, the [branch-protection
+enforcement](#branch-protection-enforcement) below, and the pipeline
+itself), keep GitHub's *basic secret-scanning push-protection* enabled
+regardless. It's the one capability Ignite's post-hoc gitleaks/regex scan
+structurally can't replace: push-protection rejects a commit containing a
+recognized secret pattern *before* it ever lands on GitHub, at pre-receive
+time. Ignite's scan — like any pipeline-stage or scheduled check — only
+ever runs *after* a commit already exists somewhere (locally, or already
+pushed), so a secret that's pushed and then deleted in a follow-up commit
+has still been exposed in git history in the window between.
+
+**Verify this against your actual GitHub bill before treating it as
+settled** — whether secret-scanning push-protection is licensed/priced
+separately from the rest of GHAS varies by plan and has changed over time;
+this doc is flagging it as something to check, not asserting today's
+pricing.
+
+## Branch-protection enforcement
+
+Ignite's gate only fires if someone actually routes code through it — a
+push, a PR, this scheduled re-scan. GHAS-style enforcement lives at the
+GitHub platform level regardless of push path. `enforce-gate-branch-protection`
+(`rust/crates/enforce-gate-branch-protection`) closes that gap for the
+`ignite/gate` status check specifically: it requires that check (and
+blocks direct/admin-bypass pushes) on a given repo's default branch.
+
+```bash
+# Prints the exact gh api call(s) it would make — no changes made.
+./target/release/enforce-gate-branch-protection my-org/my-repo
+
+# Actually applies it.
+./target/release/enforce-gate-branch-protection my-org/my-repo --apply
+```
+
+Dry-run by default; this is a deliberate, operator-run tool, not something
+wired into any pipeline or schedule.
