@@ -26,6 +26,26 @@ static SEMGREP_FORCE_WARNING_TITLES: Lazy<Vec<Regex>> = Lazy::new(|| {
 });
 static CWE_PREFIX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^CWE-\d+").unwrap());
 
+/// `p/security-audit`'s use-defusedxml rule fires on any
+/// `xml.etree.ElementTree` import, regardless of whether the file actually
+/// parses untrusted XML with it — real usage found via `ignite scan` on a
+/// sibling project: a file imported native ET only for
+/// `register_namespace`/`tostring` (serialization) and an exception type,
+/// while all parsing went through `defusedxml.ElementTree.fromstring`
+/// under a different local name. Semgrep has no cross-import-alias taint
+/// tracking for this rule, so we downgrade it here, conditioned on the
+/// file content actually showing the safe shape (defusedxml imported, no
+/// native-ET parse call) — unlike SEMGREP_FORCE_WARNING_TITLES above, this
+/// is content-aware, not a blanket downgrade of the rule.
+static USE_DEFUSEDXML_FINDING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)recommends using `?defusedxml`?").unwrap());
+static DEFUSEDXML_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*(?:from|import)\s+defusedxml\b").unwrap());
+static NATIVE_XML_PARSE_CALL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b(?:ET|xml\.etree\.ElementTree)\s*\.\s*(?:fromstring|parse|XMLParser)\s*\(").unwrap());
+
+fn is_defusedxml_already_used_safely(content: &str) -> bool {
+    DEFUSEDXML_IMPORT_RE.is_match(content) && !NATIVE_XML_PARSE_CALL_RE.is_match(content)
+}
+
 pub async fn build_semgrep_env() -> std::io::Result<HashMap<String, String>> {
     let semgrep_home = std::env::temp_dir().join("ignite-semgrep-home");
     let semgrep_cache = semgrep_home.join("cache");
@@ -143,7 +163,9 @@ pub async fn check_semantic_sast(root: &Path, runner: &ToolRunner, config: &Sema
         let content = std::fs::read_to_string(root.join(&rel_file)).ok();
         let semgrep_severity = r.get("extra").and_then(|e| e.get("severity")).and_then(|s| s.as_str()).unwrap_or("WARNING").to_uppercase();
         let message = r.get("extra").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("Semgrep finding").to_string();
-        let forced_warning = SEMGREP_FORCE_WARNING_TITLES.iter().any(|re| re.is_match(&message));
+        let forced_warning = SEMGREP_FORCE_WARNING_TITLES.iter().any(|re| re.is_match(&message))
+            || (USE_DEFUSEDXML_FINDING_RE.is_match(&message)
+                && content.as_deref().map(is_defusedxml_already_used_safely).unwrap_or(false));
         let cwe_list = r
             .get("extra")
             .and_then(|e| e.get("metadata"))
@@ -197,6 +219,24 @@ mod tests {
         let mut binaries = StdHashMap::new();
         binaries.insert("semgrep", "semgrep".to_string());
         ToolRunner::new(binaries)
+    }
+
+    #[test]
+    fn use_defusedxml_fp_downgrade_only_fires_when_native_et_never_parses() {
+        // Real shape from ioc's backend/app/api/v1/branding.py: native ET
+        // used only for register_namespace/tostring (serialization), all
+        // parsing through defusedxml under a local alias.
+        let safe = "import xml.etree.ElementTree as ET\nfrom defusedxml.ElementTree import fromstring as _safe_fromstring\nET.register_namespace(\"\", \"ns\")\nroot = _safe_fromstring(data)\nET.tostring(root)\n";
+        assert!(is_defusedxml_already_used_safely(safe));
+
+        // Genuine risk: defusedxml imported but native ET.fromstring still
+        // reachable — must NOT downgrade.
+        let still_risky = "import xml.etree.ElementTree as ET\nimport defusedxml\nroot = ET.fromstring(data)\n";
+        assert!(!is_defusedxml_already_used_safely(still_risky));
+
+        // No defusedxml at all — must NOT downgrade.
+        let no_defusedxml = "import xml.etree.ElementTree as ET\nroot = ET.fromstring(data)\n";
+        assert!(!is_defusedxml_already_used_safely(no_defusedxml));
     }
 
     #[tokio::test]
