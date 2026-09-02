@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: 123beaa5c6acea6be08112bc07847efe3787278f (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: d41defb22b9b265db345a8fb4fda8ec0e1c6bf7f (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -1263,7 +1263,7 @@ ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::672
 # Issue #208
 # [ERROR] secret - Hardcoded gcp-api-key
 #   rust/crates/phase4-orchestrator/src/lib.rs:672
-Acknowledge: Fake GCP/Firebase web API key literal ("AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk") written to an in-memory test fixture to verify gitleaks' gcp-api-key detector integration, not a real credential - same pattern as the other fake-GCP-key entries in this file, just carried to a new line number after nearby edits.
+Acknowledge: Fake GCP/Firebase web API key literal written to an in-memory test fixture to verify gitleaks' gcp-api-key detector integration, not a real credential - same pattern as the other fake-GCP-key entries in this file, just carried to a new line number after nearby edits.
 
 ID: gha-security::.github/workflows/deploy-docs.yml::13
 # Issue #209
@@ -1282,3 +1282,9 @@ ID: container-image-cve::Dockerfile::1::cve-2026-84304@google.golang.org/grpc
 # [ERROR] container-image-cve - google.golang.org/grpc@v1.82.0: gRPC-Go is the Go language implementation of gRPC. Prior to 1.83.1, in ... (fixed in 1.83.1)
 #   Dockerfile:1
 Acknowledge: google.golang.org/grpc CVE-2026-84304 (fixed upstream in 1.83.1) is bundled at various pre-1.83.1 versions inside several vendored Go-language release binaries in this image (confirmed for `act` v0.2.89 - see the neighboring GHSA-hrxh-6v49-42gf entry for the same package/version; likely also one or more of gh/hadolint/gocloc/syft/cosign/oasdiff, but Trivy's report collapses every hit onto this one Dockerfile:1 finding, so the exact binary per version isn't distinguishable from Ignite's own issue view). Not confirmed that every one of those upstream projects has shipped a release rebuilt against a patched grpc-go as of this scan. Re-check as each tool's pinned version is bumped.
+
+ID: secret::.ignite/acknowledgments.md::1266
+# Issue #212
+# [ERROR] secret - Hardcoded gcp-api-key
+#   .ignite/acknowledgments.md:1266
+Acknowledge: 
