@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: 1ec7e80cd85434ed17219961b3cec3d72659b894 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: 5909ea194ae7c1ee592a8fad2481e173d83ba3f5 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -1253,80 +1253,62 @@ ID: secret::rust/crates/secrets/src/lib.rs::565
 #   rust/crates/secrets/src/lib.rs:565
 Acknowledge: Fake DATABASE_URL connection-string literal written to a scratch fixture file within a unit test for the URI_CREDENTIAL_RE detector, not a real credential - uses example.com (IANA/RFC 2606-reserved for documentation) and an explicitly-labeled placeholder password.
 
-ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::672
-# Issue #207
-# [ERROR] secret - Hardcoded gcp-api-key
-#   rust/crates/phase4-orchestrator/src/lib.rs:672
-Acknowledge: Fake GCP/Firebase web API key literal written to an in-memory test fixture to verify gitleaks' gcp-api-key detector integration, not a real credential - same pattern as the other fake-GCP-key entries in this file, just carried to a new line number after nearby edits.
-
 ID: gha-security::.github/workflows/deploy-docs.yml::13
-# Issue #208
+# Issue #207
 # [ERROR] gha-security - overly broad permissions (  pages: write)
 #   .github/workflows/deploy-docs.yml:13
 Acknowledge: `pages: write` + `id-token: write` (next entry) are exactly the two permissions GitHub's own actions/deploy-pages documentation requires for OIDC-based Pages deployment - already the minimal job-level set (no broader contents:write, etc.). zizmor's excessive-permissions rule flags any explicit write scope without knowing what the job's own actions actually need; this is that documented minimum, not excessive in practice.
 
 ID: gha-security::.github/workflows/deploy-docs.yml::14
-# Issue #209
+# Issue #208
 # [ERROR] gha-security - overly broad permissions (  id-token: write)
 #   .github/workflows/deploy-docs.yml:14
 Acknowledge: Same justification as the `pages: write` entry above - the minimal, documented permission pair actions/deploy-pages needs for OIDC-based deployment.
 
 ID: container-image-cve::Dockerfile::1::cve-2026-84304@google.golang.org/grpc
-# Issue #210
+# Issue #209
 # [ERROR] container-image-cve - google.golang.org/grpc@v1.82.0: gRPC-Go is the Go language implementation of gRPC. Prior to 1.83.1, in ... (fixed in 1.83.1)
 #   Dockerfile:1
 Acknowledge: google.golang.org/grpc CVE-2026-84304 (fixed upstream in 1.83.1) is bundled at various pre-1.83.1 versions inside several vendored Go-language release binaries in this image (confirmed for `act` v0.2.89 - see the neighboring GHSA-hrxh-6v49-42gf entry for the same package/version; likely also one or more of gh/hadolint/gocloc/syft/cosign/oasdiff, but Trivy's report collapses every hit onto this one Dockerfile:1 finding, so the exact binary per version isn't distinguishable from Ignite's own issue view). Not confirmed that every one of those upstream projects has shipped a release rebuilt against a patched grpc-go as of this scan. Re-check as each tool's pinned version is bumped.
 
-ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1238
+ID: secret::rust/crates/llm-client/src/lib.rs::327
+# Issue #210
+# [ERROR] secret - Hardcoded api_key
+#   rust/crates/llm-client/src/lib.rs:327
+Acknowledge: Fake Anthropic API key literal ("sk-ant-test") used as test-fixture input to verify the new Anthropic-provider request/auth-header wiring, not a real credential.
+
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::692
 # Issue #211
-# [ERROR] secret - Hardcoded aws-access-token
-#   rust/crates/server/src/routes/pipeline_interactive.rs:1238
-Acknowledge: 
+# [ERROR] secret - Hardcoded gcp-api-key
+#   rust/crates/phase4-orchestrator/src/lib.rs:692
+Acknowledge: Fake GCP/Firebase API key literal used as test input to verify gitleaks' gcp-api-key detection against a nested `apiKey:` property, not a real credential.
 
-ID: license-compliance::docs-site/package.json::0::@docusaurus/core
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1250
 # Issue #212
-# [ERROR] license-compliance - @docusaurus/core@3.10.2 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:17
-Acknowledge: 
+# [ERROR] secret - Hardcoded aws-access-token
+#   rust/crates/server/src/routes/pipeline_interactive.rs:1250
+Acknowledge: Fake AWS access key ID ("AKIAABCDEFGHIJKLMNOP") embedded in an in-memory test-zip fixture to guarantee a Phase 4 finding for the review-gate streaming test, not a real credential.
 
-ID: license-compliance::docs-site/package.json::0::@docusaurus/faster
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1293
 # Issue #213
-# [ERROR] license-compliance - @docusaurus/faster@3.10.2 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:18
-Acknowledge: 
+# [ERROR] secret - Hardcoded aws-access-token
+#   rust/crates/server/src/routes/pipeline_interactive.rs:1293
+Acknowledge: Same fake AWS access key ID ("AKIAABCDEFGHIJKLMNOP"), same purpose, in the neighboring "Stop pipeline with no overrides" regression test's fixture, not a real credential.
 
-ID: license-compliance::docs-site/package.json::0::@docusaurus/preset-classic
+ID: container-image-cve::Dockerfile::1::cve-2026-16742@libsystemd0
 # Issue #214
-# [ERROR] license-compliance - @docusaurus/preset-classic@3.10.2 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:19
-Acknowledge: 
+# [ERROR] container-image-cve - libsystemd0@252.39-1~deb12u2: systemd: systemd-homed: Local privilege escalation via missing home-record signature verification
+#   Dockerfile:1
+Acknowledge: Base-image Debian bookworm package (systemd-homed is not used by this image - no homed service is run); the finding itself carries no "(fixed in X)" version, i.e. no patched Debian bookworm-security package is out yet. Same category as the already-acknowledged bsdutils/curl findings above. Not independently re-verified against live Debian security indices in this session - re-check on the next scan.
 
-ID: license-compliance::docs-site/package.json::0::docusaurus-plugin-image-zoom
+ID: container-image-cve::Dockerfile::1::cve-2026-16742@libudev1
 # Issue #215
-# [ERROR] license-compliance - docusaurus-plugin-image-zoom@3.0.1 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:22
-Acknowledge: 
+# [ERROR] container-image-cve - libudev1@252.39-1~deb12u2: systemd: systemd-homed: Local privilege escalation via missing home-record signature verification
+#   Dockerfile:1
+Acknowledge: Same CVE/package family as the libsystemd0 finding above (both come from the same unpatched systemd source package) - same reasoning applies.
 
-ID: license-compliance::docs-site/package.json::0::react
+ID: container-image-cve::Dockerfile::1::cve-2026-79770@nokogiri
 # Issue #216
-# [ERROR] license-compliance - react@19.0.0 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:24
-Acknowledge: 
-
-ID: license-compliance::docs-site/package.json::0::react-dom
-# Issue #217
-# [ERROR] license-compliance - react-dom@19.0.0 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:25
-Acknowledge: 
-
-ID: license-compliance::docs-site/package.json::0::@docusaurus/module-type-aliases
-# Issue #218
-# [ERROR] license-compliance - @docusaurus/module-type-aliases@3.10.2 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:28
-Acknowledge: 
-
-ID: license-compliance::docs-site/package.json::0::@docusaurus/types
-# Issue #219
-# [ERROR] license-compliance - @docusaurus/types@3.10.2 — License lookup failed (package/version not found upstream).
-#   docs-site/package.json:29
-Acknowledge: 
+# [ERROR] container-image-cve - nokogiri@1.18.10: nokogiri: Nokogiri: Denial of Service via crafted CSS selectors (fixed in 1.19.3)
+#   Dockerfile:1
+Acknowledge: Transitive gem dependency of `gem install licensee` (Dockerfile, INSTALL_LICENSEE) - unpinned, so it tracks whatever nokogiri licensee's dependency resolver picks at build time. A fix does exist upstream (nokogiri >= 1.19.3); this override is a deliberate "known, fix exists, not yet applied" call, not a "nothing available" one - needs a Dockerfile change (pin nokogiri, or `gem install nokogiri -v '>=1.19.3'` before licensee) and an image rebuild to actually clear, not done in this session. Follow-up: pin it.
