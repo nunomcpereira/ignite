@@ -11,6 +11,8 @@ path = "src/main.rs"
 ignite-db-store = { path = "../db-store" }
 ignite-github-api = { path = "../github-api" }
 ignite-tool-runner = { path = "../tool-runner" }
+ignite-auto-fix-pr = { path = "../auto-fix-pr" }
+ignite-deps-dev-client = { path = "../deps-dev-client" }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }

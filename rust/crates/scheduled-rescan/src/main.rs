@@ -26,7 +26,7 @@
 //! client's timeout to avoid a scheduled sweep spuriously failing on
 //! exactly the large/slow repos this job most needs to cover.
 
-use ignite_scheduled_rescan::{default_runner, dedupe_projects, open_db, rescan_one};
+use ignite_scheduled_rescan::{auto_fix_mode_from_env, default_runner, dedupe_projects, open_db, rescan_one, AutoFixMode};
 
 #[tokio::main]
 async fn main() {
@@ -54,10 +54,16 @@ async fn main() {
     let timeout_secs: u64 = std::env::var("IGNITE_SCHEDULED_RESCAN_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(1800);
     let runner = default_runner();
     let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs)).build().expect("failed to build http client");
+    let auto_fix_mode = auto_fix_mode_from_env();
+    if auto_fix_mode == AutoFixMode::Off {
+        println!("Auto-fix PRs disabled (set IGNITE_SCHEDULED_RESCAN_AUTO_FIX=dry-run or =apply to enable).");
+    } else {
+        println!("Auto-fix PRs enabled: {auto_fix_mode:?}.");
+    }
     let mut had_error = false;
 
     for target in &targets {
-        let outcome = rescan_one(&runner, &http, &server_base, &gh_token, target).await;
+        let outcome = rescan_one(&runner, &http, &server_base, &gh_token, target, auto_fix_mode).await;
         match &outcome.error {
             Some(e) => {
                 eprintln!("{}/{}: FAILED — {e}", outcome.org, outcome.repo);
@@ -68,6 +74,22 @@ async fn main() {
             }
             None => {
                 println!("{}/{}: {} finding(s), posted to job {} — {}", outcome.org, outcome.repo, outcome.issue_count, outcome.job_id.as_deref().unwrap_or("?"), if outcome.posted { "commit status updated" } else { "NOT posted (see error)" });
+            }
+        }
+        if outcome.auto_fix.candidates_found > 0 {
+            println!(
+                "  auto-fix: {} candidate(s) — {} PR(s) opened, {} skipped, {} error(s)",
+                outcome.auto_fix.candidates_found,
+                outcome.auto_fix.pr_urls.len(),
+                outcome.auto_fix.skipped,
+                outcome.auto_fix.errors.len()
+            );
+            for url in &outcome.auto_fix.pr_urls {
+                println!("    ✓ {url}");
+            }
+            for err in &outcome.auto_fix.errors {
+                eprintln!("    ✗ {err}");
+                had_error = true;
             }
         }
     }

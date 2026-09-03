@@ -157,6 +157,32 @@ Each project's `validate-all` call is bounded by
 typical HTTP client default) — a real full Phase 4 sweep on a large repo
 can legitimately run well past 10 minutes.
 
+### Auto-opening a fix PR for what it finds
+
+By default a scheduled re-scan only *reports* a newly-disclosed CVE — it
+doesn't propose the fix. Set `IGNITE_SCHEDULED_RESCAN_AUTO_FIX=dry-run` (log
+the fix plan, push nothing) or `=apply` (actually push a branch and open a
+PR) to chain straight into `auto-fix-pr` for any repo the rescan found
+something on, reusing the same clone rather than checking the repo out
+twice:
+
+```bash
+IGNITE_SERVER_URL=http://ignite.internal:51337 \
+IGNITE_DB_PATH=/path/to/ignite.db \
+GH_TOKEN=$GH_TOKEN \
+IGNITE_SCHEDULED_RESCAN_AUTO_FIX=apply \
+  ./target/release/scheduled-rescan
+```
+
+Off by default — an existing scheduled deployment's behavior never changes
+until this is explicitly set. Deliberately conservative: only a single,
+simple version constraint (a bare version, or one `^`/`~`/`==`/`>=`-style
+prefix) is auto-bumped, and a fix crossing a semver major version is always
+skipped for a human to review, never silently applied — this is the same
+`auto-fix-pr` binary (`rust/crates/auto-fix-pr`, runnable standalone against
+any repo with `./target/release/auto-fix-pr <org/repo> [--apply]`), just
+triggered automatically here instead of by hand.
+
 ## Keep GitHub's secret push-protection even without full GHAS
 
 If you're dropping GitHub Advanced Security in favor of Ignite's gate

@@ -17,7 +17,7 @@
 use axum::extract::Path as AxumPath;
 use axum::routing::post;
 use axum::{Json, Router};
-use ignite_scheduled_rescan::{default_runner, rescan_one, RescanTarget};
+use ignite_scheduled_rescan::{default_runner, rescan_one, AutoFixMode, RescanTarget};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -91,7 +91,7 @@ async fn rescan_one_posts_github_check_when_issues_found() {
     let runner = default_runner();
     let http = reqwest::Client::new();
     let target = RescanTarget { org: "acme".to_string(), repo: "widgets".to_string() };
-    let outcome = rescan_one(&runner, &http, &base, "tok", &target).await;
+    let outcome = rescan_one(&runner, &http, &base, "tok", &target, AutoFixMode::Off).await;
 
     std::env::set_var("PATH", &original_path);
 
@@ -119,7 +119,7 @@ async fn rescan_one_is_a_noop_when_no_issues_found() {
     let runner = default_runner();
     let http = reqwest::Client::new();
     let target = RescanTarget { org: "acme".to_string(), repo: "widgets".to_string() };
-    let outcome = rescan_one(&runner, &http, &base, "tok", &target).await;
+    let outcome = rescan_one(&runner, &http, &base, "tok", &target, AutoFixMode::Off).await;
 
     std::env::set_var("PATH", &original_path);
 
@@ -143,7 +143,7 @@ async fn rescan_one_reports_error_not_silent_clean_on_structural_pipeline_failur
     let runner = default_runner();
     let http = reqwest::Client::new();
     let target = RescanTarget { org: "acme".to_string(), repo: "widgets".to_string() };
-    let outcome = rescan_one(&runner, &http, &base, "tok", &target).await;
+    let outcome = rescan_one(&runner, &http, &base, "tok", &target, AutoFixMode::Off).await;
 
     std::env::set_var("PATH", &original_path);
 

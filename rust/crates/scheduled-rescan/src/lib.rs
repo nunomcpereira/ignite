@@ -19,11 +19,14 @@
 //! `changedFiles` design note in CLAUDE.md) for reusing an existing
 //! response shape/view over adding a new endpoint per use case.
 
+use ignite_auto_fix_pr::{apply_fix, discover_fix_candidates};
 use ignite_db_store::{DbStore, ProjectListRow};
+use ignite_deps_dev_client::DepsDevClient;
 use ignite_github_api::GithubApi;
 use ignite_tool_runner::ToolRunner;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RescanTarget {
@@ -59,6 +62,73 @@ pub fn should_post_github_check(issues: &[Value]) -> bool {
     !issues.is_empty()
 }
 
+/// Whether/how `rescan_one` should try to close the Dependabot-parity gap
+/// itself, right after finding something wrong, instead of requiring an
+/// operator to notice and run `auto-fix-pr` by hand afterward. Off by
+/// default — this is new, repo-mutating behavior an existing scheduled
+/// deployment shouldn't suddenly start doing — same "opt in, dry-run
+/// before apply" posture `auto-fix-pr`'s own CLI already uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoFixMode {
+    Off,
+    /// Discover fix candidates and log the plan, but push nothing/open no PRs.
+    DryRun,
+    /// Actually push branches and open PRs for every safe (non-major) fix.
+    Apply,
+}
+
+/// Reads `IGNITE_SCHEDULED_RESCAN_AUTO_FIX` — unset or any value other than
+/// `dry-run`/`apply` means `Off` (fails safe: a typo'd env var never
+/// silently starts pushing branches).
+pub fn auto_fix_mode_from_env() -> AutoFixMode {
+    match std::env::var("IGNITE_SCHEDULED_RESCAN_AUTO_FIX").ok().as_deref() {
+        Some("dry-run") => AutoFixMode::DryRun,
+        Some("apply") => AutoFixMode::Apply,
+        _ => AutoFixMode::Off,
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct AutoFixSummary {
+    pub candidates_found: usize,
+    pub pr_urls: Vec<String>,
+    pub skipped: usize,
+    pub errors: Vec<String>,
+}
+
+/// Runs `auto-fix-pr`'s own discovery + apply against an already-cloned
+/// checkout (`rescan_one`'s clone — no second clone needed) once a rescan
+/// has found something worth reacting to. Mirrors `auto-fix-pr`'s CLI
+/// exactly (`discover_fix_candidates` + `apply_fix` per candidate,
+/// idempotent via `branch_exists_on_remote`, major-version bumps always
+/// skipped) — this is the same tool, just triggered automatically instead
+/// of requiring an operator to run it by hand after noticing a finding.
+pub async fn run_auto_fix(runner: &ToolRunner, http: &reqwest::Client, full_name: &str, base_branch: &str, clone_dir: &Path, token: &str, mode: AutoFixMode) -> AutoFixSummary {
+    let mut summary = AutoFixSummary::default();
+    if mode == AutoFixMode::Off {
+        return summary;
+    }
+
+    let deps_client = DepsDevClient::new();
+    let candidates = discover_fix_candidates(clone_dir, &deps_client, http).await;
+    summary.candidates_found = candidates.len();
+    if candidates.is_empty() {
+        return summary;
+    }
+
+    let github_api = GithubApi::new(runner);
+    let apply = mode == AutoFixMode::Apply;
+    for candidate in &candidates {
+        let outcome = apply_fix(runner, &github_api, full_name, base_branch, &clone_dir.to_string_lossy(), candidate, token, apply).await;
+        match (outcome.pr_url, outcome.error) {
+            (Some(url), _) => summary.pr_urls.push(url),
+            (None, Some(err)) => summary.errors.push(format!("{}: {err}", outcome.candidate_summary)),
+            (None, None) => summary.skipped += 1,
+        }
+    }
+    summary
+}
+
 #[derive(Debug)]
 pub struct RescanOutcome {
     pub org: String,
@@ -67,11 +137,12 @@ pub struct RescanOutcome {
     pub issue_count: usize,
     pub posted: bool,
     pub error: Option<String>,
+    pub auto_fix: AutoFixSummary,
 }
 
 impl RescanOutcome {
     fn failed(org: &str, repo: &str, error: impl Into<String>) -> Self {
-        RescanOutcome { org: org.to_string(), repo: repo.to_string(), job_id: None, issue_count: 0, posted: false, error: Some(error.into()) }
+        RescanOutcome { org: org.to_string(), repo: repo.to_string(), job_id: None, issue_count: 0, posted: false, error: Some(error.into()), auto_fix: AutoFixSummary::default() }
     }
 }
 
@@ -82,7 +153,7 @@ impl RescanOutcome {
 /// (`routes/github_pr_status.rs`). Never touches a real GitHub org's
 /// settings — only ever a commit status + an optional PR comment on
 /// commits that already exist.
-pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base: &str, gh_token: &str, target: &RescanTarget) -> RescanOutcome {
+pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base: &str, gh_token: &str, target: &RescanTarget, auto_fix_mode: AutoFixMode) -> RescanOutcome {
     let full_name = format!("{}/{}", target.org, target.repo);
     let api = GithubApi::new(runner);
 
@@ -143,12 +214,19 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
                 Some(p) => format!("pipeline failed at phase {p}: {error}"),
                 None => format!("pipeline failed: {error}"),
             }),
+            auto_fix: AutoFixSummary::default(),
         };
     }
 
     if !should_post_github_check(&issues) {
-        return RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: false, error: None };
+        return RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: false, error: None, auto_fix: AutoFixSummary::default() };
     }
+
+    // Reuses the checkout `validate-all` was just pointed at above — no
+    // second clone. Runs before the github-check POST so a fresh PR (if
+    // any) exists by the time a human reads the commit-status/PR-comment
+    // this rescan is about to post.
+    let auto_fix = run_auto_fix(runner, http, &full_name, &default_branch, &dest, gh_token, auto_fix_mode).await;
 
     let check_res = http
         .post(format!("{server_base}/api/pipeline/{job_id}/github-check"))
@@ -156,13 +234,13 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
         .send()
         .await;
     match check_res {
-        Ok(res) if res.status().is_success() => RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: true, error: None },
+        Ok(res) if res.status().is_success() => RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: true, error: None, auto_fix },
         Ok(res) => {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
-            RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: false, error: Some(format!("github-check returned {status}: {text}")) }
+            RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: false, error: Some(format!("github-check returned {status}: {text}")), auto_fix }
         }
-        Err(e) => RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: false, error: Some(format!("github-check request failed: {e}")) },
+        Err(e) => RescanOutcome { org: target.org.clone(), repo: target.repo.clone(), job_id: Some(job_id), issue_count, posted: false, error: Some(format!("github-check request failed: {e}")), auto_fix },
     }
 }
 
@@ -222,6 +300,38 @@ mod tests {
     #[test]
     fn should_post_github_check_true_when_issues_present() {
         assert!(should_post_github_check(&[json!({"category": "secret"})]));
+    }
+
+    #[test]
+    fn auto_fix_mode_from_env_fails_safe_to_off() {
+        // Sequential within one test body — safe against std::env's global
+        // mutable state despite the test harness running other tests in
+        // parallel threads, since no other test in this crate touches this
+        // var.
+        std::env::remove_var("IGNITE_SCHEDULED_RESCAN_AUTO_FIX");
+        assert_eq!(auto_fix_mode_from_env(), AutoFixMode::Off);
+
+        std::env::set_var("IGNITE_SCHEDULED_RESCAN_AUTO_FIX", "typo");
+        assert_eq!(auto_fix_mode_from_env(), AutoFixMode::Off);
+
+        std::env::set_var("IGNITE_SCHEDULED_RESCAN_AUTO_FIX", "dry-run");
+        assert_eq!(auto_fix_mode_from_env(), AutoFixMode::DryRun);
+
+        std::env::set_var("IGNITE_SCHEDULED_RESCAN_AUTO_FIX", "apply");
+        assert_eq!(auto_fix_mode_from_env(), AutoFixMode::Apply);
+
+        std::env::remove_var("IGNITE_SCHEDULED_RESCAN_AUTO_FIX");
+    }
+
+    #[tokio::test]
+    async fn run_auto_fix_short_circuits_when_mode_is_off() {
+        // Off must never touch the filesystem/network — a nonexistent path
+        // proves discover_fix_candidates was never reached.
+        let runner = default_runner();
+        let http = reqwest::Client::new();
+        let summary = run_auto_fix(&runner, &http, "acme/widgets", "main", Path::new("/nonexistent/path"), "tok", AutoFixMode::Off).await;
+        assert_eq!(summary.candidates_found, 0);
+        assert!(summary.pr_urls.is_empty());
     }
 
     #[test]
