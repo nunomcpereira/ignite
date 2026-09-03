@@ -172,13 +172,13 @@ layout: default
     <div style="font-size:9.5px;color:var(--faint);margin-top:1px;">Private repo</div>
   </div>
 
-  <div style="position:absolute;left:66%;top:92%;transform:translate(-50%,-50%);text-align:center;width:200px;">
-    <div class="mono" style="font-size:8px;font-weight:700;color:var(--purple);letter-spacing:.08em;margin-bottom:4px;">ON-DEMAND · POST-SHIP</div>
+  <div style="position:absolute;left:66%;top:92%;transform:translate(-50%,-50%);text-align:center;width:290px;">
+    <div class="mono" style="font-size:8px;font-weight:700;color:var(--purple);letter-spacing:.08em;margin-bottom:4px;">ON-DEMAND, OR SCHEDULED · POST-SHIP</div>
     <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;border:1.5px dashed color-mix(in srgb, var(--purple) 55%, var(--border));background:color-mix(in srgb, var(--purple) 8%, var(--surface));">
       <span style="font-size:13px;">✨</span>
       <span style="font-size:11px;font-weight:700;color:var(--purple);">Auto-Fix PR</span>
     </div>
-    <div style="font-size:9px;color:var(--faint);margin-top:4px;line-height:1.3;">Bundles every open finding's AI-suggested fix into one reviewable PR</div>
+    <div style="font-size:8.5px;color:var(--faint);margin-top:4px;line-height:1.3;">Bundles every open finding's AI-suggested fix into one PR on demand — or unattended, from a scheduled CVE re-scan.</div>
   </div>
 </div>
 

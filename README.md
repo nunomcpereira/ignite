@@ -335,6 +335,15 @@ A **✨ Generate fix PR** button next to "View flagged issues" runs the same AI 
 
 Only available for a job whose project has already shipped to GitHub (there has to be a repo to open a PR against) - returns a clear error otherwise. Available from both a live run's results page and the Onboarded Projects history list, since - unlike Ignite Studio's Dependencies/SBOM/LOC/Posture views - it never touches the staging directory (long gone for a historical run): candidate generation reads from the persisted `issues` table, and applying fixes clones a fresh copy straight from GitHub.
 
+## Scheduled re-scans & automatic fix PRs - Dependabot-equivalent continuous coverage
+
+Every check above only runs when a scan is *triggered* - a push, a CLI run, an upload. Nothing re-checks an already-shipped repo's unchanged code against a CVE disclosed *after* it was onboarded, the way Dependabot does on a schedule. Two standalone binaries close that gap together:
+
+- **`scheduled-rescan`** (`rust/crates/scheduled-rescan`) - has no scheduler of its own; it's a one-shot binary that iterates every onboarded `(org, repo)` pair Ignite already knows about, shallow-clones each one's current GitHub default branch, runs a real `validate-all`, and - only if that turns up something - posts the result back as a commit status/PR comment. *You* put it on a timer (cron/systemd, or a GitHub Actions `schedule:` trigger) - see `docs-site/docs/ci-integration.md` for both.
+- **`auto-fix-pr`** (`rust/crates/auto-fix-pr`) - the piece Dependabot has and a bare rescan doesn't: proposing the fix, not just detecting the problem. For each repo, resolves every dependency-vulnerability finding's minimum fixed version via OSV.dev and opens one PR per safe (single, non-major-version) bump. Runnable standalone against any repo (`./target/release/auto-fix-pr <org/repo> [--apply]`, dry-run unless `--apply`), **or chained automatically off `scheduled-rescan`** via `IGNITE_SCHEDULED_RESCAN_AUTO_FIX=dry-run|apply` - so a newly-disclosed CVE found on a repo that already shipped can get a reviewable fix PR opened with no human in the loop, not just a notification. Off by default; opt in per the env var above.
+
+This is a different mechanism from the interactive **✨ Generate fix PR** above: that one is triggered by a person, covers any open finding (not just dependency CVEs), and uses an LLM to draft the diff. `auto-fix-pr` is unattended, scoped to dependency-vulnerability findings only, and resolves the fix deterministically from the advisory data - no LLM involved.
+
 ## Ignite Studio - one place for every connected tool's findings
 
 Studio's top bar (reachable from the review gate, or the "Studio" button on a finished run) has one button per non-issue artifact, each replacing the code pane with a live, on-demand report - the same "recompute against the still-staged project" pattern the existing 📦 Dependencies button uses, backed by `GET /api/pipeline/:jobId/studio/{sbom,loc-metrics,posture}`:
