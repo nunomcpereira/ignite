@@ -3485,7 +3485,7 @@
         const bg = hits.length > 0
           ? (isSelected ? (hasError ? 'bg-rose-100' : hasOnlyNiceToHave ? 'bg-emerald-100' : 'bg-amber-100') : (hasError ? 'bg-rose-50' : hasOnlyNiceToHave ? 'bg-emerald-50' : 'bg-amber-50'))
           : (inJumpRange ? 'bg-indigo-50' : '');
-        const badges = hits.filter((h) => !h.noBadge).map((h) => `<button type="button" class="studio-line-issue-badge inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 cursor-pointer hover:ring-2 hover:ring-offset-1 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white hover:ring-rose-300' : h.issue.category === 'code-duplication' ? 'bg-emerald-600 text-white hover:ring-emerald-300' : 'bg-amber-500 text-white hover:ring-amber-300'}" title="${escapeAttr(h.issue.summary)}" data-issue-id="${escapeAttr(h.issue.id)}">${h.num}</button>`).join('');
+        const badges = hits.filter((h) => !h.noBadge).map((h) => `<button type="button" class="studio-line-issue-badge inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 cursor-pointer hover:ring-2 hover:ring-offset-1 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white hover:ring-rose-300' : h.issue.category === 'code-duplication' ? 'bg-emerald-600 text-white hover:ring-emerald-300' : 'bg-amber-500 text-white hover:ring-amber-300'}" title="${escapeAttr(h.issue.summary)}" data-issue-index="${h.num - 1}">${h.num}</button>`).join('');
         return `<div class="flex ${bg}" data-line="${n}">` +
           `<span class="w-10 shrink-0 text-right pr-2 text-slate-400 select-none border-r border-slate-100">${n}</span>` +
           `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span></div>`;
@@ -3497,7 +3497,14 @@
       $('studioCodeWrap').querySelectorAll('.studio-line-issue-badge').forEach((btn) => {
         btn.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          const issue = studioIssuesForFile(studioState.currentPath).find((i) => i.id === btn.dataset.issueId);
+          // Indexed, not looked up by issue.id: several distinct findings on
+          // the same line (e.g. four separate IaC rules all flagging line 1
+          // of a Dockerfile) can legitimately share the same stable id
+          // (category::file::line) - an id-based .find() always resolved to
+          // the first of them regardless of which numbered badge was
+          // clicked. The index is unambiguous since it's the same position
+          // studioLineIssueMap assigned this badge's number from.
+          const issue = studioIssuesForFile(studioState.currentPath)[Number(btn.dataset.issueIndex)];
           if (issue) selectStudioIssue(issue);
         });
       });

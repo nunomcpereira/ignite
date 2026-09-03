@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS issues (
   owasp        TEXT,
   tool         TEXT,
   references_json TEXT,
+  duplicate_ref_json TEXT,
   status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','overridden')),
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -252,6 +253,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE issues ADD COLUMN owasp TEXT",
     "ALTER TABLE issues ADD COLUMN tool TEXT",
     "ALTER TABLE issues ADD COLUMN references_json TEXT",
+    "ALTER TABLE issues ADD COLUMN duplicate_ref_json TEXT",
 ];
 
 pub struct DbStore {
@@ -393,6 +395,9 @@ pub struct IssueInput {
     /// loose JSON blob here (same as `snippet`/`chain`) so db-store doesn't
     /// need a dependency on override-engine's types just to round-trip them.
     pub references: Option<serde_json::Value>,
+    /// A code-duplication finding's "also found at" pointer (`{file, line,
+    /// endLine}`) — same loose-JSON-blob treatment as `snippet`/`chain`.
+    pub duplicate_ref: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -413,6 +418,7 @@ pub struct IssueRow {
     pub owasp: Option<String>,
     pub tool: Option<String>,
     pub references: Option<serde_json::Value>,
+    pub duplicate_ref: Option<serde_json::Value>,
     pub status: String,
     pub created_at: String,
 }
@@ -1421,14 +1427,15 @@ impl DbStore {
             let snippet_json = issue.snippet.as_ref().map(|s| serde_json::to_string(s).unwrap());
             let chain_json = issue.chain.as_ref().map(|c| serde_json::to_string(c).unwrap());
             let references_json = issue.references.as_ref().map(|r| serde_json::to_string(r).unwrap());
+            let duplicate_ref_json = issue.duplicate_ref.as_ref().map(|d| serde_json::to_string(d).unwrap());
             let status = if overridden_ids.contains(&issue.id) { "overridden" } else { "open" };
             tx.execute(
-                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     project_id, issue.id, issue.phase, issue.category, issue.severity, issue.score,
                     issue.summary, issue.file, issue.line, snippet_json, issue.cross_file as i64, chain_json,
-                    issue.cwe, issue.owasp, issue.tool, references_json, status,
+                    issue.cwe, issue.owasp, issue.tool, references_json, duplicate_ref_json, status,
                 ],
             )
             .unwrap();
@@ -1440,7 +1447,7 @@ impl DbStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, status, created_at
+                "SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status, created_at
                  FROM issues WHERE project_id = ? ORDER BY id",
             )
             .unwrap();
@@ -1448,6 +1455,7 @@ impl DbStore {
             let snippet_json: Option<String> = row.get(8)?;
             let chain_json: Option<String> = row.get(10)?;
             let references_json: Option<String> = row.get(14)?;
+            let duplicate_ref_json: Option<String> = row.get(15)?;
             Ok(IssueRow {
                 id: row.get(0)?,
                 phase: row.get(1)?,
@@ -1464,8 +1472,9 @@ impl DbStore {
                 owasp: row.get(12)?,
                 tool: row.get(13)?,
                 references: references_json.map(|r| serde_json::from_str(&r).unwrap()),
-                status: row.get(15)?,
-                created_at: row.get(16)?,
+                duplicate_ref: duplicate_ref_json.map(|d| serde_json::from_str(&d).unwrap()),
+                status: row.get(16)?,
+                created_at: row.get(17)?,
             })
         })
         .unwrap()
@@ -1728,8 +1737,8 @@ mod tests {
         store.replace_project_issues(
             new_id,
             &[
-                IssueInput { id: "secret::app.py::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("app.py".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None },
-                IssueInput { id: "license-compliance::pom.xml::1".into(), phase: Some(3), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "commercial dependency".into(), file: Some("pom.xml".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None },
+                IssueInput { id: "secret::app.py::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("app.py".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None },
+                IssueInput { id: "license-compliance::pom.xml::1".into(), phase: Some(3), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "commercial dependency".into(), file: Some("pom.xml".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None },
             ],
             &HashSet::new(),
         );
@@ -1832,6 +1841,7 @@ mod tests {
                 owasp: Some("A02:2021 - Cryptographic Failures".into()),
                 tool: Some("built-in".into()),
                 references: Some(serde_json::json!({"cwe": ["CWE-798"]})),
+                duplicate_ref: None,
             },
             IssueInput {
                 id: "codeql-sast::b.js::10".into(),
@@ -1849,6 +1859,7 @@ mod tests {
                 owasp: None,
                 tool: Some("codeql".into()),
                 references: None,
+                duplicate_ref: Some(serde_json::json!({"file": "c.js", "line": 21, "endLine": 29})),
             },
         ];
         let mut overridden = HashSet::new();
@@ -1868,6 +1879,8 @@ mod tests {
         assert!(codeql.cross_file);
         assert!(codeql.chain.is_some());
         assert_eq!(codeql.tool.as_deref(), Some("codeql"));
+        assert_eq!(codeql.duplicate_ref, Some(serde_json::json!({"file": "c.js", "line": 21, "endLine": 29})));
+        assert_eq!(secret.duplicate_ref, None);
 
         // The frontend (public/index.html) reads issue.crossFile, not
         // issue.cross_file - the API-facing JSON must use camelCase.

@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 fn issue_row_to_input(r: &IssueRow) -> IssueInput {
-    IssueInput { id: r.id.clone(), phase: r.phase, category: r.category.clone(), severity: r.severity.clone(), score: r.score, summary: r.summary.clone(), file: r.file.clone(), line: r.line, snippet: r.snippet.clone(), cross_file: r.cross_file, chain: r.chain.clone(), cwe: r.cwe.clone(), owasp: r.owasp.clone(), tool: r.tool.clone(), references: r.references.clone() }
+    IssueInput { id: r.id.clone(), phase: r.phase, category: r.category.clone(), severity: r.severity.clone(), score: r.score, summary: r.summary.clone(), file: r.file.clone(), line: r.line, snippet: r.snippet.clone(), cross_file: r.cross_file, chain: r.chain.clone(), cwe: r.cwe.clone(), owasp: r.owasp.clone(), tool: r.tool.clone(), references: r.references.clone(), duplicate_ref: r.duplicate_ref.clone() }
 }
 
 fn issue_row_to_issue(r: &IssueRow) -> Issue {
@@ -283,7 +283,7 @@ mod tests {
         let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None);
         state.db.replace_project_issues(
             project_id,
-            &[IssueInput { id: "secrets::app.js::1".into(), phase: Some(4), category: "secrets".into(), severity: "error".into(), score: Some(9), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None }],
+            &[IssueInput { id: "secrets::app.js::1".into(), phase: Some(4), category: "secrets".into(), severity: "error".into(), score: Some(9), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None }],
             &HashSet::new(),
         );
         let backup_dir = tempfile::tempdir().unwrap();
