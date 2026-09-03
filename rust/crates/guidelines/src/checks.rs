@@ -110,6 +110,15 @@ static CSRF_DISABLED_REGEXES: Lazy<Vec<Regex>> = Lazy::new(|| {
 static UNPINNED_GHA_ACTION_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"uses:\s*([^@\s]+)@(main|master|latest|v?\d+(?:\.\d+)*)\s*$").unwrap());
 static GHA_WORKFLOW_PATH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|/)\.github/workflows/[^/]+\.ya?ml$").unwrap());
 
+static DOCKERFILE_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(^|/)(dockerfile(\.[\w.-]+)?|[\w.-]+\.dockerfile)$").unwrap());
+// Captures the image ref and, when present, the stage name from `AS <name>`
+// (multi-stage builds reference an earlier stage by name in a later `FROM`,
+// which isn't a real image and shouldn't be checked for a tag).
+static DOCKER_FROM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?\s*$").unwrap());
+static DOCKER_USER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*USER\s+(\S+)\s*$").unwrap());
+static DOCKER_SECRET_ARG_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^\s*(?:ARG|ENV)\s+([A-Za-z0-9_]*(?:password|secret|api_key|apikey|token|private_key)[A-Za-z0-9_]*)\s*[= ]").unwrap());
+
 static BINARY_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tiff", ".pdf", ".zip", ".gz", ".tar", ".bz2", ".7z", ".rar", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4",
@@ -263,6 +272,83 @@ fn no_committed_env_files(rel_path: &str) -> Vec<CheckHit> {
     }
 }
 
+fn is_dockerfile(rel_path: &str) -> bool {
+    DOCKERFILE_NAME_RE.is_match(&rel_path.replace('\\', "/"))
+}
+
+/// Flags a `FROM` with no tag (implicit `:latest`) or an explicit `:latest`
+/// tag. Splits the image ref on its *last* colon to find a tag, so a
+/// `registry.example.com:5000/image` with no real tag still correctly reads
+/// as unpinned (the split lands on the port, `contains('/')` rejects it,
+/// same as "no tag" would) — a deliberate side effect of the simplification,
+/// not a bug. A `name@sha256:<digest>` ref is treated as pinned (the digest
+/// itself becomes the "tag" half), which is the strongest form of pinning.
+fn docker_unpinned_base_image(content: &str, rel_path: &str) -> Vec<CheckHit> {
+    if !is_dockerfile(rel_path) {
+        return vec![];
+    }
+    let mut stage_names: HashSet<String> = HashSet::new();
+    let mut hits = Vec::new();
+    for (i, line) in content.split('\n').enumerate() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let Some(caps) = DOCKER_FROM_RE.captures(line) else { continue };
+        let image_ref = caps.get(1).map(|g| g.as_str()).unwrap_or("");
+        let is_prior_stage = stage_names.contains(&image_ref.to_lowercase());
+        if let Some(stage) = caps.get(2) {
+            stage_names.insert(stage.as_str().to_lowercase());
+        }
+        if is_prior_stage {
+            continue; // `FROM builder AS test` — references an earlier stage, not a real image
+        }
+        let tag = image_ref.rsplit_once(':').map(|(_, t)| t).filter(|t| !t.contains('/'));
+        let unpinned = match tag {
+            None => true,
+            Some(t) => t.eq_ignore_ascii_case("latest"),
+        };
+        if unpinned {
+            hits.push(CheckHit { line: i + 1, snippet: line.trim().chars().take(160).collect(), kind: None });
+        }
+    }
+    hits
+}
+
+/// File-level: flags a Dockerfile with no `USER` instruction at all, or
+/// whose last `USER` instruction is `root`/`0` — mirrors `USER` semantics
+/// (later instructions override earlier ones, including across stages).
+/// Reports at line 0 when there's no `USER` line to point at, same
+/// file-level-finding convention `no_committed_env_files` uses.
+fn docker_runs_as_root(content: &str, rel_path: &str) -> Vec<CheckHit> {
+    if !is_dockerfile(rel_path) {
+        return vec![];
+    }
+    let mut last: Option<(usize, String)> = None;
+    for (i, line) in content.split('\n').enumerate() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(caps) = DOCKER_USER_RE.captures(line) {
+            last = Some((i + 1, caps[1].to_string()));
+        }
+    }
+    match last {
+        None => vec![CheckHit { line: 0, snippet: "no USER instruction — container runs as root by default".to_string(), kind: None }],
+        Some((line, user)) if user == "root" || user == "0" => vec![CheckHit { line, snippet: format!("USER {user}"), kind: None }],
+        Some(_) => vec![],
+    }
+}
+
+fn docker_secret_build_arg(content: &str, rel_path: &str) -> Vec<CheckHit> {
+    if !is_dockerfile(rel_path) {
+        return vec![];
+    }
+    let mut hits = Vec::new();
+    for (i, line) in content.split('\n').enumerate() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(caps) = DOCKER_SECRET_ARG_RE.captures(line) {
+            hits.push(CheckHit { line: i + 1, snippet: line.trim().chars().take(160).collect(), kind: Some(caps[1].to_lowercase()) });
+        }
+    }
+    hits
+}
+
 fn plain(hits: Vec<Hit>) -> Vec<CheckHit> {
     hits.into_iter().map(|h| CheckHit { line: h.line, snippet: h.snippet, kind: None }).collect()
 }
@@ -282,6 +368,9 @@ pub fn run_check(check_id: &str, content: &str, rel_path: &str) -> Option<Vec<Ch
         "noCsrfDisabled" => plain(scan_lines_all(content, &CSRF_DISABLED_REGEXES)),
         "noUnpinnedGhaAction" => no_unpinned_gha_action(content, rel_path),
         "noCommittedEnvFiles" => no_committed_env_files(rel_path),
+        "dockerUnpinnedBaseImage" => docker_unpinned_base_image(content, rel_path),
+        "dockerRunsAsRoot" => docker_runs_as_root(content, rel_path),
+        "dockerSecretBuildArg" => docker_secret_build_arg(content, rel_path),
         _ => return None,
     })
 }
@@ -502,6 +591,41 @@ mod tests {
         // deceptive host is silently excluded in both ports.
         assert!(run_check("noPlaintextHttpEgress", "url = 'http://localhost.evil.com/x'\n", "app.js").unwrap().is_empty());
         assert!(run_check("noPlaintextHttpEgress", "url = 'http://127.0.0.19.evil.com/x'\n", "app.js").unwrap().is_empty());
+    }
+
+    #[test]
+    fn docker_unpinned_base_image_flags_missing_and_latest_tag() {
+        assert_eq!(run_check("dockerUnpinnedBaseImage", "FROM node\n", "Dockerfile").unwrap().len(), 1);
+        assert_eq!(run_check("dockerUnpinnedBaseImage", "FROM node:latest\n", "Dockerfile").unwrap().len(), 1);
+        assert!(run_check("dockerUnpinnedBaseImage", "FROM node:20.11.1\n", "Dockerfile").unwrap().is_empty());
+        assert!(run_check("dockerUnpinnedBaseImage", "FROM node@sha256:abcdef1234\n", "Dockerfile").unwrap().is_empty());
+    }
+
+    #[test]
+    fn docker_unpinned_base_image_ignores_multi_stage_references() {
+        let content = "FROM node:20.11.1 AS builder\nFROM builder AS test\n";
+        assert!(run_check("dockerUnpinnedBaseImage", content, "Dockerfile").unwrap().is_empty());
+    }
+
+    #[test]
+    fn docker_unpinned_base_image_only_applies_to_dockerfiles() {
+        assert!(run_check("dockerUnpinnedBaseImage", "FROM node\n", "notes.md").unwrap().is_empty());
+        assert_eq!(run_check("dockerUnpinnedBaseImage", "FROM node\n", "docker/Dockerfile.prod").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn docker_runs_as_root_flags_missing_or_root_user() {
+        assert_eq!(run_check("dockerRunsAsRoot", "FROM node:20\n", "Dockerfile").unwrap().len(), 1);
+        assert_eq!(run_check("dockerRunsAsRoot", "FROM node:20\nUSER root\n", "Dockerfile").unwrap().len(), 1);
+        assert!(run_check("dockerRunsAsRoot", "FROM node:20\nUSER appuser\n", "Dockerfile").unwrap().is_empty());
+    }
+
+    #[test]
+    fn docker_secret_build_arg_flags_credential_looking_names() {
+        let hits = run_check("dockerSecretBuildArg", "ARG API_KEY=xyz\n", "Dockerfile").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind.as_deref(), Some("api_key"));
+        assert!(run_check("dockerSecretBuildArg", "ENV NODE_ENV=production\n", "Dockerfile").unwrap().is_empty());
     }
 
     #[test]

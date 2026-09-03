@@ -1,7 +1,10 @@
 //! Company AI validation guideline catalog. Faithful port of
-//! `guidelines/catalog.js`. Each guideline is a static rule a
-//! developer/agent can be checked against during development,
-//! independent of the full Ignite onboarding pipeline.
+//! `guidelines/catalog.js`, plus three Rust-only container guidelines
+//! (docker-unpinned-base-image, docker-runs-as-root,
+//! docker-secret-build-arg — no JS-original equivalent) added after the
+//! port. Each guideline is a static rule a developer/agent can be
+//! checked against during development, independent of the full Ignite
+//! onboarding pipeline.
 
 use serde::Serialize;
 
@@ -155,11 +158,44 @@ pub fn guidelines() -> &'static [Guideline] {
             category: "security",
             severity: Severity::Warning,
             title: "GitHub Actions steps should pin to a commit SHA, not a branch/tag",
-            description: "A workflow `uses:` a third-party action pinned to a mutable ref (@main, @master, @latest, or a bare major-version tag like @v4) rather than a commit SHA.",
+            description: "A workflow `uses:` a third-party action pinned to a mutable ref (@main, @master, @latest, or a bare major-version tag like @v4) rather than a commit SHA. This is a narrow regex check covering only mutable-ref pinning — pwn requests, script injection via untrusted `${{ }}` interpolation, and over-broad `permissions:` are NOT covered here; those need Ignite's Phase 4 `gha-security` check (real zizmor workflow-expression parsing), which onboarding always runs when a repo has `.github/workflows/*.yml`.",
             rationale: "A mutable ref can be repointed by the action's maintainer (or an attacker who compromises their repo) to different code without your workflow file changing — a supply-chain integrity gap (OWASP Top 10:2025 A08, Software/Data Integrity Failures). Directly relevant here: Ignite's own Phase 5 fetches and runs the org's governance workflow.",
-            remediation: "Pin third-party actions to a full commit SHA (`uses: owner/action@<40-char-sha>`), with a trailing comment noting the version, e.g. `# v4.1.0`.",
+            remediation: "Pin third-party actions to a full commit SHA (`uses: owner/action@<40-char-sha>`), with a trailing comment noting the version, e.g. `# v4.1.0`. For the broader GHA security classes this check doesn't cover, run zizmor (or the full Ignite pipeline) instead of relying on this guideline alone.",
             check_id: Some("noUnpinnedGhaAction"),
             applies_to: &[".yml", ".yaml"],
+        },
+        Guideline {
+            id: "docker-unpinned-base-image",
+            category: "container",
+            severity: Severity::Warning,
+            title: "Dockerfile base image should be pinned to a specific tag or digest",
+            description: "A `FROM` instruction with no tag (implicit `:latest`) or an explicit `:latest` tag, rather than a specific version tag or `@sha256:` digest.",
+            rationale: "`:latest` is a mutable pointer — the base image can change under you between builds with no change to the Dockerfile itself, breaking reproducibility and silently pulling in new CVEs. Same supply-chain-integrity concern as unpinned GitHub Actions (OWASP Top 10:2025 A08).",
+            remediation: "Pin to a specific version tag (`FROM node:20.11.1`) or, stronger, a digest (`FROM node@sha256:<digest>`).",
+            check_id: Some("dockerUnpinnedBaseImage"),
+            applies_to: &["*"],
+        },
+        Guideline {
+            id: "docker-runs-as-root",
+            category: "container",
+            severity: Severity::Warning,
+            title: "Container should not run as root",
+            description: "The Dockerfile has no `USER` instruction (so the container runs as root by default), or explicitly sets `USER root`/`USER 0`.",
+            rationale: "A process running as root inside the container has a much larger blast radius if the application is compromised — container-breakout and host-mount vulnerabilities are far more dangerous against a root process. CIS Docker Benchmark 4.1.",
+            remediation: "Create a non-root user in the Dockerfile and switch to it before the app runs, e.g. `RUN useradd -m appuser` then `USER appuser`.",
+            check_id: Some("dockerRunsAsRoot"),
+            applies_to: &["*"],
+        },
+        Guideline {
+            id: "docker-secret-build-arg",
+            category: "container",
+            severity: Severity::Error,
+            title: "No secrets in Dockerfile ARG/ENV",
+            description: "An `ARG` or `ENV` instruction whose name looks like a credential (password, secret, api_key, token, private_key).",
+            rationale: "Unlike a runtime environment variable, an `ARG`/`ENV` value baked into a Dockerfile is embedded in the image's build history/layers and readable by anyone who can pull or `docker history` the image — worse exposure than a hardcoded secret in source that at least stays out of the shipped artifact.",
+            remediation: "Use Docker BuildKit secret mounts (`RUN --mount=type=secret`) or inject the value at container runtime instead of baking it into a build arg or image layer.",
+            check_id: Some("dockerSecretBuildArg"),
+            applies_to: &["*"],
         },
         Guideline {
             id: "ai-governance-workflow-required",
@@ -210,8 +246,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn guidelines_count_matches_js_original() {
-        assert_eq!(guidelines().len(), 14);
+    fn guidelines_count_includes_rust_only_container_additions() {
+        // 14 ported 1:1 from the (now-deleted) Node original, +3 Dockerfile
+        // guidelines (docker-unpinned-base-image, docker-runs-as-root,
+        // docker-secret-build-arg) added directly in Rust — no JS parity
+        // baseline for these three, see MIGRATION_STATUS.md.
+        assert_eq!(guidelines().len(), 17);
     }
 
     #[test]
@@ -233,6 +273,6 @@ mod tests {
     #[test]
     fn list_categories_is_deduped_in_first_seen_order() {
         let categories = list_categories();
-        assert_eq!(categories, vec!["ai-governance", "security", "process"]);
+        assert_eq!(categories, vec!["ai-governance", "security", "container", "process"]);
     }
 }
