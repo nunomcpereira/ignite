@@ -68,23 +68,64 @@ impl Default for Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
+    /// Which backend `llm.url`/`llm.model` below, `llm.openai`, or
+    /// `llm.anthropic` resolves against: `"local"`, `"openai"`, or
+    /// `"anthropic"`. Drives both Phase 4's deep-scan (Check 3) and
+    /// Ignite Studio's on-demand "Explain issue"/"Suggest AI fix"
+    /// buttons — both share this one connection.
+    pub provider: String,
     pub url: String,
     pub model: String,
     pub mode: String,
     pub max_files: u32,
     pub chunk_chars: u32,
     pub deep_scan_enabled: bool,
+    /// `"warning"`: quality/encapsulation findings show as warnings;
+    /// `"info"`: informational only. See `LLM_ADVISORY_LEVEL`.
+    pub advisory_level: String,
+    pub openai: OpenAiLlmConfig,
+    pub anthropic: AnthropicLlmConfig,
 }
 impl Default for LlmConfig {
     fn default() -> Self {
         LlmConfig {
+            provider: "local".into(),
             url: "http://localhost:8050".into(),
             model: "default".into(),
             mode: "warn".into(),
             max_files: 40,
             chunk_chars: 10_000,
             deep_scan_enabled: true,
+            advisory_level: "info".into(),
+            openai: OpenAiLlmConfig::default(),
+            anthropic: AnthropicLlmConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenAiLlmConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+impl Default for OpenAiLlmConfig {
+    fn default() -> Self {
+        OpenAiLlmConfig { api_key: String::new(), base_url: "https://api.openai.com/v1".into(), model: "gpt-4o-mini".into() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnthropicLlmConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+impl Default for AnthropicLlmConfig {
+    fn default() -> Self {
+        AnthropicLlmConfig { api_key: String::new(), base_url: "https://api.anthropic.com/v1".into(), model: "claude-opus-5".into() }
     }
 }
 
@@ -651,6 +692,18 @@ impl std::error::Error for LoadConfigError {}
 /// ignite-posture-rules.yaml/spectral-default-ruleset.yaml) — the caller
 /// passes the repo root.
 pub fn load_config(config_dir: &Path) -> Result<Config, LoadConfigError> {
+    // Faithful port of server.js's `require('dotenv').config()` — the Rust
+    // server otherwise never reads `.env` at all (only real exported shell
+    // env vars reach `apply_env_overrides` below), which silently strands
+    // every secret/setting documented in `.env.example` (API keys included)
+    // unless the operator manually exports them. `.env` lives next to
+    // `config.json` under `config_dir` (both governed by `IGNITE_CONFIG_DIR`),
+    // not necessarily the process's cwd. Like dotenv, this never overrides
+    // a var already set in the real environment, and a missing file is not
+    // an error (`config.example.json`'s and `.env.example`'s defaults still
+    // apply either way).
+    let _ = dotenvy::from_path(config_dir.join(".env"));
+
     let defaults = Config::default();
     let mut merged_value = serde_json::to_value(&defaults).expect("Config always serializes");
 
@@ -785,6 +838,20 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("SYFT_BINARY") { merged.sbom.syft.binary = v; }
     if let Some(v) = env_bool("MCP_AUTOSTART") { merged.mcp.auto_start = v; }
     if let Some(v) = env_num::<u16>("MCP_HTTP_PORT") { merged.mcp.http_port = v; }
+    if let Some(v) = env_str("LLM_PROVIDER") { merged.llm.provider = v; }
+    if let Some(v) = env_str("LLM_SCAN_URL") { merged.llm.url = v; }
+    if let Some(v) = env_str("LLM_SCAN_MODEL") { merged.llm.model = v; }
+    if let Some(v) = env_str("LLM_SCAN_MODE") { merged.llm.mode = v; }
+    if let Some(v) = env_num::<u32>("LLM_MAX_FILES") { merged.llm.max_files = v; }
+    if let Some(v) = env_num::<u32>("LLM_CHUNK_CHARS") { merged.llm.chunk_chars = v; }
+    if let Some(v) = env_bool("LLM_DEEP_SCAN_ENABLED") { merged.llm.deep_scan_enabled = v; }
+    if let Some(v) = env_str("LLM_ADVISORY_LEVEL") { merged.llm.advisory_level = v; }
+    if let Some(v) = env_str("OPENAI_API_KEY") { merged.llm.openai.api_key = v; }
+    if let Some(v) = env_str("OPENAI_BASE_URL") { merged.llm.openai.base_url = v; }
+    if let Some(v) = env_str("OPENAI_MODEL") { merged.llm.openai.model = v; }
+    if let Some(v) = env_str("ANTHROPIC_API_KEY") { merged.llm.anthropic.api_key = v; }
+    if let Some(v) = env_str("ANTHROPIC_BASE_URL") { merged.llm.anthropic.base_url = v; }
+    if let Some(v) = env_str("ANTHROPIC_MODEL") { merged.llm.anthropic.model = v; }
 }
 
 #[cfg(test)]

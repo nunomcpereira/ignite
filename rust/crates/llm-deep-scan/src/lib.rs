@@ -15,6 +15,21 @@ use std::path::Path;
 pub const LLM_SECURITY_DEP_PROMPT: &str = include_str!("prompts/security_dep.txt");
 pub const LLM_QUALITY_PROMPT: &str = include_str!("prompts/quality.txt");
 
+/// `LlmDeepScanConfig::source_exts`' default value — no config.json/env
+/// override exists for this yet, so callers building a real config
+/// (`phase4_config::from_config`) reach for this rather than hand-rolling
+/// their own list. Mirrors the language set the rest of Ignite's pipeline
+/// already treats as "source code" (see CLAUDE.md's Node/Go/Rust/Python/
+/// Java auto-detection) plus the other mainstream languages Semgrep's own
+/// default rulesets cover, so the deep-scan's file walk isn't narrower
+/// than the static-analysis coverage it's meant to complement.
+pub fn default_source_exts() -> HashSet<String> {
+    [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".cs", ".c", ".h", ".cpp", ".cc", ".hpp", ".swift", ".scala", ".sh"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 static DEPENDENCY_VULN_EVIDENCE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bcve-\d{4}-\d+|\bcwe-\d+|vulnerab\w*|exploit\w*|malicious|\brce\b|remote code execution|arbitrary code|backdoor|compromis\w*|security advisory|known flaw").unwrap());
 
@@ -359,6 +374,7 @@ pub async fn check_llm_deep_scan(root: &Path, config: &LlmDeepScanConfig, store:
     if !llm_available(&http_client, &config.llm).await {
         let reason = match config.llm.provider {
             ignite_llm_client::Provider::OpenAi => "OPENAI_API_KEY is not set (LLM_PROVIDER=openai).".to_string(),
+            ignite_llm_client::Provider::Anthropic => "ANTHROPIC_API_KEY is not set (LLM_PROVIDER=anthropic).".to_string(),
             ignite_llm_client::Provider::Local => format!("No LLM endpoint at {}", config.llm.scan_url),
         };
         return Ok(DeepScanResult { available: false, reason: Some(reason), findings: vec![], scanned: 0, cache_hits: 0 });
@@ -605,7 +621,7 @@ mod tests {
         // unit-testable in isolation via the config alone.
         let config = LlmDeepScanConfig {
             enabled: false,
-            llm: LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), scan_url: String::new(), scan_model: String::new() },
+            llm: LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), scan_url: String::new(), scan_model: String::new() },
             advisory_level: "warning",
             max_files: 40,
             chunk_chars: 10_000,

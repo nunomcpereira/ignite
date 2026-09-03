@@ -93,16 +93,26 @@ fn to_json_bytes<T: serde::Serialize>(v: &T) -> Vec<u8> {
 /// since every `timed()` call in the `tokio::try_join!` fan-out below runs
 /// concurrently, these lines genuinely interleave in real time (unlike a
 /// single summary logged after the whole join completes).
-async fn timed<F, T>(name: &'static str, log: &(dyn Fn(&str) + Sync), fut: F) -> std::io::Result<(T, u64)>
+/// `summarize` renders what the check actually found (finding count, engine
+/// used, or why it was skipped) onto the "done" line — a bare "done (Nms)"
+/// with no result summary was the only signal Phase 4's ~20 concurrently-
+/// fanned-out checks gave while streaming, unlike secrets/governance/etc.
+/// above which already reported a finding count inline.
+async fn timed<F, T, S>(name: &'static str, log: &(dyn Fn(&str) + Sync), fut: F, summarize: S) -> std::io::Result<(T, u64)>
 where
     F: std::future::Future<Output = std::io::Result<T>>,
+    S: FnOnce(&T) -> String,
 {
     log(&format!("→ {name} starting..."));
     let t0 = std::time::Instant::now();
     let r = fut.await?;
     let ms = t0.elapsed().as_millis() as u64;
-    log(&format!("✓ {name} done ({ms}ms)"));
+    log(&format!("✓ {name} done ({ms}ms) — {}", summarize(&r)));
     Ok((r, ms))
+}
+
+fn summarize_findings<T>(findings: &[T], engine: &str) -> String {
+    format!("{} finding(s) via {engine}", findings.len())
 }
 
 pub async fn run_phase4_checks(
@@ -276,25 +286,35 @@ pub async fn run_phase4_checks(
         (posture_result, ms_posture),
         (codeql_result, ms_codeql),
     ) = tokio::try_join!(
-        timed("semanticSast", log, semantic_sast_fut),
-        timed("pii", log, pii_fut),
-        timed("duplication", log, duplication_fut),
-        timed("locMetrics", log, loc_metrics_fut),
-        timed("igniteIgnore", log, igniteignore_fut),
-        timed("llm", log, llm_fut),
-        timed("iac", log, ignite_iac_security::check_iac_security(root, runner, &config.iac)),
-        timed("ghaSecurity", log, async { Ok::<_, std::io::Error>(ignite_gha_security::check_gha_security(root, runner, &config.gha_security).await) }),
-        timed("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities)),
-        timed("sbom", log, ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000)),
-        timed("provenance", log, provenance_fut),
-        timed("imageProvenance", log, ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store))),
-        timed("apiSchema", log, ignite_api_schema::check_api_schemas(root, runner, &config.api_schema)),
-        timed("apiSchemaDrift", log, ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift)),
-        timed("maliciousDependencies", log, ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store))),
-        timed("modelArtifactSecurity", log, ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security)),
-        timed("packageHallucination", log, hallucination_checker.check(root, config.package_hallucination_enabled, &manifests)),
-        timed("posture", log, ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture)),
-        timed("codeql", log, ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None })),
+        Box::pin(timed("semanticSast", log, semantic_sast_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("pii", log, pii_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("duplication", log, duplication_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("locMetrics", log, loc_metrics_fut, |r| match &r.metrics {
+            Some(m) => format!("{} file(s), {} language(s) via {}", m.files.len(), m.languages.len(), r.engine),
+            None => "disabled".to_string(),
+        })),
+        Box::pin(timed("igniteIgnore", log, igniteignore_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("llm", log, llm_fut, |r| match r {
+            Some(x) if x.available => summarize_findings(&x.findings, "llm-deep-scan"),
+            Some(_) => "model unavailable, skipped".to_string(),
+            None => "disabled".to_string(),
+        })),
+        Box::pin(timed("iac", log, ignite_iac_security::check_iac_security(root, runner, &config.iac), |r| summarize_findings(&r.findings, &r.engine))),
+        Box::pin(timed("ghaSecurity", log, async { Ok::<_, std::io::Error>(ignite_gha_security::check_gha_security(root, runner, &config.gha_security).await) }, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities), |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("sbom", log, ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000), |r| match &r.sbom {
+            ignite_sbom::SbomOutcome::Syft(_) => "generated via syft".to_string(),
+            ignite_sbom::SbomOutcome::Fallback(f) => format!("{} component(s) via fallback", f.components.len()),
+        })),
+        Box::pin(timed("provenance", log, provenance_fut, |r| if r.is_some() { "generated".to_string() } else { "skipped (no project id)".to_string() })),
+        Box::pin(timed("imageProvenance", log, ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store)), |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("apiSchema", log, ignite_api_schema::check_api_schemas(root, runner, &config.api_schema), |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("apiSchemaDrift", log, ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift), |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("maliciousDependencies", log, ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store)), |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("modelArtifactSecurity", log, ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security), |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("packageHallucination", log, hallucination_checker.check(root, config.package_hallucination_enabled, &manifests), |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("posture", log, ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture), |r| format!("{} categories assessed via {}", r.posture.len(), r.engine))),
+        Box::pin(timed("codeql", log, ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None }), |r| format!("{} finding(s)", r.findings.len()))),
     )?;
     task_timings.extend([
         ("semanticSast", ms_semantic_sast),

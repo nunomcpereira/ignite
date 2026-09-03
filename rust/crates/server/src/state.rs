@@ -67,12 +67,27 @@ pub fn default_package_hallucination_checker() -> ignite_package_hallucination::
     ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default())
 }
 
-/// Local-LLM provider pointed at `cfg.llm`'s resolved values — OpenAI
-/// provider selection isn't wired yet (config.json's `llm.provider` field
-/// isn't in `ignite_config::LlmConfig` at all), so this always resolves to
-/// the local provider today regardless of config.json.
+/// Resolves the configured LLM provider (`cfg.llm.provider`: `"local"`
+/// (default), `"openai"`, or `"anthropic"`) into the client config both
+/// Phase 4's deep-scan and Ignite Studio's "Explain issue"/"Suggest AI
+/// fix" buttons share.
 pub fn llm_config_from_config(cfg: &ignite_config::Config) -> ignite_llm_client::LlmClientConfig {
-    ignite_llm_client::LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), scan_url: cfg.llm.url.clone(), scan_model: cfg.llm.model.clone() }
+    let provider = match cfg.llm.provider.as_str() {
+        "openai" => ignite_llm_client::Provider::OpenAi,
+        "anthropic" => ignite_llm_client::Provider::Anthropic,
+        _ => ignite_llm_client::Provider::Local,
+    };
+    ignite_llm_client::LlmClientConfig {
+        provider,
+        openai_api_key: cfg.llm.openai.api_key.clone(),
+        openai_base_url: cfg.llm.openai.base_url.clone(),
+        openai_model: cfg.llm.openai.model.clone(),
+        anthropic_api_key: cfg.llm.anthropic.api_key.clone(),
+        anthropic_base_url: cfg.llm.anthropic.base_url.clone(),
+        anthropic_model: cfg.llm.anthropic.model.clone(),
+        scan_url: cfg.llm.url.clone(),
+        scan_model: cfg.llm.model.clone(),
+    }
 }
 
 /// Test/back-compat convenience: the local-LLM defaults with no

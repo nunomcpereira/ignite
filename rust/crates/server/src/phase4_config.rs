@@ -49,7 +49,14 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
             gitleaks_config_path,
             gitleaks_enabled: sec.gitleaks.enabled,
         },
-        llm: None,
+        llm: Some(ignite_llm_deep_scan::LlmDeepScanConfig {
+            enabled: cfg.llm.deep_scan_enabled,
+            llm: crate::state::llm_config_from_config(cfg),
+            advisory_level: if cfg.llm.advisory_level == "warning" { "warning" } else { "info" },
+            max_files: cfg.llm.max_files as usize,
+            chunk_chars: cfg.llm.chunk_chars as usize,
+            source_exts: ignite_llm_deep_scan::default_source_exts(),
+        }),
         iac: ignite_iac_security::IacSecurityConfig {
             trivy_enabled: sec.trivy.enabled,
             checkov_enabled: sec.checkov.enabled,

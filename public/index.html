@@ -352,6 +352,9 @@
       <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
         View flagged issues
       </button>
+      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100">
+        ✨ Generate fix PR
+      </button>
       </div>
     </div>
     <section id="pipeline" class="space-y-3"></section>
@@ -567,6 +570,31 @@
     </div>
   </div>
 
+  <!-- Bulk "Generate fix PR" — runs the same AI suggest-fix pass used by
+       the per-issue button in Studio, but over every open issue with a
+       stored snippet, then lets the user drop candidates before opening
+       one PR with all the accepted ones. Two-step: preview (pure LLM,
+       no git) fills fixPrList; confirming calls /fix-pr/apply with only
+       the still-checked candidates. -->
+  <div id="fixPrModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-slate-800">Generate fix PR</p>
+          <p id="fixPrSubtitle" class="text-xs text-slate-500 mt-0.5">AI-suggested fixes for this run's open issues — review each one, then open a PR with the ones you keep.</p>
+        </div>
+        <button id="fixPrCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0">✕</button>
+      </div>
+      <div id="fixPrList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
+      <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+        <p id="fixPrStatus" class="text-xs text-slate-500"></p>
+        <button id="fixPrOpenBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          Open PR
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Checks report: every check Ignite ran this run, split by area
        (Security / Quality / Dependencies / API & Schema / Process &
        Governance), with a pass/clean-or-flagged result per check —
@@ -599,7 +627,12 @@
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
         <p id="phaseMaxTitle" class="text-sm font-semibold text-slate-800"></p>
-        <button id="phaseMaxCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        <div class="flex items-center gap-3 shrink-0">
+          <button id="phaseMaxCopyBtn" type="button" class="text-slate-400 hover:text-brand-600" title="Copy phase log to clipboard">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"/></svg>
+          </button>
+          <button id="phaseMaxCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
       </div>
       <div id="phaseMaxBody" class="px-6 py-4 overflow-y-auto flex-1 bg-slate-950 rounded-b-2xl font-mono text-xs leading-relaxed"></div>
     </div>
@@ -624,7 +657,7 @@
     ];
 
     // payload: { kind: 'zip', file } | { kind: 'dir', entries: [{file, rel}], name, size }
-    const state = { payload: null, running: false, phases: {}, gxp: false, gxpFiles: [], gxpLinks: [], jobId: null };
+    const state = { payload: null, running: false, phases: {}, gxp: false, gxpFiles: [], gxpLinks: [], jobId: null, expandedPhases: new Set() };
 
     /* ------------------------------------------------------------ */
     /* Multi-job tracking — survives a page refresh and lets the     */
@@ -965,6 +998,26 @@
       return PHASE_PENDING_ICON[phaseId] || '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>';
     }
 
+    // Phase 4 fans out ~30 checks concurrently and only ever logs
+    // "→ X starting..." / "✓|✗ X done (...)" lines as each one begins/ends
+    // — no single "N of M done" event exists server-side. Parsed client-
+    // side from the raw log lines so the progress bar/% can reflect real
+    // fan-out completion instead of a fixed placeholder, and so the UI can
+    // show which checks are still outstanding.
+    function parseConcurrentCheckProgress(logs) {
+      const started = new Map(); // name -> first-seen order
+      const done = new Set();
+      logs.forEach((line) => {
+        const startMatch = /^→ (\S+) starting\.\.\./.exec(line);
+        if (startMatch && !started.has(startMatch[1])) started.set(startMatch[1], started.size);
+        const doneMatch = /^(?:✓|✗) (\S+) done\b/.exec(line);
+        if (doneMatch) done.add(doneMatch[1]);
+      });
+      if (started.size === 0) return null;
+      const pending = [...started.keys()].filter((name) => !done.has(name));
+      return { total: started.size, doneCount: done.size, pending };
+    }
+
     function renderPipeline() {
       pipelineEl.innerHTML = PHASES.map((p, idx) => {
         const ph = state.phases[p.id] || { state: 'pending', logs: [] };
@@ -996,14 +1049,22 @@
         const durationHtml = durationMs != null
           ? `<span class="text-[11px] font-mono text-slate-400 shrink-0">${formatDuration(durationMs)}</span>`
           : '';
-        // Purely cosmetic progress readout matching the mockup's per-phase
-        // bar — the backend has no fractional progress, so pending/running/
-        // done map to 0% / an indeterminate pulsing bar / 100%.
-        const progressPct = ph.state === 'pending' ? 0 : (ph.state === 'running' ? 65 : 100);
+        // Phase 4 (and any other concurrent-check phase) reports real
+        // fan-out progress parsed from its own log lines; every other
+        // phase has no such signal from the backend, so it falls back to
+        // the old fixed 65%-while-running placeholder.
+        const concurrentProgress = ph.state === 'running' ? parseConcurrentCheckProgress(ph.logs) : null;
+        const progressPct = ph.state === 'pending' ? 0
+          : ph.state === 'running' ? (concurrentProgress ? Math.round((concurrentProgress.doneCount / concurrentProgress.total) * 100) : 65)
+          : 100;
+        const pendingChecksHtml = concurrentProgress && concurrentProgress.pending.length > 0 ? `
+                <p class="text-[11px] text-slate-400 mt-1.5 truncate" title="${escapeAttr(concurrentProgress.pending.join(', '))}">
+                  ${concurrentProgress.doneCount}/${concurrentProgress.total} checks done — waiting on ${escapeHtml(concurrentProgress.pending.slice(0, 3).join(', '))}${concurrentProgress.pending.length > 3 ? ` +${concurrentProgress.pending.length - 3} more` : ''}
+                </p>` : '';
         // A short always-visible log preview for the active phase (mirrors
         // the mockup's embedded snippet); the full scrollback stays behind
         // the existing <details> toggle / maximize button.
-        const previewHtml = ph.state === 'running' && hasLogs ? `
+        const previewHtml = ph.state === 'running' && hasLogs && !state.expandedPhases.has(p.id) ? `
               <div class="bg-slate-900 rounded p-2.5 mt-2.5 font-mono text-[11px] leading-relaxed overflow-hidden">
                 ${ph.logs.slice(-3).map(formatLogLine).join('')}
               </div>` : '';
@@ -1014,7 +1075,7 @@
         return `
         <div class="relative">
           ${!isLast ? '<div class="absolute left-[19px] top-[52px] bottom-[-12px] w-px bg-slate-200"></div>' : ''}
-          <details class="bg-white border ${ph.state === 'running' ? 'border-2 border-brand-400' : 'border-slate-200'} rounded-lg overflow-hidden shadow-sm transition-all hover:shadow-card ${cardOpacity}" ${ph.state === 'failed' ? 'open' : ''}>
+          <details class="bg-white border ${ph.state === 'running' ? 'border-2 border-brand-400' : 'border-slate-200'} rounded-lg overflow-hidden shadow-sm transition-all hover:shadow-card ${cardOpacity}" ${(state.expandedPhases.has(p.id) || ph.state === 'failed') ? 'open' : ''} data-phase-id="${p.id}">
             <summary class="flex items-start gap-3 p-4 ${hasLogs ? 'cursor-pointer hover:bg-slate-50/60' : 'cursor-default'} select-none transition-colors">
               <div class="w-8 h-8 shrink-0 rounded-full border ${meta.ring} flex items-center justify-center text-xs font-bold z-10">
                 ${iconFor(iconState, p.id)}
@@ -1025,6 +1086,9 @@
                   <div class="flex items-center gap-2 shrink-0">
                     ${durationHtml}
                     <span class="text-xs font-mono ${meta.text}">${iconState === 'running' ? progressPct + '%' : meta.label}</span>
+                    ${hasLogs ? `<button type="button" class="phase-copy-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Copy phase log to clipboard">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"/></svg>
+                    </button>` : ''}
                     ${canMaximize ? `<button type="button" class="phase-maximize-btn text-slate-400 hover:text-brand-600 shrink-0" data-phase-id="${p.id}" title="Expand phase log">
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
                     </button>` : ''}
@@ -1035,7 +1099,8 @@
                 ${ph.state === 'running' ? `
                 <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2.5">
                   <div class="h-full bg-brand-600 rounded-full transition-all duration-700" style="width:${progressPct}%"></div>
-                </div>` : ''}
+                </div>
+                ${pendingChecksHtml}` : ''}
                 ${previewHtml}
               </div>
             </summary>
@@ -1059,7 +1124,50 @@
         });
       });
 
+      document.querySelectorAll('.phase-copy-btn').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const phaseId = Number(btn.dataset.phaseId);
+          copyPhaseLog(phaseId, btn);
+        });
+      });
+
+      // renderPipeline() re-does pipelineEl.innerHTML on every tick (see
+      // startPhaseDurationTicker) so a plain <details open> attribute gets
+      // wiped out from under the user the instant they expand a card —
+      // it "expands then instantly collapses" a second later. Tracking
+      // open/closed state separately in state.expandedPhases (read above
+      // when building each card's `open` attribute) and syncing it here on
+      // every real user toggle fixes that.
+      document.querySelectorAll('#pipeline > div > details').forEach((det) => {
+        det.addEventListener('toggle', () => {
+          const phaseId = Number(det.dataset.phaseId);
+          if (det.open) state.expandedPhases.add(phaseId);
+          else state.expandedPhases.delete(phaseId);
+        });
+      });
+
       renderPipelineStatusBadge();
+    }
+
+    // Copies one phase's full raw log to the clipboard, with a brief
+    // checkmark swap on the button as feedback — same icon-button
+    // pattern as phase-maximize-btn, available whether the card is
+    // expanded or collapsed (and duplicated in the maximized modal).
+    async function copyPhaseLog(phaseId, btn) {
+      const ph = state.phases[phaseId] || { logs: [] };
+      const text = ph.logs.join('\n');
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        console.error('Clipboard write failed', e);
+        return;
+      }
+      if (!btn) return;
+      const original = btn.innerHTML;
+      btn.innerHTML = '<svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>';
+      setTimeout(() => { btn.innerHTML = original; }, 1200);
     }
 
     // The small pill next to the "Pipeline Status" heading — mirrors the
@@ -1084,9 +1192,11 @@
       badge.innerHTML = `${variant.spin ? '<svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>' : ''}${variant.label}`;
     }
 
+    let phaseMaxOpenPhaseId = null;
     function openPhaseMaximized(phaseId) {
       const p = PHASES.find((x) => x.id === phaseId);
       const ph = state.phases[phaseId] || { logs: [] };
+      phaseMaxOpenPhaseId = phaseId;
       $('phaseMaxTitle').textContent = `Phase ${displayPhaseNumber(phaseId)} · ${p ? p.title : ''}`;
       $('phaseMaxBody').innerHTML = ph.logs.length > 0
         ? ph.logs.map(formatLogLine).join('')
@@ -1095,6 +1205,9 @@
     }
 
     $('phaseMaxCloseBtn').addEventListener('click', () => $('phaseMaxModal').classList.add('hidden'));
+    $('phaseMaxCopyBtn').addEventListener('click', () => {
+      if (phaseMaxOpenPhaseId != null) copyPhaseLog(phaseMaxOpenPhaseId, $('phaseMaxCopyBtn'));
+    });
     $('phaseMaxModal').addEventListener('click', (ev) => {
       if (ev.target.id === 'phaseMaxModal') $('phaseMaxModal').classList.add('hidden');
     });
@@ -1693,6 +1806,7 @@
 
     function updateViewIssuesButton() {
       $('viewIssuesBtn').classList.toggle('hidden', !state.jobId);
+      $('fixPrBtn').classList.toggle('hidden', !state.jobId);
     }
     $('viewIssuesBtn').addEventListener('click', async () => {
       if (!state.jobId) return;
@@ -1705,6 +1819,102 @@
           { org: orgInput.value.trim(), repo: repoInput.value.trim() });
       } catch {
         openIssuesViewer([], 'Could not load issues for this run.');
+      }
+    });
+
+    /* ---------------- Bulk "Generate fix PR" ---------------- */
+    let fixPrCandidates = [];
+    // The job this open modal targets — set by openFixPrModal(jobId).
+    // Kept separate from state.jobId so the modal also works from an
+    // Onboarded Projects history row, which doesn't switch the main
+    // view's tracked job.
+    let fixPrJobId = null;
+
+    function renderFixPrList() {
+      const list = $('fixPrList');
+      if (fixPrCandidates.length === 0) {
+        list.innerHTML = '<p class="text-sm text-slate-500 py-6 text-center">No AI-suggested fixes to show.</p>';
+        return;
+      }
+      list.innerHTML = fixPrCandidates.map((c, idx) => `
+        <label class="flex gap-3 border border-slate-200 rounded-lg p-3 cursor-pointer hover:bg-slate-50/60">
+          <input type="checkbox" class="fix-pr-check mt-1 shrink-0" data-idx="${idx}" ${c.included ? 'checked' : ''}>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs font-mono text-slate-500 truncate">${escapeHtml(c.file)}:${c.startLine}-${c.endLine} <span class="uppercase font-semibold text-slate-400">${escapeHtml(c.category)}</span></p>
+            <p class="text-sm text-slate-700 mt-1">${escapeHtml(c.explanation)}</p>
+            <pre class="mt-2 text-[11px] font-mono bg-rose-50 text-rose-700 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap">- ${escapeHtml(c.original)}</pre>
+            <pre class="mt-1 text-[11px] font-mono bg-emerald-50 text-emerald-700 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap">+ ${escapeHtml(c.replacement)}</pre>
+          </div>
+        </label>`).join('');
+      list.querySelectorAll('.fix-pr-check').forEach((cb) => {
+        cb.addEventListener('change', () => { fixPrCandidates[Number(cb.dataset.idx)].included = cb.checked; updateFixPrOpenBtn(); });
+      });
+    }
+
+    function updateFixPrOpenBtn() {
+      const anyIncluded = fixPrCandidates.some((c) => c.included);
+      $('fixPrOpenBtn').classList.toggle('hidden', fixPrCandidates.length === 0);
+      $('fixPrOpenBtn').disabled = !anyIncluded;
+    }
+
+    async function openFixPrModal(jobId) {
+      fixPrJobId = jobId || state.jobId;
+      if (!fixPrJobId) return;
+      fixPrCandidates = [];
+      $('fixPrModal').classList.remove('hidden');
+      $('fixPrStatus').textContent = '';
+      $('fixPrOpenBtn').classList.add('hidden');
+      $('fixPrList').innerHTML = '<p class="text-sm text-slate-500 py-6 text-center">Generating AI-suggested fixes…</p>';
+      try {
+        const res = await fetch(`/api/pipeline/${fixPrJobId}/fix-pr/preview`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.ok) {
+          $('fixPrList').innerHTML = `<p class="text-sm text-rose-600 py-6 text-center">${escapeHtml(data.error || 'Failed to generate fixes.')}</p>`;
+          return;
+        }
+        if (data.reason) {
+          $('fixPrList').innerHTML = `<p class="text-sm text-slate-500 py-6 text-center">${escapeHtml(data.reason)}</p>`;
+          return;
+        }
+        fixPrCandidates = (data.candidates || []).map((c) => ({ ...c, included: true }));
+        $('fixPrStatus').textContent = `${fixPrCandidates.length} of ${data.consideredCount} open issue(s) got a safe AI fix.`;
+        renderFixPrList();
+        updateFixPrOpenBtn();
+      } catch {
+        $('fixPrList').innerHTML = '<p class="text-sm text-rose-600 py-6 text-center">Could not reach the server.</p>';
+      }
+    }
+    $('fixPrBtn').addEventListener('click', () => openFixPrModal());
+    $('fixPrCloseBtn').addEventListener('click', () => $('fixPrModal').classList.add('hidden'));
+    $('fixPrModal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'fixPrModal') $('fixPrModal').classList.add('hidden');
+    });
+    $('fixPrOpenBtn').addEventListener('click', async () => {
+      const selected = fixPrCandidates.filter((c) => c.included).map(({ included, ...rest }) => rest);
+      if (selected.length === 0) return;
+      $('fixPrOpenBtn').disabled = true;
+      $('fixPrStatus').textContent = 'Cloning, applying fixes, and opening the PR…';
+      try {
+        const res = await fetch(`/api/pipeline/${fixPrJobId}/fix-pr/apply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ candidates: selected }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          $('fixPrStatus').textContent = data.error || 'Failed to open the PR.';
+          $('fixPrOpenBtn').disabled = false;
+          return;
+        }
+        if (data.alreadyOpen) {
+          $('fixPrStatus').textContent = `A fix PR for this run is already open on branch ${data.branch}.`;
+        } else {
+          $('fixPrStatus').innerHTML = `✓ PR opened: <a href="${escapeAttr(data.prUrl)}" target="_blank" rel="noopener" class="text-brand-600 underline">${escapeHtml(data.prUrl)}</a>`;
+        }
+        $('fixPrOpenBtn').classList.add('hidden');
+      } catch {
+        $('fixPrStatus').textContent = 'Could not reach the server.';
+        $('fixPrOpenBtn').disabled = false;
       }
     });
 
@@ -1992,6 +2202,15 @@
       stopBtn.onclick = () => submit(false);
     }
     $('reviewCloseBtn').addEventListener('click', () => $('reviewStopBtn').click());
+    // Esc closes the review gate the same way the ✕ button does — a decline
+    // (submit(false)), not a silent dismiss, since the pipeline is paused
+    // waiting on this decision either way. Studio access survives that:
+    // the server's "done" event still carries effectivatable/projectId for
+    // a decline (see pipeline_interactive.rs), so showResult()'s failure
+    // branch renders its own "Open in Ignite Studio" button.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('reviewModal').classList.contains('hidden')) $('reviewStopBtn').click();
+    });
 
     /* ------------------------------------------------------------ */
     /* External tools status — ORT, licensee, gitleaks, Trivy. Each one is */
@@ -3103,12 +3322,22 @@
         const bg = hits.length > 0
           ? (isSelected ? (hasError ? 'bg-rose-100' : hasOnlyNiceToHave ? 'bg-emerald-100' : 'bg-amber-100') : (hasError ? 'bg-rose-50' : hasOnlyNiceToHave ? 'bg-emerald-50' : 'bg-amber-50'))
           : (inJumpRange ? 'bg-indigo-50' : '');
-        const badges = hits.filter((h) => !h.noBadge).map((h) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white' : h.issue.category === 'code-duplication' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}" title="${escapeAttr(h.issue.summary)}">${h.num}</span>`).join('');
+        const badges = hits.filter((h) => !h.noBadge).map((h) => `<button type="button" class="studio-line-issue-badge inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 cursor-pointer hover:ring-2 hover:ring-offset-1 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white hover:ring-rose-300' : h.issue.category === 'code-duplication' ? 'bg-emerald-600 text-white hover:ring-emerald-300' : 'bg-amber-500 text-white hover:ring-amber-300'}" title="${escapeAttr(h.issue.summary)}" data-issue-id="${escapeAttr(h.issue.id)}">${h.num}</button>`).join('');
         return `<div class="flex ${bg}" data-line="${n}">` +
           `<span class="w-10 shrink-0 text-right pr-2 text-slate-400 select-none border-r border-slate-100">${n}</span>` +
           `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span></div>`;
       }).join('');
       $('studioCodeWrap').innerHTML = `<pre class="m-0">${rows}</pre>`;
+      // Each numbered gutter badge is the same issue the panel lists at
+      // that number — clicking it should jump straight to that finding's
+      // detail, not just show a hover tooltip.
+      $('studioCodeWrap').querySelectorAll('.studio-line-issue-badge').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const issue = studioIssuesForFile(studioState.currentPath).find((i) => i.id === btn.dataset.issueId);
+          if (issue) selectStudioIssue(issue);
+        });
+      });
     }
 
     // Selecting an issue (from the file's issue list, or opened directly
@@ -3677,6 +3906,7 @@
           <p class="text-sm font-bold text-slate-800 mb-1">${escapeHtml(studioHumanizeCategory(issue.category))}</p>
           <p class="text-xs text-slate-600 leading-relaxed">${escapeHtml(issue.summary)}</p>
           <p class="text-[10px] font-mono text-slate-400 mt-2">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</p>
+          ${issue.tool ? `<p class="text-[10px] text-slate-400 mt-1">Detected by <span class="font-semibold text-slate-600">${escapeHtml(issue.tool)}</span></p>` : ''}
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
         ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
@@ -4620,6 +4850,12 @@
       showIdle();
       resetPhases();
       updateButton();
+      // Starting a new scan abandons whatever run's review gate might
+      // still be showing (a background run left paused, or one the user
+      // is walking away from without deciding) — nothing else hides this
+      // modal on its own, so without this it just sits there over the
+      // fresh scan.
+      $('reviewModal').classList.add('hidden');
     });
 
     // Phases the server always runs (e.g. Phase 2/GxP, when config-disabled,
@@ -4811,6 +5047,7 @@
               <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
               ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${p.retained ? 'Full Ignite Studio — source retained for this run (Dependencies/SBOM/LOC/Posture/CodeQL/Rescan all available)' : 'Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)'}">${p.retained ? `🧪 Studio${p.retained_tier === 'pruned' ? ' (flagged files only)' : ' (full)'}` : '🧪 Studio'}</button>` : ''}
               ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
+              ${p.issue_count > 0 && p.job_id ? `<button type="button" class="hist-fix-pr text-[11px] font-semibold text-brand-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="Generate a PR with AI-suggested fixes for this run's open issues">✨ Fix PR</button>` : ''}
               <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold ml-auto" data-id="${p.id}" title="Delete this project">✕</button>
             </div>
           </div>
@@ -4849,6 +5086,14 @@
           } else {
             openHistoricalStudio(projectId, org, repo);
           }
+        });
+      });
+
+      historyList.querySelectorAll('.hist-fix-pr').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openFixPrModal(btn.dataset.jobId);
         });
       });
 

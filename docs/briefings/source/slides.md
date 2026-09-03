@@ -88,7 +88,7 @@ layout: default
 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:6px;">
   <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--teal) 20%, transparent);color:var(--teal);">🛡</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Breach exposure, cut at the source</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Leaked credentials, vulnerable dependencies, and insecure patterns are caught before code ever reaches a repository a threat actor can reach.</div></div>
   <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--indigo) 20%, transparent);color:var(--indigo);">📋</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Audit-ready by default</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Every decision — pass, block, or human-justified override — is attributed, timestamped, and logged. Evidence for SOC 2, ISO 27001, and EU AI Act reviews is a byproduct, not a project.</div></div>
-  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--amber) 20%, transparent);color:var(--amber);">⚡</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Security that doesn't slow delivery</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Fully automated and parallelized — engineering teams get a pass/fail verdict in minutes, with a self-service fix loop instead of a ticket queue.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--amber) 20%, transparent);color:var(--amber);">⚡</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Security that doesn't slow delivery</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Fully automated and parallelized — engineering teams get a pass/fail verdict in minutes, with one-click AI-drafted fix PRs instead of a ticket queue.</div></div>
 </div>
 
 <div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">02 · CONFIDENTIAL</span></div>
@@ -101,7 +101,7 @@ layout: default
 <h1>One pipeline, six gates, zero silent exceptions</h1>
 <p class="lede">Every upload flows left to right through independent checkpoints. A single failed gate halts the run — nothing reaches GitHub without every phase clearing, or a justified, attributed override.</p>
 
-<div style="position:relative;flex:1;margin-top:6px;height:380px;">
+<div style="position:relative;flex:1;margin-top:6px;height:430px;">
   <svg viewBox="0 0 1000 100" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;">
     <defs>
       <linearGradient id="pipeGrad" x1="0" y1="0" x2="1" y2="0">
@@ -116,6 +116,12 @@ layout: default
       </linearGradient>
     </defs>
     <path d="M 40 66 C 135 66, 135 16, 190 16 C 245 16, 245 80, 340 80 C 395 80, 395 16, 490 16 C 555 16, 555 60, 640 60 C 705 60, 705 16, 800 16 C 850 16, 850 80, 910 80 C 935 80, 935 16, 970 16" fill="none" stroke="url(#pipeGrad)" stroke-width="0.6" opacity="0.55" vector-effect="non-scaling-stroke"/>
+    <!-- On-demand, post-ship loop: Provision & Push -> bulk AI fix PR.
+         Dashed and indirect (curls back underneath the main pipe) because
+         this isn't a gate phase — it's an optional action a user
+         triggers afterward from the results page, against a repo that
+         already exists. -->
+    <path d="M 958 28 C 900 92, 760 92, 660 78" fill="none" stroke="var(--purple)" stroke-width="0.55" stroke-dasharray="3 3" opacity="0.55" vector-effect="non-scaling-stroke"/>
   </svg>
 
   <div style="position:absolute;left:4%;top:66%;transform:translate(-50%,-50%);text-align:center;width:126px;">
@@ -164,6 +170,15 @@ layout: default
     <div style="width:50px;height:50px;margin:0 auto;border-radius:50%;border:2px solid var(--blue);background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 0 0 5px color-mix(in srgb, var(--blue) 10%, transparent);">🐙</div>
     <div style="font-size:11.5px;font-weight:600;margin-top:7px;line-height:1.2;">Provision &amp; Push</div>
     <div style="font-size:9.5px;color:var(--faint);margin-top:1px;">Private repo</div>
+  </div>
+
+  <div style="position:absolute;left:66%;top:92%;transform:translate(-50%,-50%);text-align:center;width:200px;">
+    <div class="mono" style="font-size:8px;font-weight:700;color:var(--purple);letter-spacing:.08em;margin-bottom:4px;">ON-DEMAND · POST-SHIP</div>
+    <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;border:1.5px dashed color-mix(in srgb, var(--purple) 55%, var(--border));background:color-mix(in srgb, var(--purple) 8%, var(--surface));">
+      <span style="font-size:13px;">✨</span>
+      <span style="font-size:11px;font-weight:700;color:var(--purple);">Auto-Fix PR</span>
+    </div>
+    <div style="font-size:9px;color:var(--faint);margin-top:4px;line-height:1.3;">Bundles every open finding's AI-suggested fix into one reviewable PR</div>
   </div>
 </div>
 

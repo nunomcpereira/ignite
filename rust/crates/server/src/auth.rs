@@ -160,6 +160,22 @@ pub(crate) fn issue_session_response(db: &ignite_db_store::DbStore, user_id: i64
     res
 }
 
+/// Same session issuance as `issue_session_response`, but for a callback
+/// the browser reached via a top-level navigation (the SPA's "Sign in
+/// with GitHub"/"Sign in with company IdP" links are plain `<a href>`s,
+/// not a fetch/XHR a script parses) — the response has to be an HTTP
+/// redirect back into the app with the session cookie attached, not a
+/// JSON body that would otherwise just render as raw text in the tab the
+/// user's browser navigated to.
+pub(crate) fn issue_session_redirect(db: &ignite_db_store::DbStore, user_id: i64, redirect_to: &str) -> Response {
+    let session_id = ignite_auth::generate_session_id();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::milliseconds(ignite_auth::SESSION_TTL_MS as i64)).to_rfc3339();
+    db.create_session(&session_id, user_id, &expires_at);
+    let mut res = axum::response::Redirect::to(redirect_to).into_response();
+    res.headers_mut().insert(axum::http::header::SET_COOKIE, set_session_cookie(&session_id).parse().unwrap());
+    res
+}
+
 async fn auth_config(State(state): State<Arc<AppState>>) -> Response {
     let mode = &state.config.auth.mode;
     let allow_self_registration = mode == "standalone" && state.config.auth.allow_self_registration;

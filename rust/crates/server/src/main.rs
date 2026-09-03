@@ -47,6 +47,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::pipeline_interactive::router())
         .merge(routes::studio::router())
         .merge(routes::effectivate::router())
+        .merge(routes::fix_pr::router())
         .with_state(state)
         .fallback_service(ServeDir::new(public_dir))
         .layer(axum::middleware::from_fn_with_state(rate_limiter, security::rate_limit_middleware))

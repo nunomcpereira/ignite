@@ -902,10 +902,22 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
         .and_then(|v| v.as_array())
         .map(|a| a.iter().map(|o| SubmittedOverride { issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string() }).collect())
         .unwrap_or_default();
-    let actor_value = body.get("actor").cloned().unwrap_or(Value::Null);
-    let actor = match resolve_actor_from_body(&actor_value) {
-        Some(a) => a,
-        None => return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "An actor {email, name} is required to attribute this decision." }))).into_response(),
+    // An actor is only needed to attribute an override, same scoping
+    // `routes/effectivate.rs` uses — declining outright (`proceed: false`,
+    // no overrides checked, the plain "Stop pipeline" click) or continuing
+    // with nothing left to justify has nothing to attribute, so requiring
+    // one unconditionally 401'd every bare decline and left the run
+    // permanently stuck waiting at the review gate (never reaching
+    // `review_gate.resolve` below), with no client-side surfacing since
+    // the client doesn't check this response's status.
+    let actor = if overrides.is_empty() {
+        Actor { email: String::new(), name: String::new() }
+    } else {
+        let actor_value = body.get("actor").cloned().unwrap_or(Value::Null);
+        match resolve_actor_from_body(&actor_value) {
+            Some(a) => a,
+            None => return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "An actor {email, name} is required to attribute this decision." }))).into_response(),
+        }
     };
     let resolved = state.review_gate.resolve(&job_id, ReviewDecisionInput { proceed, overrides, actor });
     if !resolved {
@@ -1266,5 +1278,40 @@ mod tests {
         let done = events.iter().find(|e| e["type"] == "done").unwrap();
         assert_eq!(done["ok"], true);
         assert_eq!(done["dryRun"], true);
+    }
+
+    /// Regression test for the "Stop pipeline" button leaving a run stuck
+    /// forever at the review gate: a bare decline (`proceed: false`, no
+    /// overrides — exactly what the button sends) has nothing to
+    /// attribute, so it must succeed with no `actor` in the body, driven
+    /// through the real HTTP route (not `review_gate.resolve` directly,
+    /// which would bypass the actor-requirement bug entirely).
+    #[tokio::test]
+    async fn review_decision_stop_with_no_overrides_needs_no_actor() {
+        let (base, state) = spawn_test_server().await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let zip = zip_bytes(&[("app.js", b"const key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(key);\n")]);
+        let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
+        let base_for_decision = base.clone();
+
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+
+        let job_id = loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let running = state.running_runs.lock().unwrap();
+            if let Some((id, _run)) = running.iter().find(|(_, r)| r.review_active) {
+                break id.clone();
+            }
+            drop(running);
+        };
+
+        let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
+        assert_eq!(decision_res.status(), 200, "a bare decline with no overrides must not require an actor");
+
+        let res = handle.await.unwrap();
+        assert_eq!(res.status(), 200);
+        let events = read_ndjson(res).await;
+        let done = events.iter().find(|e| e["type"] == "done").unwrap();
+        assert_eq!(done["ok"], false, "the run must actually finish (declined), not hang forever at the review gate");
     }
 }

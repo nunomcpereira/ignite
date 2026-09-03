@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{issue_session_response, resolve_user, RequireAuth};
+use super::{issue_session_redirect, resolve_user, RequireAuth};
 use crate::state::AppState;
 
 struct PendingGithubState {
@@ -217,7 +217,7 @@ async fn github_callback(State(state): State<Arc<AppState>>, headers: axum::http
         let external_id = gh_user.id.map(|i| i.to_string()).unwrap_or_default();
         let user = state.db.upsert_github_user(&email, Some(&name), &external_id);
         state.db.upsert_github_connection(user.id, &login, &access_token, token_data.scope.as_deref());
-        issue_session_response(&state.db, user.id, json!({ "user": { "id": user.id, "email": user.email, "name": user.name } }), axum::http::StatusCode::OK)
+        issue_session_redirect(&state.db, user.id, "/")
     } else {
         state.db.upsert_github_connection(pending.user_id.unwrap(), &login, &access_token, token_data.scope.as_deref());
         Json(json!({ "ok": true, "login": login })).into_response()
@@ -305,7 +305,12 @@ mod tests {
         let state_token = redirect_url.query_pairs().find(|(k, _)| k == "state").unwrap().1.to_string();
 
         let callback_res = app.oneshot(Request::get(format!("/api/auth/github/callback?code=abc&state={state_token}")).body(Body::empty()).unwrap()).await.unwrap();
-        assert_eq!(callback_res.status(), axum::http::StatusCode::OK, "callback did not succeed");
+        // The "Sign in with GitHub" link is a plain <a href> — a real
+        // top-level browser navigation, not a fetch a script parses — so
+        // the callback has to redirect back into the app, not hand back
+        // a JSON body the browser would just render as raw text.
+        assert_eq!(callback_res.status(), axum::http::StatusCode::SEE_OTHER, "callback did not redirect back into the app");
+        assert_eq!(callback_res.headers().get(axum::http::header::LOCATION).unwrap().to_str().unwrap(), "/");
         let cookie = callback_res.headers().get(axum::http::header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
         assert!(cookie.contains(ignite_auth::SESSION_COOKIE));
 

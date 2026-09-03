@@ -61,6 +61,16 @@ that run.
 
 ![Ignite Studio - Explain this issue and Suggest AI fix](/img/screenshots/03-studio-ai-explain-fix.png)
 
+A **✨ Generate fix PR** button next to "View flagged issues" runs that same
+AI suggest-fix pass over every open issue at once, shows each proposed fix
+as a red/green diff you can individually keep or drop, then — once
+confirmed — clones the repo's default branch fresh, applies only the fixes
+you kept, and opens a single PR bundling all of them. No more clicking
+"Suggest AI fix" issue by issue. It's only available once a project has
+shipped to GitHub (there has to be a repo to open the PR against), and
+works from both a live run and the Onboarded Projects history list, since
+it reads from the persisted issue list rather than the staging directory.
+
 ### 4. Studio's other views — dependencies, SBOM, LOC, posture
 
 Ignite Studio's top bar has one button per connected tool's non-issue

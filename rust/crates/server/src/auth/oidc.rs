@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::issue_session_response;
+use super::issue_session_redirect;
 use crate::state::AppState;
 
 struct PendingOidcState {
@@ -199,7 +199,7 @@ async fn oidc_callback(State(state): State<Arc<AppState>>, Query(q): Query<Callb
     let name = claims.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| email.clone());
 
     let user = state.db.upsert_oidc_user(&email, Some(&name), &sub);
-    issue_session_response(&state.db, user.id, json!({ "user": { "id": user.id, "email": user.email, "name": user.name } }), axum::http::StatusCode::OK)
+    issue_session_redirect(&state.db, user.id, "/")
 }
 
 pub fn oidc_router() -> Router<Arc<AppState>> {
@@ -341,7 +341,11 @@ mod tests {
         }
 
         let callback_res = app.oneshot(Request::get(format!("/api/auth/oidc/callback?code=abc&state={state_token}")).body(Body::empty()).unwrap()).await.unwrap();
-        assert_eq!(callback_res.status(), axum::http::StatusCode::OK, "callback did not succeed");
+        // Same reasoning as the GitHub login callback test: "Sign in with
+        // company IdP" is a plain <a href>, so the callback has to
+        // redirect the browser back into the app, not hand back JSON.
+        assert_eq!(callback_res.status(), axum::http::StatusCode::SEE_OTHER, "callback did not redirect back into the app");
+        assert_eq!(callback_res.headers().get(axum::http::header::LOCATION).unwrap().to_str().unwrap(), "/");
         let cookie = callback_res.headers().get(axum::http::header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
         assert!(cookie.contains(ignite_auth::SESSION_COOKIE));
 

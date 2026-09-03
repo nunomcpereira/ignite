@@ -3,6 +3,7 @@ pub mod baseline;
 pub mod config;
 pub mod dependencies;
 pub mod effectivate;
+pub mod fix_pr;
 pub mod github_annotations;
 pub mod github_pr_status;
 pub mod history;
