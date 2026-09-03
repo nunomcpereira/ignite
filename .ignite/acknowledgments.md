@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: 1e294f96fe4acd7ec4c0387f672ec2b2def10c9e (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: f8b80d10ad5f93f39c113f94e3dbd2dc18ed4b57 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -1313,9 +1313,9 @@ ID: container-image-cve::Dockerfile::1::cve-2026-79770@nokogiri
 #   Dockerfile:1
 Acknowledge: Transitive gem dependency of `gem install licensee` (Dockerfile, INSTALL_LICENSEE) - unpinned, so it tracks whatever nokogiri licensee's dependency resolver picks at build time. A fix does exist upstream (nokogiri >= 1.19.3); this override is a deliberate "known, fix exists, not yet applied" call, not a "nothing available" one - needs a Dockerfile change (pin nokogiri, or `gem install nokogiri -v '>=1.19.3'` before licensee) and an image rebuild to actually clear, not done in this session. Follow-up: pin it.
 
-ID: codeql-sast::public/index.html::732::js/xss-through-dom
+ID: codeql-sast::public/index.html::775::js/xss-through-dom
 # Issue #217
 # [ERROR] codeql-sast - DOM text is reinterpreted as HTML without escaping meta-characters.
-#   public/index.html:732
+#   public/index.html:775
 # Code: document.querySelectorAll('[data-i18n]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n')); });
-Acknowledge: t()'s only inputs are (1) the fixed attribute-name strings 'data-i18n'/'data-i18n-title'/'data-i18n-placeholder' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, which is entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. innerHTML (not textContent) is used deliberately so a handful of translated strings can carry inline markup (e.g. the upload screen's bolded "folder"/".zip" spans) - switching to textContent would silently break those. No untrusted data ever reaches this call.
+Acknowledge: t()'s only inputs are (1) the fixed attribute-name strings 'data-i18n'/'data-i18n-title'/'data-i18n-placeholder' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, which is entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. innerHTML (not textContent) is used deliberately so a handful of translated strings can carry inline markup (e.g. the upload screen's bolded "folder"/".zip" spans) - switching to textContent would silently break those. No untrusted data ever reaches this call. (auto-carried-forward from codeql-sast::public/index.html::732::js/xss-through-dom - pure line-number drift, flagged code unchanged)
