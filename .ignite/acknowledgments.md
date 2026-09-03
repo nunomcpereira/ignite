@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: 5909ea194ae7c1ee592a8fad2481e173d83ba3f5 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: 600f4a48e30c28f2c1914dc28ee5e374eb63e356 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -1287,13 +1287,13 @@ ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1250
 # Issue #212
 # [ERROR] secret - Hardcoded aws-access-token
 #   rust/crates/server/src/routes/pipeline_interactive.rs:1250
-Acknowledge: Fake AWS access key ID ("AKIAABCDEFGHIJKLMNOP") embedded in an in-memory test-zip fixture to guarantee a Phase 4 finding for the review-gate streaming test, not a real credential.
+Acknowledge: Fake AKIA-prefixed AWS access key ID (well-known placeholder pattern) embedded in an in-memory test-zip fixture to guarantee a Phase 4 finding for the review-gate streaming test, not a real credential.
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1293
 # Issue #213
 # [ERROR] secret - Hardcoded aws-access-token
 #   rust/crates/server/src/routes/pipeline_interactive.rs:1293
-Acknowledge: Same fake AWS access key ID ("AKIAABCDEFGHIJKLMNOP"), same purpose, in the neighboring "Stop pipeline with no overrides" regression test's fixture, not a real credential.
+Acknowledge: Same fake AKIA-prefixed AWS access key ID, same purpose, in the neighboring "Stop pipeline with no overrides" regression test's fixture, not a real credential.
 
 ID: container-image-cve::Dockerfile::1::cve-2026-16742@libsystemd0
 # Issue #214
@@ -1312,3 +1312,15 @@ ID: container-image-cve::Dockerfile::1::cve-2026-79770@nokogiri
 # [ERROR] container-image-cve - nokogiri@1.18.10: nokogiri: Nokogiri: Denial of Service via crafted CSS selectors (fixed in 1.19.3)
 #   Dockerfile:1
 Acknowledge: Transitive gem dependency of `gem install licensee` (Dockerfile, INSTALL_LICENSEE) - unpinned, so it tracks whatever nokogiri licensee's dependency resolver picks at build time. A fix does exist upstream (nokogiri >= 1.19.3); this override is a deliberate "known, fix exists, not yet applied" call, not a "nothing available" one - needs a Dockerfile change (pin nokogiri, or `gem install nokogiri -v '>=1.19.3'` before licensee) and an image rebuild to actually clear, not done in this session. Follow-up: pin it.
+
+ID: secret::.ignite/acknowledgments.md::1290
+# Issue #217
+# [ERROR] secret - Hardcoded aws-access-token
+#   .ignite/acknowledgments.md:1290
+Acknowledge: 
+
+ID: secret::.ignite/acknowledgments.md::1296
+# Issue #218
+# [ERROR] secret - Hardcoded aws-access-token
+#   .ignite/acknowledgments.md:1296
+Acknowledge: 
