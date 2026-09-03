@@ -182,6 +182,15 @@ code knew to ask for it.
 
 [View the full technical README on GitHub »](https://github.com/nunomcpereira/ignite#readme)
 
+## White-label branding & multi-language UI
+
+The web UI deploys as your own product, not a bolted-on vendor tool:
+
+- **Branding** - product name, logo, support link, and accent color are a single config file (`public/branding.config.js`), never a hardcoded literal in the app itself, so a customer's brand and Ignite's own upstream updates never touch the same lines and never conflict.
+- **Languages** - the console's UI chrome ships fully localized in **English, French, Portuguese, and German**, switchable from a picker in the header. (Server-generated content - findings, logs, phase titles - always stays in the language the backend sends it in.)
+
+See the [README](https://github.com/nunomcpereira/ignite#white-label-branding--multi-language-ui) for the full configuration reference.
+
 ## Executive summary
 
 For a board- or leadership-level view — why this gate exists, how it fits

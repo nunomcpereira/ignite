@@ -353,6 +353,15 @@ A 🧪 **Studio** button appears next to any project in Recent Checks history th
 
 Per file, the persisted snippets are stitched together in line order; wherever there's a gap between one finding's captured lines and the next, a `⋯ N lines not shown ⋯` divider marks the code that was never retained - so it's always clear how much of the file you're *not* looking at, not just what you are. Explain-this-issue/Suggest-AI-fix still work exactly as before, since both already only ever operated on the snippet, never the full file.
 
+## White-label branding & multi-language UI
+
+The web UI (`public/index.html`) never hardcodes brand values or English literals for its own copy - both are runtime configuration, not code, so a customer deployment never has to fork the app to look and speak like its own product.
+
+- **Branding** (`public/branding.config.js`): product name, page title, header logo, support link, and the full `brand` accent color scale (buttons, links, active states) are read from `window.IGNITE_BRAND`, merged over Ignite's own defaults. Ships checked in with an empty override object - the app renders unchanged until a customer sets one or more keys (see the file's own header comment for the full list and an example). Because `index.html` only ever *reads* this object and a customer's overrides live entirely in this one file, upstream feature commits and a customer's branding edits never touch the same lines - `git pull`/merge never conflicts on this.
+- **Internationalization** (`public/i18n.js`): the static UI chrome - buttons, labels, headers, modals, tooltips, placeholders - ships fully localized in **English, French, Portuguese, and German**, switchable from a picker in the header (persisted per-browser via `localStorage`). Scope is deliberately limited to copy the app itself authors; server-generated text (phase titles/logs, finding summaries, CWE/OWASP ids, tool output, raw API error messages) is never translated and always renders exactly as the backend sends it. A missing translation key falls back to English, then to the raw key itself, so an incomplete locale degrades gracefully instead of breaking.
+
+Neither system needs a rebuild or a redeploy to take effect - both files are served as-is by the same static-file service that serves `index.html`.
+
 ## Hardening notes
 
 - **Zip-slip:** every archive entry's resolved path must stay inside the staging root, or extraction aborts.

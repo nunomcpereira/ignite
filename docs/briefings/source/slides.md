@@ -299,7 +299,22 @@ layout: default
 layout: default
 ---
 
-<div class="eyebrow mono">— 05 · Summary &amp; Recommendation</div>
+<div class="eyebrow mono">— 05 · Enterprise Readiness</div>
+<h1>Deploys as your own product, in your team's language</h1>
+<p class="lede">The onboarding console isn't a third-party vendor tool bolted onto the workflow — every customer-facing surface is themeable and localized out of the box, so it sits inside your organization's tooling as if you built it.</p>
+<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--teal) 20%, transparent);color:var(--teal);">🎨</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">White-label branding</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Product name, logo, and accent color are a single configuration file, not code — apply your organization's brand with zero risk of merge conflicts against upstream updates.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--indigo) 20%, transparent);color:var(--indigo);">🌐</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Four-language UI</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">The console ships fully localized in English, French, Portuguese, and German, with a one-click switcher — no redeployment required to change language.</div></div>
+</div>
+<div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🧩 Config, not a fork</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Both brand and language are runtime configuration — a customer deployment never diverges from upstream source, so every future Ignite release still applies cleanly on top.</div></div>
+
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">08 · CONFIDENTIAL</span></div>
+
+---
+layout: default
+---
+
+<div class="eyebrow mono">— 06 · Summary &amp; Recommendation</div>
 <h1>Best-in-class tooling, applied consistently, with a paper trail</h1>
 <p class="lede">No engine in this stack is an unproven internal script — each is either the recognized leader in its category, or a purpose-built Ignite control for a risk class those vendors don't yet cover. The value isn't any single scanner; it's that all of them run <b style="color:var(--text);">every time, on every project, with no exceptions that aren't logged.</b></p>
 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
@@ -312,4 +327,4 @@ layout: default
   <div class="mono" style="font-size:9.5px;letter-spacing:.14em;color:var(--faint);white-space:nowrap;">END OF BRIEFING</div>
 </div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">08 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">09 · CONFIDENTIAL</span></div>
