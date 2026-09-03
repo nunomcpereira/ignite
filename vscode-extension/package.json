@@ -19,8 +19,21 @@
     "commands": [
       {
         "command": "ignite.scanWorkspace",
-        "title": "Ignite: Scan Workspace",
+        "title": "Ignite: Scan Workspace — run the full compliance/security pipeline",
         "icon": "$(shield)"
+      },
+      {
+        "command": "ignite.scanChangedFiles",
+        "title": "Ignite: Scan Changed Files — full pipeline, findings limited to uncommitted files",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "ignite.explainIssue",
+        "title": "Ignite: Explain Finding — plain-language explanation via the local LLM"
+      },
+      {
+        "command": "ignite.suggestFixForIssue",
+        "title": "Ignite: Suggest Fix — propose (and optionally apply) a one-off code fix for this finding"
       },
       {
         "command": "ignite.showOutput",
@@ -36,7 +49,7 @@
       },
       {
         "command": "ignite.acknowledgeSelected",
-        "title": "Ignite: Acknowledge Selected",
+        "title": "Ignite: Acknowledge Selected — write one shared justification for every selected finding",
         "icon": "$(check)"
       },
       {
@@ -45,12 +58,17 @@
         "icon": "$(list-tree)"
       },
       {
+        "command": "ignite.generateFixPr",
+        "title": "Ignite: Generate Fix PR — preview AI-suggested fixes for open findings and open a PR",
+        "icon": "$(git-pull-request)"
+      },
+      {
         "command": "ignite.installPrePushHook",
         "title": "Ignite: Install Pre-Push Hook"
       },
       {
         "command": "ignite.refreshToolsStatus",
-        "title": "Ignite: Refresh Tools Status",
+        "title": "Ignite: Refresh Tools Status — re-probe which scanner tools are installed/enabled",
         "icon": "$(refresh)"
       },
       {
@@ -88,7 +106,17 @@
           "group": "navigation"
         },
         {
+          "command": "ignite.scanChangedFiles",
+          "when": "view == igniteFindings",
+          "group": "navigation"
+        },
+        {
           "command": "ignite.toggleFindingGrouping",
+          "when": "view == igniteFindings",
+          "group": "navigation"
+        },
+        {
+          "command": "ignite.generateFixPr",
           "when": "view == igniteFindings",
           "group": "navigation"
         },
@@ -103,6 +131,16 @@
           "command": "ignite.acknowledgeSelected",
           "when": "view == igniteFindings && (viewItem == igniteFindingGroup || viewItem == igniteUnresolvedIssue)",
           "group": "inline"
+        },
+        {
+          "command": "ignite.explainIssue",
+          "when": "view == igniteFindings && viewItem =~ /^ignite(Unresolved)?Issue$/",
+          "group": "1_ignite"
+        },
+        {
+          "command": "ignite.suggestFixForIssue",
+          "when": "view == igniteFindings && viewItem =~ /^ignite(Unresolved)?Issue$/",
+          "group": "1_ignite"
         }
       ]
     },
@@ -144,6 +182,11 @@
           "type": "boolean",
           "default": false,
           "description": "Show issues already acknowledged in .ignite/acknowledgments.md as dimmed diagnostics instead of hiding them."
+        },
+        "ignite.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional `ignite_...` API key (mint one with `ignite create-api-key <email>` on the server), sent as `Authorization: Bearer`. Most scans work fine without it, but it's needed for **Generate Fix PR** to open the PR under your own connected GitHub account instead of the server's fallback token."
         }
       }
     }

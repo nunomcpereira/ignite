@@ -8,12 +8,26 @@ function severityOf(issue: IgniteIssue): vscode.DiagnosticSeverity {
   return issue.severity === 'error' ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
 }
 
+/** e.g. "CWE-79 · OWASP A03:2021" — same reference tags the web UI's issue cards show. */
+function refSuffix(issue: IgniteIssue): string {
+  const refs = [issue.cwe, issue.owasp].filter(Boolean);
+  return refs.length ? ` (${refs.join(' · ')})` : '';
+}
+
 export function issueDiagnostic(issue: IgniteIssue): vscode.Diagnostic {
   const line = Math.max(0, (issue.line ?? 1) - 1);
   const range = new vscode.Range(line, 0, line, 10_000);
-  const diag = new vscode.Diagnostic(range, `[${issue.category}] ${issue.summary}`, severityOf(issue));
+  const diag = new vscode.Diagnostic(range, `[${issue.category}] ${issue.summary}${refSuffix(issue)}`, severityOf(issue));
   diag.source = DIAGNOSTIC_SOURCE;
-  diag.code = issue.id;
+  // Surfaced as a clickable link in the Problems panel/hover when `target` is a URL —
+  // CWE Mitre's own reference page, keyed off the numeric id (e.g. "CWE-79" -> 79).
+  if (issue.cwe) {
+    const num = issue.cwe.match(/\d+/)?.[0];
+    if (num) {
+      diag.code = { value: issue.cwe, target: vscode.Uri.parse(`https://cwe.mitre.org/data/definitions/${num}.html`) };
+    }
+  }
+  if (!diag.code) diag.code = issue.id;
   if (issue.status === 'overridden') {
     diag.tags = [vscode.DiagnosticTag.Unnecessary];
   }

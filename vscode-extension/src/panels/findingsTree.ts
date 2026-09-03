@@ -118,7 +118,19 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<Node> {
     const issue = node.issue;
     const loc = issue.file ? `${path.basename(issue.file)}${issue.line ? ':' + issue.line : ''}` : '';
     const item = new vscode.TreeItem(`${loc ? loc + ' — ' : ''}${issue.summary}`, vscode.TreeItemCollapsibleState.None);
-    item.description = issue.category;
+    const refs = [issue.cwe, issue.owasp].filter(Boolean).join(' · ');
+    item.description = refs ? `${issue.category} · ${refs}` : issue.category;
+    item.tooltip = new vscode.MarkdownString(
+      [
+        `**${issue.summary}**`,
+        '',
+        `Category: ${issue.category}`,
+        issue.cwe ? `CWE: [${issue.cwe}](https://cwe.mitre.org/data/definitions/${issue.cwe.match(/\d+/)?.[0] ?? ''}.html)` : '',
+        issue.owasp ? `OWASP: ${issue.owasp}` : '',
+      ]
+        .filter(Boolean)
+        .join('  \n')
+    );
     item.iconPath = new vscode.ThemeIcon(
       issue.status === 'overridden' ? 'check' : issue.severity === 'error' ? 'error' : 'warning',
       new vscode.ThemeColor(

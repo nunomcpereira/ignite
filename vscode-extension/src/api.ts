@@ -36,6 +36,9 @@ export interface ValidateAllResult {
   failedPhase?: number | null;
   issues: IgniteIssue[];
   phases: IgnitePhase[];
+  /** Present when `changedFiles` was passed — how many issues existed before that filter. */
+  totalIssueCount?: number;
+  filteredByChangedFiles?: boolean;
 }
 
 export interface ToolStatus {
@@ -47,6 +50,19 @@ export interface ToolStatus {
 
 function baseUrl(): string {
   return vscode.workspace.getConfiguration('ignite').get<string>('baseUrl', 'http://localhost:51337').replace(/\/+$/, '');
+}
+
+/**
+ * `Authorization: Bearer ignite_<key>` when "ignite.apiKey" is set (minted via
+ * `ignite create-api-key`) — most routes this extension calls work fine
+ * unauthenticated, but resolve_effective_github_token (fix-PR's apply step)
+ * prefers a resolved session/API-key user's own connected GitHub account over
+ * the server's fallback token, so a PR opens attributed to the right person
+ * once this is set instead of always falling back to the server's own token.
+ */
+function authHeaders(): Record<string, string> {
+  const key = vscode.workspace.getConfiguration('ignite').get<string>('apiKey', '').trim();
+  return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
 /** Thrown when the Ignite server isn't reachable — same precondition hooks/pre-push already documents. */
@@ -80,7 +96,7 @@ export async function checkReachable(onAttempt?: (line: string) => void): Promis
   for (let attempt = 1; attempt <= 3; attempt++) {
     const startedAt = Date.now();
     try {
-      const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
+      const res = await fetch(url, { method: 'GET', headers: authHeaders(), signal: AbortSignal.timeout(8000) });
       const elapsed = Date.now() - startedAt;
       if (res.ok || res.status < 500) {
         onAttempt?.(`  probe ${attempt}/3 → HTTP ${res.status} in ${elapsed}ms — reachable`);
@@ -109,6 +125,13 @@ export interface ValidateAllOptions {
   /** Justified entries read from .ignite/acknowledgments.md — same shape hooks/pre-push resubmits. */
   overrides?: OverrideSubmission[];
   actor?: { email: string; name: string };
+  /**
+   * Project-relative paths (git-diff-style) to restrict the *returned*
+   * issues to — the scan itself still runs in full (validate-all has no
+   * per-file skip mode), but the response's `issues` only include ones
+   * whose `file` is in this set, same as the CLI's `--changed-files`.
+   */
+  changedFiles?: string[];
 }
 
 export async function validateAll(projectPath: string, opts: ValidateAllOptions): Promise<ValidateAllResult> {
@@ -117,7 +140,7 @@ export async function validateAll(projectPath: string, opts: ValidateAllOptions)
   try {
     res = await fetch(`${url}/api/pipeline/validate-all`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         projectPath,
         runLocalCi: opts.runLocalCi,
@@ -125,6 +148,7 @@ export async function validateAll(projectPath: string, opts: ValidateAllOptions)
         repo: opts.repo,
         overrides: opts.overrides ?? [],
         actor: opts.actor,
+        changedFiles: opts.changedFiles,
       }),
       // Phase 4's heavier tools (Bearer, CodeQL database builds, GuardDog's
       // per-dependency fetches) can genuinely take minutes on a real project.
@@ -189,13 +213,13 @@ export interface ProjectDetails extends ProjectSummary {
  * the extension gets real progress out of a request it can't stream.
  */
 export async function listProjects(): Promise<ProjectSummary[]> {
-  const res = await fetch(`${baseUrl()}/api/projects`, { signal: AbortSignal.timeout(5000) });
+  const res = await fetch(`${baseUrl()}/api/projects`, { headers: authHeaders(), signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`GET /api/projects returned HTTP ${res.status}`);
   return (await res.json()) as ProjectSummary[];
 }
 
 export async function getProjectDetails(id: number): Promise<ProjectDetails | null> {
-  const res = await fetch(`${baseUrl()}/api/projects/${id}`, { signal: AbortSignal.timeout(5000) });
+  const res = await fetch(`${baseUrl()}/api/projects/${id}`, { headers: authHeaders(), signal: AbortSignal.timeout(5000) });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`GET /api/projects/${id} returned HTTP ${res.status}`);
   return (await res.json()) as ProjectDetails;
@@ -253,7 +277,7 @@ async function postReport<T>(path: string, projectPath: string): Promise<T> {
   try {
     res = await fetch(`${url}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ projectPath }),
       // These reuse the same tool binaries (syft/gocloc/semgrep) validate-all's
       // Phase 4 runs, so a cold run on a large project can take a while.
@@ -285,11 +309,107 @@ export function getPosture(projectPath: string): Promise<PostureResult> {
   return postReport<PostureResult>('/api/reports/posture', projectPath);
 }
 
+export interface FixCandidate {
+  issueId: string;
+  file: string;
+  category: string;
+  severity: string;
+  summary: string;
+  startLine: number;
+  endLine: number;
+  explanation: string;
+  original: string;
+  replacement: string;
+}
+
+export interface FixPrPreviewResult {
+  ok: boolean;
+  candidates: FixCandidate[];
+  consideredCount: number;
+  reason?: string;
+}
+
+export interface FixPrApplyResult {
+  ok: boolean;
+  alreadyOpen?: boolean;
+  branch?: string;
+  prUrl?: string;
+  filesChanged?: string[];
+  error?: string;
+}
+
+async function postJson<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
+  const url = baseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${url}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    throw new IgniteUnreachableError(url, e);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`${path} returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return (await res.json()) as T;
+}
+
+/** Runs the scan-wide LLM suggest-fix pass over every open issue in a job — no git involved yet. */
+export function previewFixPr(jobId: string): Promise<FixPrPreviewResult> {
+  // LLM calls over every open issue's snippet — generous timeout to match the server's own headroom.
+  return postJson<FixPrPreviewResult>(`/api/pipeline/${encodeURIComponent(jobId)}/fix-pr/preview`, {}, 10 * 60 * 1000);
+}
+
+/** Clones the repo's default branch, applies the accepted candidates, and opens one PR bundling all of them. */
+export function applyFixPr(jobId: string, candidates: FixCandidate[]): Promise<FixPrApplyResult> {
+  return postJson<FixPrApplyResult>(`/api/pipeline/${encodeURIComponent(jobId)}/fix-pr/apply`, { candidates }, 5 * 60 * 1000);
+}
+
+function issueBody(issue: IgniteIssue): Record<string, unknown> {
+  return {
+    category: issue.category,
+    severity: issue.severity,
+    file: issue.file,
+    line: issue.line,
+    summary: issue.summary,
+    snippet: issue.snippet,
+  };
+}
+
+export interface ExplainIssueResult {
+  ok: boolean;
+  explanation: string | null;
+  cached?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+/** Plain-language explanation of one finding — cached server-side by issue identity. */
+export function explainIssue(issue: IgniteIssue): Promise<ExplainIssueResult> {
+  return postJson<ExplainIssueResult>('/api/issues/explain', issueBody(issue), 90_000);
+}
+
+export interface SuggestFixResult {
+  ok: boolean;
+  suggestion: { explanation: string; replacement: string | null; startLine: number; endLine: number } | null;
+  reason?: string;
+  error?: string;
+}
+
+/** One-off LLM-proposed diff for a single finding — needs `issue.snippet` (validate-all always includes it for file-addressable issues). */
+export function suggestFix(issue: IgniteIssue): Promise<SuggestFixResult> {
+  return postJson<SuggestFixResult>('/api/issues/suggest-fix', issueBody(issue), 90_000);
+}
+
 export async function toolsStatus(): Promise<ToolStatus[]> {
   const url = baseUrl();
   let res: Response;
   try {
-    res = await fetch(`${url}/api/tools/status`, { signal: AbortSignal.timeout(10000) });
+    res = await fetch(`${url}/api/tools/status`, { headers: authHeaders(), signal: AbortSignal.timeout(10000) });
   } catch (e) {
     throw new IgniteUnreachableError(url, e);
   }

@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import {
   validateAll, checkReachable, IgniteUnreachableError, type IgniteIssue,
   getLicenseCompliance, getSbom, getLocMetrics, getPosture,
+  previewFixPr, applyFixPr, type FixCandidate,
+  explainIssue, suggestFix,
 } from './api';
 import { publishDiagnostics, DIAGNOSTIC_SOURCE } from './diagnostics';
-import { getActor, getOriginOrgRepo, getRepoRoot } from './git';
+import { getActor, getOriginOrgRepo, getRepoRoot, getChangedFiles } from './git';
 import {
   loadOverrides, appendUnresolvedIssues, reviewFilePath, findAcknowledgeLineNumber,
   writeScanSnapshot, acknowledgeIssues,
@@ -21,6 +24,8 @@ let findingsTree: FindingsTreeProvider;
 let toolsStatusTree: ToolsStatusTreeProvider;
 let statusBarItem: vscode.StatusBarItem;
 let lastResultIssues: IgniteIssue[] = [];
+/** jobId from the most recent scan — the fix-PR endpoints are scoped to one job's stored issues. */
+let lastJobId: string | undefined;
 /** Guards against a second "Ignite: Scan Workspace" firing while one is already in flight. */
 let scanInProgress = false;
 
@@ -49,7 +54,7 @@ function setStatusBar(state: 'idle' | 'running' | 'ok' | 'errors', detail?: stri
   statusBarItem.show();
 }
 
-async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
+async function scanWorkspace(context: vscode.ExtensionContext, changedOnly = false): Promise<void> {
   if (scanInProgress) {
     vscode.window.showWarningMessage('Ignite: a scan is already running — wait for it to finish before starting another.');
     outputChannel.show(true);
@@ -83,13 +88,13 @@ async function scanWorkspace(context: vscode.ExtensionContext): Promise<void> {
       if (choice === 'Open Settings') vscode.commands.executeCommand('workbench.action.openSettings', 'ignite.baseUrl');
       return;
     }
-    await runScan(context, workspaceRoot);
+    await runScan(context, workspaceRoot, changedOnly);
   } finally {
     scanInProgress = false;
   }
 }
 
-async function runScan(context: vscode.ExtensionContext, workspaceRoot: string): Promise<void> {
+async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, changedOnly: boolean): Promise<void> {
   outputChannel.clear();
   outputChannel.show(true);
   setStatusBar('running');
@@ -104,6 +109,18 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string):
     getActor(repoRoot),
     getOriginOrgRepo(repoRoot),
   ]);
+
+  let changedFiles: string[] | undefined;
+  if (changedOnly) {
+    changedFiles = await getChangedFiles(workspaceRoot);
+    if (changedFiles.length === 0) {
+      outputChannel.appendLine('No uncommitted changes in this workspace — nothing to scan.');
+      vscode.window.showInformationMessage('Ignite: no uncommitted changes to scan.');
+      setStatusBar('idle');
+      return;
+    }
+    outputChannel.appendLine(`Scanning ${changedFiles.length} changed file(s): ${changedFiles.join(', ')}`);
+  }
 
   const printer = new LiveLogPrinter(outputChannel);
   let progressReport: ((message: string) => void) | undefined;
@@ -135,6 +152,7 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string):
             repo: repo || undefined,
             overrides,
             actor: actor ?? undefined,
+            changedFiles,
           });
         } finally {
           poller.stop();
@@ -151,6 +169,10 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string):
 
     const issues = result.issues ?? [];
     lastResultIssues = issues;
+    lastJobId = result.jobId;
+    if (result.filteredByChangedFiles) {
+      outputChannel.appendLine(`  Showing ${issues.length} of ${result.totalIssueCount ?? issues.length} total finding(s) — restricted to changed files.`);
+    }
     publishDiagnostics(diagnostics, workspaceRoot, issues, showOverridden);
     findingsTree.setResult(result.phases ?? [], issues, workspaceRoot);
     const snapshotPath = await writeScanSnapshot(repoRoot, issues);
@@ -215,6 +237,158 @@ async function runReport<T>(id: string, title: string, fetchReport: (projectPath
   }
 }
 
+/**
+ * Drives the scan-wide "generate a PR that fixes every finding" feature:
+ * preview the LLM-proposed diffs for the last scan's open issues, let the
+ * user drop any they don't want via a multi-select QuickPick, confirm (this
+ * pushes a branch and opens a real PR — not reversible from here), then
+ * apply. Scoped to `lastJobId`, so a scan must have run first.
+ */
+async function generateFixPr(): Promise<void> {
+  if (!lastJobId) {
+    vscode.window.showWarningMessage('Ignite: run a scan first — Generate Fix PR works off the most recent scan\'s findings.');
+    return;
+  }
+  const jobId = lastJobId;
+
+  let preview: Awaited<ReturnType<typeof previewFixPr>>;
+  try {
+    preview = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Ignite: generating fix suggestions…', cancellable: false },
+      () => previewFixPr(jobId)
+    );
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Ignite: fix-PR preview failed — ${message}`);
+    return;
+  }
+
+  if (preview.candidates.length === 0) {
+    vscode.window.showInformationMessage(
+      preview.reason ? `Ignite: no fix suggestions — ${preview.reason}` : 'Ignite: no fixable open findings from the last scan.'
+    );
+    return;
+  }
+
+  type Pick = vscode.QuickPickItem & { candidate: FixCandidate };
+  const items: Pick[] = preview.candidates.map((c) => ({
+    label: `${path.basename(c.file)}:${c.startLine} — ${c.summary}`,
+    description: c.category,
+    detail: c.explanation,
+    picked: true,
+    candidate: c,
+  }));
+  const selected = await vscode.window.showQuickPick(items, {
+    canPickMany: true,
+    ignoreFocusOut: true,
+    title: `Ignite: ${items.length} proposed fix(es) — uncheck any to exclude, then confirm`,
+    placeHolder: 'Select the fixes to include in the PR',
+  });
+  if (!selected || selected.length === 0) return;
+
+  const confirm = await vscode.window.showWarningMessage(
+    `Open a PR with ${selected.length} fix(es)? This pushes a new branch and opens a real pull request on GitHub.`,
+    { modal: true },
+    'Open PR'
+  );
+  if (confirm !== 'Open PR') return;
+
+  try {
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Ignite: opening fix PR…', cancellable: false },
+      () => applyFixPr(jobId, selected.map((s) => s.candidate))
+    );
+    if (result.alreadyOpen) {
+      vscode.window.showInformationMessage(`Ignite: a fix PR is already open on branch ${result.branch}.`);
+      return;
+    }
+    if (!result.ok || !result.prUrl) {
+      vscode.window.showErrorMessage(`Ignite: fix-PR failed — ${result.error ?? 'unknown error'}`);
+      return;
+    }
+    const choice = await vscode.window.showInformationMessage(`Ignite: opened fix PR (${result.filesChanged?.length ?? 0} file(s) changed).`, 'Open PR');
+    if (choice === 'Open PR') vscode.env.openExternal(vscode.Uri.parse(result.prUrl));
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Ignite: fix-PR failed — ${message}`);
+  }
+}
+
+function issueFromNode(node: FindingsNode | undefined): IgniteIssue | undefined {
+  return node && node.kind === 'issue' ? node.issue : undefined;
+}
+
+/** "Ignite: Explain Finding" — plain-language explanation of one finding, from the findings tree's context menu. */
+async function explainFinding(node: FindingsNode | undefined): Promise<void> {
+  const issue = issueFromNode(node);
+  if (!issue) return;
+  try {
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Ignite: explaining finding…', cancellable: false },
+      () => explainIssue(issue)
+    );
+    if (!result.explanation) {
+      vscode.window.showInformationMessage(`Ignite: ${result.reason ?? result.error ?? 'no explanation available.'}`);
+      return;
+    }
+    await vscode.window.showInformationMessage(issue.summary, { modal: true, detail: result.explanation });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Ignite: explain failed — ${message}`);
+  }
+}
+
+/**
+ * "Ignite: Suggest Fix" — one-off LLM diff for a single finding (the
+ * per-issue counterpart to the scan-wide "Generate Fix PR"). Offers to
+ * apply the proposed replacement directly to the open file instead of
+ * opening a PR — for a fix a developer wants to review and commit
+ * themselves rather than ship through a bot-authored branch.
+ */
+async function suggestFixForFinding(node: FindingsNode | undefined, workspaceRoot: string): Promise<void> {
+  const issue = issueFromNode(node);
+  if (!issue) return;
+  if (!issue.file || !issue.snippet) {
+    vscode.window.showWarningMessage('Ignite: this finding has no stored code snippet — cannot suggest a fix.');
+    return;
+  }
+  try {
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Ignite: suggesting a fix…', cancellable: false },
+      () => suggestFix(issue)
+    );
+    if (!result.suggestion || !result.suggestion.replacement) {
+      vscode.window.showInformationMessage(`Ignite: ${result.reason ?? result.suggestion?.explanation ?? 'no fix suggestion available.'}`);
+      return;
+    }
+    const { explanation, replacement, startLine, endLine } = result.suggestion;
+    const choice = await vscode.window.showInformationMessage(
+      `Ignite: proposed fix for "${issue.summary}"`,
+      { modal: true, detail: `${explanation}\n\n${replacement}` },
+      'Apply to File'
+    );
+    if (choice !== 'Apply to File') return;
+
+    const abs = path.isAbsolute(issue.file) ? issue.file : path.join(workspaceRoot, issue.file);
+    const uri = vscode.Uri.file(abs);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const startIdx = Math.max(0, startLine - 1);
+    const endIdx = Math.min(doc.lineCount - 1, endLine - 1);
+    const range = new vscode.Range(startIdx, 0, endIdx, doc.lineAt(endIdx).text.length);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, range, replacement);
+    if (!(await vscode.workspace.applyEdit(edit))) {
+      vscode.window.showErrorMessage('Ignite: could not apply the fix — the file may have changed since the scan.');
+      return;
+    }
+    await vscode.window.showTextDocument(doc, { selection: range });
+    vscode.window.showInformationMessage('Ignite: fix applied — review and save before committing.');
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Ignite: suggest fix failed — ${message}`);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   outputChannel = vscode.window.createOutputChannel('Ignite');
   diagnostics = vscode.languages.createDiagnosticCollection(DIAGNOSTIC_SOURCE);
@@ -230,6 +404,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.createTreeView('igniteFindings', { treeDataProvider: findingsTree, canSelectMany: true }),
     vscode.window.registerTreeDataProvider('igniteToolsStatus', toolsStatusTree),
     vscode.commands.registerCommand('ignite.scanWorkspace', () => scanWorkspace(context)),
+    vscode.commands.registerCommand('ignite.scanChangedFiles', () => scanWorkspace(context, true)),
     vscode.commands.registerCommand('ignite.showOutput', () => outputChannel.show()),
     vscode.commands.registerCommand('ignite.refreshToolsStatus', () => toolsStatusTree.refresh()),
     vscode.commands.registerCommand('ignite.openReviewFile', async () => {
@@ -294,6 +469,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('ignite.showPosture', async () => {
       await runReport('posture', 'Ignite: Compliance & Feature Posture', getPosture);
+    }),
+    vscode.commands.registerCommand('ignite.generateFixPr', () => generateFixPr()),
+    vscode.commands.registerCommand('ignite.explainIssue', (node: FindingsNode) => explainFinding(node)),
+    vscode.commands.registerCommand('ignite.suggestFixForIssue', (node: FindingsNode) => {
+      const workspaceRoot = activeWorkspaceFolder()?.uri.fsPath;
+      if (!workspaceRoot) return;
+      return suggestFixForFinding(node, workspaceRoot);
     }),
     vscode.commands.registerCommand('ignite.installPrePushHook', async () => {
       const folder = activeWorkspaceFolder();
