@@ -171,7 +171,7 @@ RUN if [ "$INSTALL_GUARDDOG" = "true" ]; then pipx install guarddog && pipx ensu
 RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan && pipx ensurepath; fi
 RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor && pipx ensurepath; fi
 RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
-      arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
+      arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64)"; \
       ver="$(echo "$OASDIFF_VERSION" | tr -d v)"; \
       curl -fsSL -o /tmp/oasdiff.tar.gz \
         "https://github.com/oasdiff/oasdiff/releases/download/${OASDIFF_VERSION}/oasdiff_${ver}_linux_${arch}.tar.gz" \
