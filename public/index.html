@@ -4,17 +4,46 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ignite — Onboarding Gatekeeper</title>
+  <!-- White-label hook: every brand-facing value below (name, title, logo,
+       support link, accent color) is read from window.IGNITE_BRAND, which
+       branding.config.js sets. To apply a customer's brand, edit ONLY
+       public/branding.config.js — never hardcode brand values here, or a
+       future upstream change to this file will conflict with them. -->
+  <script src="branding.config.js"></script>
+  <script>
+    // Ignite's own defaults — what renders when branding.config.js ships
+    // its default empty override object (or is missing entirely).
+    const DEFAULT_BRAND = {
+      name: 'Ignite Studio',
+      title: 'Ignite — Onboarding Gatekeeper',
+      supportUrl: 'https://nunomcpereira.github.io/ignite/',
+      logoSvg: '<svg class="w-4.5 h-4.5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>',
+      colors: {
+        brand: {
+          50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd',
+          400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8',
+          800: '#1e40af', 900: '#1e3a8a',
+        },
+      },
+    };
+    const overrides = window.IGNITE_BRAND || {};
+    window.IGNITE_BRAND = {
+      ...DEFAULT_BRAND,
+      ...overrides,
+      colors: { ...DEFAULT_BRAND.colors, ...overrides.colors, brand: { ...DEFAULT_BRAND.colors.brand, ...(overrides.colors && overrides.colors.brand) } },
+    };
+    document.title = window.IGNITE_BRAND.title;
+  </script>
+  <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
+       See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
+  <script src="i18n.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
           colors: {
-            brand: {
-              50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd',
-              400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8',
-              800: '#1e40af', 900: '#1e3a8a',
-            },
+            brand: window.IGNITE_BRAND.colors.brand,
           },
           fontFamily: {
             sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Inter', 'Roboto', 'Helvetica Neue', 'sans-serif'],
@@ -89,23 +118,29 @@
   <!-- Top nav bar -->
   <header class="sticky top-0 z-40 bg-white border-b border-slate-200 h-14 flex items-center justify-between px-4 sm:px-6">
     <div class="flex items-center gap-2.5">
-      <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center shrink-0">
-        <svg class="w-4.5 h-4.5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
-        </svg>
-      </div>
-      <h1 class="text-base font-bold tracking-tight text-brand-700">Ignite Studio</h1>
+      <div id="brandLogo" class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center shrink-0"></div>
+      <h1 id="brandName" class="text-base font-bold tracking-tight text-brand-700"></h1>
       <span id="appVersion" class="text-[10px] font-mono font-semibold text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 hidden sm:inline-block"></span>
     </div>
     <div class="flex items-center gap-1 relative">
-      <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" title="Help &amp; documentation"
+      <a id="helpBtn" href="https://nunomcpereira.github.io/ignite/" target="_blank" rel="noopener" data-i18n-title="header.help"
          class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
         <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 17.25h.007v.008H12v-.008z"/>
         </svg>
       </a>
-      <button id="themeToggleBtn" type="button" title="Toggle dark mode"
+      <button id="localeMenuBtn" type="button" data-i18n-title="header.language"
+              class="h-9 px-2.5 flex items-center justify-center rounded-full text-[11px] font-bold text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <span id="localeMenuLabel">EN</span>
+      </button>
+      <div id="localeMenu" class="hidden absolute right-0 top-11 w-40 bg-white border border-slate-200 rounded-xl shadow-cardHover p-1.5 z-50">
+        <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="en">English</button>
+        <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="fr">Français</button>
+        <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="pt">Português</button>
+        <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="de">Deutsch</button>
+      </div>
+      <button id="themeToggleBtn" type="button" data-i18n-title="header.themeToggle"
               class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
         <svg id="themeToggleIconSun" class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
@@ -114,7 +149,7 @@
           <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
         </svg>
       </button>
-      <button id="accountMenuBtn" type="button" title="Account &amp; connected tools"
+      <button id="accountMenuBtn" type="button" data-i18n-title="header.account"
               class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
         <svg class="w-[20px] h-[20px]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -126,16 +161,25 @@
       </div>
     </div>
   </header>
+  <script>
+    // Fills in the header's brand-facing bits from window.IGNITE_BRAND
+    // (set above in <head>) — kept as a tiny standalone script right after
+    // the header markup instead of folded into the main app script further
+    // below, so branding never depends on that script's init order.
+    document.getElementById('brandLogo').innerHTML = window.IGNITE_BRAND.logoSvg;
+    document.getElementById('brandName').textContent = window.IGNITE_BRAND.name;
+    document.getElementById('helpBtn').href = window.IGNITE_BRAND.supportUrl;
+  </script>
 
   <!-- Lateral icon rail — Dashboard is this single-page app's only "screen"
        (so it's shown active/non-interactive); History opens a slide-over
        drawer with Recent Checks + Effectivated Repos, which used to sit
        permanently inline below the pipeline and crowded the page. -->
   <nav class="hidden sm:flex flex-col items-center gap-1 w-14 shrink-0 fixed left-0 top-14 bottom-0 bg-white border-r border-slate-200 py-4 z-30">
-    <button type="button" title="Dashboard" class="w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+    <button type="button" data-i18n-title="header.dashboard" class="w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
     </button>
-    <button id="historyDrawerBtn" type="button" title="Recent checks &amp; effectivated repos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+    <button id="historyDrawerBtn" type="button" data-i18n-title="header.history" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
     </button>
   </nav>
@@ -145,23 +189,23 @@
   <div id="historyDrawerBackdrop" class="hidden fixed inset-0 bg-slate-900/40 z-40"></div>
   <div id="historyDrawer" class="hidden fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-50 border-l border-slate-200 shadow-2xl z-50 flex flex-col transition-transform">
     <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-white shrink-0">
-      <h2 class="text-sm font-bold text-slate-900">Recent Checks &amp; Effectivated Repos</h2>
-      <button id="historyDrawerCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" title="Close">
+      <h2 class="text-sm font-bold text-slate-900" data-i18n="history.title">Recent Checks &amp; Effectivated Repos</h2>
+      <button id="historyDrawerCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
     <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-6">
       <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
         <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest" data-i18n="history.recentChecks">Recent Checks</h2>
           <div class="flex items-center gap-3">
-            <button id="historyClearBtn" title="Delete every recent check from history"
+            <button id="historyClearBtn" data-i18n-title="history.clearAll"
               class="text-slate-400 hover:text-red-600 transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
               </svg>
             </button>
-            <button id="historyRefreshBtn" title="Refresh the recent-checks list"
+            <button id="historyRefreshBtn" data-i18n-title="history.refresh"
               class="text-slate-400 hover:text-brand-600 transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
@@ -170,23 +214,23 @@
           </div>
         </div>
         <div id="historyList" class="divide-y divide-slate-100 max-h-[45vh] overflow-y-auto">
-          <p class="p-5 text-xs text-slate-400">Loading…</p>
+          <p class="p-5 text-xs text-slate-400" data-i18n="common.loading">Loading…</p>
         </div>
       </section>
 
       <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
         <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Effectivated Repos</h2>
-          <button id="effectivatedRefreshBtn" title="Refresh the effectivated-repos list"
+          <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest" data-i18n="history.effectivatedRepos">Effectivated Repos</h2>
+          <button id="effectivatedRefreshBtn" data-i18n-title="history.effectivatedRefresh"
             class="text-slate-400 hover:text-brand-600 transition-colors">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
             </svg>
           </button>
         </div>
-        <p class="px-5 pt-3 text-[11px] text-slate-400">Repos Ignite has actually pushed to. Enable a schedule to re-run checks against the default branch — failures notify the repo's CODEOWNERS contact, or file a GitHub issue if none is found.</p>
+        <p class="px-5 pt-3 text-[11px] text-slate-400" data-i18n="history.effectivatedNote">Repos Ignite has actually pushed to. Enable a schedule to re-run checks against the default branch — failures notify the repo's CODEOWNERS contact, or file a GitHub issue if none is found.</p>
         <div id="effectivatedList" class="divide-y divide-slate-100 max-h-[40vh] overflow-y-auto">
-          <p class="p-5 text-xs text-slate-400">Loading…</p>
+          <p class="p-5 text-xs text-slate-400" data-i18n="common.loading">Loading…</p>
         </div>
       </section>
     </div>
@@ -196,8 +240,8 @@
 
     <!-- Page header -->
     <div class="text-center mb-10">
-      <h2 class="text-2xl font-bold tracking-tight text-slate-900">Initialize Project Pipeline</h2>
-      <p class="text-base text-slate-500 mt-1">Upload your project payload to begin automated analysis and provisioning.</p>
+      <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="upload.title">Initialize Project Pipeline</h2>
+      <p class="text-base text-slate-500 mt-1" data-i18n="upload.subtitle">Upload your project payload to begin automated analysis and provisioning.</p>
     </div>
 
     <main class="min-w-0">
@@ -212,16 +256,16 @@
           <svg class="w-14 h-14 mx-auto mb-4 text-brand-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l-3 3m3-3l3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
           </svg>
-          <h3 class="text-lg font-bold text-slate-900">Drag &amp; Drop Project Payload</h3>
-          <p class="text-sm text-slate-500 mt-1.5 max-w-md mx-auto">Upload a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> to initiate the pipeline sequence.</p>
+          <h3 class="text-lg font-bold text-slate-900" data-i18n="upload.dropTitle">Drag &amp; Drop Project Payload</h3>
+          <p class="text-sm text-slate-500 mt-1.5 max-w-md mx-auto" data-i18n="upload.dropSubtitle">Upload a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> to initiate the pipeline sequence.</p>
           <div class="flex items-center justify-center gap-3 mt-5">
             <button type="button" id="pickZipBtn" class="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-card transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
-              Choose File…
+              <span data-i18n="upload.chooseFile">Choose File…</span>
             </button>
-            <button type="button" id="pickDirBtn" class="text-sm font-semibold text-brand-600 hover:text-brand-800">or choose a folder</button>
+            <button type="button" id="pickDirBtn" class="text-sm font-semibold text-brand-600 hover:text-brand-800" data-i18n="upload.chooseFolder">or choose a folder</button>
           </div>
-          <p class="text-xs text-slate-400 mt-4">Up to 1 GB · node_modules, .git and build output are skipped automatically</p>
+          <p class="text-xs text-slate-400 mt-4" data-i18n="upload.sizeNote">Up to 1 GB · node_modules, .git and build output are skipped automatically</p>
         </div>
         <div id="dropReady" class="hidden">
           <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-brand-600 flex items-center justify-center shadow-md shadow-brand-600/25">
@@ -239,12 +283,12 @@
     <section class="mb-8">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label for="orgInput" class="block text-xs font-semibold text-slate-600 mb-1.5">GitHub Organization Name</label>
+          <label for="orgInput" class="block text-xs font-semibold text-slate-600 mb-1.5" data-i18n="upload.orgLabel">GitHub Organization Name</label>
           <input id="orgInput" type="text" placeholder="acme-corp" autocomplete="off" spellcheck="false"
             class="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-shadow" />
         </div>
         <div>
-          <label for="repoInput" class="block text-xs font-semibold text-slate-600 mb-1.5">Desired Repository Name</label>
+          <label for="repoInput" class="block text-xs font-semibold text-slate-600 mb-1.5" data-i18n="upload.repoLabel">Desired Repository Name</label>
           <input id="repoInput" type="text" placeholder="my-new-service" autocomplete="off" spellcheck="false"
             class="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-shadow" />
         </div>
@@ -254,32 +298,32 @@
            Phase 2 is enabled server-side (config.json's phases[id=2].enabled;
            off by default), see applyServerConfig(). -->
       <div id="gxpFeatureBlock" class="hidden mt-5 border border-slate-200 rounded-xl p-4 bg-slate-50/60">
-        <p class="text-xs font-semibold text-slate-600 mb-2">Is this a GxP-regulated process?</p>
+        <p class="text-xs font-semibold text-slate-600 mb-2" data-i18n="upload.gxpQuestion">Is this a GxP-regulated process?</p>
         <div class="flex items-center gap-4">
           <label class="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-            <input type="radio" name="gxp" id="gxpNo" value="no" checked class="accent-brand-600" /> No
+            <input type="radio" name="gxp" id="gxpNo" value="no" checked class="accent-brand-600" /> <span data-i18n="common.no">No</span>
           </label>
           <label class="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-            <input type="radio" name="gxp" id="gxpYes" value="yes" class="accent-brand-600" /> Yes — GxP
+            <input type="radio" name="gxp" id="gxpYes" value="yes" class="accent-brand-600" /> <span data-i18n="upload.gxpYes">Yes — GxP</span>
           </label>
         </div>
 
         <div id="gxpSection" class="hidden mt-4">
-          <p class="text-xs text-slate-500 mb-3">
+          <p class="text-xs text-slate-500 mb-3" data-i18n="upload.gxpMandatory">
             <span class="font-semibold text-rose-600">Mandatory:</span> attach at least one GxP validation document
             (validation plan, IQ/OQ/PQ protocol, report…) — by link or upload. Documents are archived in the Ignite database.
           </p>
           <div class="flex gap-2 mb-2">
-            <input id="gxpLinkName" type="text" placeholder="Document name (optional)" autocomplete="off" spellcheck="false"
+            <input id="gxpLinkName" type="text" data-i18n-placeholder="upload.gxpDocNamePlaceholder" placeholder="Document name (optional)" autocomplete="off" spellcheck="false"
               class="w-40 bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500" />
             <input id="gxpLinkUrl" type="url" placeholder="https://dms.example.com/validation-plan.pdf" autocomplete="off" spellcheck="false"
               class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500" />
             <button type="button" id="gxpAddLinkBtn"
-              class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors shrink-0" title="Add another GxP validation document link">Add link</button>
+              class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors shrink-0" data-i18n-title="upload.gxpAddLinkTitle" data-i18n="upload.gxpAddLink">Add link</button>
           </div>
           <input type="file" id="gxpFileInput" multiple class="hidden" />
           <button type="button" id="gxpUploadBtn"
-            class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors" title="Upload GxP validation documents">Upload documents…</button>
+            class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors" data-i18n-title="upload.gxpUploadTitle" data-i18n="upload.gxpUploadDocs">Upload documents…</button>
           <p id="gxpError" class="hidden text-xs font-medium text-rose-600 mt-2"></p>
           <ul id="gxpList" class="mt-3 space-y-1.5"></ul>
         </div>
@@ -295,7 +339,7 @@
            still honors an explicit dryRun: false to skip simulation and ship
            directly, for agent/CI callers that don't go through this form. -->
       <input type="checkbox" id="dryRunInput" checked class="hidden" />
-      <p class="mt-5 text-xs text-slate-500">
+      <p class="mt-5 text-xs text-slate-500" data-i18n="upload.simulationNote">
         Every run first executes as a simulation — every check runs, nothing is created on GitHub. Once it passes, you'll get an option to provision &amp; push for real.
       </p>
 
@@ -303,11 +347,11 @@
         <button id="startBtn" disabled
           class="flex-1 py-3 rounded-xl text-sm font-semibold transition-all
                  disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none
-                 bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25">
+                 bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25" data-i18n="upload.initiateBtn">
           Initiate Onboarding Pipeline
         </button>
-        <button id="newScanBtn" type="button" title="Clear this view and start a new scan — any other extraction still running keeps running untouched"
-          class="py-3 px-4 rounded-xl text-sm font-semibold transition-all border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:bg-slate-100">
+        <button id="newScanBtn" type="button" data-i18n-title="upload.newScanTitle"
+          class="py-3 px-4 rounded-xl text-sm font-semibold transition-all border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:bg-slate-100" data-i18n="upload.newScanBtn">
           New scan
         </button>
       </div>
@@ -324,7 +368,7 @@
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
             </svg>
-            <span id="uploadStatusText">Uploading…</span>
+            <span id="uploadStatusText" data-i18n="upload.uploading">Uploading…</span>
           </span>
           <span id="uploadStatusPct" class="text-slate-500 font-normal"></span>
         </div>
@@ -337,23 +381,23 @@
     <!-- Pipeline stepper -->
     <div id="historyViewBanner" class="hidden mb-3 flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-xl px-4 py-2.5">
       <svg class="w-4 h-4 text-violet-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-      <p class="flex-1 min-w-0 text-xs text-violet-700"><span class="font-semibold">Viewing history</span> — <span id="historyViewLabel"></span> — read-only.</p>
-      <button id="historyViewBackBtn" type="button" class="text-xs font-semibold text-violet-700 hover:underline shrink-0">Back to live ✕</button>
+      <p class="flex-1 min-w-0 text-xs text-violet-700"><span class="font-semibold" data-i18n="pipeline.viewingHistory">Viewing history</span> — <span id="historyViewLabel"></span> — <span data-i18n="pipeline.readOnly">read-only</span>.</p>
+      <button id="historyViewBackBtn" type="button" class="text-xs font-semibold text-violet-700 hover:underline shrink-0" data-i18n="pipeline.backToLive">Back to live ✕</button>
     </div>
     <div class="flex items-center justify-between gap-2 mb-4">
       <div class="flex items-center gap-3">
-        <h2 class="text-lg font-bold text-slate-900">Pipeline Status</h2>
+        <h2 class="text-lg font-bold text-slate-900" data-i18n="pipeline.status">Pipeline Status</h2>
         <span id="pipelineStatusBadge" class="hidden text-[11px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-md border items-center gap-1.5"></span>
       </div>
       <div class="flex items-center gap-2">
-      <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="View this run's Phase 4 checks report — pass/fail detail for every check that ran">
-        📋 Checks report
+      <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.checksReportTitle">
+        <span data-i18n="pipeline.checksReport">📋 Checks report</span>
       </button>
-      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="View every flagged issue from this run, filterable by severity">
-        View flagged issues
+      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.viewIssuesTitle">
+        <span data-i18n="pipeline.viewIssues">View flagged issues</span>
       </button>
-      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" title="Preview and open a pull request with AI-suggested fixes for this run's open issues">
-        ✨ Generate fix PR
+      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" data-i18n-title="pipeline.generateFixPrTitle">
+        <span data-i18n="pipeline.generateFixPr">✨ Generate fix PR</span>
       </button>
       </div>
     </div>
@@ -367,7 +411,7 @@
 
     </main>
 
-    <footer class="mt-12 text-center text-xs text-slate-400">
+    <footer class="mt-12 text-center text-xs text-slate-400" data-i18n="footer.note">
       Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>
       Staging files are wiped from disk after every run, pass or fail.
     </footer>
@@ -378,57 +422,57 @@
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
         <div>
-          <p class="text-sm font-semibold text-slate-800">Final review — all flagged issues, before provisioning &amp; push</p>
-          <p class="text-xs text-slate-500 mt-0.5">Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.</p>
+          <p class="text-sm font-semibold text-slate-800" data-i18n="review.title">Final review — all flagged issues, before provisioning &amp; push</p>
+          <p class="text-xs text-slate-500 mt-0.5" data-i18n="review.subtitle">Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.</p>
         </div>
         <div class="flex items-center gap-3 shrink-0">
           <button id="reviewImportBtn" type="button"
                   class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
-                  title="Import a Download ⤓'d report you've filled in Acknowledge: lines on — checks the matching box and fills its justification for every issue with one">
-            Import acknowledgments ⤒
+                  data-i18n-title="review.importTitle">
+            <span data-i18n="review.importBtn">Import acknowledgments ⤒</span>
           </button>
           <input id="reviewImportFileInput" type="file" accept=".md,text/markdown,text/plain" class="hidden" />
           <button id="reviewDownloadBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Download this findings review as a file">
-            Download ⤓
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="review.downloadTitle">
+            <span data-i18n="common.downloadBtn">Download ⤓</span>
           </button>
-          <button id="reviewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
+          <button id="reviewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" data-i18n-title="common.close">✕</button>
         </div>
       </div>
       <div class="px-6 pt-3 flex items-center justify-between gap-3">
         <div class="flex items-center gap-3 text-[11px] font-semibold">
-          <button type="button" id="reviewFilterErrors" class="text-rose-600 hover:underline" title="Show only blocking (error-severity) findings">Errors only</button>
-          <button type="button" id="reviewFilterWarnings" class="text-amber-600 hover:underline" title="Show only non-blocking (warning-severity) findings">Warnings only</button>
+          <button type="button" id="reviewFilterErrors" class="text-rose-600 hover:underline" data-i18n-title="review.errorsOnlyTitle" data-i18n="review.errorsOnly">Errors only</button>
+          <button type="button" id="reviewFilterWarnings" class="text-amber-600 hover:underline" data-i18n-title="review.warningsOnlyTitle" data-i18n="review.warningsOnly">Warnings only</button>
         </div>
         <div class="flex items-center gap-3">
-          <button type="button" id="reviewStudioBtn" class="text-[11px] font-semibold text-violet-600 hover:underline" title="Open this run in Ignite Studio to browse source alongside every finding">Open in Ignite Studio ⧉</button>
-          <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline" title="Expand every finding's code snippet inline">Expand all code ▸</button>
+          <button type="button" id="reviewStudioBtn" class="text-[11px] font-semibold text-violet-600 hover:underline" data-i18n-title="review.openStudioTitle" data-i18n="review.openStudio">Open in Ignite Studio ⧉</button>
+          <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline" data-i18n-title="review.expandAllTitle" data-i18n="common.expandAllCode">Expand all code ▸</button>
         </div>
       </div>
       <div id="reviewBulkBar" class="hidden px-6 pt-3 pb-1 border-b border-slate-100 bg-slate-50">
         <div class="flex items-center gap-2 text-[11px] text-slate-600">
           <label class="flex items-center gap-1.5 cursor-pointer select-none">
             <input type="checkbox" id="reviewSelectAll" class="accent-brand-600" />
-            Select all
+            <span data-i18n="common.selectAll">Select all</span>
           </label>
           <span id="reviewSelectedCount" class="font-semibold text-slate-700">0 selected</span>
         </div>
         <div class="flex items-start gap-2 mt-2">
-          <textarea id="reviewBulkJustification" rows="2" placeholder="Justification to apply to all selected issues…"
+          <textarea id="reviewBulkJustification" rows="2" data-i18n-placeholder="review.bulkPlaceholder" placeholder="Justification to apply to all selected issues…"
                     class="flex-1 text-xs px-3 py-2 rounded-lg border border-slate-200"></textarea>
           <button type="button" id="reviewBulkApplyBtn"
-                  class="text-xs font-semibold px-3 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 shrink-0" title="Apply the same justification to every selected finding at once">Apply to selected</button>
+                  class="text-xs font-semibold px-3 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 shrink-0" data-i18n-title="review.applySelectedTitle" data-i18n="review.applySelected">Apply to selected</button>
         </div>
       </div>
       <div id="reviewIssueList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
       <div id="reviewActorRow" class="hidden px-6 pt-2 pb-1 border-t border-slate-100 grid grid-cols-2 gap-2">
         <input id="reviewActorEmail" type="email" placeholder="your.email@company.com" class="text-xs px-3 py-2 rounded-lg border border-slate-200" />
-        <input id="reviewActorName" type="text" placeholder="Full name" class="text-xs px-3 py-2 rounded-lg border border-slate-200" />
+        <input id="reviewActorName" type="text" data-i18n-placeholder="common.fullNamePlaceholder" placeholder="Full name" class="text-xs px-3 py-2 rounded-lg border border-slate-200" />
       </div>
       <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
         <p id="reviewError" class="text-xs text-rose-600 flex-1"></p>
-        <button id="reviewStopBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Stop this pipeline run instead of continuing past the pause">Stop pipeline</button>
-        <button id="reviewProceedBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700" title="Continue the pipeline run with the overrides submitted above">Continue</button>
+        <button id="reviewStopBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="review.stopPipelineTitle" data-i18n="review.stopPipeline">Stop pipeline</button>
+        <button id="reviewProceedBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700" data-i18n-title="review.continueTitle" data-i18n="common.continue">Continue</button>
       </div>
     </div>
   </div>
@@ -445,24 +489,24 @@
         </div>
         <!-- View tabs: "Code" is the always-on file/editor pane; the rest
              swap the same three-pane body for a read-only report view. -->
-        <span class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px">Code</span>
-        <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Dependency license/vulnerability report for this project">Dependencies</button>
-        <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Software Bill of Materials (SBOM) for this project">SBOM</button>
-        <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Lines-of-code metrics by language">LOC Metrics</button>
-        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Compliance & security feature posture (auth, logging, encryption, etc.)">Posture</button>
+        <span class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px" data-i18n="studio.codeTab">Code</span>
+        <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.dependenciesTitle" data-i18n="studio.dependencies">Dependencies</button>
+        <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.sbomTitle" data-i18n="studio.sbom">SBOM</button>
+        <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.locTitle" data-i18n="studio.loc">LOC Metrics</button>
+        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.postureTitle" data-i18n="studio.posture">Posture</button>
         <span class="flex-1"></span>
         <div class="flex items-center gap-1.5">
-          <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="View this build's provenance / attestation">📜 Provenance</button>
-          <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Re-run the pipeline against the current staged source">Rescan ↻</button>
-          <button id="studioCodeqlQueryBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Write and run your own .ql query against a database Run CodeQL already built. Results filter the file tree.">Custom Query</button>
-          <button id="studioCodeqlBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-sm" title="Runs the real CodeQL CLI against the currently staged project — a database build, so this can take from several seconds to a couple of minutes. Progress streams into the Output panel below.">🔎 Run CodeQL</button>
-          <button id="studioCloseBtn" type="button" title="Close" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+          <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="studio.provenanceTitle" data-i18n="studio.provenance">📜 Provenance</button>
+          <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="studio.rescanTitle" data-i18n="studio.rescan">Rescan ↻</button>
+          <button id="studioCodeqlQueryBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="studio.customQueryTitle" data-i18n="studio.customQuery">Custom Query</button>
+          <button id="studioCodeqlBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-sm" data-i18n-title="studio.runCodeqlTitle" data-i18n="studio.runCodeql">🔎 Run CodeQL</button>
+          <button id="studioCloseBtn" type="button" data-i18n-title="common.close" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </div>
       </div>
       <p id="studioError" class="hidden text-xs text-rose-600 bg-rose-50 border-b border-rose-200 px-5 py-2"></p>
-      <p id="studioHistoricalBanner" class="hidden text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-5 py-2">
+      <p id="studioHistoricalBanner" class="hidden text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-5 py-2" data-i18n="studio.historicalBanner">
         ⚠ Historical view — you're not seeing the full project. Staging files are wiped after every run, so only the
         code captured around each flagged finding is available here, not the whole file. Gaps between findings are
         marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
@@ -477,7 +521,7 @@
         <!-- File tree -->
         <div class="w-full sm:w-64 shrink-0 max-h-48 sm:max-h-none border-b sm:border-b-0 sm:border-r border-slate-200 bg-white overflow-y-auto flex flex-col">
           <div class="sticky top-0 bg-white border-b border-slate-100">
-            <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Explorer</p>
+            <p class="px-3 pt-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest" data-i18n="studio.explorer">Explorer</p>
             <!-- The 5 most-recent extractions keep their full source tree
                  browsable here (tier "full"); the next 5 (rank 6-10) are
                  pruned down to just the files that had findings (tier
@@ -486,12 +530,12 @@
                  Populated from GET /api/projects, filtered client-side to
                  rows carrying a retained_tier (see renderStudioRecentSwitcher). -->
             <select id="studioRecentSwitcher" class="w-[calc(100%-1.5rem)] mx-3 mt-2 text-[11px] px-2 py-1 rounded border border-slate-200 bg-white"></select>
-            <p id="studioPrunedBanner" class="hidden mx-3 mt-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">Older extraction — only files with findings are available, not the full tree.</p>
-            <input id="studioTreeFilter" type="text" placeholder="Filter files…" class="w-[calc(100%-1.5rem)] mx-3 my-2 text-[11px] px-2 py-1 rounded border border-slate-200" />
-            <p class="px-3 pb-2 text-[10px] text-slate-400" title="Jump to the next file with an error / with an error-or-warning / back to where you jumped from">
-              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono">e</kbd> next error
-              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono ml-1.5">w</kbd> next issue
-              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono ml-1.5">p</kbd> back
+            <p id="studioPrunedBanner" class="hidden mx-3 mt-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1" data-i18n="studio.prunedBanner">Older extraction — only files with findings are available, not the full tree.</p>
+            <input id="studioTreeFilter" type="text" data-i18n-placeholder="studio.filterFiles" placeholder="Filter files…" class="w-[calc(100%-1.5rem)] mx-3 my-2 text-[11px] px-2 py-1 rounded border border-slate-200" />
+            <p class="px-3 pb-2 text-[10px] text-slate-400" data-i18n-title="studio.jumpHintTitle" title="Jump to the next file with an error / with an error-or-warning / back to where you jumped from">
+              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono">e</kbd> <span data-i18n="studio.nextError">next error</span>
+              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono ml-1.5">w</kbd> <span data-i18n="studio.nextIssue">next issue</span>
+              <kbd class="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono ml-1.5">p</kbd> <span data-i18n="common.back">back</span>
             </p>
           </div>
           <div id="studioTree" class="text-xs flex-1 overflow-y-auto"></div>
@@ -509,18 +553,18 @@
             </span>
           </div>
           <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
-            <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate">Select a file from the tree ←</span>
-            <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100" title="View the license-compliance detail for this manifest file">📦 View license compliance for this manifest</button>
-            <span id="studioDirtyBadge" class="hidden text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">UNSAVED</span>
-            <button id="studioEditBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50" title="Edit this file's contents">Edit</button>
-            <button id="studioSaveBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" title="Save changes and re-run the checks against this file">Save + rescan</button>
-            <button id="studioDownloadBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50" title="Download this file">⬇ Download</button>
+            <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate" data-i18n="studio.selectFileHint">Select a file from the tree ←</span>
+            <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100" data-i18n-title="studio.viewManifestTitle" data-i18n="studio.viewManifest">📦 View license compliance for this manifest</button>
+            <span id="studioDirtyBadge" class="hidden text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200" data-i18n="studio.unsaved">UNSAVED</span>
+            <button id="studioEditBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50" data-i18n-title="studio.editTitle" data-i18n="common.edit">Edit</button>
+            <button id="studioSaveBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" data-i18n-title="studio.saveRescanTitle" data-i18n="studio.saveRescan">Save + rescan</button>
+            <button id="studioDownloadBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50" data-i18n-title="studio.downloadFileTitle" data-i18n="common.downloadSimple">⬇ Download</button>
           </div>
           <div id="studioCodeWrap" class="flex-1 min-h-0 overflow-auto font-mono text-[12px] leading-relaxed"></div>
         </div>
         <!-- Issue detail -->
         <div class="w-full sm:w-96 shrink-0 max-h-64 sm:max-h-none bg-white overflow-y-auto">
-          <p class="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest sticky top-0 bg-white border-b border-slate-100">Issue Details</p>
+          <p class="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest sticky top-0 bg-white border-b border-slate-100" data-i18n="studio.issueDetails">Issue Details</p>
           <div id="studioIssuePanel" class="p-3 text-xs text-slate-500"></div>
         </div>
       </div>
@@ -534,12 +578,12 @@
         <div class="flex items-center gap-4 px-3 pt-1.5 border-b border-slate-800 shrink-0">
           <span class="flex items-center gap-1.5 text-[11px] font-bold text-white uppercase tracking-wide pb-1.5 border-b-2 border-brand-500">
             <span id="studioOutputStatus" class="w-2 h-2 rounded-full bg-slate-600 shrink-0"></span>
-            Output
+            <span data-i18n="studio.output">Output</span>
           </span>
           <span id="studioOutputTaskLabel" class="text-[11px] text-slate-500 font-mono pb-1.5"></span>
           <span class="flex-1"></span>
-          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5" title="Clear the output log">Clear</button>
-          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5" title="Close the output log panel">Close ✕</button>
+          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5" data-i18n-title="studio.clearOutputTitle" data-i18n="common.clear">Clear</button>
+          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5" data-i18n-title="studio.closeOutputTitle" data-i18n="studio.closeOutput">Close ✕</button>
         </div>
         <pre id="studioOutputLog" class="flex-1 overflow-y-auto px-3 py-2 text-[11px] font-mono text-slate-300 leading-relaxed whitespace-pre-wrap"></pre>
       </div>
@@ -551,19 +595,19 @@
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
         <div>
-          <p class="text-sm font-semibold text-slate-800">Flagged issues</p>
-          <p id="issuesViewSubtitle" class="text-xs text-slate-500 mt-0.5">Read-only — issue-by-issue detail, updated live as the run progresses.</p>
+          <p class="text-sm font-semibold text-slate-800" data-i18n="issuesView.title">Flagged issues</p>
+          <p id="issuesViewSubtitle" class="text-xs text-slate-500 mt-0.5" data-i18n="issuesView.subtitle">Read-only — issue-by-issue detail, updated live as the run progresses.</p>
         </div>
         <div class="flex items-center gap-3 shrink-0">
           <button id="issuesViewExpandAllBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Expand every issue's code snippet inline">
-            Expand all code ▸
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="issuesView.expandAllTitle">
+            <span data-i18n="common.expandAllCode">Expand all code ▸</span>
           </button>
           <button id="issuesViewDownloadBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Download the flagged-issues list">
-            Download ⤓
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="issuesView.downloadTitle">
+            <span data-i18n="common.downloadBtn">Download ⤓</span>
           </button>
-          <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
+          <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" data-i18n-title="common.close">✕</button>
         </div>
       </div>
       <div id="issuesViewList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
@@ -580,16 +624,16 @@
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
         <div>
-          <p class="text-sm font-semibold text-slate-800">Generate fix PR</p>
-          <p id="fixPrSubtitle" class="text-xs text-slate-500 mt-0.5">AI-suggested fixes for this run's open issues — review each one, then open a PR with the ones you keep.</p>
+          <p class="text-sm font-semibold text-slate-800" data-i18n="fixPr.title">Generate fix PR</p>
+          <p id="fixPrSubtitle" class="text-xs text-slate-500 mt-0.5" data-i18n="fixPr.subtitle">AI-suggested fixes for this run's open issues — review each one, then open a PR with the ones you keep.</p>
         </div>
-        <button id="fixPrCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0" title="Close">✕</button>
+        <button id="fixPrCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0" data-i18n-title="common.close">✕</button>
       </div>
       <div id="fixPrList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
       <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
         <p id="fixPrStatus" class="text-xs text-slate-500"></p>
-        <button id="fixPrOpenBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed" title="Open the pull request with the fixes selected above">
-          Open PR
+        <button id="fixPrOpenBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed" data-i18n-title="fixPr.openPrTitle">
+          <span data-i18n="fixPr.openPr">Open PR</span>
         </button>
       </div>
     </div>
@@ -607,15 +651,15 @@
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
         <div>
-          <p class="text-sm font-semibold text-slate-800">Checks report</p>
-          <p id="checksReportSubtitle" class="text-xs text-slate-500 mt-0.5">Every check Ignite ran this run, grouped by area.</p>
+          <p class="text-sm font-semibold text-slate-800" data-i18n="checksReport.title">Checks report</p>
+          <p id="checksReportSubtitle" class="text-xs text-slate-500 mt-0.5" data-i18n="checksReport.subtitle">Every check Ignite ran this run, grouped by area.</p>
         </div>
         <div class="flex items-center gap-3 shrink-0">
           <button id="checksReportDownloadBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Download the checks report">
-            Download ⤓
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="checksReport.downloadTitle">
+            <span data-i18n="common.downloadBtn">Download ⤓</span>
           </button>
-          <button id="checksReportCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
+          <button id="checksReportCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" data-i18n-title="common.close">✕</button>
         </div>
       </div>
       <div id="checksReportBody" class="px-6 py-4 space-y-5 overflow-y-auto flex-1"></div>
@@ -628,10 +672,10 @@
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
         <p id="phaseMaxTitle" class="text-sm font-semibold text-slate-800"></p>
         <div class="flex items-center gap-3 shrink-0">
-          <button id="phaseMaxCopyBtn" type="button" class="text-slate-400 hover:text-brand-600" title="Copy phase log to clipboard">
+          <button id="phaseMaxCopyBtn" type="button" class="text-slate-400 hover:text-brand-600" data-i18n-title="phaseMax.copyTitle">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"/></svg>
           </button>
-          <button id="phaseMaxCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
+          <button id="phaseMaxCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" data-i18n-title="common.close">✕</button>
         </div>
       </div>
       <div id="phaseMaxBody" class="px-6 py-4 overflow-y-auto flex-1 bg-slate-950 rounded-b-2xl font-mono text-xs leading-relaxed"></div>
@@ -639,6 +683,66 @@
   </div>
 
   <script>
+    /* ------------------------------------------------------------ */
+    /* i18n — static UI chrome only, see CLAUDE.md's "Internationalization" */
+    /* section. Server-generated text (phase titles/logs, finding         */
+    /* summaries, CWE/OWASP ids, tool output, error messages) is never    */
+    /* translated — it's out of scope and stays exactly as the API sends  */
+    /* it. window.IGNITE_I18N.translations comes from i18n.js.            */
+    /* ------------------------------------------------------------ */
+    const SUPPORTED_LOCALES = ['en', 'fr', 'pt', 'de'];
+
+    function detectLocale() {
+      const saved = localStorage.getItem('ignite-locale');
+      if (saved && SUPPORTED_LOCALES.includes(saved)) return saved;
+      const nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
+      return SUPPORTED_LOCALES.includes(nav) ? nav : 'en';
+    }
+
+    let currentLocale = detectLocale();
+
+    /**
+     * Looks up `key` in the current locale, falling back to English, then to
+     * the raw key itself (never throws, never renders blank — a missing key
+     * shows up as its own name, which is easy to spot in QA instead of a
+     * silent gap). `vars` supports simple `{name}`-style interpolation for
+     * the handful of strings that need a runtime value.
+     */
+    function t(key, vars) {
+      const table = (window.IGNITE_I18N && window.IGNITE_I18N.translations) || {};
+      let str = (table[currentLocale] && table[currentLocale][key]) ?? (table.en && table.en[key]) ?? key;
+      if (vars) {
+        for (const [k, v] of Object.entries(vars)) str = str.replaceAll(`{${k}}`, v);
+      }
+      return str;
+    }
+
+    /**
+     * Applies `t()` to every element carrying a data-i18n* attribute.
+     * data-i18n uses innerHTML (not textContent) — translated strings for a
+     * few keys deliberately carry the same inline markup the English source
+     * does (e.g. bold spans in upload.dropSubtitle), and every data-i18n
+     * value is developer-authored translation copy, never user input, so
+     * innerHTML here is safe. Only the static HTML shell picks this up
+     * automatically; JS-rendered (template-literal) UI calls t() directly
+     * inline instead — see CLAUDE.md.
+     */
+    function applyStaticTranslations() {
+      document.documentElement.lang = currentLocale;
+      document.querySelectorAll('[data-i18n]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n')); });
+      document.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.getAttribute('data-i18n-title')); });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.getAttribute('data-i18n-placeholder')); });
+      const label = document.getElementById('localeMenuLabel');
+      if (label) label.textContent = currentLocale.toUpperCase();
+    }
+
+    function setLocale(loc) {
+      if (!SUPPORTED_LOCALES.includes(loc)) return;
+      currentLocale = loc;
+      localStorage.setItem('ignite-locale', loc);
+      applyStaticTranslations();
+    }
+
     /* ------------------------------------------------------------ */
     /* Pipeline model                                                */
     /* ------------------------------------------------------------ */
@@ -830,11 +934,11 @@
         return `
           <span class="text-xs text-slate-500">·</span>
           <span class="text-xs text-slate-600">GitHub: <strong class="text-slate-800">@${escapeHtml(githubState.login)}</strong></span>
-          <button id="githubDisconnectBtn" class="text-xs font-semibold text-slate-400 hover:text-rose-600">Disconnect</button>`;
+          <button id="githubDisconnectBtn" class="text-xs font-semibold text-slate-400 hover:text-rose-600">${t('account.disconnect')}</button>`;
       }
       return `
         <span class="text-xs text-slate-500">·</span>
-        <a href="/api/auth/github/connect" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Connect GitHub →</a>`;
+        <a href="/api/auth/github/connect" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('account.connectGithub')}</a>`;
     }
 
     function wireGithubConnectRow() {
@@ -865,8 +969,8 @@
       if (authState.user) {
         bar.innerHTML = `
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 border-b border-slate-100">
-            <span class="text-xs text-slate-600">Signed in as <strong class="text-slate-800">${escapeHtml(authState.user.name || authState.user.email)}</strong></span>
-            <button id="logoutBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign out</button>
+            <span class="text-xs text-slate-600">${t('account.signedInAs')} <strong class="text-slate-800">${escapeHtml(authState.user.name || authState.user.email)}</strong></span>
+            <button id="logoutBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('account.signOut')}</button>
             ${renderGithubConnectRow()}
           </div>`;
         $('logoutBtn').addEventListener('click', async () => {
@@ -881,8 +985,8 @@
       if (authState.mode === 'oidc') {
         bar.innerHTML = `
           <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
-            ${authTooltip('Not signed in — required to attribute guideline overrides.')}
-            <a href="/api/auth/oidc/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with company IdP →</a>
+            ${authTooltip(t('account.notSignedInTooltip'))}
+            <a href="/api/auth/oidc/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('account.signInIdp')}</a>
           </div>`;
         return;
       }
@@ -890,24 +994,24 @@
       if (authState.mode === 'github') {
         bar.innerHTML = `
           <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
-            ${authTooltip('Not signed in — required to attribute guideline overrides.')}
-            <a href="/api/auth/github/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">Sign in with GitHub →</a>
+            ${authTooltip(t('account.notSignedInTooltip'))}
+            <a href="/api/auth/github/login" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('account.signInGithub')}</a>
           </div>`;
         return;
       }
 
       bar.innerHTML = `
         <div class="pb-2 border-b border-slate-100">
-          <p class="text-[11px] text-slate-500 mb-2">Sign in to attribute guideline overrides in the audit log.</p>
+          <p class="text-[11px] text-slate-500 mb-2">${t('account.signInNote')}</p>
           <div class="flex items-center gap-2">
-            <input id="authEmail" type="email" placeholder="email" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
-            <input id="authPassword" type="password" placeholder="password" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
-            <button id="authLoginBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 shrink-0">Sign in</button>
+            <input id="authEmail" type="email" placeholder="${escapeAttr(t('account.emailPlaceholder'))}" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
+            <input id="authPassword" type="password" placeholder="${escapeAttr(t('account.passwordPlaceholder'))}" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
+            <button id="authLoginBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 shrink-0">${t('account.signIn')}</button>
           </div>
           ${authState.allowSelfRegistration ? `
           <div class="flex items-center gap-2 mt-2">
-            <input id="authName" type="text" placeholder="name (for new account)" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
-            <button id="authRegisterBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 hover:bg-brand-50 shrink-0">Create account</button>
+            <input id="authName" type="text" placeholder="${escapeAttr(t('account.namePlaceholder'))}" class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200" />
+            <button id="authRegisterBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 hover:bg-brand-50 shrink-0">${t('account.createAccount')}</button>
           </div>` : ''}
           <p id="authError" class="text-[11px] text-rose-600 mt-1.5 text-center"></p>
         </div>`;
@@ -2102,7 +2206,7 @@
 
       function updateSelectedCount() {
         const n = list.querySelectorAll('.override-check:checked').length;
-        selectedCountEl.textContent = `${n} selected`;
+        selectedCountEl.textContent = t('review.selectedCount', { count: n });
       }
 
       list.querySelectorAll('.override-check').forEach((cb) => {
@@ -2307,8 +2411,8 @@
         if (connected) connectedCount++;
         const dotClass = connected ? 'bg-emerald-500' : 'bg-slate-300';
         const textClass = connected ? 'text-emerald-700' : 'text-slate-400';
-        let statusLabel = connected ? 'Connected' : 'Disconnected';
-        if (s.ok && s.enabled === false) statusLabel = 'Installed (disabled)';
+        let statusLabel = connected ? t('tools.connected') : t('tools.disconnected');
+        if (s.ok && s.enabled === false) statusLabel = t('tools.installedDisabled');
         return `<div class="flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full ${dotClass} shrink-0"></span>
           <span class="text-[11px] font-semibold text-slate-700">${escapeHtml(meta.label)}</span>
@@ -2321,9 +2425,9 @@
       // viewport, so the full tool list is always collapsed behind a
       // tap-to-expand summary rather than shown inline.
       bar.innerHTML = `<div class="px-0 py-2">
-        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2" title="Show which scanner tools (Trivy, Semgrep, gitleaks, etc.) are installed and enabled">
-          <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">External tools</span>
-          <span class="text-[10px] font-semibold text-slate-500">${connectedCount}/${total} connected <span id="toolsBarChevron">▾</span></span>
+        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2" title="${escapeAttr(t('tools.toggleTitle'))}">
+          <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">${t('tools.externalTools')}</span>
+          <span class="text-[10px] font-semibold text-slate-500">${t('tools.connectedCount', { n: connectedCount, total })} <span id="toolsBarChevron">▾</span></span>
         </button>
         <div id="toolsBarList" class="hidden flex-col gap-1.5 mt-1.5">
           ${rows}
@@ -2551,7 +2655,7 @@
       $('studioSubtitle').textContent = `${org}/${repo} — historical, read-only`;
       $('studioView').classList.remove('hidden');
       studioShowError(null);
-      $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading…</p>';
+      $('studioCodeWrap').innerHTML = `<p class="p-4 text-slate-400">${t('common.loading')}</p>`;
       $('studioTree').innerHTML = '';
       $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
 
@@ -3226,7 +3330,7 @@
         return;
       }
 
-      $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading…</p>';
+      $('studioCodeWrap').innerHTML = `<p class="p-4 text-slate-400">${t('common.loading')}</p>`;
       try {
         const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/file?path=${encodeURIComponent(relPath)}`);
         const data = await res.json();
@@ -3927,19 +4031,19 @@
             <button type="button" id="studio-chain-next" class="text-[10px] font-semibold text-amber-700 hover:underline disabled:opacity-30 disabled:no-underline">Next step →</button>
           </div>
         </div>` : ''}
-        <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2" title="Get a plain-language explanation of this finding via the local LLM">Explain this issue</button>
+        <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2" title="${escapeAttr(t('issue.explainTitle'))}">${t('issue.explain')}</button>
         <div id="${explainId}-body" class="text-[11px] text-slate-600 mb-3"></div>
         <div class="border border-slate-200 rounded-lg p-3 mb-3">
           <p class="text-xs font-bold text-slate-800 flex items-center gap-1.5 mb-2">
             <svg class="w-3.5 h-3.5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>
-            AI Suggested Fix
+            ${t('issue.aiSuggestedFix')}
           </p>
-          <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100" title="Ask the local LLM to propose a concrete code fix for this finding">Generate suggested fix</button>
+          <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100" title="${escapeAttr(t('issue.suggestFixTitle'))}">${t('issue.suggestFix')}</button>
           <div id="${fixId}-body" class="text-[11px] text-slate-600 mt-2"></div>
         </div>
         ${issue.cwe || issue.references?.cve?.length ? `
         <div class="mb-3">
-          <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">References</p>
+          <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">${t('issue.references')}</p>
           ${issue.cwe ? `
           <a href="${cweNum ? `https://cwe.mitre.org/data/definitions/${cweNum}.html` : '#'}" target="_blank" rel="noopener" class="text-[11px] font-semibold text-brand-600 hover:underline flex items-start gap-1">
             <svg class="w-3 h-3 mt-0.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
@@ -3951,7 +4055,7 @@
             <span>${escapeHtml(cve)}</span>
           </a>`).join('')}
         </div>` : ''}
-        <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-1">← Back to file's issues</button>`;
+        <button type="button" id="studio-back-to-file-list" class="w-full text-[11px] font-semibold text-slate-400 hover:underline mt-1">${t('studio.backToFileIssues')}</button>`;
       if (issue.duplicateRef) {
         document.getElementById('studio-jump-duplicate')?.addEventListener('click', () => studioNavigateToDuplicateRef(issue.duplicateRef));
       }
@@ -4182,25 +4286,25 @@
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2 flex-wrap">
-                  <p class="text-lg font-bold text-slate-900">Scan Passed</p>
-                  <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">Simulation complete</span>
+                  <p class="text-lg font-bold text-slate-900">${t('result.scanPassed')}</p>
+                  <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">${t('result.simulationComplete')}</span>
                 </div>
-                <p class="text-sm text-slate-500 mt-0.5">Every check ran clean${hasIssues ? `, though ${issues.length} non-blocking finding${issues.length === 1 ? '' : 's'} were flagged below` : ''}. Dry run only — no repository was created and nothing was pushed to GitHub.</p>
+                <p class="text-sm text-slate-500 mt-0.5">${hasIssues ? t('result.allCleanWithIssues', { count: issues.length }) : t('result.allCleanNoIssues')} ${t('result.dryRunNote')}</p>
               </div>
             </div>
             ${scanStatHeaderHtml(issues)}
             ${canEffectivate ? `
             <div class="mt-6 pt-5 border-t border-slate-100 flex items-center justify-center gap-2">
               <button type="button" id="effectivateBtn" data-project-id="${projectId}"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25" title="Provision the GitHub repo and push this exact validated snapshot for real">
-                Effectivate — provision &amp; push for real
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25" title="${escapeAttr(t('result.effectivateTitle'))}">
+                ${t('result.effectivate')}
               </button>
               <button type="button" id="resultStudioBtn"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50" title="Browse this run's findings in Ignite Studio">
-                Open in Ignite Studio ⧉
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50" title="${escapeAttr(t('result.openStudioTitle'))}">
+                ${t('review.openStudio')}
               </button>
             </div>
-            <p class="text-[11px] text-slate-400 mt-2 text-center">This snapshot's source stays browsable in Studio until you start a new run, the server restarts, or it expires (24h) — same lifetime as Effectivate.</p>
+            <p class="text-[11px] text-slate-400 mt-2 text-center">${t('result.studioLifetimeNote')}</p>
             <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden text-center"></p>` : ''}
           </div>`;
         wireCriticalFindingsRows();
@@ -4211,13 +4315,13 @@
       } else if (ok) {
         resultBanner.innerHTML = `
           <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center shadow-card">
-            <p class="text-emerald-800 font-semibold mb-1">Pipeline complete — repository shipped 🎉</p>
+            <p class="text-emerald-800 font-semibold mb-1">${t('result.shipped')}</p>
             <a href="${repoUrl}" target="_blank" rel="noopener"
                class="inline-flex items-center gap-2 mt-2 text-sm font-mono text-emerald-700 hover:text-emerald-900 underline underline-offset-4">
               ${repoUrl}
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
             </a>
-            ${prUrl ? `<p class="text-xs text-emerald-700 mt-3">Onboarding PR (auto-merges on green checks): <a href="${prUrl}" target="_blank" rel="noopener" class="underline underline-offset-2 font-mono">${prUrl}</a></p>` : ''}
+            ${prUrl ? `<p class="text-xs text-emerald-700 mt-3">${t('result.onboardingPrNote')} <a href="${prUrl}" target="_blank" rel="noopener" class="underline underline-offset-2 font-mono">${prUrl}</a></p>` : ''}
           </div>`;
       } else {
         const canEffectivate = !!effectivatable && projectId != null;
@@ -4229,25 +4333,25 @@
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2 flex-wrap">
-                  <p class="text-lg font-bold text-slate-900">Scan Failed</p>
-                  <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border bg-rose-50 text-rose-700 border-rose-200">Pipeline Halted${phase ? ` — Phase ${displayPhaseNumber(phase)}` : ''}</span>
+                  <p class="text-lg font-bold text-slate-900">${t('result.scanFailed')}</p>
+                  <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border bg-rose-50 text-rose-700 border-rose-200">${phase ? t('result.pipelineHaltedPhase', { phase: displayPhaseNumber(phase) }) : t('result.pipelineHalted')}</span>
                 </div>
-                <p class="text-sm text-slate-500 mt-0.5">${escapeHtml(error || 'Unknown error')}</p>
+                <p class="text-sm text-slate-500 mt-0.5">${escapeHtml(error || t('result.unknownError'))}</p>
               </div>
-              ${issues.length > 0 ? `<div class="text-right shrink-0"><p class="text-3xl font-black text-slate-900">${issues.length}</p><p class="text-[11px] text-slate-400">Total Issues Found</p></div>` : ''}
+              ${issues.length > 0 ? `<div class="text-right shrink-0"><p class="text-3xl font-black text-slate-900">${issues.length}</p><p class="text-[11px] text-slate-400">${t('result.totalIssuesFound')}</p></div>` : ''}
             </div>
             ${scanStatHeaderHtml(issues)}
-            <p class="text-xs text-slate-500 mt-5 pt-5 border-t border-slate-100">Fix the violations above, re-zip, and try again. Staging files were cleaned up.</p>
+            <p class="text-xs text-slate-500 mt-5 pt-5 border-t border-slate-100">${t('result.fixAndRetry')}</p>
             ${canEffectivate ? `
-            <p class="text-xs text-slate-500 mt-3">Every flagged finding was already scanned and validated — if all blocking findings are acknowledged/justified, you can still ship this exact snapshot without re-uploading:</p>
+            <p class="text-xs text-slate-500 mt-3">${t('result.shipAnywayNote')}</p>
             <div class="mt-2 flex items-center gap-2">
               <button type="button" id="effectivateBtn" data-project-id="${projectId}"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md" title="Provision the GitHub repo and push this exact validated snapshot for real">
-                Effectivate — provision &amp; push for real
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md" title="${escapeAttr(t('result.effectivateTitle'))}">
+                ${t('result.effectivate')}
               </button>
               <button type="button" id="resultStudioBtn"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50" title="Browse this run's findings in Ignite Studio">
-                Open in Ignite Studio ⧉
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50" title="${escapeAttr(t('result.openStudioTitle'))}">
+                ${t('review.openStudio')}
               </button>
             </div>
             <p id="effectivateError" class="text-xs text-rose-600 mt-2 hidden"></p>` : ''}
@@ -4309,8 +4413,8 @@
           return;
         }
         if (!res.ok) {
-          if (errEl) { errEl.textContent = data.error || 'Effectivate failed.'; errEl.classList.remove('hidden'); }
-          if (btn) { btn.disabled = false; btn.textContent = 'Effectivate — provision & push for real'; }
+          if (errEl) { errEl.textContent = data.error || t('result.effectivateFailed'); errEl.classList.remove('hidden'); }
+          if (btn) { btn.disabled = false; btn.textContent = t('result.effectivate'); }
           return;
         }
         showResult(true, { repoUrl: data.repoUrl, prUrl: data.prUrl, dryRun: false });
@@ -4318,7 +4422,7 @@
         state.phases[6].state = 'failed';
         state.phases[6].logs.push(`✗ Could not reach server: ${e.message}`);
         renderPipeline();
-        if (errEl) { errEl.textContent = `Could not reach server: ${e.message}`; errEl.classList.remove('hidden'); }
+        if (errEl) { errEl.textContent = `${t('result.couldNotReachServer')} ${e.message}`; errEl.classList.remove('hidden'); }
         if (btn) { btn.disabled = false; btn.textContent = 'Effectivate — provision & push for real'; }
       } finally {
         clearInterval(pollTimer);
@@ -4359,7 +4463,7 @@
       bulkJustificationEl.value = '';
 
       function updateSelectedCount() {
-        selectedCountEl.textContent = `${list.querySelectorAll('.override-check:checked').length} selected`;
+        selectedCountEl.textContent = t('review.selectedCount', { count: list.querySelectorAll('.override-check:checked').length });
       }
       function updateActorVisibility() {
         const anyChecked = !!list.querySelector('.override-check:checked');
@@ -4717,7 +4821,7 @@
         uploadStatusSpinner.classList.add('hidden');
         const pct = uploadTotal ? Math.min(100, Math.round((uploadLoaded / uploadTotal) * 100)) : 0;
         uploadStatusFill.style.width = pct + '%';
-        uploadStatusText.textContent = 'Uploading project…';
+        uploadStatusText.textContent = t('upload.uploadingProject');
         const elapsed = formatDuration(Date.now() - uploadStartedAt);
         uploadStatusPct.textContent = uploadTotal
           ? `${pct}% (${(uploadLoaded / 1048576).toFixed(1)} / ${(uploadTotal / 1048576).toFixed(1)} MB) · ${elapsed} elapsed`
@@ -4725,7 +4829,7 @@
       } else if (uploadStage === 'waiting') {
         uploadStatusFill.style.width = '100%';
         uploadStatusSpinner.classList.remove('hidden');
-        uploadStatusText.textContent = 'Upload received — server is unpacking & starting checks…';
+        uploadStatusText.textContent = t('upload.uploadReceived');
         uploadStatusPct.textContent = `${formatDuration(Date.now() - uploadWaitStartedAt)} elapsed`;
       }
     }
@@ -5040,15 +5144,15 @@
               ${histSourceBadge(p.source)}
               <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border ${HIST_STATUS[p.status] || HIST_STATUS.running} uppercase shrink-0">${escapeHtml(p.status)}</span>
               </div>
-              <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${p.doc_count} document${p.doc_count === 1 ? '' : 's'}</p>
+              <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml((p.created_at || '').replace('T', ' '))} UTC · ${t('history.documentCount', { count: p.doc_count })}</p>
             </button>
             <div class="flex items-center gap-3 flex-wrap">
-              ${p.status === 'running' && p.job_id ? `<button type="button" class="hist-switch-to-job text-[11px] font-semibold text-emerald-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="Switch the main view to this still-running extraction">▶ Switch to this run</button>` : ''}
-              <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">📋 Checks</button>
-              ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${p.retained ? 'Full Ignite Studio — source retained for this run (Dependencies/SBOM/LOC/Posture/CodeQL/Rescan all available)' : 'Browse flagged findings in Ignite Studio (read-only — staging files for this run are gone)'}">${p.retained ? `🧪 Studio${p.retained_tier === 'pruned' ? ' (flagged files only)' : ' (full)'}` : '🧪 Studio'}</button>` : ''}
-              ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${p.issue_count} issue${p.issue_count === 1 ? '' : 's'}</button>` : ''}
-              ${p.issue_count > 0 && p.job_id ? `<button type="button" class="hist-fix-pr text-[11px] font-semibold text-brand-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="Generate a PR with AI-suggested fixes for this run's open issues">✨ Fix PR</button>` : ''}
-              <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold ml-auto" data-id="${p.id}" title="Delete this project">✕</button>
+              ${p.status === 'running' && p.job_id ? `<button type="button" class="hist-switch-to-job text-[11px] font-semibold text-emerald-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="${escapeAttr(t('history.switchToRunTitle'))}">${t('history.switchToRun')}</button>` : ''}
+              <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.checksBtn')}</button>
+              ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${escapeAttr(p.retained ? t('history.fullStudioTitle') : t('history.readOnlyStudioTitle'))}">${p.retained ? `${t('history.studioBtn')}${p.retained_tier === 'pruned' ? ` (${t('history.flaggedFilesOnly')})` : ` (${t('common.full')})`}` : t('history.studioBtn')}</button>` : ''}
+              ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
+              ${p.issue_count > 0 && p.job_id ? `<button type="button" class="hist-fix-pr text-[11px] font-semibold text-brand-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="${escapeAttr(t('pipeline.generateFixPrTitle'))}">${t('history.fixPrBtn')}</button>` : ''}
+              <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold ml-auto" data-id="${p.id}" title="${escapeAttr(t('history.deleteProjectTitle'))}">✕</button>
             </div>
           </div>
           <div class="hist-detail hidden px-5 pb-4"></div>
@@ -5236,7 +5340,7 @@
       }
       openProjects.add(id);
       detail.classList.remove('hidden');
-      detail.innerHTML = '<p class="text-xs text-slate-400">Loading…</p>';
+      detail.innerHTML = `<p class="text-xs text-slate-400">${t('common.loading')}</p>`;
       let p;
       try {
         p = await (await fetch(`/api/projects/${id}`)).json();
@@ -5285,23 +5389,23 @@
               ${o.file ? `<span class="text-[11px] font-mono text-slate-400">${escapeHtml(o.file)}${o.line ? ':' + o.line : ''}</span>` : ''}
             </div>
             <p class="text-[11px] text-slate-700 mt-1">${escapeHtml(o.summary)}</p>
-            <p class="text-[11px] text-slate-600 mt-1"><span class="font-semibold">Justification:</span> ${escapeHtml(o.justification)}</p>
-            <p class="text-[10px] text-slate-400 mt-1">Overridden by ${escapeHtml(o.actor_name || o.actor_email)} (${escapeHtml(o.actor_email)}) · ${escapeHtml((o.created_at || '').replace('T', ' '))} UTC · email ${o.email_sent ? 'sent' : 'not sent'}</p>
+            <p class="text-[11px] text-slate-600 mt-1"><span class="font-semibold">${t('history.justification')}</span> ${escapeHtml(o.justification)}</p>
+            <p class="text-[10px] text-slate-400 mt-1">${t('history.overriddenBy', { name: escapeHtml(o.actor_name || o.actor_email), email: escapeHtml(o.actor_email), date: escapeHtml((o.created_at || '').replace('T', ' ')), emailStatus: o.email_sent ? t('history.emailSent') : t('history.emailNotSent') })}</p>
           </div>`).join('')}</div>`;
 
       detail.innerHTML = `
         <button type="button" class="hist-load-main-btn flex items-center gap-1.5 text-[11px] font-semibold text-brand-600 hover:underline mb-2.5">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
-          Load into main view
+          ${t('history.loadIntoMainView')}
         </button>
         ${p.repo_url ? `<a href="${escapeHtml(p.repo_url)}" target="_blank" rel="noopener" class="block text-[11px] font-mono text-brand-600 hover:text-brand-800 underline underline-offset-2 truncate mb-2">${escapeHtml(p.repo_url)}</a>` : ''}
-        ${p.scan_location ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="${escapeAttr(p.scan_location)}"><span class="font-semibold text-slate-400">Scanned from:</span> <span class="font-mono">${escapeHtml(p.scan_location)}</span></p>` : ''}
-        ${p.source_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="Reproduce this exact scan once its retained source ages out: git checkout ${escapeAttr(p.source_commit_sha)} in the original repo"><span class="font-semibold text-slate-400">Source commit:</span> <span class="font-mono">${escapeHtml(p.source_commit_sha)}</span></p>` : ''}
-        ${p.shipped_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="The commit pushed to GitHub for this run"><span class="font-semibold text-slate-400">Shipped commit:</span> <span class="font-mono">${escapeHtml(p.shipped_commit_sha)}</span></p>` : ''}
+        ${p.scan_location ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="${escapeAttr(p.scan_location)}"><span class="font-semibold text-slate-400">${t('history.scannedFrom')}</span> <span class="font-mono">${escapeHtml(p.scan_location)}</span></p>` : ''}
+        ${p.source_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="Reproduce this exact scan once its retained source ages out: git checkout ${escapeAttr(p.source_commit_sha)} in the original repo"><span class="font-semibold text-slate-400">${t('history.sourceCommit')}</span> <span class="font-mono">${escapeHtml(p.source_commit_sha)}</span></p>` : ''}
+        ${p.shipped_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="The commit pushed to GitHub for this run"><span class="font-semibold text-slate-400">${t('history.shippedCommit')}</span> <span class="font-mono">${escapeHtml(p.shipped_commit_sha)}</span></p>` : ''}
         ${(p.status === 'failed' || p.status === 'aborted') && p.error ? `<p class="text-[11px] text-rose-600 mb-2">✗ ${escapeHtml(p.error)}</p>` : ''}
-        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Pipeline steps</p>
-        <div class="space-y-1.5 mb-3">${stepsHtml || '<p class="text-[11px] text-slate-400">No step history recorded.</p>'}</div>
-        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Documents${p.gxp ? ' (GxP validation)' : ''}</p>
+        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">${t('history.pipelineSteps')}</p>
+        <div class="space-y-1.5 mb-3">${stepsHtml || `<p class="text-[11px] text-slate-400">${t('history.noStepHistory')}</p>`}</div>
+        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">${t('history.documents')}${p.gxp ? ` (${t('history.gxpValidation')})` : ''}</p>
         <div class="space-y-1.5">${docsHtml}</div>
         ${overridesHtml}`;
 
@@ -5314,7 +5418,7 @@
 
     $('historyRefreshBtn').addEventListener('click', loadProjects);
     $('historyClearBtn').addEventListener('click', async () => {
-      if (!confirm('Clear all recent checks? This permanently deletes every project record, including its issues, overrides, and Studio history. This cannot be undone.')) return;
+      if (!confirm(t('history.clearAllConfirm'))) return;
       try {
         const res = await fetch('/api/projects', { method: 'DELETE' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -5371,6 +5475,25 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !$('historyDrawer').classList.contains('hidden')) closeHistoryDrawer();
     });
+
+    // Language picker — same show/hide popover pattern as accountMenuBtn/accountMenu above.
+    $('localeMenuBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      $('localeMenu').classList.toggle('hidden');
+    });
+    document.querySelectorAll('.locale-option').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setLocale(btn.dataset.locale);
+        $('localeMenu').classList.add('hidden');
+      });
+    });
+    document.addEventListener('click', (e) => {
+      const menu = $('localeMenu');
+      if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== $('localeMenuBtn')) {
+        menu.classList.add('hidden');
+      }
+    });
+    applyStaticTranslations();
 
     /* Initial render */
     resetPhases();

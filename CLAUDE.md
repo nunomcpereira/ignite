@@ -77,6 +77,18 @@ See `README.md`'s "System Architecture" diagram and "Pipeline Checks" table for 
 
 Settings live in `config.json` at the repo root (`config.example.json` is the template, `IGNITE_CONFIG_DIR` tells the server where to find it — defaults to cwd); environment variables override individual keys — see `.env.example` for the full list. `config.json` and `.env` are both gitignored and contain this developer's real org name, SMTP creds, etc. — don't commit them.
 
+## White-label branding (`public/branding.config.js`)
+
+`public/index.html` never hardcodes brand values (product name, page title, header logo, support link, the `brand` accent color scale) — it reads them all from `window.IGNITE_BRAND`, defined by `public/branding.config.js` and merged over Ignite's own defaults (`DEFAULT_BRAND` in `index.html`'s `<head>`) so any key left out falls back to current Ignite branding unchanged. To apply a customer's brand, edit **only** `public/branding.config.js` — never edit brand values directly in `index.html`. This keeps the two non-conflicting: upstream feature commits touch `index.html`'s structure/logic, a customer's branding touches only their own file, and `git pull`/merge never sees the same line change on both sides. `branding.config.js` ships checked in with an empty override object (see its own header comment for every available key and an example) — the VS Code extension's own icon/name isn't covered by this and would need a separate per-customer build if ever themed too.
+
+## Internationalization (`public/i18n.js`)
+
+`public/index.html` supports English/French/Portuguese/German for its **static UI chrome only** — buttons, labels, headers, modals, tooltips, placeholders. Server-generated text (phase titles/logs, finding summaries/categories/severities, CWE/OWASP ids, tool output, file paths, URLs, JSON, raw API error messages) is never translated; it comes from the Rust backend and stays exactly as the API sends it. Translations live in `public/i18n.js` (`window.IGNITE_I18N.translations`), keyed by locale then by dotted key (e.g. `upload.title`), with `en` as the source of truth. `index.html` picks up a locale by two conventions — never a hardcoded literal for in-scope UI copy:
+- Static markup: a `data-i18n`/`data-i18n-title`/`data-i18n-placeholder` attribute naming the key, applied by `applyStaticTranslations()`.
+- JS-rendered (template-literal) markup: an inline `t('some.key', vars?)` call at the render site.
+
+The picker (header, next to the theme toggle) calls `setLocale()`, which persists to `localStorage['ignite-locale']` and re-applies `[data-i18n*]` elements immediately; already-open dynamic panels pick up the new locale the next time their own render logic runs, not retroactively — there's no global re-render-on-locale-change. When adding new UI copy, add the key to `i18n.js`'s `en` table (and ideally fr/pt/de too — a missing key falls back to `en`, then to the raw key itself, so an incomplete translation degrades gracefully rather than breaking).
+
 ## Hardening invariants (don't relax without a strong reason)
 
 - Every archive entry's resolved path must stay inside the staging root (zip-slip); symlink entries are skipped and never followed (`rust/crates/staging`).
