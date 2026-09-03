@@ -146,7 +146,7 @@
   <div id="historyDrawer" class="hidden fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-50 border-l border-slate-200 shadow-2xl z-50 flex flex-col transition-transform">
     <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-white shrink-0">
       <h2 class="text-sm font-bold text-slate-900">Recent Checks &amp; Effectivated Repos</h2>
-      <button id="historyDrawerCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100">
+      <button id="historyDrawerCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" title="Close">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
@@ -155,13 +155,13 @@
         <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Recent Checks</h2>
           <div class="flex items-center gap-3">
-            <button id="historyClearBtn" title="Clear all"
+            <button id="historyClearBtn" title="Delete every recent check from history"
               class="text-slate-400 hover:text-red-600 transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
               </svg>
             </button>
-            <button id="historyRefreshBtn" title="Refresh"
+            <button id="historyRefreshBtn" title="Refresh the recent-checks list"
               class="text-slate-400 hover:text-brand-600 transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
@@ -177,7 +177,7 @@
       <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
         <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <h2 class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Effectivated Repos</h2>
-          <button id="effectivatedRefreshBtn" title="Refresh"
+          <button id="effectivatedRefreshBtn" title="Refresh the effectivated-repos list"
             class="text-slate-400 hover:text-brand-600 transition-colors">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
@@ -275,11 +275,11 @@
             <input id="gxpLinkUrl" type="url" placeholder="https://dms.example.com/validation-plan.pdf" autocomplete="off" spellcheck="false"
               class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500" />
             <button type="button" id="gxpAddLinkBtn"
-              class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors shrink-0">Add link</button>
+              class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors shrink-0" title="Add another GxP validation document link">Add link</button>
           </div>
           <input type="file" id="gxpFileInput" multiple class="hidden" />
           <button type="button" id="gxpUploadBtn"
-            class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">Upload documents…</button>
+            class="text-xs font-semibold px-3 py-2 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors" title="Upload GxP validation documents">Upload documents…</button>
           <p id="gxpError" class="hidden text-xs font-medium text-rose-600 mt-2"></p>
           <ul id="gxpList" class="mt-3 space-y-1.5"></ul>
         </div>
@@ -346,13 +346,13 @@
         <span id="pipelineStatusBadge" class="hidden text-[11px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-md border items-center gap-1.5"></span>
       </div>
       <div class="flex items-center gap-2">
-      <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+      <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="View this run's Phase 4 checks report — pass/fail detail for every check that ran">
         📋 Checks report
       </button>
-      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="View every flagged issue from this run, filterable by severity">
         View flagged issues
       </button>
-      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100">
+      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" title="Preview and open a pull request with AI-suggested fixes for this run's open issues">
         ✨ Generate fix PR
       </button>
       </div>
@@ -389,20 +389,20 @@
           </button>
           <input id="reviewImportFileInput" type="file" accept=".md,text/markdown,text/plain" class="hidden" />
           <button id="reviewDownloadBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Download this findings review as a file">
             Download ⤓
           </button>
-          <button id="reviewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+          <button id="reviewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
         </div>
       </div>
       <div class="px-6 pt-3 flex items-center justify-between gap-3">
         <div class="flex items-center gap-3 text-[11px] font-semibold">
-          <button type="button" id="reviewFilterErrors" class="text-rose-600 hover:underline">Errors only</button>
-          <button type="button" id="reviewFilterWarnings" class="text-amber-600 hover:underline">Warnings only</button>
+          <button type="button" id="reviewFilterErrors" class="text-rose-600 hover:underline" title="Show only blocking (error-severity) findings">Errors only</button>
+          <button type="button" id="reviewFilterWarnings" class="text-amber-600 hover:underline" title="Show only non-blocking (warning-severity) findings">Warnings only</button>
         </div>
         <div class="flex items-center gap-3">
-          <button type="button" id="reviewStudioBtn" class="text-[11px] font-semibold text-violet-600 hover:underline">Open in Ignite Studio ⧉</button>
-          <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline">Expand all code ▸</button>
+          <button type="button" id="reviewStudioBtn" class="text-[11px] font-semibold text-violet-600 hover:underline" title="Open this run in Ignite Studio to browse source alongside every finding">Open in Ignite Studio ⧉</button>
+          <button type="button" id="reviewExpandAllBtn" class="text-[11px] font-semibold text-brand-600 hover:underline" title="Expand every finding's code snippet inline">Expand all code ▸</button>
         </div>
       </div>
       <div id="reviewBulkBar" class="hidden px-6 pt-3 pb-1 border-b border-slate-100 bg-slate-50">
@@ -417,7 +417,7 @@
           <textarea id="reviewBulkJustification" rows="2" placeholder="Justification to apply to all selected issues…"
                     class="flex-1 text-xs px-3 py-2 rounded-lg border border-slate-200"></textarea>
           <button type="button" id="reviewBulkApplyBtn"
-                  class="text-xs font-semibold px-3 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 shrink-0">Apply to selected</button>
+                  class="text-xs font-semibold px-3 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 shrink-0" title="Apply the same justification to every selected finding at once">Apply to selected</button>
         </div>
       </div>
       <div id="reviewIssueList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
@@ -427,8 +427,8 @@
       </div>
       <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
         <p id="reviewError" class="text-xs text-rose-600 flex-1"></p>
-        <button id="reviewStopBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Stop pipeline</button>
-        <button id="reviewProceedBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700">Continue</button>
+        <button id="reviewStopBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Stop this pipeline run instead of continuing past the pause">Stop pipeline</button>
+        <button id="reviewProceedBtn" type="button" class="text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700" title="Continue the pipeline run with the overrides submitted above">Continue</button>
       </div>
     </div>
   </div>
@@ -446,14 +446,14 @@
         <!-- View tabs: "Code" is the always-on file/editor pane; the rest
              swap the same three-pane body for a read-only report view. -->
         <span class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px">Code</span>
-        <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">Dependencies</button>
-        <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">SBOM</button>
-        <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">LOC Metrics</button>
-        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors">Posture</button>
+        <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Dependency license/vulnerability report for this project">Dependencies</button>
+        <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Software Bill of Materials (SBOM) for this project">SBOM</button>
+        <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Lines-of-code metrics by language">LOC Metrics</button>
+        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" title="Compliance & security feature posture (auth, logging, encryption, etc.)">Posture</button>
         <span class="flex-1"></span>
         <div class="flex items-center gap-1.5">
-          <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">📜 Provenance</button>
-          <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Rescan ↻</button>
+          <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="View this build's provenance / attestation">📜 Provenance</button>
+          <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Re-run the pipeline against the current staged source">Rescan ↻</button>
           <button id="studioCodeqlQueryBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Write and run your own .ql query against a database Run CodeQL already built. Results filter the file tree.">Custom Query</button>
           <button id="studioCodeqlBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-sm" title="Runs the real CodeQL CLI against the currently staged project — a database build, so this can take from several seconds to a couple of minutes. Progress streams into the Output panel below.">🔎 Run CodeQL</button>
           <button id="studioCloseBtn" type="button" title="Close" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
@@ -510,11 +510,11 @@
           </div>
           <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
             <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate">Select a file from the tree ←</span>
-            <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100">📦 View license compliance for this manifest</button>
+            <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100" title="View the license-compliance detail for this manifest file">📦 View license compliance for this manifest</button>
             <span id="studioDirtyBadge" class="hidden text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">UNSAVED</span>
-            <button id="studioEditBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50">Edit</button>
-            <button id="studioSaveBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">Save + rescan</button>
-            <button id="studioDownloadBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50">⬇ Download</button>
+            <button id="studioEditBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50" title="Edit this file's contents">Edit</button>
+            <button id="studioSaveBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" title="Save changes and re-run the checks against this file">Save + rescan</button>
+            <button id="studioDownloadBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50" title="Download this file">⬇ Download</button>
           </div>
           <div id="studioCodeWrap" class="flex-1 min-h-0 overflow-auto font-mono text-[12px] leading-relaxed"></div>
         </div>
@@ -538,8 +538,8 @@
           </span>
           <span id="studioOutputTaskLabel" class="text-[11px] text-slate-500 font-mono pb-1.5"></span>
           <span class="flex-1"></span>
-          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5">Clear</button>
-          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5">Close ✕</button>
+          <button id="studioOutputClearBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5" title="Clear the output log">Clear</button>
+          <button id="studioOutputCloseBtn" type="button" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200 mb-1.5" title="Close the output log panel">Close ✕</button>
         </div>
         <pre id="studioOutputLog" class="flex-1 overflow-y-auto px-3 py-2 text-[11px] font-mono text-slate-300 leading-relaxed whitespace-pre-wrap"></pre>
       </div>
@@ -556,14 +556,14 @@
         </div>
         <div class="flex items-center gap-3 shrink-0">
           <button id="issuesViewExpandAllBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Expand every issue's code snippet inline">
             Expand all code ▸
           </button>
           <button id="issuesViewDownloadBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Download the flagged-issues list">
             Download ⤓
           </button>
-          <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+          <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
         </div>
       </div>
       <div id="issuesViewList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
@@ -583,12 +583,12 @@
           <p class="text-sm font-semibold text-slate-800">Generate fix PR</p>
           <p id="fixPrSubtitle" class="text-xs text-slate-500 mt-0.5">AI-suggested fixes for this run's open issues — review each one, then open a PR with the ones you keep.</p>
         </div>
-        <button id="fixPrCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0">✕</button>
+        <button id="fixPrCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0" title="Close">✕</button>
       </div>
       <div id="fixPrList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
       <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
         <p id="fixPrStatus" class="text-xs text-slate-500"></p>
-        <button id="fixPrOpenBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">
+        <button id="fixPrOpenBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed" title="Open the pull request with the fixes selected above">
           Open PR
         </button>
       </div>
@@ -612,10 +612,10 @@
         </div>
         <div class="flex items-center gap-3 shrink-0">
           <button id="checksReportDownloadBtn" type="button"
-                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" title="Download the checks report">
             Download ⤓
           </button>
-          <button id="checksReportCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+          <button id="checksReportCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
         </div>
       </div>
       <div id="checksReportBody" class="px-6 py-4 space-y-5 overflow-y-auto flex-1"></div>
@@ -631,7 +631,7 @@
           <button id="phaseMaxCopyBtn" type="button" class="text-slate-400 hover:text-brand-600" title="Copy phase log to clipboard">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"/></svg>
           </button>
-          <button id="phaseMaxCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+          <button id="phaseMaxCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" title="Close">✕</button>
         </div>
       </div>
       <div id="phaseMaxBody" class="px-6 py-4 overflow-y-auto flex-1 bg-slate-950 rounded-b-2xl font-mono text-xs leading-relaxed"></div>
@@ -2321,7 +2321,7 @@
       // viewport, so the full tool list is always collapsed behind a
       // tap-to-expand summary rather than shown inline.
       bar.innerHTML = `<div class="px-0 py-2">
-        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2">
+        <button type="button" id="toolsBarToggle" class="w-full flex items-center justify-between gap-2" title="Show which scanner tools (Trivy, Semgrep, gitleaks, etc.) are installed and enabled">
           <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">External tools</span>
           <span class="text-[10px] font-semibold text-slate-500">${connectedCount}/${total} connected <span id="toolsBarChevron">▾</span></span>
         </button>
@@ -3927,14 +3927,14 @@
             <button type="button" id="studio-chain-next" class="text-[10px] font-semibold text-amber-700 hover:underline disabled:opacity-30 disabled:no-underline">Next step →</button>
           </div>
         </div>` : ''}
-        <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2">Explain this issue</button>
+        <button type="button" id="${explainId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 mb-2" title="Get a plain-language explanation of this finding via the local LLM">Explain this issue</button>
         <div id="${explainId}-body" class="text-[11px] text-slate-600 mb-3"></div>
         <div class="border border-slate-200 rounded-lg p-3 mb-3">
           <p class="text-xs font-bold text-slate-800 flex items-center gap-1.5 mb-2">
             <svg class="w-3.5 h-3.5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>
             AI Suggested Fix
           </p>
-          <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100">Generate suggested fix</button>
+          <button type="button" id="${fixId}" class="w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100" title="Ask the local LLM to propose a concrete code fix for this finding">Generate suggested fix</button>
           <div id="${fixId}-body" class="text-[11px] text-slate-600 mt-2"></div>
         </div>
         ${issue.cwe || issue.references?.cve?.length ? `
@@ -4019,7 +4019,7 @@
             <p class="mb-2">${escapeHtml(data.suggestion.explanation)}</p>
             <p class="text-[10px] font-semibold text-slate-400 uppercase mb-1">Lines ${data.suggestion.startLine}-${data.suggestion.endLine}</p>
             ${studioDiffBoxHtml(issue.snippet, data.suggestion.replacement)}
-            <button type="button" id="studio-apply-fix" class="w-full flex items-center justify-center gap-1.5 text-[11px] font-bold px-2.5 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 shadow-sm">
+            <button type="button" id="studio-apply-fix" class="w-full flex items-center justify-center gap-1.5 text-[11px] font-bold px-2.5 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 shadow-sm" title="Apply the suggested fix to this file">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
               Apply Fix
             </button>`;
@@ -4192,11 +4192,11 @@
             ${canEffectivate ? `
             <div class="mt-6 pt-5 border-t border-slate-100 flex items-center justify-center gap-2">
               <button type="button" id="effectivateBtn" data-project-id="${projectId}"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25">
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 shadow-md shadow-brand-600/25" title="Provision the GitHub repo and push this exact validated snapshot for real">
                 Effectivate — provision &amp; push for real
               </button>
               <button type="button" id="resultStudioBtn"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50">
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50" title="Browse this run's findings in Ignite Studio">
                 Open in Ignite Studio ⧉
               </button>
             </div>
@@ -4242,11 +4242,11 @@
             <p class="text-xs text-slate-500 mt-3">Every flagged finding was already scanned and validated — if all blocking findings are acknowledged/justified, you can still ship this exact snapshot without re-uploading:</p>
             <div class="mt-2 flex items-center gap-2">
               <button type="button" id="effectivateBtn" data-project-id="${projectId}"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md">
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl bg-slate-800 text-white hover:bg-slate-900 shadow-md" title="Provision the GitHub repo and push this exact validated snapshot for real">
                 Effectivate — provision &amp; push for real
               </button>
               <button type="button" id="resultStudioBtn"
-                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50">
+                      class="text-sm font-semibold px-5 py-2.5 rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50" title="Browse this run's findings in Ignite Studio">
                 Open in Ignite Studio ⧉
               </button>
             </div>
