@@ -3,9 +3,10 @@
 //! check_guidelines, check_project (all local, backed directly by
 //! ignite-guidelines), plus check_dependency_licenses,
 //! check_dependency_vulnerabilities, onboard_project,
-//! resolve_review_decision, effectivate_project (thin proxies to a
-//! running Ignite server, same "MCP process never touches git/gh/the
-//! manifest parsers directly" pattern as the JS original).
+//! resolve_review_decision, effectivate_project, preview_fix_pr,
+//! apply_fix_pr (thin proxies to a running Ignite server, same "MCP
+//! process never touches git/gh/the manifest parsers directly" pattern
+//! as the JS original).
 //!
 //! Both transports are ported: `MCP_TRANSPORT=stdio` (default, spawned
 //! as a child process by an editor/agent) and `MCP_TRANSPORT=http`
@@ -142,6 +143,20 @@ struct EffectivateProjectRequest {
     actor: Option<Actor>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct PreviewFixPrRequest {
+    /// The scan job id to propose fixes for — the "jobId" field from a prior onboard_project call (dryRun or real) against the same repo.
+    job_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ApplyFixPrRequest {
+    /// Same job id passed to preview_fix_pr.
+    job_id: String,
+    /// The candidate list from preview_fix_pr's response, copied verbatim (trim it to whichever fixes you want included) — each entry must keep its exact original shape (issueId, file, startLine, endLine, original, replacement, etc.), so re-embed the JSON objects as returned rather than reconstructing them.
+    candidates: Vec<Value>,
+}
+
 #[tool_router]
 impl IgniteMcp {
     fn new() -> Self {
@@ -261,6 +276,22 @@ impl IgniteMcp {
     async fn effectivate_project(&self, Parameters(req): Parameters<EffectivateProjectRequest>) -> Result<CallToolResult, McpError> {
         let endpoint = format!("/api/projects/{}/effectivate", req.project_id);
         self.proxy_to_ignite(&endpoint, serde_json::json!({ "overrides": req.overrides, "actor": req.actor })).await
+    }
+
+    #[tool(
+        description = "Preview LLM-proposed fixes for every open finding from a prior scan job — no git/GitHub involved yet, just candidate diffs to review. Pass the returned candidates (trimmed to whichever you accept) to apply_fix_pr to actually open a PR. Requires a running Ignite server."
+    )]
+    async fn preview_fix_pr(&self, Parameters(req): Parameters<PreviewFixPrRequest>) -> Result<CallToolResult, McpError> {
+        let endpoint = format!("/api/pipeline/{}/fix-pr/preview", urlencoding::encode(&req.job_id));
+        self.proxy_to_ignite(&endpoint, serde_json::json!({})).await
+    }
+
+    #[tool(
+        description = "Open one pull request applying the given fix candidates from a prior preview_fix_pr call — clones the repo's already-provisioned default branch, applies every candidate, pushes a branch, and opens a real PR. Only pass candidates that have actually been reviewed and approved; this is not reversible from here (a human can still close/reject the PR on GitHub). Requires a running Ignite server with `gh` authenticated and the target repo already on GitHub."
+    )]
+    async fn apply_fix_pr(&self, Parameters(req): Parameters<ApplyFixPrRequest>) -> Result<CallToolResult, McpError> {
+        let endpoint = format!("/api/pipeline/{}/fix-pr/apply", urlencoding::encode(&req.job_id));
+        self.proxy_to_ignite(&endpoint, serde_json::json!({ "candidates": req.candidates })).await
     }
 }
 
