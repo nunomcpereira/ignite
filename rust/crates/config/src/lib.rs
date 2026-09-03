@@ -766,7 +766,19 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("ACT_EVENT") { merged.governance.event = v; }
     if let Some(v) = env_num::<u32>("ACT_TIMEOUT_MIN") { merged.governance.timeout_minutes = v; }
     if let Some(v) = env_str("AUTH_MODE") { merged.auth.mode = v; }
+    if let Some(v) = env_str("OIDC_CLIENT_ID") { merged.auth.oidc.client_id = v; }
     if let Some(v) = env_str("OIDC_CLIENT_SECRET") { merged.auth.oidc.client_secret = v; }
+    if let Some(v) = env_str("OIDC_REDIRECT_URI") { merged.auth.oidc.redirect_uri = v; }
+    if let Some(v) = env_str("OIDC_ISSUER") { merged.auth.oidc.issuer = v; }
+    // GitHub OAuth's redirectUri in particular has no other override path:
+    // config.json is gitignored per-environment, so a value baked in for
+    // local dev (e.g. http://localhost:<port>/...) silently stays in force
+    // on every other deployment unless one of these env vars is set —
+    // matching the escape hatch every other config.json value already has.
+    if let Some(v) = env_str("GITHUB_OAUTH_CLIENT_ID") { merged.github.oauth.client_id = v; }
+    if let Some(v) = env_str("GITHUB_OAUTH_CLIENT_SECRET") { merged.github.oauth.client_secret = v; }
+    if let Some(v) = env_str("GITHUB_OAUTH_REDIRECT_URI") { merged.github.oauth.redirect_uri = v; }
+    if let Some(v) = env_str("GITHUB_OAUTH_SCOPE") { merged.github.oauth.scope = v; }
     if let Some(v) = env_bool("GITLEAKS_ENABLED") { merged.security.gitleaks.enabled = v; }
     if let Some(v) = env_str("GITLEAKS_BINARY") { merged.security.gitleaks.binary = v; }
     if let Some(v) = env_str("GITLEAKS_CONFIG_PATH") { merged.security.gitleaks.config_path = v; }

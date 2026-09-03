@@ -449,6 +449,7 @@
               <th class="px-5 py-3" data-i18n="onboardedRepos.colAcks">Acknowledgments</th>
               <th class="px-5 py-3" data-i18n="onboardedRepos.colPrs">Recent PRs</th>
               <th class="px-5 py-3" data-i18n="onboardedRepos.colLastScan">Last scan</th>
+              <th class="px-5 py-3" data-i18n="onboardedRepos.colAction">Action</th>
             </tr>
           </thead>
           <tbody id="onboardedReposTableBody" class="divide-y divide-slate-100"></tbody>
@@ -784,6 +785,7 @@
       currentLocale = loc;
       localStorage.setItem('ignite-locale', loc);
       applyStaticTranslations();
+      if (typeof renderPipeline === 'function' && pipelineEl) renderPipeline();
     }
 
     /* ------------------------------------------------------------ */
@@ -802,6 +804,20 @@
       { id: 5, title: 'Org Governance CI — GitHub Actions', desc: 'Runs devops-governance org workflows locally in Docker via act' },
       { id: 6, title: 'Provisioning & Shipping', desc: 'git init · gh repo create --private · push to main' },
     ];
+    // English text of the 5 built-in phases, keyed by id — used to detect
+    // (byte-for-byte) whether a server-supplied phase is still the
+    // unmodified default so it can be translated via phase.default.<id>.*.
+    // A white-labeled/customized phase title or desc never matches and is
+    // rendered exactly as configured, untranslated (see i18n.js header).
+    const DEFAULT_PHASE_TEXT = Object.fromEntries(PHASES.map((p) => [p.id, { title: p.title, desc: p.desc }]));
+    function phaseTitle(p) {
+      const d = DEFAULT_PHASE_TEXT[p.id];
+      return d && d.title === p.title ? t(`phase.default.${p.id}.title`) : p.title;
+    }
+    function phaseDesc(p) {
+      const d = DEFAULT_PHASE_TEXT[p.id];
+      return d && d.desc === p.desc ? t(`phase.default.${p.id}.desc`) : p.desc;
+    }
 
     // payload: { kind: 'zip', file } | { kind: 'dir', entries: [{file, rel}], name, size }
     const state = { payload: null, running: false, phases: {}, gxp: false, gxpFiles: [], gxpLinks: [], jobId: null, expandedPhases: new Set() };
@@ -1179,11 +1195,11 @@
         const iconState = hasFlaggedIssues ? 'flagged' : ph.state;
         const meta = hasFlaggedIssues
           ? {
-              label: ph.blockingCount > 0 ? `Flagged (${ph.blockingCount} blocking)` : `Flagged (${ph.issueCount})`,
+              label: ph.blockingCount > 0 ? t('phase.status.flaggedBlocking', { count: ph.blockingCount }) : t('phase.status.flagged', { count: ph.issueCount }),
               text: 'text-amber-600 font-bold',
               ring: 'border-amber-200 text-amber-600 bg-amber-50',
             }
-          : STATE_META[ph.state];
+          : { ...STATE_META[ph.state], label: t(`phase.status.${ph.state}`) };
         const hasLogs = ph.logs.length > 0;
         // Phase 4's checks run concurrently and only flush their log lines
         // once every one of them finishes (see runPhase4Checks), so a
@@ -1229,7 +1245,7 @@
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center justify-between gap-2">
-                  <p class="text-sm font-bold text-slate-800 truncate">${idx + 1}. ${p.title}</p>
+                  <p class="text-sm font-bold text-slate-800 truncate">${idx + 1}. ${phaseTitle(p)}</p>
                   <div class="flex items-center gap-2 shrink-0">
                     ${durationHtml}
                     <span class="text-xs font-mono ${meta.text}">${iconState === 'running' ? progressPct + '%' : meta.label}</span>
@@ -1242,7 +1258,7 @@
                     ${hasLogs ? '<svg class="chevron w-4 h-4 text-slate-400 transition-transform shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>' : ''}
                   </div>
                 </div>
-                <p class="text-xs text-slate-500 mt-0.5">${p.desc}</p>
+                <p class="text-xs text-slate-500 mt-0.5">${phaseDesc(p)}</p>
                 ${ph.state === 'running' ? `
                 <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2.5">
                   <div class="h-full bg-brand-600 rounded-full transition-all duration-700" style="width:${progressPct}%"></div>
@@ -5404,6 +5420,7 @@
     function renderOnboardedRepos(repos) {
       $('onboardedReposEmpty').classList.toggle('hidden', repos.length > 0);
       $('onboardedReposTableBody').innerHTML = repos.map((r, i) => {
+        const orgCell = `<a href="https://github.com/${escapeAttr(r.org)}" target="_blank" rel="noopener" class="text-slate-600 hover:text-brand-600 hover:underline">${escapeHtml(r.org)}</a>`;
         const repoCell = r.repoUrl
           ? `<a href="${escapeAttr(r.repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>`
           : `<span class="font-semibold text-slate-800">${escapeHtml(r.repo)}</span>`;
@@ -5416,22 +5433,65 @@
             }).join(' ');
         const acksCell = r.acknowledgments.length === 0
           ? '<span class="text-slate-300">—</span>'
-          : `<button type="button" class="onboarded-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" data-i18n-title="onboardedRepos.downloadAcksTitle">⬇ ${t('onboardedRepos.acknowledgmentsCount', { count: r.acknowledgments.length })}</button>`;
+          : `<button type="button" class="onboarded-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.downloadAcksTitle'))}">⬇ ${t('onboardedRepos.acknowledgmentsCount', { count: r.acknowledgments.length })}</button>`;
+        // Findings review: the in-app read-only issues viewer for this
+        // repo's latest run, same modal the live pipeline's "View flagged
+        // issues" button opens — not a GitHub link, there's no committed
+        // findings artifact in the repo itself.
+        const findingsCell = r.findingsCount > 0
+          ? `<button type="button" class="onboarded-repo-view-findings font-semibold text-rose-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.viewFindingsTitle'))}">${r.findingsCount}</button>`
+          : `<span class="text-slate-400">${r.findingsCount}</span>`;
         return `
         <tr class="align-top">
-          <td class="px-5 py-3.5 text-slate-600">${escapeHtml(r.org)}</td>
+          <td class="px-5 py-3.5">${orgCell}</td>
           <td class="px-5 py-3.5">${repoCell}</td>
           <td class="px-5 py-3.5 text-right ${r.licenseProblems > 0 ? 'font-semibold text-amber-600' : 'text-slate-400'}">${r.licenseProblems}</td>
-          <td class="px-5 py-3.5 text-right ${r.findingsCount > 0 ? 'font-semibold text-rose-600' : 'text-slate-400'}">${r.findingsCount}</td>
+          <td class="px-5 py-3.5 text-right">${findingsCell}</td>
           <td class="px-5 py-3.5">${acksCell}</td>
           <td class="px-5 py-3.5"><div class="flex flex-wrap gap-1 max-w-[220px]">${prsCell}</div></td>
           <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>
+          <td class="px-5 py-3.5">
+            <button type="button" class="onboarded-repo-scan-now text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed" data-i="${i}" title="${escapeAttr(t('onboardedRepos.scanNowTitle'))}">
+              <span class="onboarded-repo-scan-now-label">${t('onboardedRepos.scanNow')}</span>
+            </button>
+          </td>
         </tr>`;
       }).join('');
 
       $('onboardedReposTableBody').querySelectorAll('.onboarded-repo-download-acks').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
         btn.addEventListener('click', () => downloadAcknowledgments(r.org, r.repo, r.acknowledgments));
+      });
+      $('onboardedReposTableBody').querySelectorAll('.onboarded-repo-view-findings').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', async () => {
+          try {
+            const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
+            const data = await res.json();
+            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo });
+          } catch {
+            openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
+          }
+        });
+      });
+      $('onboardedReposTableBody').querySelectorAll('.onboarded-repo-scan-now').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          const label = btn.querySelector('.onboarded-repo-scan-now-label');
+          const originalText = label.textContent;
+          label.textContent = t('onboardedRepos.scanning');
+          try {
+            const res = await fetch(`/api/onboarded-repos/${encodeURIComponent(r.org)}/${encodeURIComponent(r.repo)}/rescan`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            await loadOnboardedRepos();
+          } catch (e) {
+            window.alert(t('onboardedRepos.scanFailed', { error: e.message }));
+            btn.disabled = false;
+            label.textContent = originalText;
+          }
+        });
       });
     }
 
@@ -5490,13 +5550,14 @@
 
       const stepsHtml = (p.steps || []).map((s) => {
         const meta = STATE_META[s.state] || STATE_META.pending;
+        const label = t(`phase.status.${STATE_META[s.state] ? s.state : 'pending'}`);
         const logs = (s.logs || '').trim();
         return `
         <details class="border border-slate-200 rounded-lg bg-white">
           <summary class="flex items-center gap-2 px-3 py-2 ${logs ? 'cursor-pointer hover:bg-slate-50' : 'cursor-default'} select-none">
             <span class="text-[11px] font-bold text-brand-600 shrink-0">P${s.phase}</span>
             <span class="flex-1 min-w-0 text-xs font-medium text-slate-700 truncate">${escapeHtml(s.title)}</span>
-            <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${meta.chip} shrink-0">${meta.label}</span>
+            <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${meta.chip} shrink-0">${label}</span>
           </summary>
           ${logs ? `<div class="terminal bg-slate-900 rounded-b-lg p-2.5 max-h-44 overflow-y-auto font-mono text-[11px] leading-relaxed">${logs.split('\n').map(formatLogLine).join('')}</div>` : ''}
         </details>`;
