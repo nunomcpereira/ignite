@@ -182,6 +182,12 @@ code knew to ask for it.
 
 [View the full technical README on GitHub »](https://github.com/nunomcpereira/ignite#readme)
 
+## Onboarded Repos — every repo at a glance
+
+A second screen in the web UI's lateral nav (next to Dashboard) lists every repo Ignite has ever onboarded, one row per repo: license problems and open findings from its latest scan, every acknowledgment ever recorded for it (downloadable as one file), every PR Ignite has opened against it — the onboarding PR and any fix-PRs — linked straight to GitHub, and the date of its last scan.
+
+See the [README](https://github.com/nunomcpereira/ignite#onboarded-repos--every-repo-at-a-glance) for the full column-by-column reference.
+
 ## White-label branding & multi-language UI
 
 The web UI deploys as your own product, not a bolted-on vendor tool:

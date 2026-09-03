@@ -24,10 +24,10 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "ok": false, "error": message.into() }))).into_response()
 }
 
-fn resolve_org_repo(state: &AppState, job_id: &str) -> Option<(String, String)> {
+fn resolve_org_repo(state: &AppState, job_id: &str) -> Option<(i64, String, String)> {
     let project_id = state.db.get_project_id_by_job_id(job_id)?;
     let project = state.db.get_project(project_id)?;
-    Some((project.org, project.repo))
+    Some((project_id, project.org, project.repo))
 }
 
 async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
@@ -54,7 +54,7 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
 
 async fn apply(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
-    let Some((org, repo)) = resolve_org_repo(&state, job_id) else {
+    let Some((project_id, org, repo)) = resolve_org_repo(&state, job_id) else {
         return err(StatusCode::NOT_FOUND, "This job has no associated GitHub repository yet — it must have already shipped before a fix PR can be opened against it.");
     };
 
@@ -85,6 +85,9 @@ async fn apply(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, h
     }
     if let Some(e) = &outcome.error {
         return err(StatusCode::BAD_GATEWAY, e.clone());
+    }
+    if let Some(pr_url) = &outcome.pr_url {
+        state.db.record_pull_request(project_id, "fix-pr", pr_url, Some(&outcome.branch), Some(outcome.files_changed.len() as i64));
     }
     Json(json!({ "ok": true, "prUrl": outcome.pr_url, "branch": outcome.branch, "filesChanged": outcome.files_changed })).into_response()
 }

@@ -344,6 +344,21 @@ Every check above only runs when a scan is *triggered* - a push, a CLI run, an u
 
 This is a different mechanism from the interactive **✨ Generate fix PR** above: that one is triggered by a person, covers any open finding (not just dependency CVEs), and uses an LLM to draft the diff. `auto-fix-pr` is unattended, scoped to dependency-vulnerability findings only, and resolves the fix deterministically from the advisory data - no LLM involved.
 
+## Onboarded Repos - every repo at a glance
+
+A second lateral-nav screen (next to Dashboard, `GET /api/onboarded-repos`) lists every distinct `(org, repo)` Ignite has ever onboarded, one row each, sorted by most recent activity:
+
+| Column | Source |
+| --- | --- |
+| Org / Repo | the `projects` table, deduplicated to one row per `(org, repo)` - repo name links to GitHub when `repoUrl` is known |
+| License problems | open `license-compliance` issues from that repo's **latest** run only (a fresh snapshot, not a running total) |
+| Findings | every open issue from that repo's **latest** run only |
+| Acknowledgments | every override ever recorded for that repo, across **all** runs - a stable audit fact doesn't stop counting just because a later run didn't repeat it. Shown as a count that downloads the full history (issue id, justification, actor, timestamp) as one markdown file |
+| Recent PRs | every PR Ignite has opened for that repo, across all runs: the onboarding PR (🚀, recorded automatically when a run ships) and any interactive fix-PRs (✨, recorded when `/fix-pr/apply` succeeds) - each a direct link to the PR on GitHub |
+| Last scan | the latest run's `finished_at` (or `created_at` if still running) |
+
+Backed by `DbStore::list_onboarded_repo_summaries` (`rust/crates/db-store`) and a new `pull_requests` table that unifies both PR sources - the onboarding PR (`projects.pr_url`) and interactive fix-PRs are recorded into it the moment they're opened, with a one-time startup backfill for any `pr_url` set before this table existed. Note this list is **every repo Ignite has ever run a check against that created a project row** (including headless `validate-all` calls from the CLI/pre-push hook against an already-existing repo), not only ones freshly provisioned through the onboarding flow - a repo can appear here with zero PRs if it's only ever been gate-checked, never (re-)onboarded through Ignite itself.
+
 ## Ignite Studio - one place for every connected tool's findings
 
 Studio's top bar (reachable from the review gate, or the "Studio" button on a finished run) has one button per non-issue artifact, each replacing the code pane with a live, on-demand report - the same "recompute against the still-staged project" pattern the existing 📦 Dependencies button uses, backed by `GET /api/pipeline/:jobId/studio/{sbom,loc-metrics,posture}`:

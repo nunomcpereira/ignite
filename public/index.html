@@ -176,8 +176,11 @@
        drawer with Recent Checks + Effectivated Repos, which used to sit
        permanently inline below the pipeline and crowded the page. -->
   <nav class="hidden sm:flex flex-col items-center gap-1 w-14 shrink-0 fixed left-0 top-14 bottom-0 bg-white border-r border-slate-200 py-4 z-30">
-    <button type="button" data-i18n-title="header.dashboard" class="w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+    <button id="dashboardNavBtn" type="button" data-i18n-title="header.dashboard" class="w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
+    </button>
+    <button id="onboardedReposNavBtn" type="button" data-i18n-title="header.onboardedRepos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h17.25"/></svg>
     </button>
     <button id="historyDrawerBtn" type="button" data-i18n-title="header.history" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -236,7 +239,7 @@
     </div>
   </div>
 
-  <div class="max-w-4xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+  <div id="dashboardView" class="max-w-4xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
 
     <!-- Page header -->
     <div class="text-center mb-10">
@@ -415,6 +418,46 @@
       Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>
       Staging files are wiped from disk after every run, pass or fail.
     </footer>
+  </div>
+
+  <!-- Onboarded Repos — one row per repo Ignite has ever onboarded, keyed to
+       its latest scan snapshot. Sibling to #dashboardView, toggled by the
+       lateral nav rail's second icon (same mutually-exclusive show/hide
+       pattern, see the nav-switching script below). -->
+  <div id="onboardedReposView" class="hidden max-w-6xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+    <div class="flex items-center justify-between mb-8 gap-4 flex-wrap">
+      <div>
+        <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="onboardedRepos.title">Onboarded Repos</h2>
+        <p class="text-base text-slate-500 mt-1" data-i18n="onboardedRepos.subtitle">Every repo Ignite has onboarded, with its most recent scan snapshot.</p>
+      </div>
+      <button id="onboardedReposRefreshBtn" type="button" data-i18n-title="onboardedRepos.refresh"
+        class="text-slate-400 hover:text-brand-600 transition-colors shrink-0">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+        </svg>
+      </button>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 border-b border-slate-200">
+            <tr class="text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+              <th class="px-5 py-3" data-i18n="onboardedRepos.colOrg">Org</th>
+              <th class="px-5 py-3" data-i18n="onboardedRepos.colRepo">Repo</th>
+              <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colLicense">License problems</th>
+              <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colFindings">Findings</th>
+              <th class="px-5 py-3" data-i18n="onboardedRepos.colAcks">Acknowledgments</th>
+              <th class="px-5 py-3" data-i18n="onboardedRepos.colPrs">Recent PRs</th>
+              <th class="px-5 py-3" data-i18n="onboardedRepos.colLastScan">Last scan</th>
+            </tr>
+          </thead>
+          <tbody id="onboardedReposTableBody" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+      <div id="onboardedReposLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
+      <div id="onboardedReposEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="onboardedRepos.empty">No repos onboarded yet.</div>
+      <div id="onboardedReposError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="onboardedRepos.loadError">Could not load onboarded repos.</div>
+    </div>
   </div>
 
   <!-- Review / override modal -->
@@ -5318,6 +5361,98 @@
 
     $('effectivatedRefreshBtn').addEventListener('click', loadEffectivated);
 
+    // Onboarded Repos view — GET /api/onboarded-repos, one row per distinct
+    // (org, repo) ever onboarded, keyed to its latest scan snapshot (see
+    // DbStore::list_onboarded_repo_summaries on the server). Loaded lazily,
+    // the first time the nav icon is opened, then re-fetched on demand via
+    // the refresh button — same "don't fetch what isn't visible" posture
+    // the history drawer already uses.
+    let onboardedReposLoaded = false;
+
+    function formatScanDate(raw) {
+      return raw ? escapeHtml(raw.replace('T', ' ').slice(0, 19)) : '';
+    }
+
+    /** One downloadable text record per repo's full acknowledgment history — same Blob/temporary-anchor pattern downloadIssuesReport() already uses. */
+    function downloadAcknowledgments(org, repo, acks) {
+      const lines = [
+        `# Ignite acknowledgments — ${org}/${repo}`,
+        `# ${acks.length} record(s), most recent first`,
+        '',
+        ...acks.map((a) => [
+          `## ${a.category} — ${a.summary}`,
+          `- Issue: ${a.issue_id}`,
+          a.file ? `- Location: ${a.file}${a.line ? ':' + a.line : ''}` : null,
+          `- Severity: ${a.severity}`,
+          `- Justification: ${a.justification}`,
+          `- Acknowledged by: ${a.actor_name || a.actor_email} <${a.actor_email}>`,
+          `- Date: ${a.created_at}`,
+          '',
+        ].filter(Boolean).join('\n')),
+      ];
+      const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${org}-${repo}-acknowledgments.md`.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function renderOnboardedRepos(repos) {
+      $('onboardedReposEmpty').classList.toggle('hidden', repos.length > 0);
+      $('onboardedReposTableBody').innerHTML = repos.map((r, i) => {
+        const repoCell = r.repoUrl
+          ? `<a href="${escapeAttr(r.repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>`
+          : `<span class="font-semibold text-slate-800">${escapeHtml(r.repo)}</span>`;
+        const prsCell = r.recentPrs.length === 0
+          ? '<span class="text-slate-300">—</span>'
+          : r.recentPrs.map((pr) => {
+              const num = (pr.url.match(/\/pull\/(\d+)/) || [])[1];
+              const label = num ? `#${num}` : (pr.kind === 'onboarding' ? t('onboardedRepos.onboardingPr') : t('onboardedRepos.fixPr'));
+              return `<a href="${escapeAttr(pr.url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${pr.kind === 'fix-pr' ? 'border-brand-200 text-brand-700 bg-brand-50' : 'border-slate-200 text-slate-600'} hover:underline">${pr.kind === 'fix-pr' ? '✨' : '🚀'} ${escapeHtml(label)}</a>`;
+            }).join(' ');
+        const acksCell = r.acknowledgments.length === 0
+          ? '<span class="text-slate-300">—</span>'
+          : `<button type="button" class="onboarded-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" data-i18n-title="onboardedRepos.downloadAcksTitle">⬇ ${t('onboardedRepos.acknowledgmentsCount', { count: r.acknowledgments.length })}</button>`;
+        return `
+        <tr class="align-top">
+          <td class="px-5 py-3.5 text-slate-600">${escapeHtml(r.org)}</td>
+          <td class="px-5 py-3.5">${repoCell}</td>
+          <td class="px-5 py-3.5 text-right ${r.licenseProblems > 0 ? 'font-semibold text-amber-600' : 'text-slate-400'}">${r.licenseProblems}</td>
+          <td class="px-5 py-3.5 text-right ${r.findingsCount > 0 ? 'font-semibold text-rose-600' : 'text-slate-400'}">${r.findingsCount}</td>
+          <td class="px-5 py-3.5">${acksCell}</td>
+          <td class="px-5 py-3.5"><div class="flex flex-wrap gap-1 max-w-[220px]">${prsCell}</div></td>
+          <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>
+        </tr>`;
+      }).join('');
+
+      $('onboardedReposTableBody').querySelectorAll('.onboarded-repo-download-acks').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', () => downloadAcknowledgments(r.org, r.repo, r.acknowledgments));
+      });
+    }
+
+    async function loadOnboardedRepos() {
+      $('onboardedReposError').classList.add('hidden');
+      $('onboardedReposEmpty').classList.add('hidden');
+      $('onboardedReposLoading').classList.remove('hidden');
+      $('onboardedReposTableBody').innerHTML = '';
+      try {
+        const res = await fetch('/api/onboarded-repos');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const repos = await res.json();
+        renderOnboardedRepos(repos);
+      } catch {
+        $('onboardedReposError').classList.remove('hidden');
+      } finally {
+        $('onboardedReposLoading').classList.add('hidden');
+      }
+    }
+    $('onboardedReposRefreshBtn').addEventListener('click', loadOnboardedRepos);
+
     async function deleteProject(id) {
       const confirmed = window.confirm('Delete this onboarded project entry and its stored documents?');
       if (!confirmed) return;
@@ -5475,6 +5610,35 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !$('historyDrawer').classList.contains('hidden')) closeHistoryDrawer();
     });
+
+    // Nav rail view switch — Dashboard and Onboarded Repos are this app's
+    // only two "screens" (mutually exclusive, active-icon styling swaps
+    // with the visible one), unlike the history drawer above which is an
+    // overlay on top of whichever screen is showing.
+    const NAV_ACTIVE = ['bg-brand-50', 'text-brand-600'];
+    const NAV_INACTIVE = ['text-slate-400', 'hover:text-brand-600', 'hover:bg-slate-100'];
+    function setActiveNavBtn(activeBtn, inactiveBtn) {
+      inactiveBtn.classList.remove(...NAV_ACTIVE);
+      inactiveBtn.classList.add(...NAV_INACTIVE);
+      activeBtn.classList.remove(...NAV_INACTIVE);
+      activeBtn.classList.add(...NAV_ACTIVE);
+    }
+    function showDashboardView() {
+      $('onboardedReposView').classList.add('hidden');
+      $('dashboardView').classList.remove('hidden');
+      setActiveNavBtn($('dashboardNavBtn'), $('onboardedReposNavBtn'));
+    }
+    function showOnboardedReposView() {
+      $('dashboardView').classList.add('hidden');
+      $('onboardedReposView').classList.remove('hidden');
+      setActiveNavBtn($('onboardedReposNavBtn'), $('dashboardNavBtn'));
+      if (!onboardedReposLoaded) {
+        onboardedReposLoaded = true;
+        loadOnboardedRepos();
+      }
+    }
+    $('dashboardNavBtn').addEventListener('click', showDashboardView);
+    $('onboardedReposNavBtn').addEventListener('click', showOnboardedReposView);
 
     // Language picker — same show/hide popover pattern as accountMenuBtn/accountMenu above.
     $('localeMenuBtn').addEventListener('click', (e) => {

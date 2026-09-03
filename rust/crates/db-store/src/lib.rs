@@ -202,6 +202,29 @@ CREATE TABLE IF NOT EXISTS runtime_coverage (
   updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (org, repo, rel_path)
 );
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL CHECK (kind IN ('onboarding','fix-pr')),
+  url           TEXT NOT NULL,
+  branch        TEXT,
+  files_changed INTEGER,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_project ON pull_requests(project_id);
+"#;
+
+/// One-time-per-row backfill, safe to re-run every startup: every historical
+/// `projects.pr_url` set before the `pull_requests` table existed gets a
+/// matching `kind='onboarding'` row, so `list_onboarded_repo_summaries`'s
+/// "recent PRs" column has a single source of truth (`pull_requests`)
+/// instead of having to union in `projects.pr_url` separately forever.
+/// `WHERE NOT IN (...)` makes re-running this a no-op once backfilled.
+const BACKFILL_ONBOARDING_PRS_SQL: &str = r#"
+INSERT INTO pull_requests (project_id, kind, url, created_at)
+SELECT id, 'onboarding', pr_url, COALESCE(finished_at, created_at) FROM projects
+WHERE pr_url IS NOT NULL
+  AND id NOT IN (SELECT project_id FROM pull_requests WHERE kind = 'onboarding');
 "#;
 
 /// Same forward-compatible-migration dance as the JS original: `ALTER
@@ -499,6 +522,39 @@ pub struct FileScanCacheInput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestRow {
+    pub kind: String,
+    pub url: String,
+    pub branch: Option<String>,
+    pub files_changed: Option<i64>,
+    pub created_at: String,
+}
+
+/// One row per distinct (org, repo) ever onboarded — the "Onboarded Repos"
+/// view's data source. `license_problems`/`findings_count` are open-issue
+/// counts against the *latest* project run for that repo (a fresh snapshot,
+/// not a cumulative total across every historical run); `acknowledgments`/
+/// `recent_prs` are the full audit history across every run for that repo,
+/// since an override or a PR stays a real historical fact regardless of
+/// which run produced it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardedRepoSummary {
+    pub org: String,
+    pub repo: String,
+    pub repo_url: Option<String>,
+    pub latest_project_id: i64,
+    pub latest_job_id: String,
+    pub status: String,
+    pub last_scan_at: String,
+    pub license_problems: i64,
+    pub findings_count: i64,
+    pub acknowledgments: Vec<OverrideRow>,
+    pub recent_prs: Vec<PullRequestRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RuntimeCoverageRow {
     pub hit_count: i64,
     pub covered_pct: Option<f64>,
@@ -522,6 +578,7 @@ impl DbStore {
                 }
             }
         }
+        conn.execute_batch(BACKFILL_ONBOARDING_PRS_SQL)?;
         Ok(DbStore { conn: Mutex::new(conn) })
     }
 
@@ -552,6 +609,18 @@ impl DbStore {
             params![status, error, repo_url, pr_url, project_id],
         )
         .unwrap();
+        if let Some(url) = pr_url {
+            conn.execute("INSERT INTO pull_requests (project_id, kind, url) VALUES (?, 'onboarding', ?)", params![project_id, url]).unwrap();
+        }
+    }
+
+    /// Records a PR Ignite opened outside the main onboarding flow — today
+    /// only the interactive fix-PR feature (`routes/fix_pr.rs`'s `apply`),
+    /// kind `'fix-pr'`. The onboarding PR itself is recorded automatically
+    /// by `finish_project` when it's given a `pr_url`.
+    pub fn record_pull_request(&self, project_id: i64, kind: &str, url: &str, branch: Option<&str>, files_changed: Option<i64>) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("INSERT INTO pull_requests (project_id, kind, url, branch, files_changed) VALUES (?, ?, ?, ?, ?)", params![project_id, kind, url, branch, files_changed]).unwrap();
     }
 
     pub fn add_step(&self, project_id: i64, phase: i64, title: &str, state: &str, logs: &str) {
@@ -633,6 +702,104 @@ impl DbStore {
         .unwrap()
         .map(|r| r.unwrap())
         .collect()
+    }
+
+    /// One row per distinct (org, repo) ever onboarded, keyed to its latest
+    /// project run, for the web UI's "Onboarded Repos" view. Deliberately
+    /// several small queries per repo (mirrors `get_project_details`'s own
+    /// style) rather than one giant join — repo counts here are small
+    /// (dozens, not millions) and this endpoint isn't hit on every request.
+    pub fn list_onboarded_repo_summaries(&self) -> Vec<OnboardedRepoSummary> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut latest_stmt = conn
+            .prepare_cached(
+                "SELECT p.id, p.job_id, p.org, p.repo, p.status, COALESCE(p.finished_at, p.created_at) AS last_scan_at, p.repo_url
+                 FROM projects p
+                 INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects GROUP BY org, repo) latest
+                   ON p.org = latest.org AND p.repo = latest.repo AND p.id = latest.max_id
+                 ORDER BY last_scan_at DESC",
+            )
+            .unwrap();
+        struct Latest {
+            id: i64,
+            job_id: String,
+            org: String,
+            repo: String,
+            status: String,
+            last_scan_at: String,
+            repo_url: Option<String>,
+        }
+        let latest_rows: Vec<Latest> = latest_stmt
+            .query_map([], |row| Ok(Latest { id: row.get(0)?, job_id: row.get(1)?, org: row.get(2)?, repo: row.get(3)?, status: row.get(4)?, last_scan_at: row.get(5)?, repo_url: row.get(6)? }))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        let mut count_stmt = conn.prepare_cached("SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND status = 'open' AND (?2 IS NULL OR category = ?2)").unwrap();
+        let mut acks_stmt = conn
+            .prepare_cached(
+                "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification,
+                        o.actor_email, o.actor_name, o.email_sent, o.created_at
+                 FROM overrides o INNER JOIN projects p ON o.project_id = p.id
+                 WHERE p.org = ? AND p.repo = ? ORDER BY o.created_at DESC",
+            )
+            .unwrap();
+        let mut prs_stmt = conn
+            .prepare_cached(
+                "SELECT pr.kind, pr.url, pr.branch, pr.files_changed, pr.created_at
+                 FROM pull_requests pr INNER JOIN projects p ON pr.project_id = p.id
+                 WHERE p.org = ? AND p.repo = ? ORDER BY pr.created_at DESC LIMIT 20",
+            )
+            .unwrap();
+
+        latest_rows
+            .into_iter()
+            .map(|latest| {
+                let findings_count: i64 = count_stmt.query_row(params![latest.id, Option::<&str>::None], |row| row.get(0)).unwrap();
+                let license_problems: i64 = count_stmt.query_row(params![latest.id, Some("license-compliance")], |row| row.get(0)).unwrap();
+                let acknowledgments = acks_stmt
+                    .query_map(params![latest.org, latest.repo], |row| {
+                        Ok(OverrideRow {
+                            id: row.get(0)?,
+                            phase: row.get(1)?,
+                            issue_id: row.get(2)?,
+                            category: row.get(3)?,
+                            severity: row.get(4)?,
+                            summary: row.get(5)?,
+                            file: row.get(6)?,
+                            line: row.get(7)?,
+                            justification: row.get(8)?,
+                            actor_email: row.get(9)?,
+                            actor_name: row.get(10)?,
+                            email_sent: row.get::<_, i64>(11)? != 0,
+                            created_at: row.get(12)?,
+                        })
+                    })
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+                let recent_prs = prs_stmt
+                    .query_map(params![latest.org, latest.repo], |row| Ok(PullRequestRow { kind: row.get(0)?, url: row.get(1)?, branch: row.get(2)?, files_changed: row.get(3)?, created_at: row.get(4)? }))
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+
+                OnboardedRepoSummary {
+                    org: latest.org,
+                    repo: latest.repo,
+                    repo_url: latest.repo_url,
+                    latest_project_id: latest.id,
+                    latest_job_id: latest.job_id,
+                    status: latest.status,
+                    last_scan_at: latest.last_scan_at,
+                    license_problems,
+                    findings_count,
+                    acknowledgments,
+                    recent_prs,
+                }
+            })
+            .collect()
     }
 
     fn get_project_row(conn: &Connection, project_id: i64) -> Option<Project> {
@@ -1508,6 +1675,72 @@ mod tests {
         assert_eq!(project.status, "success");
         assert_eq!(project.repo_url.as_deref(), Some("https://github.com/acme/widgets"));
         assert!(project.finished_at.is_some());
+    }
+
+    #[test]
+    fn finish_project_with_pr_url_records_an_onboarding_pull_request() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-pr", "acme", "widgets", false, "ui", None);
+        store.finish_project("success", None, Some("https://github.com/acme/widgets"), Some("https://github.com/acme/widgets/pull/1"), id);
+
+        let summaries = store.list_onboarded_repo_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].recent_prs.len(), 1);
+        assert_eq!(summaries[0].recent_prs[0].kind, "onboarding");
+        assert_eq!(summaries[0].recent_prs[0].url, "https://github.com/acme/widgets/pull/1");
+    }
+
+    #[test]
+    fn record_pull_request_adds_a_fix_pr_entry_alongside_onboarding() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-fix", "acme", "widgets", false, "ui", None);
+        store.finish_project("success", None, Some("https://github.com/acme/widgets"), Some("https://github.com/acme/widgets/pull/1"), id);
+        store.record_pull_request(id, "fix-pr", "https://github.com/acme/widgets/pull/2", Some("ignite/fix-issues/job-fix"), Some(3));
+
+        let summaries = store.list_onboarded_repo_summaries();
+        let prs = &summaries[0].recent_prs;
+        assert_eq!(prs.len(), 2);
+        assert!(prs.iter().any(|p| p.kind == "fix-pr" && p.url == "https://github.com/acme/widgets/pull/2" && p.files_changed == Some(3)));
+        assert!(prs.iter().any(|p| p.kind == "onboarding"));
+    }
+
+    #[test]
+    fn list_onboarded_repo_summaries_uses_latest_run_for_counts_but_full_history_for_acks_and_prs() {
+        let (_dir, store) = open_test_db();
+        let old_id = store.create_project("job-old", "acme", "widgets", false, "ui", None);
+        store.add_override(AddOverrideArgs {
+            project_id: old_id,
+            job_id: "job-old",
+            phase: 4,
+            issue_id: "license-compliance::pom.xml::1",
+            category: "license-compliance",
+            severity: "error",
+            summary: "commercial dependency",
+            file: Some("pom.xml"),
+            line: Some(1),
+            justification: "reviewed, approved for internal use",
+            actor_email: "dev@acme.example",
+            actor_name: Some("Dev"),
+            email_sent: true,
+        });
+
+        let new_id = store.create_project("job-new", "acme", "widgets", false, "ui", None);
+        store.replace_project_issues(
+            new_id,
+            &[
+                IssueInput { id: "secret::app.py::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("app.py".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None },
+                IssueInput { id: "license-compliance::pom.xml::1".into(), phase: Some(3), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "commercial dependency".into(), file: Some("pom.xml".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None },
+            ],
+            &HashSet::new(),
+        );
+
+        let summaries = store.list_onboarded_repo_summaries();
+        assert_eq!(summaries.len(), 1, "same (org, repo) across two runs must collapse to one row");
+        let summary = &summaries[0];
+        assert_eq!(summary.latest_project_id, new_id, "must key off the latest run, not the first");
+        assert_eq!(summary.findings_count, 2, "counts come from the latest run's open issues only");
+        assert_eq!(summary.license_problems, 1);
+        assert_eq!(summary.acknowledgments.len(), 1, "acknowledgments span every run for the repo, not just the latest");
     }
 
     #[test]

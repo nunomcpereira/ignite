@@ -9,6 +9,7 @@ pub mod github_pr_status;
 pub mod history;
 pub mod issues;
 mod job_issues;
+pub mod onboarded_repos;
 mod phase_meta;
 pub mod pipeline_interactive;
 pub mod pipeline_onboard;
