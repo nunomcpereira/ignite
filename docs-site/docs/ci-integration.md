@@ -97,6 +97,15 @@ Nothing here is new API surface — it's the existing `validate-all`/
 
 ## Scheduled re-scans — Dependabot-equivalent continuous coverage
 
+:::info[The schedule is yours to set — Ignite has no built-in scheduler]
+Despite the name, `scheduled-rescan` has no scheduler inside it — it's a
+one-shot binary that scans every onboarded repo once and exits. "Scheduled"
+means *you* run it on a timer from outside Ignite: a cron/systemd job, or a
+GitHub Actions `schedule:` trigger (both shown below). Nothing about it is
+wired into the Ignite server's own process or started automatically on
+onboarding.
+:::
+
 Ignite's dependency/CVE checks (Trivy, package-hallucination, GuardDog, and
 the rest of Phase 4) only run when a scan is *triggered* — a push, or
 someone running the CLI. Unlike Dependabot, nothing re-checks an already
