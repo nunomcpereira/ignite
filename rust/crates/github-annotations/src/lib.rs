@@ -69,6 +69,9 @@ mod tests {
             duplicate_ref: None,
             status: status.to_string(),
             created_at: String::new(),
+            justification: None,
+            actor_email: None,
+            actor_name: None,
         }
     }
 

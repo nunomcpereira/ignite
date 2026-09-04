@@ -137,7 +137,7 @@ mod tests {
     use super::*;
 
     fn issue(category: &str, severity: &str, status: &str, file: Option<&str>, line: Option<i64>) -> IssueRow {
-        IssueRow { id: format!("{category}::x"), phase: Some(4), category: category.to_string(), severity: severity.to_string(), score: Some(5), summary: "test finding".to_string(), file: file.map(str::to_string), line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, status: status.to_string(), created_at: String::new() }
+        IssueRow { id: format!("{category}::x"), phase: Some(4), category: category.to_string(), severity: severity.to_string(), score: Some(5), summary: "test finding".to_string(), file: file.map(str::to_string), line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, status: status.to_string(), created_at: String::new(), justification: None, actor_email: None, actor_name: None }
     }
 
     #[test]

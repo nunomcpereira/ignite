@@ -144,6 +144,8 @@ window.IGNITE_I18N = {
       'pipeline.viewIssuesTitle': 'View every flagged issue from this run, filterable by severity',
       'pipeline.generateFixPr': '✨ Generate fix PR',
       'pipeline.generateFixPrTitle': "Preview and open a pull request with AI-suggested fixes for this run's open issues",
+      'pipeline.openStudio': '⧉ Open in Studio',
+      'pipeline.openStudioTitle': "Browse this run's staged files and flagged issues in Ignite Studio",
 
       'footer.note': 'Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>Staging files are wiped from disk after every run, pass or fail.',
 
@@ -254,6 +256,8 @@ window.IGNITE_I18N = {
       'tools.disconnected': 'Disconnected',
       'tools.installedDisabled': 'Installed (disabled)',
       'tools.externalTools': 'External tools',
+      'tools.loading': 'Checking external tools…',
+      'tools.loadError': 'Could not load external tools status.',
       'tools.connectedCount': '{n}/{total} connected',
       'tools.toggleTitle': 'Show which scanner tools (Trivy, Semgrep, gitleaks, etc.) are installed and enabled',
 
@@ -403,6 +407,8 @@ window.IGNITE_I18N = {
       'pipeline.viewIssuesTitle': 'Voir chaque problème signalé de cette exécution, filtrable par gravité',
       'pipeline.generateFixPr': '✨ Générer une PR de correction',
       'pipeline.generateFixPrTitle': "Prévisualiser et ouvrir une pull request avec des corrections suggérées par IA pour les problèmes ouverts de cette exécution",
+      'pipeline.openStudio': '⧉ Ouvrir dans Studio',
+      'pipeline.openStudioTitle': "Parcourir les fichiers indexés et les problèmes signalés de cette exécution dans Ignite Studio",
 
       'footer.note': "Inclut une analyse de sécurité approfondie par LLM local — votre code ne quitte jamais cette machine avant d'être livré sur GitHub.<br/>Les fichiers de préparation sont effacés du disque après chaque exécution, réussie ou non.",
 
@@ -513,6 +519,8 @@ window.IGNITE_I18N = {
       'tools.disconnected': 'Déconnecté',
       'tools.installedDisabled': 'Installé (désactivé)',
       'tools.externalTools': 'Outils externes',
+      'tools.loading': 'Vérification des outils externes…',
+      'tools.loadError': "Impossible de charger l'état des outils externes.",
       'tools.connectedCount': '{n}/{total} connecté(s)',
       'tools.toggleTitle': 'Afficher quels outils de scan (Trivy, Semgrep, gitleaks, etc.) sont installés et activés',
 
@@ -662,6 +670,8 @@ window.IGNITE_I18N = {
       'pipeline.viewIssuesTitle': 'Ver cada problema sinalizado desta execução, filtrável por gravidade',
       'pipeline.generateFixPr': '✨ Gerar PR de correção',
       'pipeline.generateFixPrTitle': 'Pré-visualizar e abrir um pull request com correções sugeridas por IA para os problemas em aberto desta execução',
+      'pipeline.openStudio': '⧉ Abrir no Studio',
+      'pipeline.openStudioTitle': 'Navegar pelos ficheiros preparados e problemas sinalizados desta execução no Ignite Studio',
 
       'footer.note': 'Inclui uma análise profunda de segurança por LLM local — seu código nunca sai desta máquina até ser enviado ao GitHub.<br/>Os arquivos de preparo são apagados do disco após cada execução, aprovada ou não.',
 
@@ -772,6 +782,8 @@ window.IGNITE_I18N = {
       'tools.disconnected': 'Desconectado',
       'tools.installedDisabled': 'Instalado (desativado)',
       'tools.externalTools': 'Ferramentas externas',
+      'tools.loading': 'A verificar ferramentas externas…',
+      'tools.loadError': 'Não foi possível carregar o estado das ferramentas externas.',
       'tools.connectedCount': '{n}/{total} conectada(s)',
       'tools.toggleTitle': 'Mostrar quais ferramentas de verificação (Trivy, Semgrep, gitleaks, etc.) estão instaladas e ativadas',
 
@@ -921,6 +933,8 @@ window.IGNITE_I18N = {
       'pipeline.viewIssuesTitle': 'Jedes gemeldete Problem dieses Laufs ansehen, filterbar nach Schweregrad',
       'pipeline.generateFixPr': '✨ Fix-PR erstellen',
       'pipeline.generateFixPrTitle': 'Von KI vorgeschlagene Korrekturen für die offenen Probleme dieses Laufs ansehen und einen Pull Request öffnen',
+      'pipeline.openStudio': '⧉ In Studio öffnen',
+      'pipeline.openStudioTitle': 'Die bereitgestellten Dateien und gemeldeten Probleme dieses Laufs in Ignite Studio durchsuchen',
 
       'footer.note': 'Enthält einen lokalen LLM-Sicherheits-Deep-Scan — Ihr Code verlässt diesen Rechner erst, wenn er an GitHub ausgeliefert wird.<br/>Staging-Dateien werden nach jedem Lauf von der Festplatte gelöscht, egal ob erfolgreich oder nicht.',
 
@@ -1031,6 +1045,8 @@ window.IGNITE_I18N = {
       'tools.disconnected': 'Nicht verbunden',
       'tools.installedDisabled': 'Installiert (deaktiviert)',
       'tools.externalTools': 'Externe Tools',
+      'tools.loading': 'Externe Tools werden geprüft…',
+      'tools.loadError': 'Status der externen Tools konnte nicht geladen werden.',
       'tools.connectedCount': '{n}/{total} verbunden',
       'tools.toggleTitle': 'Anzeigen, welche Scan-Tools (Trivy, Semgrep, gitleaks usw.) installiert und aktiviert sind',
 

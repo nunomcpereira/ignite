@@ -194,7 +194,7 @@ pub async fn run_phase4_checks(
     task_timings.push(("secrets", ms_secrets));
     log(&format!("✓ secrets done ({} finding(s), {ms_secrets}ms)", secrets_result.findings.len()));
     let secrets_check = CheckResult {
-        findings: secrets_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), ..Default::default() }).collect(),
+        findings: secrets_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some("built-in".to_string()),
     };
 
@@ -214,7 +214,7 @@ pub async fn run_phase4_checks(
     task_timings.push(("governance", ms_governance));
     log(&format!("✓ governance done ({} finding(s), {ms_governance}ms)", governance_result.findings.len()));
     let governance_check =
-        CheckResult { findings: governance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), raw_snippet_text: Some(f.snippet.clone()), tool: Some("ai-governance".to_string()), ..Default::default() }).collect(), engine: Some("built-in".to_string()) };
+        CheckResult { findings: governance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), raw_snippet_text: Some(f.snippet.clone()), tool: Some("ai-governance".to_string()), code: snippet_json(&f.code), ..Default::default() }).collect(), engine: Some("built-in".to_string()) };
 
     if config.fast {
         // FAST_MODE_TASKS = secrets, governance, semanticSast, fileEncapsulation
@@ -228,7 +228,7 @@ pub async fn run_phase4_checks(
             findings: semantic_sast_result
                 .findings
                 .iter()
-                .map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), owasp: f.owasp.clone(), ..Default::default() })
+                .map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), owasp: f.owasp.clone(), code: snippet_json(&f.code), ..Default::default() })
                 .collect(),
             engine: Some(semantic_sast_result.engine.to_string()),
         };
@@ -239,7 +239,7 @@ pub async fn run_phase4_checks(
         task_timings.push(("fileEncapsulation", ms));
         log(&format!("✓ fileEncapsulation done ({} finding(s), {ms}ms)", file_encapsulation_result.findings.len()));
         let file_encapsulation_check = CheckResult {
-            findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+            findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
             engine: Some(file_encapsulation_result.engine.to_string()),
         };
 
@@ -522,7 +522,7 @@ pub async fn run_phase4_checks(
     });
 
     let iac_check = Some(CheckResult {
-        findings: iac_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: iac_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.clone()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(iac_result.engine),
     });
 
@@ -552,19 +552,19 @@ pub async fn run_phase4_checks(
     let provenance_doc = provenance_result.map(|p| to_json_bytes(&p));
 
     let image_provenance_check =
-        Some(CheckResult { findings: image_provenance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(), engine: Some(image_provenance_result.engine.to_string()) });
+        Some(CheckResult { findings: image_provenance_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(), engine: Some(image_provenance_result.engine.to_string()) });
 
     let semantic_sast_check = Some(CheckResult {
         findings: semantic_sast_result
             .findings
             .iter()
-            .map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), owasp: f.owasp.clone(), ..Default::default() })
+            .map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), owasp: f.owasp.clone(), code: snippet_json(&f.code), ..Default::default() })
             .collect(),
         engine: Some(semantic_sast_result.engine.to_string()),
     });
 
     let pii_check = Some(CheckResult {
-        findings: pii_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), ..Default::default() }).collect(),
+        findings: pii_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), cwe: f.cwe.clone(), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(pii_result.engine.to_string()),
     });
 
@@ -580,6 +580,7 @@ pub async fn run_phase4_checks(
                 severity: Some(f.severity.to_string()),
                 message: Some(f.message.clone()),
                 duplicate_ref: serde_json::to_value(&f.duplicate_ref).ok(),
+                code: snippet_json(&f.code),
                 ..Default::default()
             })
             .collect(),
@@ -593,14 +594,14 @@ pub async fn run_phase4_checks(
     task_timings.push(("fileEncapsulation", ms));
     log(&format!("✓ fileEncapsulation done ({} finding(s), {ms}ms)", file_encapsulation_result.findings.len()));
     let file_encapsulation_check = Some(CheckResult {
-        findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(file_encapsulation_result.engine.to_string()),
     });
 
     let loc_metrics_doc = if config.project_id.is_some() { loc_metrics_result.metrics.as_ref().map(to_json_bytes) } else { None };
 
     let api_schema_check = Some(CheckResult {
-        findings: api_schema_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: api_schema_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(api_schema_result.engine.to_string()),
     });
 
@@ -647,7 +648,7 @@ pub async fn run_phase4_checks(
     task_timings.push(("deadCode", ms));
     log(&format!("✓ deadCode done ({} finding(s), {ms}ms)", dead_code_result.findings.len()));
     let dead_code_check = Some(CheckResult {
-        findings: dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(dead_code_result.engine.to_string()),
     });
 
@@ -661,7 +662,7 @@ pub async fn run_phase4_checks(
     task_timings.push(("health", ms));
     log(&format!("✓ health done ({} finding(s), {ms}ms)", health_result.findings.len()));
     let health_check = Some(CheckResult {
-        findings: health_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: health_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(health_result.engine.to_string()),
     });
 
@@ -672,7 +673,7 @@ pub async fn run_phase4_checks(
     task_timings.push(("cssDeadCode", ms));
     log(&format!("✓ cssDeadCode done ({} finding(s), {ms}ms)", css_dead_code_result.findings.len()));
     let css_dead_code_check = Some(CheckResult {
-        findings: css_dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: css_dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(css_dead_code_result.engine.to_string()),
     });
 
@@ -683,7 +684,7 @@ pub async fn run_phase4_checks(
     task_timings.push(("boundaries", ms));
     log(&format!("✓ boundaries done ({} finding(s), {ms}ms)", boundaries_result.findings.len()));
     let boundaries_check = Some(CheckResult {
-        findings: boundaries_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: boundaries_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(boundaries_result.engine.to_string()),
     });
 

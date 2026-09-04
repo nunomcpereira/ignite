@@ -20,7 +20,7 @@ pub struct ContainerImageVulnerabilitiesConfig {
 
 impl Default for ContainerImageVulnerabilitiesConfig {
     fn default() -> Self {
-        ContainerImageVulnerabilitiesConfig { enabled: false, severity_threshold: "HIGH,CRITICAL".to_string(), build_timeout_ms: 8 * 60_000 }
+        ContainerImageVulnerabilitiesConfig { enabled: false, severity_threshold: "HIGH,CRITICAL".to_string(), build_timeout_ms: 30 * 60_000 }
     }
 }
 

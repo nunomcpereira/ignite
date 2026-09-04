@@ -40,6 +40,7 @@ pub struct Config {
     #[serde(default)]
     pub phases: Vec<serde_json::Value>,
     pub mcp: McpConfig,
+    pub ai_auto_justify: AiAutoJustifyConfig,
 }
 
 impl Default for Config {
@@ -61,7 +62,38 @@ impl Default for Config {
             ignore_file: IgnoreFileConfig { enabled: true },
             phases: Vec::new(),
             mcp: McpConfig::default(),
+            ai_auto_justify: AiAutoJustifyConfig::default(),
         }
+    }
+}
+
+/// Auto-justification of low-risk blocking findings via the configured LLM
+/// (`llm.*`) at the final review gate, right after any exact-match
+/// carry-forward from a previous scan of the same org/repo has already
+/// been applied. Off by default and deliberately narrow: only categories
+/// on `categories` are ever offered to the model, and its response is
+/// still filtered back down to that same allowlist server-side — the
+/// model is never trusted to decide which categories are safe to
+/// auto-acknowledge, only to draft a justification within ones a human
+/// already scoped as low-risk (parseable-license mismatches, not secrets
+/// or SAST findings with real exploitation potential). Applied overrides
+/// are recorded distinctly (actor `ai-assist@ignite.internal`) so Ignite
+/// Studio can show them as identified-but-justified without conflating
+/// them with a human's own review decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiAutoJustifyConfig {
+    pub enabled: bool,
+    pub categories: Vec<String>,
+    /// Upper bound on how many eligible findings go into a single
+    /// justification request — keeps the prompt (and a single bad
+    /// response) bounded regardless of how many low-risk findings a scan
+    /// turns up.
+    pub max_findings_per_request: usize,
+}
+impl Default for AiAutoJustifyConfig {
+    fn default() -> Self {
+        AiAutoJustifyConfig { enabled: false, categories: vec!["license-compliance".to_string()], max_findings_per_request: 50 }
     }
 }
 
@@ -401,7 +433,7 @@ impl Default for TrivyImageConfig {
         TrivyImageConfig {
             enabled: false,
             severity_threshold: "HIGH,CRITICAL".into(),
-            build_timeout_ms: 8 * 60_000,
+            build_timeout_ms: 30 * 60_000,
         }
     }
 }
@@ -828,6 +860,9 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("IGNOREFILE_ENABLED") { merged.ignore_file.enabled = v; }
     if let Some(v) = env_bool("TRIVY_IMAGE_ENABLED") { merged.security.trivy_image.enabled = v; }
     if let Some(v) = env_str("TRIVY_IMAGE_SEVERITY") { merged.security.trivy_image.severity_threshold = v; }
+    if let Some(v) = env_num::<u64>("TRIVY_IMAGE_BUILD_TIMEOUT_MS") { merged.security.trivy_image.build_timeout_ms = v; }
+    if let Some(v) = env_bool("AI_AUTO_JUSTIFY_ENABLED") { merged.ai_auto_justify.enabled = v; }
+    if let Some(v) = env_csv("AI_AUTO_JUSTIFY_CATEGORIES") { merged.ai_auto_justify.categories = v; }
     if let Some(v) = env_bool("POSTURE_ENABLED") { merged.compliance.posture.enabled = v; }
     if let Some(v) = env_str("POSTURE_RULESET") { merged.compliance.posture.ruleset = v; }
     if let Some(v) = env_bool("EU_AI_ACT_DOCS_ENABLED") { merged.compliance.eu_ai_act_documents.enabled = v; }

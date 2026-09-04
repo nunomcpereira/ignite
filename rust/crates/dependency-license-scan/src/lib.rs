@@ -10,7 +10,7 @@
 //! correct (just not ORT-augmented) until that piece is added.
 
 use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry_license, find_manifest_dep_line, resolve_best_published_version, resolve_see_license_in_file, DepsDevClient};
-use ignite_fs_utils::walk_files;
+use ignite_fs_utils::{build_snippet, walk_files, SnippetOptions};
 use ignite_license_classification::{classify_license_tier, is_internal_dependency_ref, best_effort_version, LicenseTier};
 use ignite_override_engine::{build_issue_id, derive_cwe_owasp, score_for_issue, BuildIssueIdArgs, CweOwaspHint, Issue, Severity};
 use ignite_studio_manifests::{studio_manifests, ManifestDep, STUDIO_MAX_DEPS_PER_MANIFEST};
@@ -690,7 +690,7 @@ pub async fn run_license_compliance_check(root: &Path, runner: &ToolRunner, clie
             return vec![];
         }
     };
-    let issues = collect_license_issues(&scan.manifests, &license_files);
+    let issues = collect_license_issues(root, &scan.manifests, &license_files);
     if !issues.is_empty() {
         let blocking = issues.iter().filter(|i| i.severity == Severity::Error).count();
         log(&format!("⚠ {} license compliance finding(s) ({blocking} commercial/blocking):", issues.len()));
@@ -716,7 +716,7 @@ pub async fn run_dependency_vulnerability_check(root: &Path, client: &DepsDevCli
             return vec![];
         }
     };
-    let issues = collect_dependency_vulnerability_issues(&manifests);
+    let issues = collect_dependency_vulnerability_issues(root, &manifests);
     if !issues.is_empty() {
         let blocking = issues.iter().filter(|i| i.severity == Severity::Error).count();
         log(&format!("⚠ {} dependency vulnerability finding(s) ({blocking} critical/high — CVSS ≥7):", issues.len()));
@@ -736,7 +736,20 @@ pub async fn run_dependency_vulnerability_check(root: &Path, client: &DepsDevCli
 /// addressable-issue shape `collect_phase4_issues` uses, so commercial/
 /// copyleft/unrecognized licenses gate a run exactly like a hardcoded
 /// secret does, instead of only ever showing up in the Dependencies view.
-pub fn collect_license_issues(manifests: &[LicenseScanManifest], license_files: &[LicenseFileFinding]) -> Vec<Issue> {
+/// Best-effort snippet around a manifest/LICENSE-file line, for the
+/// "Generate suggested fix" panel — these issues point at a real line in a
+/// real checked-in file (a manifest pin, a LICENSE file), so there's no
+/// reason they can't carry a snippet the same way every phase 4 code
+/// finding does; `None` (missing file, out-of-range line) just means no
+/// snippet, never a hard failure for the surrounding scan.
+fn manifest_line_snippet(root: &Path, rel_file: &str, line: Option<i64>) -> Option<serde_json::Value> {
+    let line = usize::try_from(line?).ok()?;
+    let content = std::fs::read_to_string(root.join(rel_file)).ok()?;
+    let snippet = build_snippet(&content, line, SnippetOptions::default())?;
+    serde_json::to_value(snippet).ok()
+}
+
+pub fn collect_license_issues(root: &Path, manifests: &[LicenseScanManifest], license_files: &[LicenseFileFinding]) -> Vec<Issue> {
     let mut issues = Vec::new();
     let category = "license-compliance";
 
@@ -750,6 +763,7 @@ pub fn collect_license_issues(manifests: &[LicenseScanManifest], license_files: 
             // that shift lines, so overrides survive unrelated manifest changes.
             let id = format!("{}::{}", build_issue_id(BuildIssueIdArgs { category, file: Some(&manifest.file), line: None, discriminator: None }), dep.name);
             let version = dep.version.clone().unwrap_or_else(|| if dep.version_range.is_empty() { "?".to_string() } else { dep.version_range.clone() });
+            let line = dep.line.map(|l| l as i64);
             issues.push(Issue {
                 id,
                 category: category.to_string(),
@@ -757,8 +771,8 @@ pub fn collect_license_issues(manifests: &[LicenseScanManifest], license_files: 
                 score: score_for_issue(category, severity),
                 summary: format!("{}@{} — {}", dep.name, version, dep.reason),
                 file: Some(manifest.file.clone()),
-                line: dep.line.map(|l| l as i64),
-                snippet: None,
+                line,
+                snippet: manifest_line_snippet(root, &manifest.file, line),
                 cross_file: false,
                 chain: None,
                 duplicate_ref: None,
@@ -780,7 +794,7 @@ pub fn collect_license_issues(manifests: &[LicenseScanManifest], license_files: 
             summary: lf.reason.clone(),
             file: Some(lf.file.clone()),
             line: Some(lf.line as i64),
-            snippet: None,
+            snippet: manifest_line_snippet(root, &lf.file, Some(lf.line as i64)),
             cross_file: false,
             chain: None,
             duplicate_ref: None,
@@ -803,7 +817,7 @@ static CWE_ALIAS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^CWE-\d+$").unw
 /// findings into the same addressable-issue shape `collect_license_issues`
 /// uses, so a known-critical dependency vulnerability gates a run exactly
 /// like a commercial license does.
-pub fn collect_dependency_vulnerability_issues(manifests: &[VulnScanManifest]) -> Vec<Issue> {
+pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnScanManifest]) -> Vec<Issue> {
     let mut issues = Vec::new();
     let category = "dependency-vulnerability";
 
@@ -846,7 +860,8 @@ pub fn collect_dependency_vulnerability_issues(manifests: &[VulnScanManifest]) -
                 // represent on their own.
                 let references = ignite_override_engine::build_references(std::iter::once(advisory_id.as_str()).chain(vuln.aliases.iter().map(|s| s.as_str())));
 
-                let id = format!("{}::{}::{}", build_issue_id(BuildIssueIdArgs { category, file: Some(&manifest.file), line: dep.line.map(|l| l as i64), discriminator: None }), dep.name, advisory_id);
+                let line = dep.line.map(|l| l as i64);
+                let id = format!("{}::{}::{}", build_issue_id(BuildIssueIdArgs { category, file: Some(&manifest.file), line, discriminator: None }), dep.name, advisory_id);
                 issues.push(Issue {
                     id,
                     category: category.to_string(),
@@ -854,8 +869,8 @@ pub fn collect_dependency_vulnerability_issues(manifests: &[VulnScanManifest]) -
                     score: score_for_issue(category, severity),
                     summary,
                     file: Some(manifest.file.clone()),
-                    line: dep.line.map(|l| l as i64),
-                    snippet: None,
+                    line,
+                    snippet: manifest_line_snippet(root, &manifest.file, line),
                     cross_file: false,
                     chain: None,
                     duplicate_ref: None,
@@ -920,7 +935,8 @@ mod tests {
             ],
             source: "deps.dev",
         };
-        let issues = collect_license_issues(&[manifest], &[]);
+        let dir = tempdir().unwrap();
+        let issues = collect_license_issues(dir.path(), &[manifest], &[]);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].category, "license-compliance");
         assert_eq!(issues[0].severity, Severity::Error);
@@ -931,7 +947,8 @@ mod tests {
     #[test]
     fn collect_license_issues_includes_license_file_findings() {
         let lf = LicenseFileFinding { file: "vendor/LICENSE".to_string(), tier: "red", line: 1, reason: "Commercial/proprietary license terms detected in LICENSE file.".to_string() };
-        let issues = collect_license_issues(&[], &[lf]);
+        let dir = tempdir().unwrap();
+        let issues = collect_license_issues(dir.path(), &[], &[lf]);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].file.as_deref(), Some("vendor/LICENSE"));
         assert_eq!(issues[0].severity, Severity::Error);
@@ -951,7 +968,9 @@ mod tests {
                 note: None,
             }],
         };
-        let issues = collect_dependency_vulnerability_issues(&[manifest]);
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), (1..=20).map(|n| format!("line {n}\n")).collect::<String>()).unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[manifest]);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].category, "dependency-vulnerability");
         assert_eq!(issues[0].severity, Severity::Error);
@@ -961,6 +980,11 @@ mod tests {
         assert_eq!(issues[0].tool.as_deref(), Some("deps.dev"));
         assert_eq!(issues[0].references.ghsa, vec!["GHSA-qwcr-r2fm-qrc7"]);
         assert_eq!(issues[0].references.cve, vec!["CVE-2024-1234"]);
+        // Regression: the manifest line the advisory points at (line 12
+        // here) must carry a real snippet, not `None` — otherwise
+        // Studio's "Generate suggested fix" 400s with "A code snippet is
+        // required" for every dependency-vulnerability finding.
+        assert!(issues[0].snippet.is_some(), "expected a snippet built from the manifest file+line");
     }
 
     /// Real case hit against deps.dev live data: one advisory carries
@@ -994,7 +1018,8 @@ mod tests {
                 note: None,
             }],
         };
-        let issues = collect_dependency_vulnerability_issues(&[manifest]);
+        let dir = tempdir().unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[manifest]);
         assert_eq!(issues.len(), 1);
         let refs = &issues[0].references;
         assert_eq!(refs.ghsa, vec!["GHSA-82w8-qh3p-5jfq"]);

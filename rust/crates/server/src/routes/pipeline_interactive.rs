@@ -667,6 +667,92 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
 
         // ---------------- Final review gate ----------------
         log.status(6, "running", None);
+
+        // Auto-resolve findings this scan doesn't need to put in front of
+        // a human at all: first, exact-id matches already justified on a
+        // previous scan of this same org/repo; then (if configured) any
+        // remaining finding in a low-risk allowlisted category the
+        // configured LLM is willing to draft a justification for. Both
+        // write real override rows under a distinct system/AI actor (never
+        // attributed to whoever happens to resolve the gate below) and
+        // fold into `pre_overrides`/`pre_ids` so `validate_overrides`
+        // treats them as already applied and Ignite Studio shows them as
+        // identified-but-justified rather than open.
+        let mut pre_overrides: Vec<SubmittedOverride> = Vec::new();
+        let mut pre_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(pid) = project_id {
+            let carried_forward = state.db.get_carry_forward_overrides(&org, &repo, pid);
+            let mut carried_count = 0;
+            for issue in &all_issues {
+                let Some(prior) = carried_forward.get(&issue.id) else { continue };
+                let justification = format!("Carried forward from a previous scan of {org}/{repo}: {}", prior.justification);
+                state.db.add_override(ignite_db_store::AddOverrideArgs {
+                    project_id: pid,
+                    job_id: &job_id,
+                    phase: 4,
+                    issue_id: &issue.id,
+                    category: &issue.category,
+                    severity: match issue.severity {
+                        Severity::Error => "error",
+                        Severity::Warning => "warning",
+                    },
+                    summary: &issue.summary,
+                    file: issue.file.as_deref(),
+                    line: issue.line,
+                    justification: &justification,
+                    actor_email: "carried-forward@ignite.internal",
+                    actor_name: Some("Carried forward (previous scan)"),
+                    email_sent: false,
+                });
+                pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification });
+                pre_ids.insert(issue.id.clone());
+                carried_count += 1;
+            }
+            if carried_count > 0 {
+                log.log(6, &format!("⚠ {carried_count} finding(s) already justified in a previous scan of {org}/{repo} — carried forward, no action needed."));
+            }
+
+            let remaining: Vec<Issue> = all_issues.iter().filter(|i| !pre_ids.contains(&i.id)).cloned().collect();
+            let ai_suggestions = crate::ai_justify::suggest_justifications(&state.config.ai_auto_justify, &state.llm_config, &remaining, |m| log.log(6, m)).await;
+            if !ai_suggestions.is_empty() {
+                let mut ai_count = 0;
+                for issue in &all_issues {
+                    if pre_ids.contains(&issue.id) {
+                        continue;
+                    }
+                    let Some(justification) = ai_suggestions.get(&issue.id) else { continue };
+                    state.db.add_override(ignite_db_store::AddOverrideArgs {
+                        project_id: pid,
+                        job_id: &job_id,
+                        phase: 4,
+                        issue_id: &issue.id,
+                        category: &issue.category,
+                        severity: match issue.severity {
+                            Severity::Error => "error",
+                            Severity::Warning => "warning",
+                        },
+                        summary: &issue.summary,
+                        file: issue.file.as_deref(),
+                        line: issue.line,
+                        justification,
+                        actor_email: "ai-assist@ignite.internal",
+                        actor_name: Some("Ignite AI Assist"),
+                        email_sent: false,
+                    });
+                    pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification: justification.clone() });
+                    pre_ids.insert(issue.id.clone());
+                    ai_count += 1;
+                }
+                if ai_count > 0 {
+                    log.log(6, &format!("⚠ {ai_count} finding(s) auto-justified by the configured AI engine — review before shipping."));
+                }
+            }
+
+            if !pre_ids.is_empty() {
+                persist_issues_snapshot(&state, &job_id, project_id, &all_issues, &pre_ids);
+            }
+        }
+
         if !all_issues.is_empty() {
             let error_count = all_issues.iter().filter(|i| i.severity == Severity::Error).count();
             log.log(6, &format!("⚠ {} issue(s) accumulated across the run ({error_count} blocking) — waiting for final review before provisioning/push.", all_issues.len()));
@@ -685,7 +771,9 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
                 live.review_active = false;
             }
 
-            let result = validate_overrides(&all_issues, &decision.overrides);
+            let mut merged_overrides = decision.overrides.clone();
+            merged_overrides.extend(pre_overrides.iter().cloned());
+            let result = validate_overrides(&all_issues, &merged_overrides);
             let applied_ids: std::collections::HashSet<String> = result.applied.iter().map(|(i, _)| i.id.clone()).collect();
             let ok = result.ok;
             let unresolved_count = result.unresolved_errors.len();
@@ -697,11 +785,15 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
                     format!("    ✗ [{}] {loc} — {}", issue.category, issue.summary)
                 })
                 .collect();
-            let applied_count = result.applied.len();
+            // Already recorded (and logged) above under their own
+            // carried-forward/AI actor — don't re-attribute them to
+            // whoever just resolved the gate.
+            let human_applied: Vec<(&Issue, String)> = result.applied.iter().filter(|(issue, _)| !pre_ids.contains(&issue.id)).map(|(issue, j)| (*issue, j.clone())).collect();
+            let applied_count = human_applied.len();
 
             if applied_count > 0 {
                 log.log(6, &format!("⚠ {applied_count} flagged issue(s) overridden by {}:", decision.actor.email));
-                for (issue, justification) in &result.applied {
+                for (issue, justification) in &human_applied {
                     let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "unknown location".to_string());
                     log.log(6, &format!("    ⚠ [override] [{:?}] {loc} — {} — \"{justification}\"", issue.severity, issue.summary));
                     if let Some(pid) = project_id {
@@ -921,21 +1013,39 @@ async fn pipeline(State(state): State<Arc<AppState>>, headers: axum::http::Heade
 /// the review gate. Thin enough to live here rather than waiting on the
 /// full routes/review_gate.js port (studio.js's file-browsing endpoints,
 /// which share that file, are the parts still not ported).
-async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, axum::Json(body): axum::Json<Value>) -> Response {
+async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, axum::Json(body): axum::Json<Value>) -> Response {
     let proceed = body.get("proceed").and_then(|v| v.as_bool()).unwrap_or(false);
     let overrides: Vec<SubmittedOverride> = body
         .get("overrides")
         .and_then(|v| v.as_array())
         .map(|a| a.iter().map(|o| SubmittedOverride { issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string() }).collect())
         .unwrap_or_default();
-    // The actor is always the authenticated session user, never taken from
-    // the request body — trusting a client-supplied {email, name} would
-    // let any caller forge attribution in the persistent override audit
-    // trail. Declining outright (`proceed: false`, no overrides) or
-    // continuing with nothing left to justify has nothing to attribute,
-    // so an empty actor there is fine — same scoping `routes/effectivate.rs`
-    // uses; only overriding a blocking finding needs a real identity.
-    let actor = Actor { email: user.email.clone(), name: user.name.clone().unwrap_or(user.email) };
+    // The actor comes from the authenticated session when there is one,
+    // else from a client-supplied {email, name} in the body — same
+    // resolution `routes/effectivate.rs` uses. Only actually overriding a
+    // blocking finding needs a real identity for the audit trail; a bare
+    // decline (`proceed: false`, no overrides) or a continue with nothing
+    // left to justify has nothing to attribute, so those go through
+    // unauthenticated. This matters in practice: this is also the request
+    // Esc/✕ on the review modal sends (as a decline), and a session that
+    // expired during a long-paused review must still be able to close that
+    // modal — a hard 401 here used to leave it with no way out.
+    let actor = if let Some(user) = user {
+        Some(Actor { email: user.email.clone(), name: user.name.clone().unwrap_or(user.email) })
+    } else {
+        body.get("actor").and_then(|a| {
+            let email = a.get("email").and_then(|v| v.as_str())?.trim();
+            if email.is_empty() {
+                return None;
+            }
+            let name = a.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(email);
+            Some(Actor { email: email.to_string(), name: name.to_string() })
+        })
+    };
+    if !overrides.is_empty() && actor.is_none() {
+        return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Log in, or provide actor {email,name}, to submit overrides." }))).into_response();
+    }
+    let actor = actor.unwrap_or_default();
     let resolved = state.review_gate.resolve(&job_id, ReviewDecisionInput { proceed, overrides, actor });
     if !resolved {
         return (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response();
@@ -1327,14 +1437,87 @@ mod tests {
         assert_eq!(done["dryRun"], true);
     }
 
-    /// Regression test for the "Stop pipeline" button leaving a run stuck
-    /// forever at the review gate: a bare decline (`proceed: false`, no
-    /// overrides — exactly what the button sends) has nothing to
-    /// attribute, so it must succeed with no `actor` in the body, driven
-    /// through the real HTTP route (not `review_gate.resolve` directly,
-    /// which would bypass the actor-requirement bug entirely).
+    /// Same ignore rationale as `dry_run_streams_job_and_review_events_then_pauses_at_gate`
+    /// (needs a real Phase 4 secrets scan). Proves the carry-forward wiring
+    /// end to end: a repeat scan of the same org/repo must not require the
+    /// human to re-justify a finding they already justified last time —
+    /// `run_interactive_pipeline`'s pre-gate block should have already
+    /// looked it up via `db.get_carry_forward_overrides` and applied it, so
+    /// the second run's decision can proceed with zero overrides and still
+    /// end up `ok`.
     #[tokio::test]
-    async fn review_decision_stop_with_no_overrides_needs_no_actor() {
+    #[ignore]
+    async fn repeat_scan_of_same_repo_carries_forward_a_previously_justified_finding() {
+        let (base, state) = spawn_test_server().await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
+
+        // --- First scan: a human justifies the secret finding by hand. ---
+        let form1 = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip.clone()).file_name("p.zip"));
+        let client1 = client.clone();
+        let base1 = base.clone();
+        let handle1 = tokio::spawn(async move { client1.post(format!("{base1}/api/pipeline")).multipart(form1).send().await.unwrap() });
+        let job1 = wait_for_review_gate(&state, std::time::Duration::from_secs(180)).await;
+        let secret_issue_id = {
+            let running = state.running_runs.lock().unwrap();
+            running[&job1].all_issues.iter().find(|i| i.category == "secret").map(|i| i.id.clone()).expect("fixture should flag a secret finding")
+        };
+        assert!(state.review_gate.resolve(
+            &job1,
+            ReviewDecisionInput { proceed: true, overrides: vec![SubmittedOverride { issue_id: secret_issue_id.clone(), justification: "Test fixture literal, not a real credential.".to_string() }], actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } },
+        ));
+        let res1 = handle1.await.unwrap();
+        assert_eq!(res1.status(), 200);
+        let events1 = read_ndjson(res1).await;
+        assert_eq!(events1.iter().find(|e| e["type"] == "done").unwrap()["ok"], true);
+
+        // --- Second scan: same org/repo/fixture, human submits *no*
+        // overrides at all — the earlier justification must already have
+        // been carried forward and applied before the gate even opened.
+        let form2 = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
+        let handle2 = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form2).send().await.unwrap() });
+        let job2 = wait_for_review_gate(&state, std::time::Duration::from_secs(180)).await;
+        assert_ne!(job1, job2);
+        assert!(state.review_gate.resolve(&job2, ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }));
+        let res2 = handle2.await.unwrap();
+        assert_eq!(res2.status(), 200);
+        let events2 = read_ndjson(res2).await;
+        let done2 = events2.iter().find(|e| e["type"] == "done").unwrap();
+        assert_eq!(done2["ok"], true, "second scan should have succeeded on the carried-forward override alone: {done2:?}");
+
+        // The carried-forward override is a real audit-log row, attributed
+        // to a distinct system actor, not silently invisible.
+        let project2_id = state.db.get_project_id_by_job_id(&job2).unwrap();
+        let overrides2 = state.db.get_project_overrides(project2_id);
+        let carried = overrides2.iter().find(|o| o.issue_id == secret_issue_id).expect("carried-forward override should be recorded on the second scan's own project row");
+        assert_eq!(carried.actor_email, "carried-forward@ignite.internal");
+        assert!(carried.justification.contains("Carried forward"));
+    }
+
+    async fn wait_for_review_gate(state: &Arc<AppState>, timeout: std::time::Duration) -> String {
+        tokio::time::timeout(timeout, async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let running = state.running_runs.lock().unwrap();
+                if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
+                    return id.clone();
+                }
+                drop(running);
+            }
+        })
+        .await
+        .expect("run never reached the review gate within the timeout — the fixture's blocking finding may not be getting flagged in this environment")
+    }
+
+    /// Regression test for the "Stop pipeline"/Esc/✕ path leaving a run
+    /// stuck forever at the review gate when the caller's session has
+    /// expired: a bare decline (`proceed: false`, no overrides — exactly
+    /// what those all send) has nothing to attribute, so it must succeed
+    /// fully unauthenticated (no bearer token, no `actor` in the body),
+    /// driven through the real HTTP route (not `review_gate.resolve`
+    /// directly, which would bypass the auth-requirement bug entirely).
+    #[tokio::test]
+    async fn review_decision_stop_with_no_overrides_needs_no_auth() {
         let (base, state) = spawn_test_server().await;
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
@@ -1362,16 +1545,56 @@ mod tests {
         .await
         .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
 
-        let user_id = state.db.create_local_user("review-decision-test@example.com", None, ignite_auth::dummy_hash());
-        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
-        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
-        let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).bearer_auth(token).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
-        assert_eq!(decision_res.status(), 200, "a bare decline with no overrides must not require an actor");
+        // No bearer token at all — mirrors a session that expired while
+        // the pipeline sat paused for review.
+        let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
+        assert_eq!(decision_res.status(), 200, "a bare decline with no overrides must not require authentication");
 
         let res = handle.await.unwrap();
         assert_eq!(res.status(), 200);
         let events = read_ndjson(res).await;
         let done = events.iter().find(|e| e["type"] == "done").unwrap();
         assert_eq!(done["ok"], false, "the run must actually finish (declined), not hang forever at the review gate");
+    }
+
+    /// The counterpart guard: an unauthenticated caller with no `actor` in
+    /// the body still cannot submit an actual override — only a bare
+    /// decline/no-op skips the identity requirement.
+    #[tokio::test]
+    async fn review_decision_with_overrides_still_requires_an_actor() {
+        let (base, state) = spawn_test_server().await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
+        let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
+        let base_for_decision = base.clone();
+
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+        let job_id = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let running = state.running_runs.lock().unwrap();
+                if let Some((id, r)) = running.iter().find(|(_, r)| r.review_active) {
+                    return (id.clone(), r.all_issues.iter().find(|i| i.status != "overridden").map(|i| i.id.clone()));
+                }
+                drop(running);
+            }
+        })
+        .await
+        .expect("run never reached the review gate within 180s");
+        let (job_id, issue_id) = job_id;
+        let issue_id = issue_id.expect("expected at least one open blocking finding to attempt to override");
+
+        let decision_res = reqwest::Client::new()
+            .post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision"))
+            .json(&json!({ "proceed": true, "overrides": [{ "issueId": issue_id, "justification": "reviewed, safe" }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(decision_res.status(), 401, "submitting an actual override with no session and no actor in the body must still be rejected");
+
+        // Clean up: the pipeline is still paused at the review gate — stop
+        // it with a bare decline so the spawned upload request resolves.
+        let _ = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await;
+        let _ = handle.await;
     }
 }

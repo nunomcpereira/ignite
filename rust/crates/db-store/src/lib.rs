@@ -421,6 +421,17 @@ pub struct IssueRow {
     pub duplicate_ref: Option<serde_json::Value>,
     pub status: String,
     pub created_at: String,
+    /// The most recent override's justification/actor when `status ==
+    /// "overridden"`, `None` otherwise — joined in from `overrides` at read
+    /// time (`get_project_issues`) rather than stored on the issue row
+    /// itself, so a UI showing one issue's detail (Ignite Studio's
+    /// per-issue panel, Studio's file view) can render who justified it and
+    /// why without a second round-trip, and so a carried-forward/AI-drafted
+    /// override (see `ai_justify`/`get_carry_forward_overrides`) reads no
+    /// differently from a human one — same three fields either way.
+    pub justification: Option<String>,
+    pub actor_email: Option<String>,
+    pub actor_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1439,6 +1450,54 @@ impl DbStore {
         Self::get_project_overrides_inner(&conn, project_id)
     }
 
+    /// The most recent justification for each issue id previously
+    /// overridden on any other scan of the same `(org, repo)` —
+    /// `exclude_project_id` is the project row the current scan just
+    /// created, so a scan never "carries forward" from itself. Matching is
+    /// by exact `issue_id` (`<category>::<file>::<line>`), the same stable
+    /// id `override-engine` already produces per finding; unlike the
+    /// headless `.ignite/acknowledgments.md` flow, there's no fuzzy
+    /// line-shift carry-forward here yet, so an unrelated edit above a
+    /// flagged line drops the match same as any other id change would.
+    pub fn get_carry_forward_overrides(&self, org: &str, repo: &str, exclude_project_id: i64) -> HashMap<String, OverrideRow> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification, o.actor_email, o.actor_name, o.email_sent, o.created_at
+                 FROM overrides o
+                 INNER JOIN projects p ON o.project_id = p.id
+                 WHERE p.org = ? AND p.repo = ? AND p.id != ?
+                 ORDER BY o.created_at DESC, o.id DESC",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(params![org, repo, exclude_project_id], |row| {
+                Ok(OverrideRow {
+                    id: row.get(0)?,
+                    phase: row.get(1)?,
+                    issue_id: row.get(2)?,
+                    category: row.get(3)?,
+                    severity: row.get(4)?,
+                    summary: row.get(5)?,
+                    file: row.get(6)?,
+                    line: row.get(7)?,
+                    justification: row.get(8)?,
+                    actor_email: row.get(9)?,
+                    actor_name: row.get(10)?,
+                    email_sent: row.get::<_, i64>(11)? != 0,
+                    created_at: row.get(12)?,
+                })
+            })
+            .unwrap();
+        let mut by_issue_id: HashMap<String, OverrideRow> = HashMap::new();
+        for row in rows.flatten() {
+            // ORDER BY created_at DESC means the first row seen per
+            // issue_id is already the most recent justification.
+            by_issue_id.entry(row.issue_id.clone()).or_insert(row);
+        }
+        by_issue_id
+    }
+
     // ---------------- flagged issues ----------------
 
     /// Called repeatedly as a run progresses — always reflects the latest
@@ -1472,8 +1531,11 @@ impl DbStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status, created_at
-                 FROM issues WHERE project_id = ? ORDER BY id",
+                "SELECT i.issue_id, i.phase, i.category, i.severity, i.score, i.summary, i.file, i.line, i.snippet_json, i.cross_file, i.chain_json, i.cwe, i.owasp, i.tool, i.references_json, i.duplicate_ref_json, i.status, i.created_at,
+                        (SELECT o.justification FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
+                        (SELECT o.actor_email FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
+                        (SELECT o.actor_name FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1)
+                 FROM issues i WHERE i.project_id = ? ORDER BY i.id",
             )
             .unwrap();
         // Corrupted JSON in a cached column must never panic here: a panic
@@ -1516,6 +1578,9 @@ impl DbStore {
                     duplicate_ref: parse_or_log("duplicate_ref", &id, duplicate_ref_json),
                     status: row.get(16)?,
                     created_at: row.get(17)?,
+                    justification: row.get(18)?,
+                    actor_email: row.get(19)?,
+                    actor_name: row.get(20)?,
                     id,
                 })
             })
@@ -1936,6 +2001,63 @@ mod tests {
         assert!(json.get("cross_file").is_none());
     }
 
+    /// `get_project_issues` must join in the actual override so a
+    /// per-issue detail panel (Ignite Studio) can show who justified a
+    /// finding and why without a second request — regression coverage for
+    /// the gap where an overridden issue's `status` flipped to
+    /// "overridden" but `justification`/`actorEmail`/`actorName` stayed
+    /// absent, so the UI had nothing to render beyond a generic badge.
+    #[test]
+    fn get_project_issues_joins_in_the_latest_overrides_justification_and_actor() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-8", "acme", "widgets", false, "ui", None);
+        store.replace_project_issues(
+            id,
+            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &HashSet::new(),
+        );
+        // Not yet overridden — no justification/actor to show.
+        let before = store.get_project_issues(id);
+        assert_eq!(before[0].status, "open");
+        assert!(before[0].justification.is_none());
+        assert!(before[0].actor_email.is_none());
+
+        store.add_override(AddOverrideArgs {
+            project_id: id,
+            job_id: "job-8",
+            phase: 4,
+            issue_id: "license-compliance::requirements.txt::0::PyMuPDF",
+            category: "license-compliance",
+            severity: "error",
+            summary: "Unrecognized license",
+            file: Some("requirements.txt"),
+            line: Some(9),
+            justification: "PyMuPDF is AGPL-3.0, a real license the scanner failed to parse.",
+            actor_email: "ai-assist@ignite.internal",
+            actor_name: Some("Ignite AI Assist"),
+            email_sent: false,
+        });
+        let mut overridden = HashSet::new();
+        overridden.insert("license-compliance::requirements.txt::0::PyMuPDF".to_string());
+        store.replace_project_issues(
+            id,
+            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &overridden,
+        );
+
+        let after = store.get_project_issues(id);
+        assert_eq!(after[0].status, "overridden");
+        assert_eq!(after[0].justification.as_deref(), Some("PyMuPDF is AGPL-3.0, a real license the scanner failed to parse."));
+        assert_eq!(after[0].actor_email.as_deref(), Some("ai-assist@ignite.internal"));
+        assert_eq!(after[0].actor_name.as_deref(), Some("Ignite AI Assist"));
+
+        // The API-facing JSON must be camelCase, same convention as every
+        // other field on this row.
+        let json = serde_json::to_value(&after[0]).unwrap();
+        assert_eq!(json["actorEmail"], serde_json::json!("ai-assist@ignite.internal"));
+        assert!(json.get("actor_email").is_none());
+    }
+
     #[test]
     fn cosign_verify_cache_respects_ttl() {
         let (_dir, store) = open_test_db();
@@ -1998,6 +2120,101 @@ mod tests {
         let details = store.get_project_details(id).unwrap();
         assert_eq!(details.steps[0].state, "failed");
         assert!(details.steps[0].logs.contains("Server restarted"));
+    }
+
+    #[test]
+    fn get_carry_forward_overrides_matches_by_issue_id_across_repeat_scans_of_the_same_repo() {
+        let (_dir, store) = open_test_db();
+        let old_id = store.create_project("job-old", "acme", "widgets", false, "ui", None);
+        store.add_override(AddOverrideArgs {
+            project_id: old_id,
+            job_id: "job-old",
+            phase: 4,
+            issue_id: "license-compliance::requirements.txt::0::PyMuPDF",
+            category: "license-compliance",
+            severity: "error",
+            summary: "Unrecognized license",
+            file: Some("requirements.txt"),
+            line: Some(9),
+            justification: "PyMuPDF is AGPL-3.0, a real permissive-adjacent license the scanner failed to parse.",
+            actor_email: "dev@acme.example",
+            actor_name: Some("Dev"),
+            email_sent: false,
+        });
+
+        // A second scan of a *different* repo must never see the first
+        // repo's overrides.
+        let other_repo_id = store.create_project("job-other-repo", "acme", "gizmos", false, "ui", None);
+        let none_for_other_repo = store.get_carry_forward_overrides("acme", "gizmos", other_repo_id);
+        assert!(none_for_other_repo.is_empty());
+
+        let new_id = store.create_project("job-new", "acme", "widgets", false, "ui", None);
+        let carried = store.get_carry_forward_overrides("acme", "widgets", new_id);
+        assert_eq!(carried.len(), 1);
+        let row = &carried["license-compliance::requirements.txt::0::PyMuPDF"];
+        assert!(row.justification.contains("AGPL-3.0"));
+
+        // The current scan's own project id is excluded, so a run doesn't
+        // "carry forward" its own just-written overrides.
+        let self_id = new_id;
+        store.add_override(AddOverrideArgs {
+            project_id: self_id,
+            job_id: "job-new",
+            phase: 4,
+            issue_id: "secret::app.js::5",
+            category: "secret",
+            severity: "error",
+            summary: "hardcoded key",
+            file: Some("app.js"),
+            line: Some(5),
+            justification: "test fixture",
+            actor_email: "dev@acme.example",
+            actor_name: None,
+            email_sent: false,
+        });
+        let carried_excluding_self = store.get_carry_forward_overrides("acme", "widgets", self_id);
+        assert!(!carried_excluding_self.contains_key("secret::app.js::5"));
+    }
+
+    #[test]
+    fn get_carry_forward_overrides_keeps_only_the_most_recent_justification_per_issue_id() {
+        let (_dir, store) = open_test_db();
+        let first_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        store.add_override(AddOverrideArgs {
+            project_id: first_id,
+            job_id: "job-1",
+            phase: 4,
+            issue_id: "license-compliance::requirements.txt::0::regex",
+            category: "license-compliance",
+            severity: "error",
+            summary: "Unrecognized license",
+            file: Some("requirements.txt"),
+            line: Some(14),
+            justification: "stale reasoning",
+            actor_email: "dev@acme.example",
+            actor_name: None,
+            email_sent: false,
+        });
+        let second_id = store.create_project("job-2", "acme", "widgets", false, "ui", None);
+        store.add_override(AddOverrideArgs {
+            project_id: second_id,
+            job_id: "job-2",
+            phase: 4,
+            issue_id: "license-compliance::requirements.txt::0::regex",
+            category: "license-compliance",
+            severity: "error",
+            summary: "Unrecognized license",
+            file: Some("requirements.txt"),
+            line: Some(14),
+            justification: "current reasoning",
+            actor_email: "dev@acme.example",
+            actor_name: None,
+            email_sent: false,
+        });
+
+        let third_id = store.create_project("job-3", "acme", "widgets", false, "ui", None);
+        let carried = store.get_carry_forward_overrides("acme", "widgets", third_id);
+        assert_eq!(carried["license-compliance::requirements.txt::0::regex"].justification, "current reasoning");
     }
 
     #[test]

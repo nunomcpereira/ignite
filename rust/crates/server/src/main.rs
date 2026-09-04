@@ -3,6 +3,7 @@
 //! aren't ported yet — see each `routes/*.rs` module's doc comment for
 //! what it covers.
 
+mod ai_justify;
 mod auth;
 mod phase4_config;
 mod review_gate;

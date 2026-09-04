@@ -170,6 +170,11 @@
       "binary": "syft"
     }
   },
+  "aiAutoJustify": {
+    "enabled": false,
+    "categories": ["license-compliance"],
+    "maxFindingsPerRequest": 50
+  },
   "phases": [
     { "id": 2, "enabled": true },
     { "id": 5, "enabled": false, "title": "Org Governance CI (disabled at this org)" }
