@@ -61,8 +61,12 @@ function baseUrl(): string {
  * once this is set instead of always falling back to the server's own token.
  */
 function authHeaders(): Record<string, string> {
-  const key = vscode.workspace.getConfiguration('ignite').get<string>('apiKey', '').trim();
-  return key ? { Authorization: `Bearer ${key}` } : {};
+  const raw = vscode.workspace.getConfiguration('ignite').get<string>('apiKey', '').trim();
+  if (!raw) return {};
+  // Tolerate a pasted "Bearer ignite_xxx" (e.g. copied straight from a curl
+  // example) instead of doubling it into "Authorization: Bearer Bearer ignite_xxx".
+  const key = raw.replace(/^Bearer\s+/i, '');
+  return { Authorization: `Bearer ${key}` };
 }
 
 /** Thrown when the Ignite server isn't reachable — same precondition hooks/pre-push already documents. */
@@ -93,10 +97,16 @@ function sleep(ms: number): Promise<void> {
  */
 export async function checkReachable(onAttempt?: (line: string) => void): Promise<boolean> {
   const url = baseUrl();
+  // Probing "/" would 200 against *any* static file server on that port
+  // (including a stray dev server left running from something else) since
+  // it just serves the SPA fallback — /api/auth/config is a cheap,
+  // unauthenticated, Ignite-specific route, so a response here actually
+  // means Ignite is what's listening.
+  const probeUrl = `${url}/api/auth/config`;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const startedAt = Date.now();
     try {
-      const res = await fetch(url, { method: 'GET', headers: authHeaders(), signal: AbortSignal.timeout(8000) });
+      const res = await fetch(probeUrl, { method: 'GET', headers: authHeaders(), signal: AbortSignal.timeout(8000) });
       const elapsed = Date.now() - startedAt;
       if (res.ok || res.status < 500) {
         onAttempt?.(`  probe ${attempt}/3 → HTTP ${res.status} in ${elapsed}ms — reachable`);

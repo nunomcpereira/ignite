@@ -260,7 +260,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l-3 3m3-3l3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
           </svg>
           <h3 class="text-lg font-bold text-slate-900" data-i18n="upload.dropTitle">Drag &amp; Drop Project Payload</h3>
-          <p class="text-sm text-slate-500 mt-1.5 max-w-md mx-auto" data-i18n="upload.dropSubtitle">Upload a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> to initiate the pipeline sequence.</p>
+          <p class="text-sm text-slate-500 mt-1.5 max-w-md mx-auto" data-i18n-html="upload.dropSubtitle">Upload a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> to initiate the pipeline sequence.</p>
           <div class="flex items-center justify-center gap-3 mt-5">
             <button type="button" id="pickZipBtn" class="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-card transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
@@ -312,7 +312,7 @@
         </div>
 
         <div id="gxpSection" class="hidden mt-4">
-          <p class="text-xs text-slate-500 mb-3" data-i18n="upload.gxpMandatory">
+          <p class="text-xs text-slate-500 mb-3" data-i18n-html="upload.gxpMandatory">
             <span class="font-semibold text-rose-600">Mandatory:</span> attach at least one GxP validation document
             (validation plan, IQ/OQ/PQ protocol, report…) — by link or upload. Documents are archived in the Ignite database.
           </p>
@@ -417,7 +417,7 @@
 
     </main>
 
-    <footer class="mt-12 text-center text-xs text-slate-400" data-i18n="footer.note">
+    <footer class="mt-12 text-center text-xs text-slate-400" data-i18n-html="footer.note">
       Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>
       Staging files are wiped from disk after every run, pass or fail.
     </footer>
@@ -553,7 +553,7 @@
         </div>
       </div>
       <p id="studioError" class="hidden text-xs text-rose-600 bg-rose-50 border-b border-rose-200 px-5 py-2"></p>
-      <p id="studioHistoricalBanner" class="hidden text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-5 py-2" data-i18n="studio.historicalBanner">
+      <p id="studioHistoricalBanner" class="hidden text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-5 py-2" data-i18n-html="studio.historicalBanner">
         ⚠ Historical view — you're not seeing the full project. Staging files are wiped after every run, so only the
         code captured around each flagged finding is available here, not the whole file. Gaps between findings are
         marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
@@ -766,17 +766,19 @@
 
     /**
      * Applies `t()` to every element carrying a data-i18n* attribute.
-     * data-i18n uses innerHTML (not textContent) — translated strings for a
-     * few keys deliberately carry the same inline markup the English source
-     * does (e.g. bold spans in upload.dropSubtitle), and every data-i18n
-     * value is developer-authored translation copy, never user input, so
-     * innerHTML here is safe. Only the static HTML shell picks this up
-     * automatically; JS-rendered (template-literal) UI calls t() directly
-     * inline instead — see CLAUDE.md.
+     *
+     * Defence-in-depth: plain-text keys use textContent (auto-escapes HTML).
+     * The handful of keys whose translations carry deliberate inline markup
+     * (e.g. bold spans in upload.dropSubtitle, line breaks in footer.note)
+     * must opt in explicitly via the data-i18n-html attribute, which uses
+     * innerHTML. Only the static HTML shell picks this up automatically;
+     * JS-rendered (template-literal) UI calls t() directly inline instead
+     * — see CLAUDE.md.
      */
     function applyStaticTranslations() {
       document.documentElement.lang = currentLocale;
-      document.querySelectorAll('[data-i18n]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n')); });
+      document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.getAttribute('data-i18n')); });
+      document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n-html')); });
       document.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.getAttribute('data-i18n-title')); });
       document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.getAttribute('data-i18n-placeholder')); });
       const label = document.getElementById('localeMenuLabel');

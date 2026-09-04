@@ -375,6 +375,24 @@ async function suggestFixForFinding(node: FindingsNode | undefined, workspaceRoo
     const startIdx = Math.max(0, startLine - 1);
     const endIdx = Math.min(doc.lineCount - 1, endLine - 1);
     const range = new vscode.Range(startIdx, 0, endIdx, doc.lineAt(endIdx).text.length);
+
+    // The LLM call between scan and "Apply to File" can take a while — if the
+    // file was edited in the meantime, startLine/endLine may no longer point
+    // at the code the fix was generated against. Compare against the snippet
+    // captured at scan time before blindly overwriting those lines.
+    const originalText = issue.snippet.lines
+      .filter((l) => l.number >= startLine && l.number <= endLine)
+      .map((l) => l.text)
+      .join('\n');
+    if (originalText && doc.getText(range).trim() !== originalText.trim()) {
+      const proceed = await vscode.window.showWarningMessage(
+        `Ignite: ${path.basename(issue.file)} has changed since this finding was scanned — the proposed fix may no longer target the right lines.`,
+        { modal: true },
+        'Apply Anyway'
+      );
+      if (proceed !== 'Apply Anyway') return;
+    }
+
     const edit = new vscode.WorkspaceEdit();
     edit.replace(uri, range, replacement);
     if (!(await vscode.workspace.applyEdit(edit))) {
@@ -421,15 +439,16 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await vscode.window.showTextDocument(uri);
     }),
-    vscode.commands.registerCommand('ignite.acknowledgeIssue', async (issueId: string) => {
+    vscode.commands.registerCommand('ignite.acknowledgeIssue', async (node: FindingsNode) => {
+      const issue = issueFromNode(node);
+      if (!issue) return;
       const folder = activeWorkspaceFolder();
       if (!folder) return;
       const repoRoot = (await getRepoRoot(folder.uri.fsPath)) ?? folder.uri.fsPath;
-      const unresolved = lastResultIssues.filter((i) => i.severity === 'error' && i.status !== 'overridden');
-      await appendUnresolvedIssues(repoRoot, unresolved);
+      await appendUnresolvedIssues(repoRoot, [issue]);
       const uri = vscode.Uri.file(reviewFilePath(repoRoot));
       const doc = await vscode.window.showTextDocument(uri);
-      const lineNo = await findAcknowledgeLineNumber(repoRoot, issueId);
+      const lineNo = await findAcknowledgeLineNumber(repoRoot, issue.id);
       if (lineNo !== null) {
         const pos = new vscode.Position(lineNo, 'Acknowledge: '.length);
         doc.selection = new vscode.Selection(pos, pos);

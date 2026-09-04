@@ -2044,9 +2044,4 @@ ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::868
 # Code: fs::write(root.join("config.js"), format!("export const environment = {{ firebase: {{ apiKey: '{}' }} }};\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
 Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the built-in secret scanner (SECRET_RE) doesn't false-positive on a `firebase: { apiKey: ... }` nested property shape, not a real credential.
 
-ID: codeql-sast::public/index.html::779::js/xss-through-dom
-# Issue #338
-# [ERROR] codeql-sast - DOM text is reinterpreted as HTML without escaping meta-characters.
-#   public/index.html:779
-# Code: document.querySelectorAll('[data-i18n]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n')); });
-Acknowledge: t()'s only inputs are (1) the fixed attribute-name strings 'data-i18n'/'data-i18n-title'/'data-i18n-placeholder' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, which is entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. innerHTML (not textContent) is used deliberately so a handful of translated strings can carry inline markup (e.g. the upload screen's bolded "folder"/".zip" spans) - switching to textContent would silently break those. No untrusted data ever reaches this call. (auto-carried-forward from codeql-sast::public/index.html::732::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::775::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::776::js/xss-through-dom - pure line-number drift, flagged code unchanged)
+

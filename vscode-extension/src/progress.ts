@@ -59,10 +59,18 @@ export class ScanProgressPoller {
 
   private async tick(): Promise<void> {
     try {
+      // No git remote (org/repo both blank) — nothing distinguishes this
+      // scan's row from any other remote-less project's, so don't guess.
+      if (!this.org || !this.repo) return;
       if (this.projectId === null) {
         const projects = await listProjects();
+        // A crashed prior scan of the same org/repo can leave its own row
+        // stuck at status "running" in the DB — restrict to rows created no
+        // earlier than this poll started (small buffer for clock skew /
+        // commit latency) so this doesn't latch onto stale progress.
+        const cutoff = this.startedAt - 5000;
         const match = projects.find(
-          (p) => p.org === this.org && p.repo === this.repo && p.status === 'running'
+          (p) => p.org === this.org && p.repo === this.repo && p.status === 'running' && new Date(p.created_at).getTime() >= cutoff
         );
         if (!match) return;
         this.projectId = match.id;
