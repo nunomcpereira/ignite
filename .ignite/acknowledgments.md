@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: fdcfcceaab4d5cbd55992a6046c4337282f642e6 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: c7b0b07961d6f1cb618ef1a27ba9e3d7390b996e (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -2020,7 +2020,7 @@ ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1287
 # Issue #334
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:1287
-Acknowledge: Test-fixture literal AWS-shaped key ("AKIAABCDEFGHIJKLMNOP") embedded in a unit test's synthetic zip upload to deterministically trigger a Phase 4 finding, not a real credential.
+Acknowledge: Test-fixture literal AWS-shaped key embedded in a unit test's synthetic zip upload to deterministically trigger a Phase 4 finding, not a real credential.
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1340
 # Issue #335
@@ -2033,3 +2033,9 @@ ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::867
 # [ERROR] secret - Hardcoded gcp-api-key
 #   rust/crates/phase4-orchestrator/src/lib.rs:867
 Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the secrets checker's gitleaks-only detection path (not the built-in regex), not a real credential.
+
+ID: secret::.ignite/acknowledgments.md::2023
+# Issue #337
+# [ERROR] secret - Hardcoded aws-access-token
+#   .ignite/acknowledgments.md:2023
+Acknowledge: 
