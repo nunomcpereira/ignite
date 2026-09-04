@@ -24,6 +24,31 @@ pub fn compare_semver(a: (u64, u64, u64), b: (u64, u64, u64)) -> std::cmp::Order
     a.cmp(&b)
 }
 
+/// deps.dev's top-level `licenses` is its own SPDX-normalized view — when
+/// it can't map a package's declared license to an SPDX id at all, it
+/// reports the placeholder "non-standard" there instead of the real
+/// license text, even though the raw text (e.g. "BSD License", "Apache
+/// Software License") is sitting right there in
+/// `licenseDetails[].license`. Falling back to that raw text (still run
+/// through the same normalizer/alias table downstream) recovers real,
+/// permissive licenses that would otherwise misreport as "Unrecognized".
+fn licenses_from_deps_dev_json(data: &serde_json::Value) -> Vec<String> {
+    let top_level: Vec<String> = data.get("licenses").and_then(|l| l.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    if !is_placeholder_license_list(&top_level) {
+        return top_level;
+    }
+    let raw: Vec<String> = data
+        .get("licenseDetails")
+        .and_then(|d| d.as_array())
+        .map(|a| a.iter().filter_map(|d| d.get("license").and_then(|l| l.as_str()).map(String::from)).filter(|l| !l.trim().is_empty()).collect())
+        .unwrap_or_default();
+    if raw.is_empty() {
+        top_level
+    } else {
+        raw
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepsDevPackageInfo {
     pub licenses: Vec<String>,
@@ -59,7 +84,12 @@ impl DepsDevClient {
         if let Some(cached) = self.package_info_cache.lock().unwrap().get(&key) {
             return cached.clone();
         }
-        let url = format!("https://api.deps.dev/v3/systems/{}/packages/{}/versions/{}", system, urlencoding::encode(name), urlencoding::encode(version));
+        // v3alpha, not the stable v3 endpoint used elsewhere in this file:
+        // it's a strict superset of v3's response shape (every field v3
+        // returns is present identically) plus `licenseDetails`, which v3
+        // omits entirely — `licenses_from_deps_dev_json`'s placeholder
+        // fallback below has nothing to read without it.
+        let url = format!("https://api.deps.dev/v3alpha/systems/{}/packages/{}/versions/{}", system, urlencoding::encode(name), urlencoding::encode(version));
         // `.timeout()` on the request builder only bounds `.send()` (up to
         // response headers) — it does NOT cover the subsequent body read
         // (`.json()`/`.text()`), which is a separate future with no timeout
@@ -79,7 +109,7 @@ impl DepsDevClient {
                 return None;
             }
             let data: serde_json::Value = res.json().await.ok()?;
-            let licenses = data.get("licenses").and_then(|l| l.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            let licenses = licenses_from_deps_dev_json(&data);
             let advisory_ids = data
                 .get("advisoryKeys")
                 .and_then(|a| a.as_array())
@@ -343,6 +373,33 @@ mod tests {
         assert!(is_placeholder_license_list(&["Unknown".to_string()]));
         assert!(!is_placeholder_license_list(&["MIT".to_string()]));
         assert!(!is_placeholder_license_list(&[]));
+    }
+
+    #[test]
+    fn licenses_from_deps_dev_json_falls_back_to_license_details_when_top_level_is_placeholder() {
+        // Real deps.dev response shape for itsdangerous@2.2.0: top-level
+        // `licenses` is the unhelpful placeholder, but `licenseDetails`
+        // carries the real declared license text.
+        let data = serde_json::json!({
+            "licenses": ["non-standard"],
+            "licenseDetails": [{"license": "BSD License", "spdx": "non-standard"}],
+        });
+        assert_eq!(licenses_from_deps_dev_json(&data), vec!["BSD License".to_string()]);
+    }
+
+    #[test]
+    fn licenses_from_deps_dev_json_prefers_top_level_when_not_a_placeholder() {
+        let data = serde_json::json!({
+            "licenses": ["MIT"],
+            "licenseDetails": [{"license": "MIT License", "spdx": "MIT"}],
+        });
+        assert_eq!(licenses_from_deps_dev_json(&data), vec!["MIT".to_string()]);
+    }
+
+    #[test]
+    fn licenses_from_deps_dev_json_keeps_placeholder_when_no_license_details_present() {
+        let data = serde_json::json!({"licenses": ["non-standard"]});
+        assert_eq!(licenses_from_deps_dev_json(&data), vec!["non-standard".to_string()]);
     }
 
     #[test]

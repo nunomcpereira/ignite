@@ -13,13 +13,37 @@ use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry
 use ignite_fs_utils::{build_snippet, walk_files, SnippetOptions};
 use ignite_license_classification::{classify_license_tier, is_internal_dependency_ref, best_effort_version, LicenseTier};
 use ignite_override_engine::{build_issue_id, derive_cwe_owasp, score_for_issue, BuildIssueIdArgs, CweOwaspHint, Issue, Severity};
-use ignite_studio_manifests::{studio_manifests, ManifestDep, STUDIO_MAX_DEPS_PER_MANIFEST};
+use ignite_studio_manifests::{lockfile_specs, studio_manifests, ManifestDep, STUDIO_MAX_DEPS_PER_MANIFEST};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// A manifest's declared range only says what's *permitted* to install,
+/// not what actually is — a lockfile, when present, pins the real
+/// resolved version per dependency, which is strictly more accurate than
+/// guessing a single representative version out of the range (as
+/// `best_effort_version`/`resolve_best_published_version` below do for
+/// unlocked manifests). Looked up next to the manifest first (monorepo
+/// per-package lockfiles), then at the project root (single root
+/// lockfile) — only the first lockfile that both exists and parses to a
+/// non-empty map is used.
+fn resolve_lockfile_versions(manifest_file: &Path, root: &Path, ecosystem: &str) -> HashMap<String, String> {
+    let dir = manifest_file.parent().unwrap_or(root);
+    for spec in lockfile_specs().iter().filter(|s| s.ecosystem == ecosystem) {
+        for candidate_dir in [dir, root] {
+            if let Ok(content) = std::fs::read_to_string(candidate_dir.join(spec.file)) {
+                let versions = (spec.parse)(&content);
+                if !versions.is_empty() {
+                    return versions;
+                }
+            }
+        }
+    }
+    HashMap::new()
+}
 
 /// A superset of `classify_license_tier`'s 3-state `LicenseTier`: an
 /// internal workspace/catalog reference is neither green/warning/red on
@@ -101,6 +125,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
         }
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
         let raw_deps: Vec<ManifestDep> = (spec.parse)(&content).into_iter().take(STUDIO_MAX_DEPS_PER_MANIFEST).collect();
+        let lockfile_versions = resolve_lockfile_versions(&file, root, spec.ecosystem);
 
         // One registry round-trip (or several, on the fallback paths below)
         // per dependency — awaited one at a time here used to mean N deps
@@ -127,29 +152,33 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                 };
             }
 
-            let version = match best_effort_version(&dep.version_range) {
-                Some(v) => v,
-                None => {
-                    // BEST_EFFORT_VERSION_RE requires a `major.minor`, so a
-                    // bare-major range (Cargo's `"1"` shorthand for `^1`,
-                    // common in every crate's Cargo.toml) doesn't match —
-                    // fall through to the same registry-based range
-                    // resolution the retry path below uses, instead of
-                    // giving up immediately. Only a genuinely unresolvable
-                    // spec (git ref, tag, local path) still reports
-                    // "Could not resolve" below.
-                    match resolve_best_published_version(client, spec.system, &dep.name, &dep.version_range).await {
-                        Some(v) => v,
-                        None => {
-                            return LicenseScanDependency {
-                                name: dep.name.clone(),
-                                version_range: dep.version_range.clone(),
-                                version: None,
-                                line,
-                                licenses: vec![],
-                                tier: DependencyLicenseTier::Red,
-                                reason: "Could not resolve an exact version to check (range/tag/git ref).".to_string(),
-                            };
+            let version = if let Some(locked) = lockfile_versions.get(&dep.name) {
+                locked.clone()
+            } else {
+                match best_effort_version(&dep.version_range) {
+                    Some(v) => v,
+                    None => {
+                        // BEST_EFFORT_VERSION_RE requires a `major.minor`, so a
+                        // bare-major range (Cargo's `"1"` shorthand for `^1`,
+                        // common in every crate's Cargo.toml) doesn't match —
+                        // fall through to the same registry-based range
+                        // resolution the retry path below uses, instead of
+                        // giving up immediately. Only a genuinely unresolvable
+                        // spec (git ref, tag, local path) still reports
+                        // "Could not resolve" below.
+                        match resolve_best_published_version(client, spec.system, &dep.name, &dep.version_range).await {
+                            Some(v) => v,
+                            None => {
+                                return LicenseScanDependency {
+                                    name: dep.name.clone(),
+                                    version_range: dep.version_range.clone(),
+                                    version: None,
+                                    line,
+                                    licenses: vec![],
+                                    tier: DependencyLicenseTier::Red,
+                                    reason: "Could not resolve an exact version to check (range/tag/git ref).".to_string(),
+                                };
+                            }
                         }
                     }
                 }
@@ -250,6 +279,7 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
         let Some(spec) = studio_manifests().iter().find(|m| m.file == base) else { continue };
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
         let raw_deps: Vec<ManifestDep> = (spec.parse)(&content).into_iter().take(STUDIO_MAX_DEPS_PER_MANIFEST).collect();
+        let lockfile_versions = resolve_lockfile_versions(&file, root, spec.ecosystem);
 
         // Same fix as scan_dependency_licenses_fallback above: one future
         // per dependency instead of one `.await` at a time in a for-loop —
@@ -271,15 +301,20 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
                 };
             }
 
-            let Some(version) = best_effort_version(&dep.version_range) else {
-                return VulnScanDependency {
-                    name: dep.name.clone(),
-                    version_range: dep.version_range.clone(),
-                    version: None,
-                    line,
-                    vulnerabilities: vec![],
-                    note: Some("Could not resolve an exact version to check (range/tag/git ref).".to_string()),
+            let version = if let Some(locked) = lockfile_versions.get(&dep.name) {
+                locked.clone()
+            } else {
+                let Some(version) = best_effort_version(&dep.version_range) else {
+                    return VulnScanDependency {
+                        name: dep.name.clone(),
+                        version_range: dep.version_range.clone(),
+                        version: None,
+                        line,
+                        vulnerabilities: vec![],
+                        note: Some("Could not resolve an exact version to check (range/tag/git ref).".to_string()),
+                    };
                 };
+                version
             };
 
             let mut info = client.fetch_package_info(spec.system, &dep.name, &version).await;
@@ -1122,6 +1157,70 @@ mod tests {
         assert_eq!(dep.name, "serde");
         assert_ne!(dep.tier, DependencyLicenseTier::Red, "expected serde@1 to resolve to a real published version instead of \"Could not resolve\": {}", dep.reason);
         assert!(dep.version.is_some(), "expected a resolved version, got: {}", dep.reason);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[test]
+    fn resolve_lockfile_versions_prefers_lockfile_next_to_manifest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("backend")).unwrap();
+        fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.100\"\n").unwrap();
+        fs::write(root.join("backend/Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.210\"\n").unwrap();
+        let manifest = root.join("backend/Cargo.toml");
+        fs::write(&manifest, "[package]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+
+        let versions = resolve_lockfile_versions(&manifest, root, "cargo");
+        assert_eq!(versions.get("serde"), Some(&"1.0.210".to_string()), "expected the lockfile next to the manifest, not the root one");
+    }
+
+    #[test]
+    fn resolve_lockfile_versions_falls_back_to_root_lockfile() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.210\"\n").unwrap();
+        let manifest = root.join("Cargo.toml");
+        fs::write(&manifest, "[package]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+
+        let versions = resolve_lockfile_versions(&manifest, root, "cargo");
+        assert_eq!(versions.get("serde"), Some(&"1.0.210".to_string()));
+    }
+
+    #[test]
+    fn resolve_lockfile_versions_empty_when_no_lockfile_present() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let manifest = root.join("Cargo.toml");
+        fs::write(&manifest, "[package]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+
+        assert!(resolve_lockfile_versions(&manifest, root, "cargo").is_empty());
+    }
+
+    /// A range like `serde = "^1.0"` alone resolves (via
+    /// `resolve_best_published_version`) to whatever the registry says is
+    /// the *latest* matching published version — but a `Cargo.lock`
+    /// present in the project pins the actual version really in use,
+    /// which is what must be checked for license/CVE purposes. Picks a
+    /// real, old-but-still-published serde version deliberately far from
+    /// "latest" so a pass here can't be explained by coincidence.
+    #[tokio::test]
+    async fn scan_dependency_licenses_fallback_prefers_lockfile_version_over_range_guess() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"^1.0\"\n").unwrap();
+        fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.100\"\n").unwrap();
+
+        let client = DepsDevClient::new();
+        let npm_http = reqwest::Client::new();
+        let manifests = scan_dependency_licenses_fallback(root, &client, &npm_http, &HashSet::new()).await.unwrap();
+        if manifests.is_empty() || manifests[0].dependencies.is_empty() {
+            eprintln!("skipping: could not reach deps.dev (network unavailable in this environment)");
+            ignite_fs_utils::invalidate_walk_cache(root);
+            return;
+        }
+        let dep = &manifests[0].dependencies[0];
+        assert_eq!(dep.name, "serde");
+        assert_eq!(dep.version.as_deref(), Some("1.0.100"), "expected the Cargo.lock-pinned version, not a range-guessed one");
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 

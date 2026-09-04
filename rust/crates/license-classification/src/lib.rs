@@ -51,6 +51,14 @@ static LICENSE_ALIASES: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
         ("apachelicense", "Apache-2.0"),
         ("bsd2clause", "BSD-2-Clause"),
         ("bsd3clause", "BSD-3-Clause"),
+        // PyPI/Python-classifier-style strings deps.dev itself can't map
+        // to an SPDX id and passes through as raw text via
+        // `licenseDetails` (see deps-dev-client's placeholder fallback).
+        // "BSD License" alone doesn't say 2- vs 3-clause; both tier Green
+        // so the ambiguity doesn't affect classification.
+        ("bsdlicense", "BSD-3-Clause"),
+        ("apachesoftwarelicense", "Apache-2.0"),
+        ("gnuafferogpl30", "AGPL-3.0"),
     ])
 });
 
@@ -234,6 +242,22 @@ mod tests {
         // since it changes nothing observable and the port's goal is
         // faithful parity).
         assert_eq!(normalize_license_id("Apache License 2.0"), "Apache License 2.0");
+    }
+
+    #[test]
+    fn normalizes_deps_dev_raw_license_detail_strings() {
+        // These are the exact raw `licenseDetails[].license` strings
+        // deps.dev returned (top-level `licenses: ["non-standard"]`) for
+        // itsdangerous, regex, and PyMuPDF — a real onboarding scan.
+        assert_eq!(normalize_license_id("BSD License"), "BSD-3-Clause");
+        assert_eq!(normalize_license_id("Apache Software License"), "Apache-2.0");
+        assert_eq!(normalize_license_id("GNU AFFERO GPL 3.0"), "AGPL-3.0");
+        let bsd = classify_license_tier(&["BSD License".to_string()]);
+        assert_eq!(bsd.tier, LicenseTier::Green);
+        let apache = classify_license_tier(&["Apache Software License".to_string()]);
+        assert_eq!(apache.tier, LicenseTier::Green);
+        let agpl = classify_license_tier(&["GNU AFFERO GPL 3.0".to_string()]);
+        assert_eq!(agpl.tier, LicenseTier::Warning);
     }
 
     #[test]
