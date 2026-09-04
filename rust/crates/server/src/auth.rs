@@ -112,10 +112,6 @@ pub fn resolve_effective_github_token(headers: &HeaderMap, db: &ignite_db_store:
 /// Axum extractor: 401s with the same body shape as the Node original
 /// (`{"error": "Authentication required."}`) unless a session/API key
 /// resolves to a real user.
-/// Not yet used by any ported route (GitHub-connect/disconnect, which
-/// need it in the Node original, aren't ported), but kept public and
-/// tested so the next route that needs it doesn't have to build this.
-#[allow(dead_code)]
 pub struct RequireAuth(pub AttachedUser);
 
 #[async_trait::async_trait]
@@ -127,6 +123,17 @@ impl FromRequestParts<Arc<AppState>> for RequireAuth {
             Some(user) => Ok(RequireAuth(user)),
             None => Err((StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response()),
         }
+    }
+}
+
+/// Middleware form of `RequireAuth`, for mounting on a whole sub-router at
+/// once (e.g. `/studio/*`) rather than adding the extractor to every
+/// handler individually. Same 401 body shape.
+pub async fn require_auth_middleware(State(state): State<Arc<AppState>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if resolve_user(req.headers(), &state.db).is_some() {
+        next.run(req).await
+    } else {
+        (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response()
     }
 }
 
@@ -206,9 +213,9 @@ struct RegisterBody {
     password: String,
 }
 
-async fn auth_register(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<RegisterBody>) -> Response {
-    let ip = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("unknown");
-    if !ignite_auth::register_limiter().check(ip) {
+async fn auth_register(State(state): State<Arc<AppState>>, axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>, Json(body): Json<RegisterBody>) -> Response {
+    let ip = addr.ip().to_string();
+    if !ignite_auth::register_limiter().check(&ip) {
         return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "Too many registration attempts. Try again later." }))).into_response();
     }
     let email = body.email.trim().to_lowercase();
@@ -241,14 +248,23 @@ struct LoginBody {
     password: String,
 }
 
-async fn auth_login(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<LoginBody>) -> Response {
+async fn auth_login(State(state): State<Arc<AppState>>, axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>, Json(body): Json<LoginBody>) -> Response {
     let email = body.email.trim().to_lowercase();
     // Named `pw`/`pw_ok`, not `password`/`password_ok` — see the same note
     // in auth_register above.
     let pw = body.password;
-    let ip = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("unknown");
-    let limiter_key = if email.is_empty() { ip } else { email.as_str() };
-    if !ignite_auth::login_limiter().check(limiter_key) {
+    let ip = addr.ip().to_string();
+    // Keyed by ip+email (not email alone) so an attacker can't lock a
+    // targeted legitimate account out by hammering it with wrong passwords
+    // from many different addresses — that only exhausts their own
+    // per-(ip,email) bucket. A separate per-ip bucket still throttles
+    // credential-stuffing across many emails from one address.
+    let per_ip_key = format!("ip:{ip}");
+    if !ignite_auth::login_limiter().check(&per_ip_key) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "Too many attempts. Try again later." }))).into_response();
+    }
+    let combined_key = format!("{ip}:{email}");
+    if !ignite_auth::login_limiter().check(&combined_key) {
         return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "Too many attempts. Try again later." }))).into_response();
     }
     let user = state.db.get_user_by_email(&email);
@@ -329,6 +345,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/register")
                     .header("content-type", "application/json")
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(json!({ "email": "dev@example.com", "name": "Dev", "password": "correct horse battery" }).to_string()))
                     .unwrap(),
             )
@@ -358,6 +375,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/register")
                     .header("content-type", "application/json")
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(json!({ "email": "dev2@example.com", "name": "Dev", "password": "correct horse battery" }).to_string()))
                     .unwrap(),
             )
@@ -368,6 +386,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/login")
                     .header("content-type", "application/json")
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(json!({ "email": "dev2@example.com", "password": "wrong password here" }).to_string()))
                     .unwrap(),
             )
@@ -383,6 +402,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/register")
                     .header("content-type", "application/json")
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(json!({ "email": "dev3@example.com", "name": "Dev", "password": "correct horse battery" }).to_string()))
                     .unwrap(),
             )
@@ -393,6 +413,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/login")
                     .header("content-type", "application/json")
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(json!({ "email": "dev3@example.com", "password": "correct horse battery" }).to_string()))
                     .unwrap(),
             )
@@ -410,6 +431,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/register")
                     .header("content-type", "application/json")
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(json!({ "email": "dev4@example.com", "name": "Dev", "password": "correct horse battery" }).to_string()))
                     .unwrap(),
             )

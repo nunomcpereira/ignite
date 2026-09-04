@@ -64,14 +64,19 @@ pub fn parse_cargo_toml_deps(content: &str) -> Vec<ManifestDep> {
 }
 
 static REQUIREMENTS_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Za-z0-9_.\-]+)\s*([=<>!~]{1,2}\s*[0-9A-Za-z.*+\-]+)?").unwrap());
-static WHITESPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
 
 pub fn parse_requirements_txt_deps(content: &str) -> Vec<ManifestDep> {
     content
         .split('\n')
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
-        .filter_map(|l| REQUIREMENTS_LINE_RE.captures(l).map(|m| ManifestDep { name: m[1].to_string(), version_range: m.get(2).map(|v| WHITESPACE_RE.replace_all(v.as_str(), "").into_owned()).unwrap_or_default() }))
+        // `version_range` must stay exactly the substring that appears in
+        // the manifest line (not whitespace-stripped) — auto-fix-pr's
+        // `apply_fix_to_content` finds-and-replaces this exact string in
+        // the raw file content, and a normalized "==1.2.3" doesn't occur
+        // literally in a line written as "requests == 1.2.3", silently
+        // failing to match and skipping the fix.
+        .filter_map(|l| REQUIREMENTS_LINE_RE.captures(l).map(|m| ManifestDep { name: m[1].to_string(), version_range: m.get(2).map(|v| v.as_str().to_string()).unwrap_or_default() }))
         .collect()
 }
 

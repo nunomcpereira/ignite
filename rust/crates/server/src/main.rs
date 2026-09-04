@@ -47,6 +47,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::pipeline_onboard::router())
         .merge(routes::pipeline_interactive::router())
         .merge(routes::studio::router())
+        .merge(routes::studio::mutating_router().layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware)))
         .merge(routes::effectivate::router())
         .merge(routes::fix_pr::router())
         .with_state(state)
@@ -89,6 +90,20 @@ async fn main() {
     });
     let config_port = state.config.port;
     let public_dir = config_dir.join("public");
+
+    state.db.sweep_expired_sessions();
+    {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // first tick fires immediately; already swept above
+            loop {
+                interval.tick().await;
+                sweep_state.db.sweep_expired_sessions();
+            }
+        });
+    }
+
     let app = build_router(state, &public_dir);
 
     // Mirrors server.js: `process.env.PORT || CONFIG.port`.
@@ -127,6 +142,38 @@ mod tests {
         // leak the tempdir so the db file survives for the life of the test process
         std::mem::forget(db_dir);
         format!("http://{addr}")
+    }
+
+    /// Like `spawn_test_server`, but also mints a real API key against a
+    /// real local user so tests hitting a `RequireAuth`-gated route (e.g.
+    /// `/github-check`) can authenticate as a headless caller instead of
+    /// carrying a session cookie around.
+    async fn spawn_test_server_with_api_key() -> (String, String) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let user_id = db.create_local_user("apikey-test@example.com", None, ignite_auth::dummy_hash());
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
+        let state = Arc::new(AppState {
+            runner: state::default_runner(),
+            db,
+            running_runs: Mutex::new(HashMap::new()),
+            pending_effectivations: Mutex::new(HashMap::new()),
+            review_gate: review_gate::ReviewGate::default(),
+            llm_config: state::default_llm_config(),
+            config: ignite_config::Config::default(),
+            package_hallucination_checker: state::default_package_hallucination_checker(),
+        });
+        let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
+        let app = build_router(state, &public_dir);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+        });
+        std::mem::forget(db_dir);
+        (format!("http://{addr}"), token)
     }
 
     #[tokio::test]
@@ -279,18 +326,26 @@ mod tests {
 
     #[tokio::test]
     async fn github_check_rejects_invalid_owner_name() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/pipeline/job-1/github-check")).json(&serde_json::json!({ "owner": "-bad-", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/pipeline/job-1/github-check")).bearer_auth(token).json(&serde_json::json!({ "owner": "-bad-", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
     #[tokio::test]
     async fn github_check_returns_404_for_unknown_job() {
+        let (base, token) = spawn_test_server_with_api_key().await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/nope/github-check")).bearer_auth(token).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn github_check_rejects_unauthenticated_caller() {
         let base = spawn_test_server().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/pipeline/nope/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
-        assert_eq!(res.status(), 404);
+        let res = client.post(format!("{base}/api/pipeline/job-1/github-check")).json(&serde_json::json!({ "owner": "acme", "repo": "widgets", "sha": "abc1234" })).send().await.unwrap();
+        assert_eq!(res.status(), 401);
     }
 
     #[tokio::test]

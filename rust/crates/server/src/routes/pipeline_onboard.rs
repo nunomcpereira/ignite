@@ -131,8 +131,8 @@ pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
 /// overrides) rather than every check's hardcoded `::default()` — see
 /// `crate::phase4_config`. `fast` is always `false` here: onboarding
 /// (unlike validate-all/the pre-push hook) never runs in lightning mode.
-pub(crate) fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>) -> ignite_phase4_orchestrator::Phase4Config {
-    crate::phase4_config::from_config(&state.config, org, repo, project_id, false)
+pub(crate) fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>, igniteignore_git_check_root: Option<std::path::PathBuf>) -> ignite_phase4_orchestrator::Phase4Config {
+    crate::phase4_config::from_config(&state.config, org, repo, project_id, false, igniteignore_git_check_root)
 }
 
 async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (StatusCode, Value)> {
@@ -269,7 +269,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         if !phase_enabled(&phase_meta, 4) {
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
         } else {
-            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id));
+            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), Some(project_path.clone()));
             let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| logger.log(4, m))
                 .await
                 .map_err(|e| PipelineError::new(4, e.to_string()))?;

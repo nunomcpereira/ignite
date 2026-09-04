@@ -11,7 +11,7 @@
 //! workflow is exactly the kind of supply-chain risk a compliance
 //! gatekeeper exists to catch before a repo is pushed.
 
-use ignite_fs_utils::{relative_to_root, walk_files};
+use ignite_fs_utils::relative_to_root;
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde::Serialize;
 use std::path::Path;
@@ -48,12 +48,12 @@ pub async fn zizmor_tooling(runner: &ToolRunner) -> bool {
 
 fn has_workflow_files(root: &Path) -> bool {
     let dir = root.join(".github").join("workflows");
-    if !dir.is_dir() {
+    let Ok(entries) = std::fs::read_dir(&dir) else {
         return false;
-    }
-    walk_files(root)
-        .map(|files| files.iter().any(|f| f.starts_with(&dir) && matches!(f.extension().and_then(|e| e.to_str()), Some("yml") | Some("yaml"))))
-        .unwrap_or(false)
+    };
+    entries.filter_map(|e| e.ok()).any(|e| {
+        e.file_type().map(|t| t.is_file()).unwrap_or(false) && matches!(e.path().extension().and_then(|ext| ext.to_str()), Some("yml") | Some("yaml"))
+    })
 }
 
 /// Recursively hunts a JSON value for the first string field whose key is

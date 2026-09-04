@@ -464,6 +464,25 @@ pub struct Phase4Inputs {
     pub ignite_ignore: Option<CheckResult>,
 }
 
+/// Short, deterministic hex tag derived from a finding's own content — the
+/// fallback discriminator for a `push_simple` call site that has no
+/// natural one of its own. Without *some* discriminator, every finding a
+/// check reports lands on the same `category::file::line` id whenever two
+/// distinct findings happen to share a line (a linter or SAST rule firing
+/// twice on one line is common), so justifying/overriding one silently
+/// suppresses every other finding sharing that id too. Hashing the
+/// summary text (the one thing every `push_simple` call always has) keeps
+/// the same finding content stable across re-scans — same summary, same
+/// id, same override still applies — while two different findings on the
+/// same line get different ids.
+fn content_discriminator(summary: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    summary.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
+
 fn push_simple(
     issues: &mut Vec<Issue>,
     category: &str,
@@ -757,7 +776,38 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
         }
     }
 
+    disambiguate_colliding_ids(&mut issues);
+
     issues
+}
+
+/// Most `push_simple` call sites pass no discriminator, so their id is
+/// just `category::file::line` — fine for the overwhelming common case of
+/// one finding per file:line, but two *distinct* findings from the same
+/// (or a different) check that happen to land on the same line collide
+/// onto that one id. Left alone, justifying/overriding either one
+/// silently suppresses the other too, since the override engine has no
+/// way to tell them apart.
+///
+/// Fixed here, at the end of the merge, rather than by having
+/// `push_simple` always append a discriminator: doing it unconditionally
+/// would change the id of every single-finding-per-line issue too (the
+/// overwhelming majority), breaking every existing `.ignite/
+/// acknowledgments.md` override that pins an id. Only ids that actually
+/// collide are touched, so a colliding pair's justification does need to
+/// be re-reviewed (correct — it was silently covering two different
+/// findings before), but every other id, and thus every other existing
+/// override, is completely unaffected.
+fn disambiguate_colliding_ids(issues: &mut [Issue]) {
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for issue in issues.iter() {
+        *counts.entry(issue.id.clone()).or_insert(0) += 1;
+    }
+    for issue in issues.iter_mut() {
+        if counts.get(&issue.id).copied().unwrap_or(0) > 1 {
+            issue.id = format!("{}::{}", issue.id, content_discriminator(&issue.summary));
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1141,6 +1191,37 @@ mod tests {
         let real_code = issues.iter().find(|i| i.file.as_deref() == Some("src/handler.js")).unwrap();
         assert_eq!(dev_tooling.severity, Severity::Warning);
         assert_eq!(real_code.severity, Severity::Error);
+    }
+
+    /// Regression test for the id-collision bug: two distinct findings
+    /// from the same check, on the same file:line, with no discriminator
+    /// of their own, must not collapse onto one shared id — justifying
+    /// one would otherwise silently suppress the other too.
+    #[test]
+    fn distinct_findings_sharing_a_file_and_line_get_distinct_ids() {
+        let mut input = Phase4Inputs::default();
+        let mut ss = CheckResult::default();
+        ss.findings.push(RawFinding { message: Some("Possible SQL injection".into()), severity: Some("error".into()), ..finding("src/handler.js", 5) });
+        ss.findings.push(RawFinding { message: Some("Possible command injection via exec".into()), severity: Some("error".into()), ..finding("src/handler.js", 5) });
+        input.semantic_sast = Some(ss);
+        let issues = collect_phase4_issues(&input);
+        assert_eq!(issues.len(), 2);
+        assert_ne!(issues[0].id, issues[1].id);
+    }
+
+    /// The overwhelming common case — one finding per file:line — must
+    /// keep the plain `category::file::line` id unchanged: only an actual
+    /// collision should ever cause an id to grow a discriminator suffix,
+    /// or every existing `.ignite/acknowledgments.md` override pinned to
+    /// the old id format would silently stop matching.
+    #[test]
+    fn a_lone_finding_on_its_line_keeps_the_plain_id() {
+        let mut input = Phase4Inputs::default();
+        let mut ss = CheckResult::default();
+        ss.findings.push(RawFinding { message: Some("Possible command injection via exec".into()), severity: Some("error".into()), ..finding("src/handler.js", 5) });
+        input.semantic_sast = Some(ss);
+        let issues = collect_phase4_issues(&input);
+        assert_eq!(issues[0].id, "semantic-sast::src/handler.js::5");
     }
 
     #[test]

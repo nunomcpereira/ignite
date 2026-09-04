@@ -66,6 +66,7 @@ mod tests {
             owasp: None,
             tool: None,
             references: None,
+            duplicate_ref: None,
             status: status.to_string(),
             created_at: String::new(),
         }

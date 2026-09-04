@@ -45,11 +45,11 @@ ARG HADOLINT_VERSION=v2.15.1
 ARG GITLEAKS_VERSION=v8.30.1
 ARG SYFT_VERSION=v1.51.1
 ARG COSIGN_VERSION=v3.1.3
-ARG OASDIFF_VERSION=v1.29.1
+ARG OASDIFF_VERSION=v1.30.0
 ARG CODEQL_VERSION=v2.26.4
 ARG GOCLOC_VERSION=v0.7.0
 ARG ACT_VERSION=v0.2.89
-ARG GH_VERSION=v2.98.0
+ARG GH_VERSION=v2.100.0
 ARG INSTALL_CHECKOV=true
 ARG INSTALL_HADOLINT=true
 ARG INSTALL_GITLEAKS=true
@@ -79,7 +79,7 @@ ARG INSTALL_DOCKER_CLI=true
 # docker-compose.yml's `group_add` does this for you already. Docker
 # Desktop (macOS/Windows) sockets are typically reachable regardless.
 ARG DOCKER_GID=999
-ARG ORT_VERSION=92.5.0
+ARG ORT_VERSION=92.6.0
 
 # pipx defaults to installing under $HOME (/root at this point in the build,
 # readable only by root) - point it at a shared, world-readable location up

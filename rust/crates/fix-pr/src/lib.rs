@@ -184,7 +184,16 @@ pub fn apply_candidates_to_files(root: &Path, candidates: &[FixCandidate]) -> st
     let mut touched = Vec::new();
     for (file, mut file_candidates) in by_file {
         file_candidates.sort_by(|a, b| b.start_line.cmp(&a.start_line));
-        let path = root.join(file);
+        // `file` is a client-supplied path (round-tripped from
+        // /fix-pr/preview, but the /apply request body is trusted only up
+        // to this point) — confine it to the cloned repo root the same way
+        // the staging/upload path does, rather than an unconfined
+        // `root.join(file)` that a `../../etc/passwd` or absolute path
+        // would happily escape with.
+        let path = match ignite_staging::resolve_within_root(root, file) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
         let mut content = std::fs::read_to_string(&path)?;
         let mut any_applied = false;
         for c in file_candidates {

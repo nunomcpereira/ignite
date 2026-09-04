@@ -17,6 +17,41 @@ fn snippet_json<T: serde::Serialize>(snippet: &Option<T>) -> Option<serde_json::
     snippet.as_ref().and_then(|s| serde_json::to_value(s).ok())
 }
 
+/// Per-check ceiling on the concurrent Phase 4 fan-out below. With
+/// `tokio::join!` (not `try_join!`), total wall time is bounded by the
+/// *slowest* single check rather than short-circuiting on the first error
+/// — correct for not losing 18 other checks' work to one bad one, but it
+/// means one check with an unbounded wait (a network call to an
+/// unreachable host that never resets the connection, rather than
+/// refusing it outright) can now stall the entire run indefinitely instead
+/// of just that one check. Every genuinely fallible check future is
+/// wrapped in this so a hang degrades to a timed-out "error" result for
+/// that check alone, same as any other check-level failure.
+const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 1200;
+
+/// Overridable via `IGNITE_PHASE4_CHECK_TIMEOUT_SECS` — same pattern as
+/// `scheduled-rescan`'s `IGNITE_SCHEDULED_RESCAN_TIMEOUT_SECS` — for a
+/// deployment where 1200s is too short (a very large monorepo) or too
+/// long (a CI job with a tighter overall budget than that per check).
+fn check_timeout() -> std::time::Duration {
+    let secs = std::env::var("IGNITE_PHASE4_CHECK_TIMEOUT_SECS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 0).unwrap_or(DEFAULT_CHECK_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+async fn with_timeout<F, T>(name: &'static str, log: &(dyn Fn(&str) + Sync), fut: F) -> std::io::Result<T>
+where
+    F: std::future::Future<Output = std::io::Result<T>>,
+{
+    let timeout = check_timeout();
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(r) => r,
+        Err(_) => {
+            log(&format!("✗ {name} timed out after {}s — skipping.", timeout.as_secs()));
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("{name} timed out after {}s", timeout.as_secs())))
+        }
+    }
+}
+
 fn to_oe_codeql_finding(f: &ignite_codeql_cross_file::CodeqlFinding) -> OeCodeqlFinding {
     OeCodeqlFinding {
         file: Some(f.file.clone()),
@@ -61,6 +96,18 @@ pub struct Phase4Config {
     pub css_dead_code: ignite_css_dead_code::CssDeadCodeConfig,
     pub boundaries: ignite_boundaries::BoundariesConfig,
     pub igniteignore_enabled: bool,
+    /// The real, original project directory to check `.igniteignore`'s
+    /// git-tracked status against, when it's different from `root` (the
+    /// scanned copy `run_phase4_checks` is given). Staging always strips
+    /// `.git` out of the copy it makes (`walk_files`'s `SKIP_DIRS`) — for
+    /// the CLI/pre-push/onboard headless paths, which stage an existing
+    /// local directory that may well be a real git checkout, checking
+    /// `root` itself would report every such run as "no git history" even
+    /// though the real source right next to it has one. `None` (the
+    /// interactive ZIP/folder-upload path, which has no other backing
+    /// directory to check) falls back to `root`, which is the correct
+    /// "can't verify, so don't assume safe" behavior there.
+    pub igniteignore_git_check_root: Option<std::path::PathBuf>,
     pub codeql: ignite_codeql_cross_file::CodeqlConfig,
 }
 
@@ -98,17 +145,17 @@ fn to_json_bytes<T: serde::Serialize>(v: &T) -> Vec<u8> {
 /// with no result summary was the only signal Phase 4's ~20 concurrently-
 /// fanned-out checks gave while streaming, unlike secrets/governance/etc.
 /// above which already reported a finding count inline.
-async fn timed<F, T, S>(name: &'static str, log: &(dyn Fn(&str) + Sync), fut: F, summarize: S) -> std::io::Result<(T, u64)>
+async fn timed<F, T, S>(name: &'static str, log: &(dyn Fn(&str) + Sync), fut: F, summarize: S) -> (T, u64)
 where
-    F: std::future::Future<Output = std::io::Result<T>>,
+    F: std::future::Future<Output = T>,
     S: FnOnce(&T) -> String,
 {
     log(&format!("→ {name} starting..."));
     let t0 = std::time::Instant::now();
-    let r = fut.await?;
+    let r = fut.await;
     let ms = t0.elapsed().as_millis() as u64;
     log(&format!("✓ {name} done ({ms}ms) — {}", summarize(&r)));
-    Ok((r, ms))
+    (r, ms)
 }
 
 fn summarize_findings<T>(findings: &[T], engine: &str) -> String {
@@ -237,31 +284,158 @@ pub async fn run_phase4_checks(
     // group 2 depends on group 1's output. On a project where every
     // individual check is only a few seconds, that stage-crossing wait was a
     // large fraction of total wall time — a real regression Node's flat
-    // fan-out never had. Merged into one `tokio::try_join!`; the few
-    // previously-infallible checks (semgrep, Bearer, jscpd, gocloc,
-    // igniteignore) are wrapped in `Ok::<_, io::Error>(...)` so every branch
-    // shares one Result shape, same trick already used for llm/provenance.
+    // fan-out never had.
+    //
+    // Uses `tokio::join!`, not `try_join!`: with `try_join!`, one transient
+    // I/O failure in any single auxiliary check (SBOM generation hitting a
+    // permissions error, a manifest scanner failing to open a file) cancels
+    // every other in-flight future and aborts the *entire* Phase 4 run —
+    // losing every primary security check's already-in-progress or already-
+    // completed work over one unrelated check's hiccup. Every future below
+    // is therefore infallible: a check that can genuinely error (unlike the
+    // already-infallible ones just wrapped in `Ok::<_, io::Error>(...)` for
+    // a uniform shape) catches its own error, logs it, and degrades to an
+    // empty "error" result for that one check only — everything else in the
+    // fan-out still completes and still gets reported.
     let manifests = ignite_package_hallucination::default_manifests();
-    let semantic_sast_fut = async { Ok::<_, std::io::Error>(ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await) };
-    let pii_fut = async { Ok::<_, std::io::Error>(ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow).await) };
-    let duplication_fut = async { Ok::<_, std::io::Error>(ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication).await) };
-    let loc_metrics_fut = async { Ok::<_, std::io::Error>(ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled).await) };
-    let igniteignore_fut = async { Ok::<_, std::io::Error>(ignite_igniteignore::check_igniteignore_committed(root, runner, config.igniteignore_enabled).await) };
+    let semantic_sast_fut = async { ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await };
+    let pii_fut = async { ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow).await };
+    let duplication_fut = async { ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication).await };
+    let loc_metrics_fut = async { ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled).await };
+    let igniteignore_check_root = config.igniteignore_git_check_root.as_deref().unwrap_or(root);
+    let igniteignore_fut = async { ignite_igniteignore::check_igniteignore_committed(root, igniteignore_check_root, runner, config.igniteignore_enabled).await };
+    let gha_security_fut = async { ignite_gha_security::check_gha_security(root, runner, &config.gha_security).await };
 
+    // Every future below this point wraps a genuinely fallible check
+    // (`std::io::Result<T>`) and must never let that error escape the
+    // future — with `tokio::join!` (not `try_join!`) below, an error that
+    // did escape would still just vanish into an unused `Result::Err`
+    // rather than cancelling its 18 siblings, but catching it here is what
+    // lets a per-check "skipped due to error" result actually get reported
+    // and folded into `task_timings`/the issue list like every other run.
     let llm_fut = async {
         if let Some(llm_config) = &config.llm {
-            let result = ignite_llm_deep_scan::check_llm_deep_scan(root, llm_config, store, &config.org, &config.repo, |_l| {}).await?;
-            Ok::<_, std::io::Error>(Some(result))
+            match with_timeout("llm", log, ignite_llm_deep_scan::check_llm_deep_scan(root, llm_config, store, &config.org, &config.repo, |_l| {})).await {
+                Ok(result) => Some(result),
+                Err(e) => {
+                    log(&format!("✗ llm failed: {e} — skipping."));
+                    None
+                }
+            }
         } else {
-            Ok(None)
+            None
         }
     };
     let provenance_fut = async {
         if config.project_id.is_some() {
-            let provenance = ignite_provenance::generate_provenance(root, runner, "0.1.0", ignite_provenance::ProvenanceParams { org: Some(&config.org), repo: Some(&config.repo), job_id: None }).await?;
-            Ok::<_, std::io::Error>(Some(provenance))
+            match with_timeout("provenance", log, ignite_provenance::generate_provenance(root, runner, "0.1.0", ignite_provenance::ProvenanceParams { org: Some(&config.org), repo: Some(&config.repo), job_id: None })).await {
+                Ok(provenance) => Some(provenance),
+                Err(e) => {
+                    log(&format!("✗ provenance failed: {e} — skipping."));
+                    None
+                }
+            }
         } else {
-            Ok(None)
+            None
+        }
+    };
+    let iac_fut = async {
+        match with_timeout("iac", log, ignite_iac_security::check_iac_security(root, runner, &config.iac)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ iac failed: {e} — skipping."));
+                ignite_iac_security::IacSecurityResult { findings: vec![], engine: "error".to_string() }
+            }
+        }
+    };
+    let image_vuln_fut = async {
+        match with_timeout("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ imageVulnerabilities failed: {e} — skipping."));
+                ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesResult { findings: vec![], engine: "error" }
+            }
+        }
+    };
+    let sbom_fut = async {
+        match with_timeout("sbom", log, ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ sbom failed: {e} — skipping."));
+                ignite_sbom::SbomResult { engine: "error", sbom: ignite_sbom::SbomOutcome::Fallback(ignite_sbom::FallbackSbom { bom_format: "ignite-fallback", spec_version: None, components: vec![] }) }
+            }
+        }
+    };
+    let image_provenance_fut = async {
+        match with_timeout("imageProvenance", log, ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store))).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ imageProvenance failed: {e} — skipping."));
+                ignite_image_provenance::ImageProvenanceResult { findings: vec![], engine: "error" }
+            }
+        }
+    };
+    let api_schema_fut = async {
+        match with_timeout("apiSchema", log, ignite_api_schema::check_api_schemas(root, runner, &config.api_schema)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ apiSchema failed: {e} — skipping."));
+                ignite_api_schema::ApiSchemaResult { findings: vec![], engine: "error" }
+            }
+        }
+    };
+    let api_schema_drift_fut = async {
+        match with_timeout("apiSchemaDrift", log, ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ apiSchemaDrift failed: {e} — skipping."));
+                ignite_api_schema_drift::ApiSchemaDriftResult { findings: vec![], engine: "error" }
+            }
+        }
+    };
+    let malicious_deps_fut = async {
+        match with_timeout("maliciousDependencies", log, ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store))).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ maliciousDependencies failed: {e} — skipping."));
+                ignite_malicious_dependencies::MaliciousDependenciesResult { findings: vec![], engine: "error" }
+            }
+        }
+    };
+    let model_artifact_fut = async {
+        match with_timeout("modelArtifactSecurity", log, ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ modelArtifactSecurity failed: {e} — skipping."));
+                ignite_model_artifact_security::ModelArtifactSecurityResult { findings: vec![], engine: "error" }
+            }
+        }
+    };
+    let hallucination_fut = async {
+        match with_timeout("packageHallucination", log, hallucination_checker.check(root, config.package_hallucination_enabled, &manifests)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ packageHallucination failed: {e} — skipping."));
+                ignite_package_hallucination::PackageHallucinationResult { findings: vec![], engine: "error", checked_count: 0 }
+            }
+        }
+    };
+    let posture_fut = async {
+        match with_timeout("posture", log, ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture)).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ posture failed: {e} — skipping."));
+                ignite_feature_posture::FeaturePostureResult { engine: "error", posture: Default::default() }
+            }
+        }
+    };
+    let codeql_fut = async {
+        match with_timeout("codeql", log, ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None })).await {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!("✗ codeql failed: {e} — skipping."));
+                ignite_codeql_cross_file::CodeqlCrossFileResult { findings: vec![], engine: "error", languages: vec![] }
+            }
         }
     };
 
@@ -285,7 +459,7 @@ pub async fn run_phase4_checks(
         (hallucination_result, ms_hallucination),
         (posture_result, ms_posture),
         (codeql_result, ms_codeql),
-    ) = tokio::try_join!(
+    ) = tokio::join!(
         Box::pin(timed("semanticSast", log, semantic_sast_fut, |r| summarize_findings(&r.findings, r.engine))),
         Box::pin(timed("pii", log, pii_fut, |r| summarize_findings(&r.findings, r.engine))),
         Box::pin(timed("duplication", log, duplication_fut, |r| summarize_findings(&r.findings, r.engine))),
@@ -299,23 +473,23 @@ pub async fn run_phase4_checks(
             Some(_) => "model unavailable, skipped".to_string(),
             None => "disabled".to_string(),
         })),
-        Box::pin(timed("iac", log, ignite_iac_security::check_iac_security(root, runner, &config.iac), |r| summarize_findings(&r.findings, &r.engine))),
-        Box::pin(timed("ghaSecurity", log, async { Ok::<_, std::io::Error>(ignite_gha_security::check_gha_security(root, runner, &config.gha_security).await) }, |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities), |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("sbom", log, ignite_sbom::generate_sbom(root, runner, config.sbom_enabled, &manifests, 1000), |r| match &r.sbom {
+        Box::pin(timed("iac", log, iac_fut, |r| summarize_findings(&r.findings, &r.engine))),
+        Box::pin(timed("ghaSecurity", log, gha_security_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("imageVulnerabilities", log, image_vuln_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("sbom", log, sbom_fut, |r| match &r.sbom {
             ignite_sbom::SbomOutcome::Syft(_) => "generated via syft".to_string(),
             ignite_sbom::SbomOutcome::Fallback(f) => format!("{} component(s) via fallback", f.components.len()),
         })),
         Box::pin(timed("provenance", log, provenance_fut, |r| if r.is_some() { "generated".to_string() } else { "skipped (no project id)".to_string() })),
-        Box::pin(timed("imageProvenance", log, ignite_image_provenance::check_image_provenance(root, runner, &config.image_provenance, Some(store)), |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("apiSchema", log, ignite_api_schema::check_api_schemas(root, runner, &config.api_schema), |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("apiSchemaDrift", log, ignite_api_schema_drift::check_api_schema_drift(root, runner, &config.api_schema_drift), |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("maliciousDependencies", log, ignite_malicious_dependencies::check_malicious_dependencies(root, runner, &config.malicious_dependencies, Some(store)), |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("modelArtifactSecurity", log, ignite_model_artifact_security::check_model_artifact_security(root, runner, &config.model_artifact_security), |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("packageHallucination", log, hallucination_checker.check(root, config.package_hallucination_enabled, &manifests), |r| summarize_findings(&r.findings, r.engine))),
-        Box::pin(timed("posture", log, ignite_feature_posture::check_feature_posture(root, runner, &config.feature_posture), |r| format!("{} categories assessed via {}", r.posture.len(), r.engine))),
-        Box::pin(timed("codeql", log, ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None }), |r| format!("{} finding(s)", r.findings.len()))),
-    )?;
+        Box::pin(timed("imageProvenance", log, image_provenance_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("apiSchema", log, api_schema_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("apiSchemaDrift", log, api_schema_drift_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("maliciousDependencies", log, malicious_deps_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("modelArtifactSecurity", log, model_artifact_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("packageHallucination", log, hallucination_fut, |r| summarize_findings(&r.findings, r.engine))),
+        Box::pin(timed("posture", log, posture_fut, |r| format!("{} categories assessed via {}", r.posture.len(), r.engine))),
+        Box::pin(timed("codeql", log, codeql_fut, |r| format!("{} finding(s)", r.findings.len()))),
+    );
     task_timings.extend([
         ("semanticSast", ms_semantic_sast),
         ("pii", ms_pii),
@@ -652,6 +826,7 @@ mod tests {
             css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: false },
             boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
             igniteignore_enabled: false,
+            igniteignore_git_check_root: None,
             codeql: ignite_codeql_cross_file::CodeqlConfig { enabled: false, ..Default::default() },
         }
     }

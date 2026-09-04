@@ -290,7 +290,7 @@ async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<Strin
 
     tokio::spawn(async move {
         let keep_db_dir = codeql_db_dir_for(ctx.project_id);
-        let codeql_config = crate::phase4_config::from_config(&state.config, &ctx.org, &ctx.repo, ctx.project_id, false).codeql;
+        let codeql_config = crate::phase4_config::from_config(&state.config, &ctx.org, &ctx.repo, ctx.project_id, false, None).codeql;
         let codeql_result = ignite_codeql_cross_file::check_codeql_cross_file_with_log(
             &ctx.root,
             &state.runner,
@@ -404,7 +404,7 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
                 return Err("No CodeQL database available for this project.".to_string());
             };
             let db_dir = db_root.join(&language).join("db");
-            let timeout_ms = crate::phase4_config::from_config(&state.config, &ctx.org, &ctx.repo, ctx.project_id, false).codeql.timeout_ms;
+            let timeout_ms = crate::phase4_config::from_config(&state.config, &ctx.org, &ctx.repo, ctx.project_id, false, None).codeql.timeout_ms;
             ignite_codeql_cross_file::run_custom_codeql_query(&ctx.root, &db_dir, &language, &query_text, &state.runner, timeout_ms, |line| log(line)).await
         }
         .await;
@@ -502,18 +502,33 @@ async fn provenance(State(state): State<Arc<AppState>>, Path(job_id): Path<Strin
     }
 }
 
+/// Read-only — no session/API-key required. Lets a scan be run and its
+/// results (file tree, dependencies, SBOM, LOC metrics, posture,
+/// provenance) inspected without logging in, for local/simulation use.
+/// Nothing here can change a run's outcome or the files it will push.
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/pipeline/:job_id/studio/tree", get(tree))
-        .route("/api/pipeline/:job_id/studio/file", get(get_file).put(put_file))
-        .route("/api/pipeline/:job_id/studio/rescan", axum::routing::post(rescan))
-        .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
-        .route("/api/pipeline/:job_id/studio/codeql/query", axum::routing::post(codeql_query))
+        .route("/api/pipeline/:job_id/studio/file", get(get_file))
         .route("/api/pipeline/:job_id/studio/dependencies", get(dependencies))
         .route("/api/pipeline/:job_id/studio/sbom", get(sbom))
         .route("/api/pipeline/:job_id/studio/loc-metrics", get(loc_metrics))
         .route("/api/pipeline/:job_id/studio/posture", get(posture))
         .route("/api/pipeline/:job_id/studio/provenance", get(provenance))
+}
+
+/// Everything that can change what actually gets scanned or pushed:
+/// editing a file mid-run, forcing a rescan, or running an arbitrary
+/// CodeQL query. Requires auth — see the finding this closes in
+/// `main.rs`'s `require_auth_middleware` wiring: an unauthenticated
+/// caller reaching any of these could tamper with a run before Phase 6
+/// pushes it.
+pub fn mutating_router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/api/pipeline/:job_id/studio/file", axum::routing::put(put_file))
+        .route("/api/pipeline/:job_id/studio/rescan", axum::routing::post(rescan))
+        .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
+        .route("/api/pipeline/:job_id/studio/codeql/query", axum::routing::post(codeql_query))
 }
 
 #[cfg(test)]
@@ -545,7 +560,7 @@ mod tests {
             LiveRun { org: "acme".to_string(), repo: "widgets".to_string(), project_id: Some(project_id), all_issues: vec![], project_root: Some(root), source_backup_dir: Some(backup), review_active: true },
         );
 
-        let router = axum::Router::new().merge(router()).with_state(app_state.clone());
+        let router = axum::Router::new().merge(router()).merge(mutating_router()).with_state(app_state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

@@ -95,7 +95,22 @@ fn remove_empty_dirs(root: &std::path::Path) {
 
 fn write_temp_upload(bytes: &[u8]) -> std::io::Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("ignite-upload-{}", uuid::Uuid::new_v4()));
-    std::fs::write(&path, bytes)?;
+    // Uploaded archives can contain confidential source (and `.env`
+    // files); `std::fs::write` creates with the process umask (typically
+    // 0644), leaving them readable by every local OS user on a shared box
+    // for as long as the file lingers. Open with 0600 up front instead of
+    // writing-then-chmod, so there's no window where the file is
+    // world-readable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
+        std::io::Write::write_all(&mut f, bytes)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, bytes)?;
+    }
     Ok(path)
 }
 
@@ -142,7 +157,24 @@ struct ParsedUpload {
     temp_paths_to_clean: Vec<PathBuf>,
 }
 
-async fn parse_multipart(mut multipart: Multipart) -> Result<ParsedUpload, (StatusCode, Value)> {
+async fn parse_multipart(multipart: Multipart) -> Result<ParsedUpload, (StatusCode, Value)> {
+    let mut temp_paths_to_clean: Vec<PathBuf> = Vec::new();
+    let result = parse_multipart_inner(multipart, &mut temp_paths_to_clean).await;
+    // Any temp file already written to disk for this request must be
+    // removed even when the parse fails partway through (payload-too-large,
+    // a malformed field, the client aborting mid-upload) — otherwise every
+    // rejected upload leaks its already-streamed bytes into the OS temp
+    // dir forever, a straightforward disk-exhaustion DoS against repeated
+    // failed uploads.
+    if result.is_err() {
+        for p in &temp_paths_to_clean {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    result
+}
+
+async fn parse_multipart_inner(mut multipart: Multipart, temp_paths_to_clean: &mut Vec<PathBuf>) -> Result<ParsedUpload, (StatusCode, Value)> {
     let bad = |e: String| (StatusCode::BAD_REQUEST, json!({ "error": e }));
 
     let mut org = String::new();
@@ -155,7 +187,6 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<ParsedUpload, (Stat
     let mut dir_files: Vec<UploadFile> = Vec::new();
     let mut dir_file_names: Vec<String> = Vec::new();
     let mut gxp_doc_files: Vec<(String, Option<String>, Vec<u8>)> = Vec::new();
-    let mut temp_paths_to_clean: Vec<PathBuf> = Vec::new();
     // Mirrors multer's `files: 100000` — only file-bearing fields
     // (archive/files/gxpDocs) count toward this, not text fields like
     // org/repo/dryRun, matching multer's own "max number of file fields"
@@ -219,7 +250,7 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<ParsedUpload, (Stat
     let gxp_links: Vec<Value> = serde_json::from_str(&gxp_links_raw).unwrap_or_default();
     let dir_file_count_and_bytes = (dir_files.len(), dir_files.iter().map(|f| f.size).sum());
 
-    Ok(ParsedUpload { org, repo, gxp_requested, dry_run, gxp_links, archive, dir_files, dir_file_count_and_bytes, gxp_doc_files, temp_paths_to_clean })
+    Ok(ParsedUpload { org, repo, gxp_requested, dry_run, gxp_links, archive, dir_files, dir_file_count_and_bytes, gxp_doc_files, temp_paths_to_clean: temp_paths_to_clean.clone() })
 }
 
 struct PhaseRecord {
@@ -293,16 +324,6 @@ impl EventLog {
 fn new_issue(id: String, phase: i64, category: &str, severity: Severity, summary: String, file: Option<String>, line: Option<i64>) -> Issue {
     let _ = phase;
     Issue { id, category: category.to_string(), severity, score: score_for_issue(category, severity), summary, file, line, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None, tool: None, references: ignite_override_engine::IssueReferences::default() }
-}
-
-fn resolve_actor_from_body(actor_value: &Value) -> Option<Actor> {
-    let actor = actor_value;
-    let email = actor.get("email").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
-    if !ignite_auth::is_valid_email(&email) {
-        return None;
-    }
-    let name = actor.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(&email).to_string();
-    Some(Actor { email, name })
 }
 
 /// Refreshes `AppState::running_runs`' cached issue snapshot for this job
@@ -561,7 +582,12 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
         } else {
             log.status(4, "running", None);
             let root = project_root.clone().unwrap();
-            let config = default_phase4_config(state.as_ref(), &org, &repo, project_id);
+            // No original backing directory to check git status against —
+            // a ZIP/folder upload's only content is what got extracted
+            // into `root` itself, so that's what `.igniteignore`'s commit
+            // status gets checked against too (correctly unverifiable for
+            // an upload with no git history in it).
+            let config = default_phase4_config(state.as_ref(), &org, &repo, project_id, None);
             match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| log.log(4, m)).await {
                 Ok(output) => {
                     let issue_count = output.issues.len();
@@ -895,30 +921,21 @@ async fn pipeline(State(state): State<Arc<AppState>>, headers: axum::http::Heade
 /// the review gate. Thin enough to live here rather than waiting on the
 /// full routes/review_gate.js port (studio.js's file-browsing endpoints,
 /// which share that file, are the parts still not ported).
-async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, axum::Json(body): axum::Json<Value>) -> Response {
+async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, axum::Json(body): axum::Json<Value>) -> Response {
     let proceed = body.get("proceed").and_then(|v| v.as_bool()).unwrap_or(false);
     let overrides: Vec<SubmittedOverride> = body
         .get("overrides")
         .and_then(|v| v.as_array())
         .map(|a| a.iter().map(|o| SubmittedOverride { issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string() }).collect())
         .unwrap_or_default();
-    // An actor is only needed to attribute an override, same scoping
-    // `routes/effectivate.rs` uses — declining outright (`proceed: false`,
-    // no overrides checked, the plain "Stop pipeline" click) or continuing
-    // with nothing left to justify has nothing to attribute, so requiring
-    // one unconditionally 401'd every bare decline and left the run
-    // permanently stuck waiting at the review gate (never reaching
-    // `review_gate.resolve` below), with no client-side surfacing since
-    // the client doesn't check this response's status.
-    let actor = if overrides.is_empty() {
-        Actor { email: String::new(), name: String::new() }
-    } else {
-        let actor_value = body.get("actor").cloned().unwrap_or(Value::Null);
-        match resolve_actor_from_body(&actor_value) {
-            Some(a) => a,
-            None => return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "An actor {email, name} is required to attribute this decision." }))).into_response(),
-        }
-    };
+    // The actor is always the authenticated session user, never taken from
+    // the request body — trusting a client-supplied {email, name} would
+    // let any caller forge attribution in the persistent override audit
+    // trail. Declining outright (`proceed: false`, no overrides) or
+    // continuing with nothing left to justify has nothing to attribute,
+    // so an empty actor there is fine — same scoping `routes/effectivate.rs`
+    // uses; only overriding a blocking finding needs a real identity.
+    let actor = Actor { email: user.email.clone(), name: user.name.clone().unwrap_or(user.email) };
     let resolved = state.review_gate.resolve(&job_id, ReviewDecisionInput { proceed, overrides, actor });
     if !resolved {
         return (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response();
@@ -1033,14 +1050,24 @@ mod tests {
 
         let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
 
-        let job_id = loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let running = state.running_runs.lock().unwrap();
-            if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
-                break id.clone();
+        // Bounded, not an unconditional `loop`: if the fixture's blocking
+        // finding doesn't actually get flagged in this environment (e.g. a
+        // secrets-scan fixture that needs `gitleaks` installed to match),
+        // the run never pauses at the review gate and `review_active`
+        // never becomes true — an unbounded loop here would then spin
+        // forever instead of failing with a message that says why.
+        let job_id = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let running = state.running_runs.lock().unwrap();
+                if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
+                    return id.clone();
+                }
+                drop(running);
             }
-            drop(running);
-        };
+        })
+        .await
+        .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
         let resolved = state.review_gate.resolve(
             &job_id,
             ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
@@ -1204,14 +1231,24 @@ mod tests {
 
         let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
 
-        let job_id = loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let running = state.running_runs.lock().unwrap();
-            if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
-                break id.clone();
+        // Bounded, not an unconditional `loop`: if the fixture's blocking
+        // finding doesn't actually get flagged in this environment (e.g. a
+        // secrets-scan fixture that needs `gitleaks` installed to match),
+        // the run never pauses at the review gate and `review_active`
+        // never becomes true — an unbounded loop here would then spin
+        // forever instead of failing with a message that says why.
+        let job_id = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let running = state.running_runs.lock().unwrap();
+                if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
+                    return id.clone();
+                }
+                drop(running);
             }
-            drop(running);
-        };
+        })
+        .await
+        .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
         let resolved = state.review_gate.resolve(
             &job_id,
             ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
@@ -1247,7 +1284,7 @@ mod tests {
         // unit-test-runner would otherwise detect a Node project and try
         // to `npm install` inside Docker, which hangs with no registry
         // network access in a sandboxed test environment.
-        let zip = zip_bytes(&[("app.js", b"const key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(key);\n")]);
+        let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 
         let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
@@ -1255,14 +1292,24 @@ mod tests {
         // Poll running_runs until the job appears and is paused at review,
         // then resolve it — mirrors what routes/review_gate.js (not yet
         // ported) will eventually do over HTTP.
-        let job_id = loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let running = state.running_runs.lock().unwrap();
-            if let Some((id, _run)) = running.iter().find(|(_, r)| r.review_active) {
-                break id.clone();
+        // Bounded, not an unconditional `loop`: if the fixture's blocking
+        // finding doesn't actually get flagged in this environment (e.g. a
+        // secrets-scan fixture that needs `gitleaks` installed to match),
+        // the run never pauses at the review gate and `review_active`
+        // never becomes true — an unbounded loop here would then spin
+        // forever instead of failing with a message that says why.
+        let job_id = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let running = state.running_runs.lock().unwrap();
+                if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
+                    return id.clone();
+                }
+                drop(running);
             }
-            drop(running);
-        };
+        })
+        .await
+        .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
 
         let resolved = state.review_gate.resolve(
             &job_id,
@@ -1290,22 +1337,35 @@ mod tests {
     async fn review_decision_stop_with_no_overrides_needs_no_actor() {
         let (base, state) = spawn_test_server().await;
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
-        let zip = zip_bytes(&[("app.js", b"const key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(key);\n")]);
+        let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
         let base_for_decision = base.clone();
 
         let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
 
-        let job_id = loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let running = state.running_runs.lock().unwrap();
-            if let Some((id, _run)) = running.iter().find(|(_, r)| r.review_active) {
-                break id.clone();
+        // Bounded, not an unconditional `loop`: if the fixture's blocking
+        // finding doesn't actually get flagged in this environment (e.g. a
+        // secrets-scan fixture that needs `gitleaks` installed to match),
+        // the run never pauses at the review gate and `review_active`
+        // never becomes true — an unbounded loop here would then spin
+        // forever instead of failing with a message that says why.
+        let job_id = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let running = state.running_runs.lock().unwrap();
+                if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
+                    return id.clone();
+                }
+                drop(running);
             }
-            drop(running);
-        };
+        })
+        .await
+        .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
 
-        let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
+        let user_id = state.db.create_local_user("review-decision-test@example.com", None, ignite_auth::dummy_hash());
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
+        let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).bearer_auth(token).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
         assert_eq!(decision_res.status(), 200, "a bare decline with no overrides must not require an actor");
 
         let res = handle.await.unwrap();

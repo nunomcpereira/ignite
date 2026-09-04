@@ -232,14 +232,23 @@ pub fn apply_fix_to_content(content: &str, dep_line: usize, old_range: &str, fix
     let mut lines: Vec<&str> = content.split('\n').collect();
     let idx = dep_line - 1;
     let line = lines.get(idx)?;
-    if !line.contains(old_range) {
-        return None;
-    }
+    // Replace the *last* occurrence of `old_range` on the line, not the
+    // first: every supported manifest shape puts the dependency name
+    // before its version constraint on the line (npm's `"name": "range"`,
+    // Cargo's `name = "range"`, requirements.txt's `name==range`, go.mod's
+    // `name range`, pom.xml's `<artifactId>..</artifactId><version>range`)
+    // — so the version is always the rightmost match. A first-occurrence
+    // replace corrupts the package name itself whenever `old_range`
+    // happens to also be a substring of it (e.g. a dep literally named
+    // `my-1.2.3-lib` being fixed to version `1.2.3`).
+    let match_start = line.rfind(old_range)?;
     let new_range = rewrite_range(old_range, fixed_version);
-    let new_line = line.replacen(old_range, &new_range, 1);
-    let owned_line = new_line;
-    lines[idx] = &owned_line;
-    // `lines[idx]` borrows `owned_line`, which would be dropped at scope
+    let mut new_line = String::with_capacity(line.len() - old_range.len() + new_range.len());
+    new_line.push_str(&line[..match_start]);
+    new_line.push_str(&new_range);
+    new_line.push_str(&line[match_start + old_range.len()..]);
+    lines[idx] = &new_line;
+    // `lines[idx]` borrows `new_line`, which would be dropped at scope
     // end — join immediately instead of returning the borrowed Vec.
     Some(lines.join("\n"))
 }

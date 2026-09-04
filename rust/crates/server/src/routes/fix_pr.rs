@@ -52,7 +52,7 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
     Json(json!({ "ok": true, "candidates": candidates, "consideredCount": considered_count })).into_response()
 }
 
-async fn apply(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
     let Some((project_id, org, repo)) = resolve_org_repo(&state, job_id) else {
         return err(StatusCode::NOT_FOUND, "This job has no associated GitHub repository yet — it must have already shipped before a fix PR can be opened against it.");

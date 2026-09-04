@@ -13,7 +13,7 @@
 
 use regex::Regex;
 
-pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_id: Option<i64>, fast: bool) -> ignite_phase4_orchestrator::Phase4Config {
+pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_id: Option<i64>, fast: bool, igniteignore_git_check_root: Option<std::path::PathBuf>) -> ignite_phase4_orchestrator::Phase4Config {
     let sec = &cfg.security;
 
     let known_public_key_patterns: Vec<Regex> = sec
@@ -108,6 +108,7 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
         css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: cfg.code_intelligence.css_dead_code.enabled },
         boundaries: ignite_boundaries::BoundariesConfig { enabled: cfg.architecture.boundaries.enabled, preset: boundaries_preset, zones },
         igniteignore_enabled: cfg.ignore_file.enabled,
+        igniteignore_git_check_root,
         codeql: ignite_codeql_cross_file::CodeqlConfig {
             enabled: sec.codeql.enabled,
             languages: sec.codeql.languages.clone(),
@@ -154,7 +155,7 @@ mod tests {
         let mut cfg = ignite_config::Config::default();
         cfg.security.semgrep.enabled = false;
         cfg.security.guarddog.enabled = false;
-        let phase4 = from_config(&cfg, "org", "repo", None, false);
+        let phase4 = from_config(&cfg, "org", "repo", None, false, None);
         assert!(!phase4.semantic_sast.enabled);
         assert!(!phase4.malicious_dependencies.enabled);
         // Untouched fields still reflect the (enabled-by-default) config.
@@ -175,7 +176,7 @@ mod tests {
         cfg.architecture.boundaries.enabled = true;
         cfg.architecture.boundaries.preset = "layered".to_string();
         cfg.architecture.boundaries.zones = vec![serde_json::json!({ "name": "api", "pattern": "src/api/**", "allow": ["core"] })];
-        let phase4 = from_config(&cfg, "org", "repo", None, false);
+        let phase4 = from_config(&cfg, "org", "repo", None, false, None);
         assert!(phase4.boundaries.enabled);
         assert_eq!(phase4.boundaries.preset.as_deref(), Some("layered"));
         assert_eq!(phase4.boundaries.zones.len(), 1);

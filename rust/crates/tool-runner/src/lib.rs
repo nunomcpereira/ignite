@@ -212,6 +212,28 @@ pub struct ToolOutput {
 /// dumps), and this is an audit trail, not a copy of the report.
 const LOG_OUTPUT_LIMIT: usize = 4000;
 
+/// Redacts secrets out of a command's args before they're logged or
+/// surfaced in an error payload — most importantly the GitHub bearer token
+/// `github-api`'s `gh_clone_repo*` passes via `-c
+/// http.extraheader=AUTHORIZATION: bearer <token>` (never written to
+/// `.git/config` on disk by design, but a raw `tracing::info!` of the args
+/// or a `ToolError::Failed` returned to an API caller would leak it just
+/// the same). Redacts the whole value of any `http.extraheader=...` /
+/// `-H`-style arg and any arg that looks like it's carrying a bearer
+/// token, rather than trying to enumerate every tool that might take one.
+fn redact_args_for_display(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|a| {
+            let lower = a.to_lowercase();
+            if lower.contains("extraheader") || lower.contains("authorization") || lower.contains("bearer ") {
+                "***REDACTED***".to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
+}
+
 fn log_preview(s: &str) -> String {
     if s.len() <= LOG_OUTPUT_LIMIT {
         return s.to_string();
@@ -280,6 +302,7 @@ impl ToolRunner {
     ) -> Result<ToolOutput, ToolError> {
         let safe_tool = sanitize_command(tool)?;
         let safe_args = sanitize_cli_args(args)?;
+        let redacted_args = redact_args_for_display(&safe_args);
         let safe_cwd = sanitize_cwd(cwd)?;
         let env = self.build_env(&opts.env);
         let timeout_ms = opts.timeout_ms.filter(|&t| t > 0).unwrap_or(120_000);
@@ -294,7 +317,7 @@ impl ToolRunner {
         tracing::info!(
             tool = %safe_tool,
             binary = %binary,
-            args = %safe_args.join(" "),
+            args = %redacted_args.join(" "),
             cwd = %safe_cwd,
             "tool-runner: invoking"
         );
@@ -312,7 +335,7 @@ impl ToolRunner {
         let run = async {
             let output = command.output().await.map_err(|e| ToolError::Failed {
                 command: binary.clone(),
-                args: safe_args.join(" "),
+                args: redacted_args.join(" "),
                 timeout_note: String::new(),
                 detail: e.to_string(),
             })?;
@@ -324,13 +347,13 @@ impl ToolRunner {
             Err(_) => {
                 tracing::warn!(
                     tool = %safe_tool,
-                    args = %safe_args.join(" "),
+                    args = %redacted_args.join(" "),
                     timeout_ms,
                     "tool-runner: timed out"
                 );
                 return Err(ToolError::Failed {
                     command: binary,
-                    args: safe_args.join(" "),
+                    args: redacted_args.join(" "),
                     timeout_note: format!(" (timed out after {timeout_ms}ms)"),
                     detail: "timed out".to_string(),
                 })
@@ -343,7 +366,7 @@ impl ToolRunner {
 
         tracing::info!(
             tool = %safe_tool,
-            args = %safe_args.join(" "),
+            args = %redacted_args.join(" "),
             cwd = %safe_cwd,
             exit_code = code,
             stdout = %log_preview(stdout.trim()),
@@ -359,7 +382,7 @@ impl ToolRunner {
             };
             return Err(ToolError::Failed {
                 command: binary,
-                args: safe_args.join(" "),
+                args: redacted_args.join(" "),
                 timeout_note: String::new(),
                 detail,
             });
@@ -385,6 +408,7 @@ impl ToolRunner {
             return Err(ToolError::Unsupported(safe_tool));
         }
         let safe_args = sanitize_cli_args(args)?;
+        let redacted_args = redact_args_for_display(&safe_args);
         let safe_cwd = sanitize_cwd(cwd)?;
         let env = self.build_env(env_overrides);
         let binary = self.resolve_binary(&safe_tool)?;
@@ -392,7 +416,7 @@ impl ToolRunner {
         tracing::info!(
             tool = %safe_tool,
             binary = %binary,
-            args = %safe_args.join(" "),
+            args = %redacted_args.join(" "),
             cwd = %safe_cwd,
             "tool-runner: invoking (streaming)"
         );
@@ -453,7 +477,7 @@ impl ToolRunner {
                 let _ = child.kill().await;
                 tracing::warn!(
                     tool = %safe_tool,
-                    args = %safe_args.join(" "),
+                    args = %redacted_args.join(" "),
                     timeout_ms,
                     "tool-runner: timed out (streaming)"
                 );
@@ -467,7 +491,7 @@ impl ToolRunner {
         let code = status.code().unwrap_or(-1);
         tracing::info!(
             tool = %safe_tool,
-            args = %safe_args.join(" "),
+            args = %redacted_args.join(" "),
             cwd = %safe_cwd,
             exit_code = code,
             output = %log_preview(&captured_lines.join("\n")),

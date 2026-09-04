@@ -1079,7 +1079,8 @@ impl DbStore {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT s.id, s.expires_at, u.id AS user_id, u.email, u.name, u.provider
-             FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?",
+             FROM sessions s JOIN users u ON u.id = s.user_id
+             WHERE s.id = ? AND s.expires_at >= datetime('now')",
             params![session_id],
             |row| {
                 Ok(SessionRow {
@@ -1096,9 +1097,6 @@ impl DbStore {
         .unwrap()
     }
 
-    /// Expired sessions are otherwise harmless (get_session checks
-    /// expires_at before trusting a row), so this doesn't need to run
-    /// inline on every request.
     pub fn sweep_expired_sessions(&self) {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM sessions WHERE expires_at < datetime('now')", []).unwrap();
@@ -1119,18 +1117,33 @@ impl DbStore {
         let mut stmt = conn
             .prepare_cached("SELECT rel_path, hash, findings_json FROM file_scan_cache WHERE org = ? AND repo = ? AND check_name = ?")
             .unwrap();
-        stmt.query_map(params![org, repo, check_name], |row| {
-            let rel_path: String = row.get(0)?;
-            let hash: String = row.get(1)?;
-            let findings_json: String = row.get(2)?;
-            Ok((rel_path, hash, findings_json))
-        })
-        .unwrap()
-        .map(|r| r.unwrap())
-        .map(|(rel_path, hash, findings_json)| {
-            (rel_path, FileScanCacheEntry { hash, findings: serde_json::from_str(&findings_json).unwrap() })
-        })
-        .collect()
+        let rows: Result<Vec<(String, String, String)>, rusqlite::Error> = stmt
+            .query_map(params![org, repo, check_name], |row| {
+                let rel_path: String = row.get(0)?;
+                let hash: String = row.get(1)?;
+                let findings_json: String = row.get(2)?;
+                Ok((rel_path, hash, findings_json))
+            })
+            .and_then(|mapped| mapped.collect());
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to read file scan cache");
+                return HashMap::new();
+            }
+        };
+        // A corrupted findings_json blob just drops that one cache entry
+        // (forcing a re-scan of that file) rather than panicking and
+        // poisoning the connection mutex for the whole process.
+        rows.into_iter()
+            .filter_map(|(rel_path, hash, findings_json)| match serde_json::from_str(&findings_json) {
+                Ok(findings) => Some((rel_path, FileScanCacheEntry { hash, findings })),
+                Err(e) => {
+                    tracing::warn!(rel_path, error = %e, "corrupted file scan cache entry, dropping");
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Replaces the entire cache for this (org, repo, check_name): files
@@ -1190,7 +1203,13 @@ impl DbStore {
             )
             .optional()
             .unwrap();
-        json.map(|j| serde_json::from_str(&j).unwrap())
+        json.and_then(|j| match serde_json::from_str(&j) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "corrupted manifest scan cache entry, dropping");
+                None
+            }
+        })
     }
 
     pub fn save_manifest_scan_cache(&self, tool: &str, ecosystem: &str, content_hash: &str, tool_version: &str, findings: &serde_json::Value) {
@@ -1218,7 +1237,13 @@ impl DbStore {
             )
             .optional()
             .unwrap();
-        json.map(|j| serde_json::from_str(&j).unwrap())
+        json.and_then(|j| match serde_json::from_str(&j) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "corrupted CodeQL scan cache entry, dropping");
+                None
+            }
+        })
     }
 
     pub fn save_codeql_scan_cache(&self, org: &str, repo: &str, language: &str, file_set_hash: &str, tool_version: &str, findings: &serde_json::Value) {
@@ -1451,35 +1476,57 @@ impl DbStore {
                  FROM issues WHERE project_id = ? ORDER BY id",
             )
             .unwrap();
-        stmt.query_map(params![project_id], |row| {
-            let snippet_json: Option<String> = row.get(8)?;
-            let chain_json: Option<String> = row.get(10)?;
-            let references_json: Option<String> = row.get(14)?;
-            let duplicate_ref_json: Option<String> = row.get(15)?;
-            Ok(IssueRow {
-                id: row.get(0)?,
-                phase: row.get(1)?,
-                category: row.get(2)?,
-                severity: row.get(3)?,
-                score: row.get(4)?,
-                summary: row.get(5)?,
-                file: row.get(6)?,
-                line: row.get(7)?,
-                snippet: snippet_json.map(|s| serde_json::from_str(&s).unwrap()),
-                cross_file: row.get::<_, i64>(9)? != 0,
-                chain: chain_json.map(|c| serde_json::from_str(&c).unwrap()),
-                cwe: row.get(11)?,
-                owasp: row.get(12)?,
-                tool: row.get(13)?,
-                references: references_json.map(|r| serde_json::from_str(&r).unwrap()),
-                duplicate_ref: duplicate_ref_json.map(|d| serde_json::from_str(&d).unwrap()),
-                status: row.get(16)?,
-                created_at: row.get(17)?,
+        // Corrupted JSON in a cached column must never panic here: a panic
+        // while holding `self.conn.lock()` poisons the mutex and every
+        // subsequent DB call on this process fails permanently until
+        // restart. Parse failures are logged and degrade to `None`/empty
+        // instead — a malformed cached snippet/chain/references blob is
+        // recoverable data loss, not a reason to take the whole server down.
+        fn parse_or_log<T: serde::de::DeserializeOwned>(field: &str, issue_id: &str, json: Option<String>) -> Option<T> {
+            json.and_then(|j| match serde_json::from_str(&j) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(issue_id, field, error = %e, "corrupted JSON column in issues table, dropping field");
+                    None
+                }
             })
-        })
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect()
+        }
+        let rows: Result<Vec<IssueRow>, rusqlite::Error> = stmt
+            .query_map(params![project_id], |row| {
+                let id: String = row.get(0)?;
+                let snippet_json: Option<String> = row.get(8)?;
+                let chain_json: Option<String> = row.get(10)?;
+                let references_json: Option<String> = row.get(14)?;
+                let duplicate_ref_json: Option<String> = row.get(15)?;
+                Ok(IssueRow {
+                    phase: row.get(1)?,
+                    category: row.get(2)?,
+                    severity: row.get(3)?,
+                    score: row.get(4)?,
+                    summary: row.get(5)?,
+                    file: row.get(6)?,
+                    line: row.get(7)?,
+                    snippet: parse_or_log("snippet", &id, snippet_json),
+                    cross_file: row.get::<_, i64>(9)? != 0,
+                    chain: parse_or_log("chain", &id, chain_json),
+                    cwe: row.get(11)?,
+                    owasp: row.get(12)?,
+                    tool: row.get(13)?,
+                    references: parse_or_log("references", &id, references_json),
+                    duplicate_ref: parse_or_log("duplicate_ref", &id, duplicate_ref_json),
+                    status: row.get(16)?,
+                    created_at: row.get(17)?,
+                    id,
+                })
+            })
+            .and_then(|mapped| mapped.collect());
+        match rows {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to read project issues");
+                Vec::new()
+            }
+        }
     }
 
     pub fn get_project_id_by_job_id(&self, job_id: &str) -> Option<i64> {

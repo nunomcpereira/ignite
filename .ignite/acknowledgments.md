@@ -1319,3 +1319,21 @@ ID: codeql-sast::public/index.html::775::js/xss-through-dom
 #   public/index.html:775
 # Code: document.querySelectorAll('[data-i18n]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n')); });
 Acknowledge: t()'s only inputs are (1) the fixed attribute-name strings 'data-i18n'/'data-i18n-title'/'data-i18n-placeholder' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, which is entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. innerHTML (not textContent) is used deliberately so a handful of translated strings can carry inline markup (e.g. the upload screen's bolded "folder"/".zip" spans) - switching to textContent would silently break those. No untrusted data ever reaches this call. (auto-carried-forward from codeql-sast::public/index.html::732::js/xss-through-dom - pure line-number drift, flagged code unchanged)
+
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1282
+# Issue #218
+# [ERROR] secret - Hardcoded aws_secret
+#   rust/crates/server/src/routes/pipeline_interactive.rs:1282
+Acknowledge: Fake AWS access key literal used as test-fixture input to verify the review-gate flow pauses on a blocking finding, not a real credential.
+
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1335
+# Issue #219
+# [ERROR] secret - Hardcoded aws_secret
+#   rust/crates/server/src/routes/pipeline_interactive.rs:1335
+Acknowledge: Fake AWS access key literal used as test-fixture input to verify the review-gate flow pauses on a blocking finding, not a real credential.
+
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::853
+# Issue #220
+# [ERROR] secret - Hardcoded gcp-api-key
+#   rust/crates/phase4-orchestrator/src/lib.rs:853
+Acknowledge: Fake GCP/Firebase API key literal used as test input to verify gitleaks' entropy-based detection catches what the built-in regex scan misses, not a real credential.

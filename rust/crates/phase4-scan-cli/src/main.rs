@@ -109,6 +109,7 @@ async fn main() {
         css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: true },
         boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
         igniteignore_enabled: true,
+        igniteignore_git_check_root: Some(PathBuf::from(&source)),
         codeql: ignite_codeql_cross_file::CodeqlConfig::default(),
     };
 

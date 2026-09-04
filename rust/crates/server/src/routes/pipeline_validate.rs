@@ -277,7 +277,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
             let root_b = root.clone();
             let state_a = state.clone();
             let state_b = state.clone();
-            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), fast);
+            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), fast, Some(project_path.clone()));
             let (license_issues, phase4_result) = tokio::join!(
                 time_stage(&timings, "licenseAndDependencyScan", async move {
                     let mut v = ignite_dependency_license_scan::run_license_compliance_check(&root_a, &state_a.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
@@ -509,8 +509,8 @@ fn filter_tagged_by_changed_files(tagged: &[Value], changed_files: Option<&std::
 /// Builds the real Phase4Config from `state.config` (config.json + env
 /// overrides) rather than every check's hardcoded `::default()` — see
 /// `crate::phase4_config`.
-fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>, fast: bool) -> ignite_phase4_orchestrator::Phase4Config {
-    crate::phase4_config::from_config(&state.config, org, repo, project_id, fast)
+fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>, fast: bool, igniteignore_git_check_root: Option<std::path::PathBuf>) -> ignite_phase4_orchestrator::Phase4Config {
+    crate::phase4_config::from_config(&state.config, org, repo, project_id, fast, igniteignore_git_check_root)
 }
 
 async fn validate_all(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {

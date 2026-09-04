@@ -4,7 +4,8 @@
 //! falling back to `resolve_server_github_token()` (GH_TOKEN/GITHUB_TOKEN
 //! env) for unattended CI callers with no session.
 
-use crate::routes::job_issues::lookup_job_issues;
+use crate::auth::RequireAuth;
+use crate::routes::job_issues::{lookup_job_issues, lookup_job_owner_repo};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -72,7 +73,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
     let owner = body.get("owner").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
@@ -97,6 +98,10 @@ async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
     let Some(issues) = lookup_job_issues(&state, job_id) else {
         return err(StatusCode::NOT_FOUND, "Unknown job id.".to_string());
     };
+    match lookup_job_owner_repo(&state, job_id) {
+        Some((job_org, job_repo)) if job_org.eq_ignore_ascii_case(&owner) && job_repo.eq_ignore_ascii_case(&repo) => {}
+        _ => return err(StatusCode::FORBIDDEN, "Job id does not belong to the given owner/repo.".to_string()),
+    }
 
     let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     if gh_token.is_empty() {
