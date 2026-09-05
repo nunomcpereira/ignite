@@ -1253,6 +1253,28 @@
     // side from the raw log lines so the progress bar/% can reflect real
     // fan-out completion instead of a fixed placeholder, and so the UI can
     // show which checks are still outstanding.
+    // Which of Phase 4's concurrent checks (see phase4-orchestrator's
+    // `→ <name> starting...` log lines) are a thin wrapper around one real
+    // external tool worth naming — as opposed to a built-in/regex/heuristic
+    // check, or one backed by more than one tool (iac's Trivy+Checkov+
+    // Hadolint fan-out has no single name to show here).
+    const CONCURRENT_CHECK_TOOLS = {
+      maliciousDependencies: 'GuardDog',
+      semanticSast: 'Semgrep',
+      pii: 'Bearer',
+      duplication: 'jscpd',
+      locMetrics: 'gocloc',
+      ghaSecurity: 'zizmor',
+      imageVulnerabilities: 'Trivy',
+      sbom: 'Syft',
+      imageProvenance: 'cosign',
+      apiSchema: 'Spectral',
+      apiSchemaDrift: 'oasdiff',
+      modelArtifactSecurity: 'picklescan',
+      codeql: 'CodeQL',
+    };
+    const annotateCheckName = (name) => CONCURRENT_CHECK_TOOLS[name] ? `${name} (${CONCURRENT_CHECK_TOOLS[name]})` : name;
+
     function parseConcurrentCheckProgress(logs) {
       const started = new Map(); // name -> first-seen order
       const done = new Set();
@@ -1307,8 +1329,8 @@
           : ph.state === 'running' ? (concurrentProgress ? Math.round((concurrentProgress.doneCount / concurrentProgress.total) * 100) : 65)
           : 100;
         const pendingChecksHtml = concurrentProgress && concurrentProgress.pending.length > 0 ? `
-                <p class="text-[11px] text-slate-400 mt-1.5 truncate" title="${escapeAttr(concurrentProgress.pending.join(', '))}">
-                  ${concurrentProgress.doneCount}/${concurrentProgress.total} checks done — waiting on ${escapeHtml(concurrentProgress.pending.slice(0, 3).map(name => name === 'maliciousDependencies' ? 'maliciousDependencies (GuardDog)' : name).join(', '))}${concurrentProgress.pending.length > 3 ? ` +${concurrentProgress.pending.length - 3} more` : ''}
+                <p class="text-[11px] text-slate-400 mt-1.5 truncate" title="${escapeAttr(concurrentProgress.pending.map(annotateCheckName).join(', '))}">
+                  ${concurrentProgress.doneCount}/${concurrentProgress.total} checks done — waiting on ${escapeHtml(concurrentProgress.pending.slice(0, 3).map(annotateCheckName).join(', '))}${concurrentProgress.pending.length > 3 ? ` +${concurrentProgress.pending.length - 3} more` : ''}
                 </p>` : '';
         // A short always-visible log preview for the active phase (mirrors
         // the mockup's embedded snippet); the full scrollback stays behind
