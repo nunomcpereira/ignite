@@ -111,6 +111,7 @@ async fn main() {
         igniteignore_enabled: true,
         igniteignore_git_check_root: Some(PathBuf::from(&source)),
         codeql: ignite_codeql_cross_file::CodeqlConfig::default(),
+        codeql_query_suite_review_overdue: false,
     };
 
     let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());

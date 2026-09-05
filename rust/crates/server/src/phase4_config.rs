@@ -117,6 +117,11 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
             ram_mb: sec.codeql.ram_mb,
             timeout_ms: sec.codeql.timeout_ms,
         },
+        codeql_query_suite_review_overdue: ignite_config::is_codeql_review_overdue(
+            sec.codeql.last_reviewed_at.as_deref(),
+            sec.codeql.review_cadence_days,
+            chrono::Utc::now().date_naive(),
+        ),
     }
 }
 

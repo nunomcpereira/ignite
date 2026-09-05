@@ -76,7 +76,7 @@ fn category_scores() -> &'static HashMap<&'static str, i32> {
             ("code-duplication", 2), ("code-structure", 2), ("api-schema-lint", 4),
             ("api-breaking-change", 6), ("dependency-vulnerability", 8),
             ("malicious-dependency", 9), ("malicious-model-artifact", 10),
-            ("package-hallucination", 5), ("codeql-sast", 8),
+            ("package-hallucination", 5), ("codeql-sast", 8), ("codeql-analysis-failed", 8), ("codeql-query-suite-stale", 6),
             ("ai-act-prohibited-practice", 6), ("ai-act-transparency-disclosure", 4),
             ("ai-act-ai-logging", 4), ("ai-act-compliance-documents", 3),
         ]
@@ -326,6 +326,23 @@ pub struct CodeqlFinding {
 #[derive(Debug, Clone, Default)]
 pub struct CodeqlResult {
     pub findings: Vec<CodeqlFinding>,
+    /// Languages whose `codeql database create`/`database analyze` failed
+    /// outright (e.g. a Java autobuild dying because no build toolchain is
+    /// configured for that path) — as opposed to succeeding with zero
+    /// findings. Without this, a failed build and a genuinely clean scan
+    /// are indistinguishable in the pipeline's own output: both read as
+    /// "codeql done, 0 findings". Each failure becomes its own blocking
+    /// issue below so it needs an explicit override/fix instead of quietly
+    /// passing.
+    pub failed_languages: Vec<(String, String)>,
+    /// True when `ignite_config::is_codeql_review_overdue` says the pinned
+    /// query-suite versions haven't been reviewed within their configured
+    /// cadence. Previously only a non-blocking `tracing::warn!` at server
+    /// startup — nothing enforced it, so "review every 90 days" could (and
+    /// did, in practice) go unreviewed indefinitely. Escalated to a real,
+    /// overridable Phase 4 issue so the same accountability mechanism every
+    /// other check gets also applies to keeping the pin itself current.
+    pub query_suite_review_overdue: bool,
 }
 
 fn snippet_text(snippet: &serde_json::Value) -> String {
@@ -353,6 +370,47 @@ static TAINTED_FORMAT_OR_LOG_INJECTION_RE: Lazy<Regex> = Lazy::new(|| Regex::new
 /// CodeQL" endpoint can build just this slice without needing every other
 /// check's results at hand.
 pub fn collect_codeql_issues(codeql: &CodeqlResult) -> Vec<Issue> {
+    let failed = codeql.failed_languages.iter().map(|(language, reason)| {
+        let category = "codeql-analysis-failed";
+        let summary = format!("CodeQL could not analyze {language}: {reason}");
+        Issue {
+            id: build_issue_id(BuildIssueIdArgs { category, file: None, line: None, discriminator: Some(language) }),
+            category: category.to_string(),
+            severity: Severity::Error,
+            score: score_for_issue(category, Severity::Error),
+            summary,
+            file: None,
+            line: None,
+            snippet: None,
+            cross_file: false,
+            chain: None,
+            duplicate_ref: None,
+            references: IssueReferences::default(),
+            cwe: None,
+            owasp: None,
+            tool: Some("codeql".to_string()),
+        }
+    });
+    let stale_pin = codeql.query_suite_review_overdue.then(|| {
+        let category = "codeql-query-suite-stale";
+        Issue {
+            id: build_issue_id(BuildIssueIdArgs { category, file: None, line: None, discriminator: None }),
+            category: category.to_string(),
+            severity: Severity::Error,
+            score: score_for_issue(category, Severity::Error),
+            summary: "CodeQL's pinned query-suite versions haven't been reviewed within their configured cadence (security.codeql.reviewCadenceDays/lastReviewedAt). Re-verify each pinned version is still current and bump lastReviewedAt.".to_string(),
+            file: None,
+            line: None,
+            snippet: None,
+            cross_file: false,
+            chain: None,
+            duplicate_ref: None,
+            references: IssueReferences::default(),
+            cwe: None,
+            owasp: None,
+            tool: Some("codeql".to_string()),
+        }
+    });
     codeql
         .findings
         .iter()
@@ -401,6 +459,8 @@ pub fn collect_codeql_issues(codeql: &CodeqlResult) -> Vec<Issue> {
                 tool: Some("codeql".to_string()),
             }
         })
+        .chain(failed)
+        .chain(stale_pin)
         .collect()
 }
 
@@ -544,6 +604,25 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
 
     if let Some(iac) = &input.iac {
         for f in &iac.findings {
+            // Checkov runs its default frameworks with no `--framework`
+            // filter, which per checkov's own docs includes its bundled
+            // `secrets` (detect-secrets-based) scanner alongside IaC
+            // misconfig checks — CKV_SECRET_* check ids. Route those into
+            // the same `secret` category gitleaks/regex findings use
+            // instead of `iac-security`, so a real secret checkov finds
+            // isn't hidden from secret-focused triage/overrides under an
+            // unrelated category.
+            if f.kind.as_deref().unwrap_or("").to_lowercase().starts_with("ckv_secret") {
+                let in_test_file = is_likely_test_file(f.file.as_deref());
+                let severity = if in_test_file { Severity::Warning } else { Severity::Error };
+                let summary = format!(
+                    "{}{}",
+                    message_or_kind(f),
+                    if in_test_file { " (in a test file — likely a fixture, not a real credential)" } else { "" }
+                );
+                push_simple(&mut issues, "secret", severity, summary, f, None);
+                continue;
+            }
             let sev = f.severity.as_deref();
             let severity = if sev == Some("critical") || sev == Some("high") { Severity::Error } else { Severity::Warning };
             let mut summary = message_or_kind(f);
@@ -1240,6 +1319,43 @@ mod tests {
     }
 
     #[test]
+    fn checkov_secrets_framework_findings_land_in_secret_not_iac_security() {
+        let mut input = Phase4Inputs::default();
+        let mut iac = CheckResult::default();
+        iac.findings.push(RawFinding {
+            kind: Some("ckv_secret_6".into()),
+            message: Some("Base64 High Entropy String".into()),
+            tool: Some("checkov".into()),
+            severity: Some("medium".into()),
+            ..finding("parla/app/apphosting.yaml", 3)
+        });
+        input.iac = Some(iac);
+        let issues = collect_phase4_issues(&input);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].category, "secret", "a CKV_SECRET_* finding must not land under iac-security");
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert_eq!(issues[0].tool.as_deref(), Some("checkov"));
+        assert!(issues[0].summary.contains("Base64 High Entropy String"));
+    }
+
+    #[test]
+    fn checkov_iac_misconfig_findings_still_land_in_iac_security() {
+        let mut input = Phase4Inputs::default();
+        let mut iac = CheckResult::default();
+        iac.findings.push(RawFinding {
+            kind: Some("ckv_docker_2".into()),
+            message: Some("Ensure that HEALTHCHECK instructions have been added".into()),
+            tool: Some("checkov".into()),
+            severity: Some("high".into()),
+            ..finding("Dockerfile", 1)
+        });
+        input.iac = Some(iac);
+        let issues = collect_phase4_issues(&input);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].category, "iac-security");
+    }
+
+    #[test]
     fn ignite_ignore_finding_is_always_blocking() {
         let mut input = Phase4Inputs::default();
         let mut ii = CheckResult::default();
@@ -1248,6 +1364,32 @@ mod tests {
         let issues = collect_phase4_issues(&input);
         assert_eq!(issues[0].category, "igniteignore-not-committed");
         assert_eq!(issues[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn a_failed_codeql_language_becomes_a_blocking_issue_not_a_silent_pass() {
+        let codeql = CodeqlResult { findings: vec![], failed_languages: vec![("java".to_string(), "autobuild.sh exited 1".to_string())], query_suite_review_overdue: false };
+        let issues = collect_codeql_issues(&codeql);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].category, "codeql-analysis-failed");
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(issues[0].summary.contains("java"));
+        assert!(issues[0].summary.contains("autobuild.sh exited 1"));
+    }
+
+    #[test]
+    fn an_overdue_query_suite_review_becomes_a_blocking_issue() {
+        let codeql = CodeqlResult { findings: vec![], failed_languages: vec![], query_suite_review_overdue: true };
+        let issues = collect_codeql_issues(&codeql);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].category, "codeql-query-suite-stale");
+        assert_eq!(issues[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn no_stale_pin_issue_when_review_is_current() {
+        let codeql = CodeqlResult { findings: vec![], failed_languages: vec![], query_suite_review_overdue: false };
+        assert!(collect_codeql_issues(&codeql).is_empty());
     }
 
     #[test]

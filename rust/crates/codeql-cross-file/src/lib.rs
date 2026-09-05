@@ -402,6 +402,10 @@ pub struct CodeqlCrossFileResult {
     pub findings: Vec<CodeqlFinding>,
     pub engine: &'static str,
     pub languages: Vec<String>,
+    /// (language, error) pairs for every language whose database
+    /// create/analyze failed outright — kept distinct from a clean 0-finding
+    /// result so a failed build doesn't read as "scanned, nothing found".
+    pub failed_languages: Vec<(String, String)>,
 }
 
 pub struct CodeqlContext<'a> {
@@ -436,15 +440,16 @@ pub async fn check_codeql_cross_file_with_log(
         CodeqlToolingProbe { ok: false, version: None, reason: Some("codeql is disabled (security.codeql.enabled=false).".to_string()) }
     };
     if !tooling.ok {
-        return Ok(CodeqlCrossFileResult { findings: vec![], engine: "disabled", languages: vec![] });
+        return Ok(CodeqlCrossFileResult { findings: vec![], engine: "disabled", languages: vec![], failed_languages: vec![] });
     }
 
     let languages = discover_codeql_languages(root, &config.languages)?;
     if languages.is_empty() {
-        return Ok(CodeqlCrossFileResult { findings: vec![], engine: "codeql", languages: vec![] });
+        return Ok(CodeqlCrossFileResult { findings: vec![], engine: "codeql", languages: vec![], failed_languages: vec![] });
     }
 
     let mut findings = Vec::new();
+    let mut failed_languages = Vec::new();
     for language in &languages {
         let file_set_hash = hash_file_set(root, language)?;
         // A caller that wants the built database kept on disk (Studio's
@@ -477,13 +482,17 @@ pub async fn check_codeql_cross_file_with_log(
                     }
                     f
                 }
-                Err(_) => continue, // logged by the caller in the real server integration
+                Err(e) => {
+                    log(&format!("  ✗ codeql could not analyze {language}: {e}"));
+                    failed_languages.push((language.clone(), e));
+                    continue;
+                }
             }
         };
         findings.extend(lang_findings);
     }
 
-    Ok(CodeqlCrossFileResult { findings, engine: "codeql", languages })
+    Ok(CodeqlCrossFileResult { findings, engine: "codeql", languages, failed_languages })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -796,6 +805,35 @@ mod tests {
         let result = check_codeql_cross_file(root, &runner(), &config, CodeqlContext { org: None, repo: None, store: None, keep_db_dir: None }).await.unwrap();
         assert_eq!(result.engine, "codeql");
         assert_eq!(result.languages, vec!["javascript".to_string()]);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn failed_database_analyze_is_reported_as_a_failed_language_not_a_clean_scan() {
+        let mut check = std::process::Command::new("codeql");
+        check.arg("version");
+        if check.output().map(|o| !o.status.success()).unwrap_or(true) {
+            eprintln!("skipping: codeql not installed on PATH");
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("app.js"), "function add(a, b) { return a + b; }\nmodule.exports = add;\n").unwrap();
+
+        // `database create` succeeds against a real JS file, but the query
+        // suite id is bogus, so `database analyze` fails — mirrors the real
+        // Java-autobuild failure found in production: the database builds
+        // fine, the analysis step is what dies.
+        let mut query_suites = HashMap::new();
+        query_suites.insert("javascript".to_string(), "codeql/this-pack-does-not-exist:no-such-suite.qls".to_string());
+        let config = CodeqlConfig { query_suites, timeout_ms: 5 * 60_000, ..Default::default() };
+        let result = check_codeql_cross_file(root, &runner(), &config, CodeqlContext { org: None, repo: None, store: None, keep_db_dir: None }).await.unwrap();
+
+        assert!(result.findings.is_empty(), "a failed analyze should produce no findings, not fabricated ones");
+        assert_eq!(result.failed_languages.len(), 1, "expected javascript's failed analyze to be recorded, got {:?}", result.failed_languages);
+        assert_eq!(result.failed_languages[0].0, "javascript");
+
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 

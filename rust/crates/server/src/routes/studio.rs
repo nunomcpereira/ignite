@@ -31,10 +31,11 @@ use axum::routing::get;
 use axum::{Json, Router};
 use ignite_db_store::{IssueInput, IssueRow};
 use ignite_override_engine::{CheckResult, CodeqlFinding as OeCodeqlFinding, CodeqlResult, Phase4Inputs, RawFinding};
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
@@ -338,10 +339,15 @@ async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<Strin
                     cwe: f.cwe.clone(),
                 })
                 .collect(),
+            failed_languages: codeql_result.failed_languages.clone(),
+            // Studio's ad-hoc "Run CodeQL" query playground, not the
+            // compliance-gate scan itself — the stale-pin governance issue
+            // belongs to the real pipeline run, not a one-off query.
+            query_suite_review_overdue: false,
         };
         let fresh_issues = ignite_override_engine::collect_codeql_issues(&oe_result);
 
-        let (resolved_ids, new_ids) = replace_issue_batch(&state, &job_id, &ctx, fresh_issues, &["codeql-sast"]);
+        let (resolved_ids, new_ids) = replace_issue_batch(&state, &job_id, &ctx, fresh_issues, &["codeql-sast", "codeql-analysis-failed"]);
         let issues = get_issues(&state, &job_id, &ctx);
         send(json!({ "type": "done", "ok": true, "issues": issues, "resolvedIds": resolved_ids, "newIds": new_ids, "languages": codeql_result.languages }));
     });
@@ -364,6 +370,17 @@ struct CodeqlQueryBody {
     #[serde(default)]
     query: String,
 }
+
+/// One in-flight ad-hoc query per Studio job at a time (the UI only ever
+/// has one "Run query" button) — keyed by job_id so `DELETE
+/// .../codeql/query` can flip it without needing the request that started
+/// the run still open. A `watch` channel rather than a plain bool: the
+/// running task borrows the receiver directly into its `tokio::select!`,
+/// so setting it to `true` wakes the task immediately instead of needing
+/// to be polled.
+static CODEQL_QUERY_CANCELLATIONS: Lazy<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+const CODEQL_QUERY_CANCELLED_SENTINEL: &str = "__ignite_codeql_query_cancelled__";
 
 /// Ad-hoc CodeQL query — runs a user-supplied `.ql` query against
 /// whichever database `/studio/codeql` already built for this
@@ -393,8 +410,18 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
     let language = body.language.trim().to_string();
     let query_text = body.query;
 
+    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    CODEQL_QUERY_CANCELLATIONS.lock().unwrap().insert(job_id.clone(), cancel_tx);
+
     tokio::spawn(async move {
-        let result = async {
+        // Validated up front, outside the select! below: these are
+        // synchronous, instant checks, and racing them against
+        // `cancel_rx.changed()` let the cancel branch win nondeterministically
+        // even when nothing was cancelled — `tokio::select!` picks randomly
+        // among branches that are already ready on the first poll, and an
+        // immediately-`Err`-returning validation future is just as "ready"
+        // as a freshly created watch channel.
+        let validation: Result<(std::path::PathBuf, u64), String> = (|| {
             if language.is_empty() {
                 return Err("language is required.".to_string());
             }
@@ -409,14 +436,52 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
             };
             let db_dir = db_root.join(&language).join("db");
             let timeout_ms = crate::phase4_config::from_config(&state.config, &ctx.org, &ctx.repo, ctx.project_id, false, None).codeql.timeout_ms;
-            ignite_codeql_cross_file::run_custom_codeql_query(&ctx.root, &db_dir, &language, &query_text, &state.runner, timeout_ms, |line| log(line)).await
-        }
-        .await;
+            Ok((db_dir, timeout_ms))
+        })();
+
+        let result = match validation {
+            Err(e) => Err(e),
+            Ok((db_dir, timeout_ms)) => {
+                let run = ignite_codeql_cross_file::run_custom_codeql_query(&ctx.root, &db_dir, &language, &query_text, &state.runner, timeout_ms, |line| log(line));
+                // Only an explicit `true` sent through `cancel_tx` counts as
+                // a cancel. A closed channel (`changed()` returning `Err`) is
+                // NOT one — the sender can be dropped by our own cleanup
+                // below on the *previous* request for this job_id (or, in
+                // tests, a hardcoded shared job_id across parallel test
+                // cases), and that must resolve as "no cancel", not race
+                // `run` to a false cancellation.
+                let wait_for_cancel = async {
+                    loop {
+                        if cancel_rx.changed().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                        if *cancel_rx.borrow() {
+                            return;
+                        }
+                    }
+                };
+                // Whichever finishes first wins: a real result, or the user
+                // hitting Cancel. The loser is dropped — `ToolRunner::
+                // run_tool_streaming`'s `kill_on_drop(true)` means dropping
+                // `run` mid-flight actually kills the `codeql` child process
+                // rather than leaving it running after the client stopped
+                // waiting.
+                tokio::select! {
+                    r = run => r,
+                    _ = wait_for_cancel => Err(CODEQL_QUERY_CANCELLED_SENTINEL.to_string()),
+                }
+            }
+        };
+        CODEQL_QUERY_CANCELLATIONS.lock().unwrap().remove(&job_id);
 
         match result {
             Ok(r) => {
                 log(&format!("✓ {} row(s) returned.", r.rows.len()));
                 send(json!({ "type": "done", "ok": true, "columns": r.columns, "rows": r.rows }));
+            }
+            Err(e) if e == CODEQL_QUERY_CANCELLED_SENTINEL => {
+                log("✗ Cancelled.");
+                send(json!({ "type": "done", "ok": false, "cancelled": true, "error": "Cancelled." }));
             }
             Err(e) => {
                 log(&format!("✗ {e}"));
@@ -434,6 +499,20 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
         .header("X-Accel-Buffering", "no")
         .body(body)
         .unwrap()
+}
+
+/// `DELETE .../studio/codeql/query` — cancels the in-flight ad-hoc query
+/// for this job, if any. Always `200 { ok: true, cancelled }`: cancelling
+/// a query that already finished (or was never running) isn't an error,
+/// same convention as `fix_pr.rs`'s preview-job cancel endpoint.
+async fn codeql_query_cancel(Path(job_id): Path<String>) -> Response {
+    let cancelled = CODEQL_QUERY_CANCELLATIONS
+        .lock()
+        .unwrap()
+        .get(&job_id)
+        .map(|tx| tx.send(true).is_ok())
+        .unwrap_or(false);
+    Json(json!({ "ok": true, "cancelled": cancelled })).into_response()
 }
 
 async fn dependencies(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
@@ -550,7 +629,10 @@ pub fn mutating_router() -> Router<Arc<AppState>> {
         .route("/api/pipeline/:job_id/studio/file", axum::routing::put(put_file))
         .route("/api/pipeline/:job_id/studio/rescan", axum::routing::post(rescan))
         .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
-        .route("/api/pipeline/:job_id/studio/codeql/query", axum::routing::post(codeql_query))
+        .route(
+            "/api/pipeline/:job_id/studio/codeql/query",
+            axum::routing::post(codeql_query).delete(codeql_query_cancel),
+        )
 }
 
 #[cfg(test)]

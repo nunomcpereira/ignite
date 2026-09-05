@@ -429,7 +429,12 @@ impl ToolRunner {
             .envs(&env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // A caller that races this future against a cancellation signal
+            // (tokio::select!) and drops it without reaching the explicit
+            // `child.kill()` below must not leak the child process — Tokio
+            // otherwise leaves a dropped Child running as an orphan.
+            .kill_on_drop(true);
 
         let mut child = command.spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");

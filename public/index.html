@@ -4139,10 +4139,11 @@
         <div class="flex items-center gap-2 mb-2">
           <label class="text-[11px] font-semibold text-slate-500">Language</label>
           <select id="studioQueryLanguage" class="text-[11px] border border-slate-200 rounded px-2 py-1">${optionsHtml}</select>
-          <button type="button" id="studioQueryRunBtn" class="ml-auto text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:bg-orange-700">▶ Run query</button>
+          <button type="button" id="studioQueryCancelBtn" class="ml-auto text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-slate-200 text-slate-600 hover:bg-slate-300 hidden">■ Cancel</button>
+          <button type="button" id="studioQueryRunBtn" class="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:bg-orange-700">▶ Run query</button>
         </div>
         <textarea id="studioQueryText" class="w-full flex-1 min-h-[180px] font-mono text-[12px] leading-relaxed border border-slate-200 rounded-lg p-2" spellcheck="false" placeholder="import ${escapeHtml(languages[0])}\n\nfrom ...\nselect ...">${STUDIO_QUERY_EXAMPLES[languages[0]] || ''}</textarea>
-        <p class="text-[10px] text-slate-400 mt-1">Runs against the database "Run CodeQL" already built for this language — no rebuild. Results below, and the file tree narrows to files your query's rows point at.</p>
+        <p class="text-[10px] text-slate-400 mt-1">Runs against the database "Run CodeQL" already built for this language — no rebuild. <kbd class="px-1 py-0.5 border border-slate-300 rounded bg-slate-50 font-mono">${isMac ? '⌘' : 'Ctrl'}+Enter</kbd> runs it. Results below, and the file tree narrows to files your query's rows point at.</p>
         <div id="studioQueryResultsWrap" class="mt-3"></div>
       </div>`;
       $('studioQueryLanguage').addEventListener('change', () => {
@@ -4150,8 +4151,17 @@
         if (!ta.dataset.touched) ta.value = STUDIO_QUERY_EXAMPLES[$('studioQueryLanguage').value] || '';
       });
       $('studioQueryText').addEventListener('input', (e) => { e.target.dataset.touched = '1'; });
+      $('studioQueryText').addEventListener('keydown', (e) => {
+        const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+        if (cmdOrCtrl && e.key === 'Enter' && !$('studioQueryRunBtn').disabled) {
+          e.preventDefault();
+          studioRunCustomCodeqlQuery();
+        }
+      });
       $('studioQueryRunBtn').addEventListener('click', () => studioRunCustomCodeqlQuery());
+      $('studioQueryCancelBtn').addEventListener('click', () => studioCancelCustomCodeqlQuery());
     }
+    const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent || '');
     $('studioCodeqlQueryBtn').addEventListener('click', () => renderStudioCodeqlQueryPanel());
 
     // Placeholder query text per language — just enough to compile so a
@@ -4163,25 +4173,48 @@
       go: 'import go\n\nfrom FuncDecl f\nselect f, "A function declaration."',
     };
 
+    // Cancelling only aborts *this browser's* fetch read immediately — the
+    // DELETE call below is what actually stops the server-side codeql
+    // subprocess (studio.rs's CODEQL_QUERY_CANCELLATIONS registry), so a
+    // cancel still stops real work, not just the spinner.
+    let studioActiveQueryAbort = null;
+
+    async function studioCancelCustomCodeqlQuery() {
+      const btn = $('studioQueryCancelBtn');
+      btn.disabled = true;
+      btn.textContent = '■ Cancelling…';
+      try {
+        await fetch(`/api/pipeline/${studioState.jobId}/studio/codeql/query`, { method: 'DELETE' });
+      } catch { /* best-effort — the abort below still stops the client side regardless */ }
+      studioActiveQueryAbort?.abort();
+    }
+
     async function studioRunCustomCodeqlQuery() {
       const language = $('studioQueryLanguage').value;
       const query = $('studioQueryText').value;
       const wrap = $('studioQueryResultsWrap');
-      const btn = $('studioQueryRunBtn');
+      const runBtn = $('studioQueryRunBtn');
+      const cancelBtn = $('studioQueryCancelBtn');
       studioShowError(null);
-      btn.disabled = true;
-      btn.textContent = '▶ Running…';
+      runBtn.disabled = true;
+      runBtn.textContent = '▶ Running…';
+      cancelBtn.classList.remove('hidden');
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = '■ Cancel';
       $('studioOutputPanel').classList.remove('hidden');
       $('studioOutputTaskLabel').textContent = `codeql query run (${language})`;
       $('studioOutputLog').textContent = '';
       studioOutputSetStatus('running');
       studioOutputAppendLine(`$ Running custom query against the ${language} database…`);
       wrap.innerHTML = '';
+      const abort = new AbortController();
+      studioActiveQueryAbort = abort;
       try {
         const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/codeql/query`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ language, query }),
+          signal: abort.signal,
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -4209,43 +4242,98 @@
         studioOutputSetStatus('success');
         renderStudioQueryResults(doneEvent.columns, doneEvent.rows);
       } catch (e) {
-        studioOutputAppendLine(`$ ✗ ${e.message}`);
-        studioOutputSetStatus('failed');
-        studioShowError(e.message);
+        const cancelled = e.name === 'AbortError';
+        studioOutputAppendLine(cancelled ? '$ ✗ Cancelled.' : `$ ✗ ${e.message}`);
+        studioOutputSetStatus(cancelled ? 'idle' : 'failed');
+        if (!cancelled) studioShowError(e.message);
       } finally {
-        btn.disabled = false;
-        btn.textContent = '▶ Run query';
+        studioActiveQueryAbort = null;
+        runBtn.disabled = false;
+        runBtn.textContent = '▶ Run query';
+        cancelBtn.classList.add('hidden');
       }
     }
 
+    // Cells are real CodeQL `select` output — anything from a one-word
+    // identifier to a multi-line entity `toString()`. The previous version
+    // truncated every cell to `max-w-xs` with only a hover title as the
+    // escape hatch, which made most non-trivial queries unreadable at a
+    // glance. Wrapping instead of truncating, a taller/resizable scroll
+    // region, and a click-to-copy affordance replace that.
+    // Sort/filter state lives outside the render function so re-rendering
+    // after a header click or a search keystroke doesn't lose the user's
+    // current sort/filter — only a fresh query run (studioRunCustomCodeqlQuery)
+    // resets it.
+    let studioQueryResultState = { columns: [], rows: [], filter: '', sortIndex: -1, sortDir: 1 };
+
     function renderStudioQueryResults(columns, rows) {
+      studioQueryResultState = { columns, rows: rows || [], filter: '', sortIndex: -1, sortDir: 1 };
+      renderStudioQueryResultsFromState();
+    }
+
+    function renderStudioQueryResultsFromState() {
+      const { columns, rows, filter, sortIndex, sortDir } = studioQueryResultState;
       const wrap = $('studioQueryResultsWrap');
       if (!rows || rows.length === 0) {
         wrap.innerHTML = '<p class="text-[11px] text-slate-400">Query ran successfully — 0 rows.</p>';
         return;
       }
+
+      const needle = filter.trim().toLowerCase();
+      let visibleRows = !needle ? rows : rows.filter((r) => {
+        const loc = r.location ? `${r.location.file}:${r.location.line}` : '';
+        return r.cells.some((c) => c.toLowerCase().includes(needle)) || loc.toLowerCase().includes(needle);
+      });
+      if (sortIndex >= 0) {
+        const cellOf = (r) => sortIndex === columns.length ? (r.location ? `${r.location.file}:${String(r.location.line).padStart(10, '0')}` : '') : r.cells[sortIndex];
+        visibleRows = [...visibleRows].sort((a, b) => cellOf(a).localeCompare(cellOf(b), undefined, { numeric: true }) * sortDir);
+      }
+
       const locatedFiles = new Set(rows.filter((r) => r.location).map((r) => r.location.file));
-      const headHtml = columns.map((c) => `<th class="px-2 py-1">${escapeHtml(c)}</th>`).join('');
-      const rowsHtml = rows.map((r) => {
-        const cellsHtml = r.cells.map((c) => `<td class="px-2 py-1 font-mono text-[11px] truncate max-w-xs" title="${escapeAttr(c)}">${escapeHtml(c)}</td>`).join('');
+      const sortArrow = (i) => sortIndex === i ? (sortDir === 1 ? ' ▲' : ' ▼') : '';
+      const headHtml = columns.map((c, i) => `<th class="studio-query-sort-col px-2.5 py-1.5 border-b border-r border-slate-200 last:border-r-0 whitespace-nowrap cursor-pointer select-none hover:bg-slate-100" data-col="${i}" title="Sort by ${escapeAttr(c)}">${escapeHtml(c)}${sortArrow(i)}</th>`).join('');
+      const rowsHtml = visibleRows.map((r, i) => {
+        const cellsHtml = r.cells.map((c) => `<td class="studio-query-cell px-2.5 py-1.5 border-r border-slate-100 last:border-r-0 align-top font-mono text-[11px] whitespace-pre-wrap break-words max-w-[32rem]" data-copy="${escapeAttr(c)}" title="Click to copy">${escapeHtml(c)}</td>`).join('');
         const jumpBtn = r.location
-          ? `<button type="button" class="studio-query-row-jump text-[10px] font-semibold text-brand-600 hover:underline" data-file="${escapeAttr(r.location.file)}" data-line="${r.location.line}">${escapeHtml(r.location.file)}:${r.location.line}</button>`
+          ? `<button type="button" class="studio-query-row-jump text-[10px] font-semibold text-brand-600 hover:underline whitespace-nowrap" data-file="${escapeAttr(r.location.file)}" data-line="${r.location.line}">${escapeHtml(r.location.file)}:${r.location.line}</button>`
           : '<span class="text-[10px] text-slate-300">—</span>';
-        return `<tr class="border-b border-slate-100">${cellsHtml}<td class="px-2 py-1">${jumpBtn}</td></tr>`;
+        return `<tr class="${i % 2 === 1 ? 'bg-slate-50/60' : ''} border-b border-slate-100 hover:bg-amber-50/40">${cellsHtml}<td class="px-2.5 py-1.5 align-top">${jumpBtn}</td></tr>`;
       }).join('');
+      const filteredNote = needle ? `, ${visibleRows.length} shown` : '';
       wrap.innerHTML = `
-        <div class="flex items-center gap-2 mb-1.5">
-          <span class="text-[11px] text-slate-500">${rows.length} row(s)${locatedFiles.size > 0 ? `, ${locatedFiles.size} file(s) with a location` : ''}</span>
+        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+          <span class="text-[11px] text-slate-500">${rows.length} row(s), ${columns.length} column(s)${locatedFiles.size > 0 ? `, ${locatedFiles.size} file(s) with a location` : ''}${filteredNote}</span>
           ${locatedFiles.size > 0 ? `<button type="button" id="studioQueryFilterTreeBtn" class="text-[11px] font-semibold text-amber-700 hover:underline">Filter tree to these files</button>` : ''}
+          <button type="button" id="studioQueryExportCsvBtn" class="text-[11px] font-semibold text-slate-600 hover:underline">⤓ Export CSV</button>
+          <input type="text" id="studioQueryFilterInput" value="${escapeAttr(filter)}" placeholder="Filter rows…" class="ml-auto text-[11px] border border-slate-200 rounded px-2 py-1 w-40" />
         </div>
-        <div class="overflow-auto max-h-64 border border-slate-200 rounded-lg">
-          <table class="w-full text-left text-[11px]">
-            <thead class="bg-slate-50 sticky top-0"><tr>${headHtml}<th class="px-2 py-1">Location</th></tr></thead>
-            <tbody>${rowsHtml}</tbody>
+        <div class="overflow-auto resize-y max-h-[32rem] min-h-[10rem] border border-slate-200 rounded-lg">
+          <table class="w-full text-left text-[11px] table-auto border-collapse">
+            <thead class="bg-slate-50 sticky top-0 z-10 font-semibold text-slate-600"><tr>${headHtml}<th class="studio-query-sort-col px-2.5 py-1.5 border-b border-slate-200 whitespace-nowrap cursor-pointer select-none hover:bg-slate-100" data-col="${columns.length}" title="Sort by Location">Location${sortArrow(columns.length)}</th></tr></thead>
+            <tbody>${rowsHtml || `<tr><td colspan="${columns.length + 1}" class="px-2.5 py-3 text-center text-slate-400">No rows match "${escapeHtml(filter)}".</td></tr>`}</tbody>
           </table>
         </div>`;
+
       const filterBtn = document.getElementById('studioQueryFilterTreeBtn');
       if (filterBtn) filterBtn.addEventListener('click', () => studioSetQueryResultFilter(locatedFiles));
+      $('studioQueryExportCsvBtn').addEventListener('click', () => studioExportQueryResultsCsv(columns, visibleRows));
+      const filterInput = $('studioQueryFilterInput');
+      filterInput.addEventListener('input', (e) => {
+        studioQueryResultState.filter = e.target.value;
+        const pos = e.target.selectionStart;
+        renderStudioQueryResultsFromState();
+        const refocused = $('studioQueryFilterInput');
+        refocused.focus();
+        refocused.setSelectionRange(pos, pos);
+      });
+      wrap.querySelectorAll('.studio-query-sort-col').forEach((th) => {
+        th.addEventListener('click', () => {
+          const col = Number(th.dataset.col);
+          studioQueryResultState.sortDir = studioQueryResultState.sortIndex === col ? -studioQueryResultState.sortDir : 1;
+          studioQueryResultState.sortIndex = col;
+          renderStudioQueryResultsFromState();
+        });
+      });
       wrap.querySelectorAll('.studio-query-row-jump').forEach((b) => {
         b.addEventListener('click', async () => {
           await openStudioFile(b.dataset.file);
@@ -4254,6 +4342,34 @@
           scrollStudioToLine(Number(b.dataset.line));
         });
       });
+      wrap.querySelectorAll('.studio-query-cell').forEach((cell) => {
+        cell.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(cell.dataset.copy);
+            const prev = cell.style.backgroundColor;
+            cell.style.backgroundColor = '#fef3c7';
+            setTimeout(() => { cell.style.backgroundColor = prev; }, 200);
+          } catch { /* clipboard permission denied — non-critical, cell is still selectable/readable as-is */ }
+        });
+      });
+    }
+
+    // CSV of whatever's currently visible (post-filter/sort) — an exported
+    // file that silently included rows the user just filtered out would be
+    // a worse surprise than one that doesn't export at all.
+    function studioExportQueryResultsCsv(columns, rows) {
+      const csvCell = (v) => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+      const header = [...columns, 'Location'].map(csvCell).join(',');
+      const lines = rows.map((r) => [...r.cells, r.location ? `${r.location.file}:${r.location.line}` : ''].map(csvCell).join(','));
+      const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'codeql-query-results.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
     }
 
     // Rescan already returns the fresh issue list but not the file tree —

@@ -109,6 +109,10 @@ pub struct Phase4Config {
     /// "can't verify, so don't assume safe" behavior there.
     pub igniteignore_git_check_root: Option<std::path::PathBuf>,
     pub codeql: ignite_codeql_cross_file::CodeqlConfig,
+    /// Precomputed via `ignite_config::is_codeql_review_overdue` from
+    /// `security.codeql.{reviewCadenceDays,lastReviewedAt}` — see
+    /// `override_engine::CodeqlResult::query_suite_review_overdue`.
+    pub codeql_query_suite_review_overdue: bool,
 }
 
 pub struct Phase4Documents {
@@ -434,7 +438,7 @@ pub async fn run_phase4_checks(
             Ok(r) => r,
             Err(e) => {
                 log(&format!("✗ codeql failed: {e} — skipping."));
-                ignite_codeql_cross_file::CodeqlCrossFileResult { findings: vec![], engine: "error", languages: vec![] }
+                ignite_codeql_cross_file::CodeqlCrossFileResult { findings: vec![], engine: "error", languages: vec![], failed_languages: vec![] }
             }
         }
     };
@@ -695,6 +699,8 @@ pub async fn run_phase4_checks(
 
     let codeql_check = Some(CodeqlResult {
         findings: codeql_result.findings.iter().map(to_oe_codeql_finding).collect(),
+        failed_languages: codeql_result.failed_languages.clone(),
+        query_suite_review_overdue: config.codeql_query_suite_review_overdue,
     });
 
     let inputs = Phase4Inputs {
@@ -829,6 +835,7 @@ mod tests {
             igniteignore_enabled: false,
             igniteignore_git_check_root: None,
             codeql: ignite_codeql_cross_file::CodeqlConfig { enabled: false, ..Default::default() },
+            codeql_query_suite_review_overdue: false,
         }
     }
 
