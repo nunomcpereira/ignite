@@ -213,6 +213,22 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_pull_requests_project ON pull_requests(project_id);
+CREATE TABLE IF NOT EXISTS dependency_scan_cache (
+  project_id  INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  scan_json   TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS fix_pr_previews (
+  job_id           TEXT PRIMARY KEY,
+  total            INTEGER NOT NULL DEFAULT 0,
+  completed        INTEGER NOT NULL DEFAULT 0,
+  done             INTEGER NOT NULL DEFAULT 0,
+  cancelled        INTEGER NOT NULL DEFAULT 0,
+  considered_count INTEGER NOT NULL DEFAULT 0,
+  reason           TEXT,
+  candidates_json  TEXT NOT NULL DEFAULT '[]',
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 /// One-time-per-row backfill, safe to re-run every startup: every historical
@@ -1763,6 +1779,105 @@ impl DbStore {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM runtime_coverage WHERE org = ? AND repo = ?", params![org, repo]).unwrap()
     }
+
+    // ---------------- dependency scan cache ----------------
+
+    /// Persists a dependency license scan result (the full
+    /// `DependencyLicenseScan` serialized as JSON) for a project, so the
+    /// Studio Dependencies tab can read it back instantly instead of
+    /// re-running ORT + deps.dev from scratch.
+    pub fn save_dependency_scan_cache(&self, project_id: i64, scan_json: &serde_json::Value) {
+        let conn = self.conn.lock().unwrap();
+        let json_str = serde_json::to_string(scan_json).unwrap_or_default();
+        conn.execute(
+            "INSERT INTO dependency_scan_cache (project_id, scan_json) VALUES (?, ?)
+             ON CONFLICT(project_id) DO UPDATE SET scan_json = excluded.scan_json, created_at = datetime('now')",
+            params![project_id, json_str],
+        )
+        .unwrap();
+    }
+
+    /// Retrieves a cached dependency license scan result for a project.
+    /// Returns `None` if no cached result exists (e.g. the scan hasn't
+    /// run yet, or the project was created before caching was added).
+    pub fn get_dependency_scan_cache(&self, project_id: i64) -> Option<serde_json::Value> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.prepare_cached("SELECT scan_json FROM dependency_scan_cache WHERE project_id = ?")
+            .unwrap()
+            .query_row(params![project_id], |row| {
+                let json_str: String = row.get(0)?;
+                Ok(serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null))
+            })
+            .optional()
+            .unwrap()
+            .filter(|v| !v.is_null());
+        result
+    }
+
+    /// Persists (insert-or-replace) a finished/cancelled fix-PR preview
+    /// job — deliberately only ever called once the job has reached a
+    /// terminal state, never mid-run: generating these candidates is one
+    /// LLM call per open issue and can take real wall-clock time, so a
+    /// completed result is worth surviving a server restart, but a
+    /// still-running job is not resumable after one (the `tokio` task
+    /// that was computing it is simply gone) — persisting a "still
+    /// running" row would just leave a stale, misleading entry forever.
+    /// `candidates` is stored as opaque JSON (this crate stays decoupled
+    /// from `ignite-fix-pr`, like every other check crate); the caller
+    /// (`routes/fix_pr.rs`) owns the typed `FixCandidate` shape.
+    pub fn save_fix_pr_preview(&self, job_id: &str, total: i64, completed: i64, cancelled: bool, considered_count: i64, reason: Option<&str>, candidates: &serde_json::Value) {
+        let conn = self.conn.lock().unwrap();
+        let candidates_json = serde_json::to_string(candidates).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "INSERT INTO fix_pr_previews (job_id, total, completed, done, cancelled, considered_count, reason, candidates_json, updated_at)
+             VALUES (?, ?, ?, 1, ?, ?, ?, ?, datetime('now'))
+             ON CONFLICT(job_id) DO UPDATE SET total = excluded.total, completed = excluded.completed, done = 1,
+                 cancelled = excluded.cancelled, considered_count = excluded.considered_count,
+                 reason = excluded.reason, candidates_json = excluded.candidates_json, updated_at = datetime('now')",
+            params![job_id, total, completed, cancelled as i64, considered_count, reason, candidates_json],
+        )
+        .unwrap();
+    }
+
+    /// Retrieves a previously-finished fix-PR preview job (see
+    /// [`Self::save_fix_pr_preview`]) — `None` if this job id was never
+    /// saved (still running, never started, or a `job_id` from before
+    /// this table existed).
+    pub fn get_fix_pr_preview(&self, job_id: &str) -> Option<FixPrPreviewRow> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .prepare_cached("SELECT total, completed, cancelled, considered_count, reason, candidates_json FROM fix_pr_previews WHERE job_id = ?")
+            .unwrap()
+            .query_row(params![job_id], |row| {
+                let candidates_json: String = row.get(5)?;
+                Ok(FixPrPreviewRow {
+                    total: row.get(0)?,
+                    completed: row.get(1)?,
+                    cancelled: row.get::<_, i64>(2)? != 0,
+                    considered_count: row.get(3)?,
+                    reason: row.get(4)?,
+                    candidates: serde_json::from_str(&candidates_json).unwrap_or(serde_json::Value::Array(vec![])),
+                })
+            })
+            .optional()
+            .unwrap();
+        result
+    }
+}
+
+/// A saved [`DbStore::save_fix_pr_preview`] row, read back by
+/// [`DbStore::get_fix_pr_preview`]. Always represents a finished job —
+/// there's no "still running" state in this table (see that method's
+/// doc comment) — so `done` isn't a field here, it's implied `true`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FixPrPreviewRow {
+    pub total: i64,
+    pub completed: i64,
+    pub cancelled: bool,
+    pub considered_count: i64,
+    pub reason: Option<String>,
+    pub candidates: serde_json::Value,
 }
 
 #[cfg(test)]
@@ -2215,6 +2330,40 @@ mod tests {
         let third_id = store.create_project("job-3", "acme", "widgets", false, "ui", None);
         let carried = store.get_carry_forward_overrides("acme", "widgets", third_id);
         assert_eq!(carried["license-compliance::requirements.txt::0::regex"].justification, "current reasoning");
+    }
+
+    #[test]
+    fn fix_pr_preview_round_trips_and_survives_a_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let candidates = serde_json::json!([{ "issueId": "secret::app.js::5", "file": "app.js" }]);
+        {
+            let store = DbStore::open(&path).unwrap();
+            assert!(store.get_fix_pr_preview("job-1").is_none());
+            store.save_fix_pr_preview("job-1", 3, 3, false, 3, None, &candidates);
+            let row = store.get_fix_pr_preview("job-1").unwrap();
+            assert_eq!(row.total, 3);
+            assert_eq!(row.completed, 3);
+            assert!(!row.cancelled);
+            assert_eq!(row.candidates, candidates);
+        }
+        // Simulates the server-restart case this table exists for: a fresh
+        // DbStore handle reopening the same on-disk file must still see
+        // the finished job.
+        let reopened = DbStore::open(&path).unwrap();
+        let row = reopened.get_fix_pr_preview("job-1").unwrap();
+        assert_eq!(row.candidates, candidates);
+    }
+
+    #[test]
+    fn fix_pr_preview_save_overwrites_a_prior_save_for_the_same_job() {
+        let (_dir, store) = open_test_db();
+        store.save_fix_pr_preview("job-1", 5, 2, false, 5, None, &serde_json::json!([]));
+        store.save_fix_pr_preview("job-1", 5, 5, true, 5, Some("cancelled by user"), &serde_json::json!([{ "issueId": "a" }]));
+        let row = store.get_fix_pr_preview("job-1").unwrap();
+        assert_eq!(row.completed, 5);
+        assert!(row.cancelled);
+        assert_eq!(row.reason.as_deref(), Some("cancelled by user"));
     }
 
     #[test]

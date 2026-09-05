@@ -60,6 +60,82 @@ pub async fn trivy_image_tooling(runner: &ToolRunner) -> TrivyImageToolingProbe 
     TrivyImageToolingProbe { ok: true, reason: None }
 }
 
+/// Cleans up any orphaned `ignite-trivyscan-*` images and prunes dangling build cache.
+/// Safe to run at server startup and before starting an image vulnerability scan.
+pub async fn docker_housekeeping(runner: &ToolRunner) {
+    let tmp = std::env::temp_dir();
+    let tmp_str = tmp.to_str().unwrap_or(".");
+
+    // Only attempt housekeeping if docker is accessible
+    if runner.run_tool("docker", &["info".to_string(), "--format".to_string(), "{{.ServerVersion}}".to_string()], tmp_str, RunToolOptions::default()).await.is_err() {
+        return;
+    }
+
+    // 1. Query leftover scan image tags
+    if let Ok(out) = runner.run_tool(
+        "docker",
+        &[
+            "images".to_string(),
+            "--filter".to_string(),
+            "reference=ignite-trivyscan-*".to_string(),
+            "--format".to_string(),
+            "{{.Repository}}:{{.Tag}}".to_string(),
+        ],
+        tmp_str,
+        RunToolOptions::default(),
+    ).await {
+        let tags: Vec<String> = out
+            .stdout
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && l.contains("ignite-trivyscan-"))
+            .collect();
+
+        if !tags.is_empty() {
+            let mut rmi_args = vec!["rmi".to_string(), "-f".to_string()];
+            rmi_args.extend(tags);
+            let _ = runner.run_tool("docker", &rmi_args, tmp_str, RunToolOptions::default()).await;
+        }
+    }
+
+    // 2. Prune dangling build cache
+    let _ = runner.run_tool(
+        "docker",
+        &["builder".to_string(), "prune".to_string(), "-f".to_string()],
+        tmp_str,
+        RunToolOptions::default(),
+    ).await;
+}
+
+struct TagCleanupGuard {
+    tag: String,
+    active: bool,
+}
+
+impl TagCleanupGuard {
+    fn new(tag: String) -> Self {
+        Self { tag, active: true }
+    }
+
+    fn defuse(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for TagCleanupGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let tag = self.tag.clone();
+            // If dropped prematurely (e.g. timeout or task cancellation), spawn cleanup
+            let _ = std::process::Command::new("docker")
+                .args(["rmi", "-f", &tag])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+}
+
 fn unique_suffix() -> String {
     format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0))
 }
@@ -71,6 +147,9 @@ pub async fn check_container_image_vulnerabilities(root: &Path, runner: &ToolRun
     if !tooling_ok {
         return Ok(ContainerImageVulnerabilitiesResult { findings: vec![], engine: "disabled" });
     }
+
+    // Pre-scan housekeeping: clean up any leftover scan images and dangling build cache
+    docker_housekeeping(runner).await;
 
     let mut dockerfiles = Vec::new();
     for file in walk_files(root)? {
@@ -88,6 +167,7 @@ pub async fn check_container_image_vulnerabilities(root: &Path, runner: &ToolRun
         let rel_dockerfile = dockerfile.strip_prefix(root).unwrap_or(dockerfile).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
         let build_context = dockerfile.parent().unwrap_or(root);
         let tag = format!("ignite-trivyscan-{}:latest", unique_suffix());
+        let mut cleanup_guard = TagCleanupGuard::new(tag.clone());
         let report_path = std::env::temp_dir().join(format!("ignite-trivy-image-{}.json", unique_suffix()));
 
         let build_result = runner
@@ -155,6 +235,9 @@ pub async fn check_container_image_vulnerabilities(root: &Path, runner: &ToolRun
         let _ = tokio::fs::remove_file(&report_path).await;
         if built {
             let _ = runner.run_tool("docker", &["rmi".to_string(), "-f".to_string(), tag], &root.to_string_lossy(), RunToolOptions::default()).await;
+            cleanup_guard.defuse();
+        } else {
+            cleanup_guard.defuse();
         }
     }
 

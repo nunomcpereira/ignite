@@ -529,7 +529,10 @@ async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, lo
             let npm_http = reqwest::Client::new();
             let log_a = log.clone();
             let log_b = log.clone();
-            let mut license_issues = ignite_dependency_license_scan::run_license_compliance_check(&root, &state.runner, &client, &npm_http, move |m| log_a.log(3, m)).await;
+            let (mut license_issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root, &state.runner, &client, &npm_http, move |m| log_a.log(3, m)).await;
+            if let (Some(pid), Some(scan_json)) = (project_id, &dep_scan_json) {
+                state.db.save_dependency_scan_cache(pid, scan_json);
+            }
             license_issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root, &client, move |m| log_b.log(3, m)).await);
             if !license_issues.is_empty() {
                 all_issues.extend(license_issues);
@@ -1113,6 +1116,7 @@ mod tests {
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
         });
         let router = axum::Router::new().merge(router()).with_state(app_state.clone());
 

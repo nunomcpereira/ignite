@@ -9,7 +9,7 @@
        branding.config.js sets. To apply a customer's brand, edit ONLY
        public/branding.config.js — never hardcode brand values here, or a
        future upstream change to this file will conflict with them. -->
-  <script src="branding.config.js"></script>
+  <script src="branding.config.js?v=20260905"></script>
   <script>
     // Ignite's own defaults — what renders when branding.config.js ships
     // its default empty override object (or is missing entirely).
@@ -36,7 +36,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js"></script>
+  <script src="i18n.js?v=20260905"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -536,7 +536,7 @@
         </div>
         <!-- View tabs: "Code" is the always-on file/editor pane; the rest
              swap the same three-pane body for a read-only report view. -->
-        <span class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px" data-i18n="studio.codeTab">Code</span>
+        <button id="studioCodeBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px transition-colors" data-i18n-title="studio.codeTitle" data-i18n="studio.codeTab">Code</button>
         <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.dependenciesTitle" data-i18n="studio.dependencies">Dependencies</button>
         <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.sbomTitle" data-i18n="studio.sbom">SBOM</button>
         <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.locTitle" data-i18n="studio.loc">LOC Metrics</button>
@@ -610,9 +610,15 @@
           <div id="studioCodeWrap" class="flex-1 min-h-0 overflow-auto font-mono text-[12px] leading-relaxed"></div>
         </div>
         <!-- Issue detail -->
-        <div class="w-full sm:w-96 shrink-0 max-h-64 sm:max-h-none bg-white overflow-y-auto">
-          <p class="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest sticky top-0 bg-white border-b border-slate-100" data-i18n="studio.issueDetails">Issue Details</p>
-          <div id="studioIssuePanel" class="p-3 text-xs text-slate-500"></div>
+        <div class="w-full sm:w-96 shrink-0 max-h-64 sm:max-h-none bg-white overflow-y-auto flex flex-col">
+          <div class="flex items-center justify-between px-3 py-2 sticky top-0 bg-white border-b border-slate-100 shrink-0 z-10">
+            <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest" data-i18n="studio.issueDetails">Issue Details</p>
+            <button id="studioDownloadFileIssuesBtn" type="button" class="hidden text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1" data-i18n-title="studio.downloadFileFindingsTitle" title="Download findings for this file">
+              <span>⬇</span>
+              <span data-i18n="studio.downloadFindings">Findings</span>
+            </button>
+          </div>
+          <div id="studioIssuePanel" class="p-3 text-xs text-slate-500 flex-1"></div>
         </div>
       </div>
       <!-- Task/output panel — VS Code's integrated-terminal pattern: a
@@ -667,6 +673,32 @@
        one PR with all the accepted ones. Two-step: preview (pure LLM,
        no git) fills fixPrList; confirming calls /fix-pr/apply with only
        the still-checked candidates. -->
+
+  <!-- AI Fix Generation Progress Bar (Bottom) -->
+  <div id="fixPrProgress" class="hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-50 border-t border-slate-200 p-3 flex items-center gap-3 px-6 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+    <svg class="animate-spin h-5 w-5 text-brand-600 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+    <div class="flex-1 min-w-0">
+      <div class="flex justify-between items-end mb-1.5">
+        <div class="text-xs font-semibold text-slate-700">Generating AI-suggested fixes...</div>
+        <div id="fixPrProgressPct" class="text-[11px] font-mono font-bold text-brand-600">0%</div>
+      </div>
+      <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+        <div id="fixPrProgressBar" class="h-full bg-brand-600 rounded-full transition-all duration-300" style="width: 0%"></div>
+      </div>
+    </div>
+    <button id="fixPrCancelBtn" type="button" class="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100">Cancel</button>
+  </div>
+
+  <!-- AI Fix Generation Notification (Top Right) -->
+  <div id="fixPrNotification" class="hidden fixed top-4 right-4 z-50 bg-white border border-slate-200 shadow-xl rounded-xl p-4 cursor-pointer hover:bg-slate-50 transition-all flex items-start gap-3 w-80" onclick="document.getElementById('fixPrModal').classList.remove('hidden'); this.classList.add('hidden');">
+    <div class="bg-brand-50 text-brand-700 p-2 rounded-full mt-0.5 shrink-0 text-lg">✨</div>
+    <div>
+      <p class="text-sm font-bold text-slate-800">AI Fixes Generated</p>
+      <p class="text-xs text-slate-500 mt-0.5">The AI has analyzed the open issues and prepared suggested fixes. Click here to review them.</p>
+    </div>
+    <button type="button" class="text-slate-400 hover:text-slate-600 text-sm absolute top-3 right-3" onclick="event.stopPropagation(); this.closest('#fixPrNotification').classList.add('hidden');">✕</button>
+  </div>
+
   <div id="fixPrModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
@@ -1276,7 +1308,7 @@
           : 100;
         const pendingChecksHtml = concurrentProgress && concurrentProgress.pending.length > 0 ? `
                 <p class="text-[11px] text-slate-400 mt-1.5 truncate" title="${escapeAttr(concurrentProgress.pending.join(', '))}">
-                  ${concurrentProgress.doneCount}/${concurrentProgress.total} checks done — waiting on ${escapeHtml(concurrentProgress.pending.slice(0, 3).join(', '))}${concurrentProgress.pending.length > 3 ? ` +${concurrentProgress.pending.length - 3} more` : ''}
+                  ${concurrentProgress.doneCount}/${concurrentProgress.total} checks done — waiting on ${escapeHtml(concurrentProgress.pending.slice(0, 3).map(name => name === 'maliciousDependencies' ? 'maliciousDependencies (GuardDog)' : name).join(', '))}${concurrentProgress.pending.length > 3 ? ` +${concurrentProgress.pending.length - 3} more` : ''}
                 </p>` : '';
         // A short always-visible log preview for the active phase (mirrors
         // the mockup's embedded snippet); the full scrollback stays behind
@@ -1677,8 +1709,27 @@
         : isNiceToHave
         ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">NICE TO HAVE</span>'
         : '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200">WARNING</span>';
+      // A carried-forward/AI-drafted override reads identically to a human
+      // one on the wire — same justification/actorEmail/actorName fields
+      // either way, distinguished only by which actor string comes back
+      // (`carried-forward@ignite.internal` / `ai-assist@ignite.internal`
+      // vs. a real reviewer's email). Mirrors studioRenderIssuePanel's
+      // badge so a read-only issue list (Onboarded Repos "view findings",
+      // history) doesn't hide that a finding was already justified by AI.
+      const isSystemActor = issue.status === 'overridden' && /^(carried-forward|ai-assist)@ignite\.internal$/.test(issue.actorEmail || '');
+      const overrideActorLabel = isSystemActor
+        ? (issue.actorEmail === 'ai-assist@ignite.internal' ? '✨ AI-justified' : '↻ Carried forward')
+        : (issue.actorName || issue.actorEmail || 'a reviewer');
       const statusBadge = !interactive && issue.status === 'overridden'
-        ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">OVERRIDDEN</span>'
+        ? isSystemActor
+          ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-violet-50 text-violet-700 border-violet-200">${overrideActorLabel}</span>`
+          : '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">OVERRIDDEN</span>'
+        : '';
+      const justificationDetailHtml = !interactive && issue.status === 'overridden' && issue.justification
+        ? `<div class="border rounded-lg p-2 mt-2 ${isSystemActor ? 'border-violet-200 bg-violet-50' : 'border-slate-200 bg-slate-50'}">
+            <p class="text-[9px] font-bold uppercase tracking-wide mb-1 ${isSystemActor ? 'text-violet-500' : 'text-slate-400'}">Justification — ${escapeHtml(overrideActorLabel)}</p>
+            <p class="text-xs text-slate-700 leading-relaxed">${escapeHtml(issue.justification)}</p>
+          </div>`
         : '';
       // Fixed per-category 0-10 severity score (see override-engine.js
       // scoreForIssue) — independent of the blocking/warning badge, which
@@ -1741,6 +1792,7 @@
               ${dupRefBtn}
             </div>
             <p class="text-xs text-slate-700 mt-1">${escapeHtml(issue.summary)}</p>
+            ${justificationDetailHtml}
             ${snippetHtml}
             ${justificationHtml}
           </div>
@@ -1877,6 +1929,7 @@
       const title = meta.org && meta.repo ? `${meta.org}/${meta.repo}` : 'Ignite flagged issues';
       const lines = [];
       lines.push(`# Flagged issues — ${title}`);
+      if (meta.file) lines.push(`File: ${meta.file}`);
       lines.push(`Generated: ${new Date().toISOString()}`);
       lines.push(`Total: ${issues.length} (${issues.filter((i) => i.severity === 'error').length} blocking)`);
       lines.push('');
@@ -1895,7 +1948,18 @@
         if (issue.references?.cve?.length) {
           lines.push(`CVE: ${issue.references.cve.join(', ')}`);
         }
-        if (issue.status === 'overridden') lines.push('(already acknowledged/overridden in a previous review)');
+        if (issue.status === 'overridden') {
+          // Same actor-labeling as renderIssueCard/studioRenderIssuePanel —
+          // a carried-forward/AI-drafted override reads identically to a
+          // human one on the wire (justification/actorEmail/actorName),
+          // distinguished only by which actor string comes back.
+          const isSystemActor = /^(carried-forward|ai-assist)@ignite\.internal$/.test(issue.actorEmail || '');
+          const actorLabel = isSystemActor
+            ? (issue.actorEmail === 'ai-assist@ignite.internal' ? 'AI-justified' : 'Carried forward from a previous scan')
+            : (issue.actorName || issue.actorEmail || 'a reviewer');
+          lines.push(`(already acknowledged/overridden — ${actorLabel})`);
+          if (issue.justification) lines.push(`Justification: ${issue.justification}`);
+        }
         lines.push('');
         lines.push(issue.summary || '(no summary)');
         if (issue.recommendation) {
@@ -2045,7 +2109,7 @@
 
     /* ---------------- Bulk "Generate fix PR" ---------------- */
     let fixPrCandidates = [];
-    // The job this open modal targets — set by openFixPrModal(jobId).
+    // The job this open modal targets — set by triggerFixPrGeneration(jobId).
     // Kept separate from state.jobId so the modal also works from an
     // Onboarded Projects history row, which doesn't switch the main
     // view's tracked job.
@@ -2078,34 +2142,112 @@
       $('fixPrOpenBtn').disabled = !anyIncluded;
     }
 
-    async function openFixPrModal(jobId) {
+    function setFixPrProgress(pct) {
+      const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+      $('fixPrProgressPct').textContent = clamped + '%';
+      $('fixPrProgressBar').style.width = clamped + '%';
+    }
+
+    function finishFixPrJob(data) {
+      if (!data.ok) {
+        $('fixPrProgress').classList.add('hidden');
+        $('fixPrList').innerHTML = `<p class="text-sm text-rose-600 py-6 text-center">${escapeHtml(data.error || 'Failed to generate fixes.')}</p>`;
+        $('fixPrModal').classList.remove('hidden');
+        return;
+      }
+      if (data.reason) {
+        $('fixPrProgress').classList.add('hidden');
+        $('fixPrList').innerHTML = `<p class="text-sm text-slate-500 py-6 text-center">${escapeHtml(data.reason)}</p>`;
+        $('fixPrModal').classList.remove('hidden');
+        return;
+      }
+
+      setFixPrProgress(100);
+      setTimeout(() => { $('fixPrProgress').classList.add('hidden'); }, 500);
+
+      fixPrCandidates = (data.candidates || []).map((c) => ({ ...c, included: true }));
+      $('fixPrStatus').textContent = `${fixPrCandidates.length} of ${data.consideredCount} open issue(s) got a safe AI fix.`;
+      renderFixPrList();
+      updateFixPrOpenBtn();
+
+      $('fixPrNotification').classList.remove('hidden');
+    }
+
+    // Preview generation runs as a background job on the server (one LLM
+    // call per open issue, serially — can take minutes). We start it,
+    // then poll its status so the progress bar reflects real issues
+    // completed instead of a fake timer that never actually finishes.
+    async function pollFixPrStatus(jobId) {
+      if (jobId !== fixPrJobId) return; // superseded by a newer run
+      try {
+        const res = await fetch(`/api/pipeline/${jobId}/fix-pr/preview/status`);
+        const data = await res.json();
+        if (jobId !== fixPrJobId) return;
+
+        if (!data.ok) {
+          finishFixPrJob(data);
+          return;
+        }
+        if (data.total > 0) {
+          setFixPrProgress((data.completed / data.total) * 100);
+        }
+        if (data.done) {
+          finishFixPrJob(data);
+          return;
+        }
+        setTimeout(() => pollFixPrStatus(jobId), 1000);
+      } catch {
+        if (jobId !== fixPrJobId) return;
+        $('fixPrProgress').classList.add('hidden');
+        $('fixPrList').innerHTML = '<p class="text-sm text-rose-600 py-6 text-center">Could not reach the server.</p>';
+        $('fixPrModal').classList.remove('hidden');
+      }
+    }
+
+    async function triggerFixPrGeneration(jobId) {
       fixPrJobId = jobId || state.jobId;
       if (!fixPrJobId) return;
       fixPrCandidates = [];
-      $('fixPrModal').classList.remove('hidden');
+
+      // Show progress bar, hide any existing notifications/modals
+      $('fixPrProgress').classList.remove('hidden');
+      $('fixPrNotification').classList.add('hidden');
+      $('fixPrModal').classList.add('hidden');
       $('fixPrStatus').textContent = '';
       $('fixPrOpenBtn').classList.add('hidden');
-      $('fixPrList').innerHTML = '<p class="text-sm text-slate-500 py-6 text-center">Generating AI-suggested fixes…</p>';
+      $('fixPrList').innerHTML = '<p class="text-sm text-slate-500 py-6 text-center">Loading AI-suggested fixes…</p>';
+      setFixPrProgress(0);
+
       try {
         const res = await fetch(`/api/pipeline/${fixPrJobId}/fix-pr/preview`, { method: 'POST' });
         const data = await res.json();
-        if (!data.ok) {
-          $('fixPrList').innerHTML = `<p class="text-sm text-rose-600 py-6 text-center">${escapeHtml(data.error || 'Failed to generate fixes.')}</p>`;
+        if (fixPrJobId !== (jobId || state.jobId)) return; // superseded
+
+        if (data.total > 0) {
+          setFixPrProgress((data.completed / data.total) * 100);
+        }
+        if (data.done) {
+          finishFixPrJob(data);
           return;
         }
-        if (data.reason) {
-          $('fixPrList').innerHTML = `<p class="text-sm text-slate-500 py-6 text-center">${escapeHtml(data.reason)}</p>`;
-          return;
-        }
-        fixPrCandidates = (data.candidates || []).map((c) => ({ ...c, included: true }));
-        $('fixPrStatus').textContent = `${fixPrCandidates.length} of ${data.consideredCount} open issue(s) got a safe AI fix.`;
-        renderFixPrList();
-        updateFixPrOpenBtn();
+        pollFixPrStatus(fixPrJobId);
       } catch {
+        $('fixPrProgress').classList.add('hidden');
         $('fixPrList').innerHTML = '<p class="text-sm text-rose-600 py-6 text-center">Could not reach the server.</p>';
+        $('fixPrModal').classList.remove('hidden');
       }
     }
-    $('fixPrBtn').addEventListener('click', () => openFixPrModal());
+    $('fixPrBtn').addEventListener('click', () => triggerFixPrGeneration());
+    $('fixPrCancelBtn').addEventListener('click', async () => {
+      const jobId = fixPrJobId;
+      if (!jobId) return;
+      fixPrJobId = null; // stops any in-flight poll loop for this run
+      $('fixPrProgress').classList.add('hidden');
+      $('fixPrList').innerHTML = '<p class="text-sm text-slate-500 py-6 text-center">Cancelled.</p>';
+      try {
+        await fetch(`/api/pipeline/${jobId}/fix-pr/preview`, { method: 'DELETE' });
+      } catch { /* best-effort — the job is already abandoned client-side */ }
+    });
     $('fixPrCloseBtn').addEventListener('click', () => $('fixPrModal').classList.add('hidden'));
     $('fixPrModal').addEventListener('click', (ev) => {
       if (ev.target.id === 'fixPrModal') $('fixPrModal').classList.add('hidden');
@@ -2302,7 +2444,15 @@
 
       $('reviewStudioBtn').onclick = () => openStudio(state.reviewJobId, null, { fromReview: true });
 
-      list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: true })).join('');
+      // Carried-forward/AI-justified issues arrive already
+      // `status === 'overridden'` (see run_interactive_pipeline's
+      // pre_overrides pass) — render those read-only (with the
+      // AI-justified/carried-forward badge and justification text) rather
+      // than as an unchecked "BLOCKING" card, same as openEffectivateReview
+      // already does. Without this, a reviewer had no way to tell an
+      // already-AI-acknowledged finding apart from one still needing a
+      // human justification.
+      list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: issues[idx].status !== 'overridden' })).join('');
       wireIssueListInteractions(list, $('reviewExpandAllBtn'));
       wireIssueFilterLinks($('reviewFilterErrors'), $('reviewFilterWarnings'), list);
 
@@ -2692,6 +2842,7 @@
       $('studioEditBtn').classList.add('hidden');
       $('studioSaveBtn').classList.add('hidden');
       $('studioManifestBtn').classList.add('hidden');
+      $('studioDownloadFileIssuesBtn')?.classList.add('hidden');
       $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
       $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading historical snapshot…</p>';
       studioShowError(null);
@@ -2757,6 +2908,7 @@
     async function openStudio(jobId, issue, { fromReview = false } = {}) {
       if (!jobId) return;
       setStudioHistoricalUi(false);
+      setStudioActiveTab('studioCodeBtn');
       renderStudioRecentSwitcher(jobId);
       studioState.jobId = jobId;
       studioState.fromReview = fromReview;
@@ -2783,6 +2935,7 @@
       studioShowError(null);
       $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading file tree…</p>';
       $('studioTree').innerHTML = '';
+      $('studioDownloadFileIssuesBtn')?.classList.add('hidden');
       $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
 
       try {
@@ -2834,6 +2987,7 @@
     async function openHistoricalStudio(projectId, org, repo) {
       if (!projectId) return;
       setStudioHistoricalUi(true);
+      setStudioActiveTab('studioCodeBtn');
       renderStudioRecentSwitcher(null);
       studioState.jobId = null;
       studioState.historicalProjectId = projectId;
@@ -3026,7 +3180,39 @@
       internal: { label: 'INTERNAL REF', chip: 'bg-slate-100 text-slate-500 border-slate-200' },
     };
 
+    function setStudioActiveTab(activeId) {
+      const tabIds = ['studioCodeBtn', 'studioDepsBtn', 'studioSbomBtn', 'studioLocBtn', 'studioPostureBtn'];
+      tabIds.forEach((id) => {
+        const btn = $(id);
+        if (!btn) return;
+        const isActive = id === activeId;
+        btn.classList.toggle('text-brand-700', isActive);
+        btn.classList.toggle('border-brand-600', isActive);
+        btn.classList.toggle('text-slate-500', !isActive);
+        btn.classList.toggle('border-transparent', !isActive);
+        btn.classList.toggle('hover:border-brand-200', !isActive);
+      });
+    }
+
+    $('studioCodeBtn')?.addEventListener('click', () => {
+      setStudioActiveTab('studioCodeBtn');
+      if (studioState.currentPath) {
+        openStudioFile(studioState.currentPath);
+      } else {
+        $('studioFilePath').textContent = 'Code';
+        $('studioCodeWrap').innerHTML = `<p class="p-4 text-slate-400">${escapeHtml(t('studio.selectFileHint'))}</p>`;
+        $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+        $('studioDirtyBadge').classList.add('hidden');
+        $('studioEditBtn').classList.add('hidden');
+        $('studioSaveBtn').classList.add('hidden');
+        $('studioDownloadBtn').classList.add('hidden');
+        $('studioManifestBtn').classList.add('hidden');
+        $('studioDownloadFileIssuesBtn')?.classList.add('hidden');
+      }
+    });
+
     async function openStudioDependencies() {
+      setStudioActiveTab('studioDepsBtn');
       studioState.currentPath = null;
       studioMarkActiveFile(null);
       $('studioFilePath').textContent = 'Dependency license compliance';
@@ -3034,6 +3220,7 @@
       $('studioEditBtn').classList.add('hidden');
       $('studioSaveBtn').classList.add('hidden');
       $('studioManifestBtn').classList.add('hidden');
+      $('studioDownloadFileIssuesBtn')?.classList.add('hidden');
       $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
       $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Scanning dependency manifests (ORT if installed, else deps.dev lookups)…</p>';
       studioShowError(null);
@@ -3121,6 +3308,7 @@
       $('studioEditBtn').classList.add('hidden');
       $('studioSaveBtn').classList.add('hidden');
       $('studioManifestBtn').classList.add('hidden');
+      $('studioDownloadFileIssuesBtn')?.classList.add('hidden');
       $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
       $('studioCodeWrap').innerHTML = `<p class="p-4 text-slate-400">${escapeHtml(loadingText)}</p>`;
       studioShowError(null);
@@ -3170,6 +3358,7 @@
       </div>`;
     }
     $('studioSbomBtn').addEventListener('click', () => {
+      setStudioActiveTab('studioSbomBtn');
       if (studioState.historical) {
         return openStudioReportFromDoc('Software Bill of Materials (SBOM)', renderStudioSbom, {
           doc: studioState.historicalDocs.sbom,
@@ -3225,6 +3414,7 @@
       });
     }
     $('studioLocBtn').addEventListener('click', () => {
+      setStudioActiveTab('studioLocBtn');
       if (studioState.historical) {
         // The stored loc-metrics.json doesn't carry which engine produced
         // it (gocloc vs. the built-in fallback) — only the live endpoint's
@@ -3280,6 +3470,22 @@
       'ai-act-ai-logging': 'Looks for an explicit model input/output/decision logging call (e.g. mlflow.log_metric(...), wandb.log(...), langsmith.trace(...), a custom logDecision(...)/logPrediction(...)) — not just an MLOps client imported. To go green: log AI model inputs/outputs/decisions through one of these instead of relying on generic app logs (EU AI Act Art. 12).',
     };
 
+    const STUDIO_POSTURE_GOALS = {
+      'sso-saml-oidc': 'Enterprise Single Sign-On (SAML/OIDC) integration with identity providers to centralize user authentication and lifecycle management.',
+      'rbac-abac': 'Role-Based or Attribute-Based Access Control enforcing authorization guards and policy checks on sensitive endpoints and resources.',
+      'audit-logging': 'Structured audit logging of security-critical actions (auth, privilege escalation, data access) for forensics and compliance audits.',
+      'siem-log-forwarding': 'Centralized security log forwarding and transport (Syslog, OpenTelemetry, Fluentd) to export events off-host to a SIEM/collector.',
+      'https-tls': 'Enforces HTTPS redirect and HTTP Strict Transport Security (HSTS) headers to protect data in transit from eavesdropping and MITM.',
+      'backups-dr': 'Automated backup schedules, database snapshots, or retention policies ensuring disaster recovery readiness.',
+      'encryption-at-rest': 'Cryptographic protection of sensitive data persisted to disk or databases using KMS, Vault, or vetted encryption libraries.',
+      'rate-limiting': 'Request rate limiting and throttling middleware to protect sensitive routes against brute-force, credential stuffing, and DoS attacks.',
+      'mfa-2fa': 'Multi-Factor Authentication (TOTP/MFA) verification requiring a second factor during login or privilege escalation challenges.',
+      'secrets-management': 'Dynamic runtime retrieval of credentials and API keys from a dedicated secrets vault instead of static environment variables or files.',
+      'ai-act-prohibited-practice': 'EU AI Act (Art. 5) prohibited practice scan — flags unacceptable-risk AI practices (e.g. emotion inference, social scoring) for mandatory human review.',
+      'ai-act-transparency-disclosure': 'EU AI Act (Art. 13/50) transparency disclosure — verifies end users are informed when interacting with an AI system or synthetic content.',
+      'ai-act-ai-logging': 'EU AI Act (Art. 12) decision logging — tracks AI model inputs, outputs, and decision traces for auditability and explainability.',
+    };
+
     function renderStudioPosture(data) {
       const posture = data.posture || {};
       const badge = studioEngineBadge(data.engine, 'Semgrep CLI (Posture)');
@@ -3292,11 +3498,22 @@
         const meta = STUDIO_POSTURE_STATUS_META[metaKey] || STUDIO_POSTURE_STATUS_META.MISSING;
         const matchesHtml = matches.slice(0, 5).map((m) => `<button type="button" class="studio-posture-match block w-full text-left px-2 py-1 rounded hover:bg-slate-50 font-mono text-[10px] text-slate-500" data-path="${escapeAttr(m.file)}" data-line="${m.line}">${escapeHtml(m.file)}:${m.line} <span class="text-slate-400">(${escapeHtml(m.tier)})</span></button>`).join('');
         const hint = STUDIO_POSTURE_HINTS[category];
-        const showHint = hint && (inverted ? status !== 'MISSING' : status === 'MISSING');
+        // Inverted cards (Art. 5) are clean at MISSING, same as every other
+        // card — but unlike the others, the hint text here is what the scan
+        // is watching for, not "what to add to go green", so it stays
+        // useful (and shown) in the clean MISSING state too, not just when
+        // flagging a risk to review.
+        const showHint = hint && (inverted ? true : status === 'MISSING');
+        const goalKey = `studio.postureGoal.${category}`;
+        const translatedGoal = t(goalKey);
+        const goalText = (translatedGoal && translatedGoal !== goalKey) ? translatedGoal : (STUDIO_POSTURE_GOALS[category] || hint || '');
         return `<div class="rounded-lg border ${meta.chip} p-3">
           <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-slate-700">${escapeHtml(STUDIO_POSTURE_LABELS[category] || category)}</span>
-            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip}">${meta.icon} ${escapeHtml(status)}</span>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="text-xs font-semibold text-slate-700">${escapeHtml(STUDIO_POSTURE_LABELS[category] || category)}</span>
+              ${authTooltip(goalText)}
+            </div>
+            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip} shrink-0 ml-2">${meta.icon} ${escapeHtml(status)}</span>
           </div>
           ${matches.length > 0 ? `<div class="mt-2">${matchesHtml}</div>` : ''}
           ${showHint ? `<p class="mt-2 text-[11px] text-slate-500 leading-snug">${escapeHtml(hint)}</p>` : ''}
@@ -3312,6 +3529,7 @@
       });
     }
     $('studioPostureBtn').addEventListener('click', () => {
+      setStudioActiveTab('studioPostureBtn');
       if (studioState.historical) {
         // posture-report.json is already stored as { engine, posture } —
         // the exact shape renderStudioPosture expects, no reshaping needed.
@@ -3345,6 +3563,7 @@
       </div>`;
     }
     $('studioProvenanceBtn').addEventListener('click', () => {
+      setStudioActiveTab(null);
       if (studioState.historical) {
         return openStudioReportFromDoc('Build Provenance', renderStudioProvenance, {
           doc: studioState.historicalDocs.provenance,
@@ -3501,6 +3720,7 @@
     }
 
     async function openStudioFile(relPath) {
+      setStudioActiveTab('studioCodeBtn');
       studioShowError(null);
       if (studioState.dirty && !window.confirm('Discard unsaved changes to the current file?')) return;
       studioState.currentPath = relPath;
@@ -3753,6 +3973,33 @@
       URL.revokeObjectURL(url);
     }
     $('studioDownloadBtn').addEventListener('click', studioDownloadCurrentFile);
+
+    // Downloads only the findings on the currently selected file as a formatted
+    // worklist report.
+    function studioDownloadCurrentFileFindings() {
+      if (!studioState.currentPath) return;
+      const issues = studioIssuesForFile(studioState.currentPath);
+      if (!issues.length) return;
+      const meta = {
+        org: studioState.org,
+        repo: studioState.repo,
+        file: studioState.currentPath,
+      };
+      const text = buildIssuesReport(issues, meta);
+      const fileName = studioState.currentPath.split('/').pop() || 'file';
+      const fileSlug = fileName.replace(/[^a-zA-Z0-9._-]+/g, '_');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${fileSlug}-findings-${stamp}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+    $('studioDownloadFileIssuesBtn').addEventListener('click', studioDownloadCurrentFileFindings);
 
     async function studioRescan() {
       studioShowError(null);
@@ -4023,6 +4270,7 @@
     function renderStudioIssueListForFile(relPath) {
       const issues = studioIssuesForFile(relPath);
       studioState.selectedIssue = null;
+      $('studioDownloadFileIssuesBtn')?.classList.toggle('hidden', issues.length === 0);
       if (issues.length === 0) {
         $('studioIssuePanel').innerHTML = '<p>No flagged issues in this file.</p>';
         return;
@@ -5414,7 +5662,7 @@
         btn.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          openFixPrModal(btn.dataset.jobId);
+          triggerFixPrGeneration(btn.dataset.jobId);
         });
       });
 

@@ -67,6 +67,9 @@
       "enabled": true,
       "binary": "trivy"
     },
+    "trivyImage": {
+      "enabled": false
+    },
     "checkov": {
       "enabled": true,
       "binary": "checkov"

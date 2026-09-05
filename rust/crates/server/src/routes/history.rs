@@ -200,6 +200,7 @@ mod tests {
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
         });
         let router = axum::Router::new().merge(router()).with_state(app_state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

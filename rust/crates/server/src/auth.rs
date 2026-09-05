@@ -325,6 +325,7 @@ mod tests {
             llm_config: crate::state::default_llm_config(),
             config: ignite_config::Config::default(),
             package_hallucination_checker: crate::state::default_package_hallucination_checker(),
+            fix_pr_previews: Mutex::new(HashMap::new()),
         })
     }
 

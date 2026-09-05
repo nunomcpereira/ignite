@@ -266,7 +266,11 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
             let l3b = logger.clone();
-            issues.extend(ignite_dependency_license_scan::run_license_compliance_check(&root, &state.runner, &client, &npm_http, move |m| l3a.log(3, m)).await);
+            let (license_issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root, &state.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
+            if let Some(scan_json) = &dep_scan_json {
+                state.db.save_dependency_scan_cache(project_id, scan_json);
+            }
+            issues.extend(license_issues);
             issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root, &client, move |m| l3b.log(3, m)).await);
         } else {
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
@@ -278,9 +282,12 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
             let state_a = state.clone();
             let state_b = state.clone();
             let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), fast, Some(project_path.clone()));
-            let (license_issues, phase4_result) = tokio::join!(
+            let (license_result, phase4_result) = tokio::join!(
                 time_stage(&timings, "licenseAndDependencyScan", async move {
-                    let mut v = ignite_dependency_license_scan::run_license_compliance_check(&root_a, &state_a.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
+                    let (mut v, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root_a, &state_a.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
+                    if let Some(scan_json) = &dep_scan_json {
+                        state_a.db.save_dependency_scan_cache(project_id, scan_json);
+                    }
                     v.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root_a, &client, move |m| l3b.log(3, m)).await);
                     v
                 }),
@@ -293,7 +300,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                 }
                 Err(e) => return Err(PipelineError::new(4, e.to_string())),
             }
-            issues.extend(license_issues);
+            issues.extend(license_result);
         }
 
         let gated_issues: Vec<&Issue> = match baseline_mode.as_deref() {
@@ -544,6 +551,7 @@ mod phase_gating_tests {
             llm_config: state::default_llm_config(),
             config,
             package_hallucination_checker: state::default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
         });
         (app_state, db_dir)
     }

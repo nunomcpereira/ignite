@@ -9,6 +9,7 @@ ignite-github-api = { path = "../github-api" }
 ignite-staging = { path = "../staging" }
 ignite-llm-client = { path = "../llm-client" }
 ignite-tool-runner = { path = "../tool-runner" }
+futures = "0.3"
 once_cell = "1"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

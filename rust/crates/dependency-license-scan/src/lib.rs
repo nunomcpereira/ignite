@@ -709,20 +709,28 @@ pub async fn scan_dependency_licenses(root: &Path, runner: &ToolRunner, client: 
 /// compliance gate. Never fails the phase on a scan error (a deps.dev
 /// network hiccup shouldn't fail structure audit); returns an empty issue
 /// list instead.
-pub async fn run_license_compliance_check(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client, mut log: impl FnMut(&str)) -> Vec<Issue> {
+pub async fn run_license_compliance_check(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client, log: impl FnMut(&str)) -> Vec<Issue> {
+    let (issues, _scan) = run_license_compliance_check_with_scan(root, runner, client, npm_http, log).await;
+    issues
+}
+
+/// Like `run_license_compliance_check` but also returns the rich
+/// `DependencyLicenseScan` result so the caller can cache it (e.g. for
+/// the Studio Dependencies tab to read back without re-running ORT).
+pub async fn run_license_compliance_check_with_scan(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client, mut log: impl FnMut(&str)) -> (Vec<Issue>, Option<serde_json::Value>) {
     log("Check 5 — dependency & license compliance scan (manifests + LICENSE files)...");
     let scan = match scan_dependency_licenses(root, runner, client, npm_http, &mut log).await {
         Ok(s) => s,
         Err(e) => {
             log(&format!("⚠ License compliance scan failed (non-blocking): {e}"));
-            return vec![];
+            return (vec![], None);
         }
     };
     let license_files = match scan_project_license_files(root) {
         Ok(f) => f,
         Err(e) => {
             log(&format!("⚠ License compliance scan failed (non-blocking): {e}"));
-            return vec![];
+            return (vec![], None);
         }
     };
     let issues = collect_license_issues(root, &scan.manifests, &license_files);
@@ -737,7 +745,22 @@ pub async fn run_license_compliance_check(root: &Path, runner: &ToolRunner, clie
     } else {
         log("✓ Check 5 passed — no commercial/restrictive licenses detected.");
     }
-    issues
+
+    // Serialize the rich scan result for caching — the JSON shape matches
+    // what the Studio Dependencies tab's `renderStudioDependencies` expects.
+    let scan_json = serde_json::json!({
+        "ok": true,
+        "engine": scan.engine,
+        "projectLicense": scan.project_license.as_ref().map(|p| serde_json::json!({
+            "spdxId": p.spdx_id,
+            "confidence": p.confidence,
+            "tier": p.tier,
+            "reason": p.reason,
+        })),
+        "manifests": scan.manifests,
+    });
+
+    (issues, Some(scan_json))
 }
 
 /// Faithful port of `runDependencyVulnerabilityCheck` — Phase 3's

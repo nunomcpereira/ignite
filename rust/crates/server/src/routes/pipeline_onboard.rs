@@ -235,7 +235,10 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         let npm_http = reqwest::Client::new();
         let l3a = logger.clone();
         let l3b = logger.clone();
-        let mut license_issues = ignite_dependency_license_scan::run_license_compliance_check(&root, &state.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
+        let (mut license_issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root, &state.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
+        if let Some(scan_json) = &dep_scan_json {
+            state.db.save_dependency_scan_cache(project_id, scan_json);
+        }
         license_issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root, &client, move |m| l3b.log(3, m)).await);
 
         logger.log(3, "Check 1 — scanning for raw environment files (.env*)...");

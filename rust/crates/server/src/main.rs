@@ -88,11 +88,13 @@ async fn main() {
         llm_config: state::llm_config_from_config(&config),
         config,
         package_hallucination_checker: state::default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
     });
     let config_port = state.config.port;
     let public_dir = config_dir.join("public");
 
     state.db.sweep_expired_sessions();
+    state.db.abort_stale_running_projects();
     {
         let sweep_state = state.clone();
         tokio::spawn(async move {
@@ -102,6 +104,12 @@ async fn main() {
                 interval.tick().await;
                 sweep_state.db.sweep_expired_sessions();
             }
+        });
+    }
+    {
+        let housekeeping_state = state.clone();
+        tokio::spawn(async move {
+            ignite_container_image_vulnerabilities::docker_housekeeping(&housekeeping_state.runner).await;
         });
     }
 
@@ -131,6 +139,7 @@ mod tests {
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
         });
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state, &public_dir);
@@ -164,6 +173,7 @@ mod tests {
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
         });
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state, &public_dir);

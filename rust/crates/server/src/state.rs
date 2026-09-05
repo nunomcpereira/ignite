@@ -1,10 +1,38 @@
 use crate::review_gate::ReviewGate;
 use ignite_db_store::IssueRow;
+use ignite_fix_pr::FixCandidate;
 use ignite_tool_runner::ToolRunner;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
+
+/// In-flight/finished state of one `POST /api/pipeline/:job_id/fix-pr/preview`
+/// background run, keyed by job id in `AppState::fix_pr_previews` — lets
+/// `GET .../fix-pr/preview/status` report real per-issue progress instead
+/// of the frontend's old fake asymptotic timer, and lets the whole preview
+/// generation (which can run one LLM call per open issue, serially) happen
+/// off the request/response cycle.
+#[derive(Default)]
+pub struct FixPrPreviewJob {
+    pub total: usize,
+    pub completed: usize,
+    pub done: bool,
+    pub candidates: Vec<FixCandidate>,
+    pub considered_count: usize,
+    /// Set instead of running at all, e.g. "AI service unavailable."
+    pub reason: Option<String>,
+    /// True once a caller has cancelled this job via
+    /// `DELETE .../fix-pr/preview`. Set alongside `done = true` at the
+    /// same time the background task is aborted, since an aborted task
+    /// never gets to run its own completion code.
+    pub cancelled: bool,
+    /// Handle to abort the `tokio::spawn`'d generation task outright —
+    /// including whatever LLM request is in flight — rather than only
+    /// stopping it between issues. `None` once the job has already
+    /// finished/been cancelled and the handle was consumed.
+    pub abort_handle: Option<tokio::task::AbortHandle>,
+}
 
 /// In-flight SSE pipeline job state (`runningRuns` in server.js) — one
 /// entry per job currently streaming through `POST /api/pipeline`
@@ -61,6 +89,9 @@ pub struct AppState {
     /// scan, never actually caching anything across repeat scans of the
     /// same repo the way Node's equivalent in-process cache does.
     pub package_hallucination_checker: ignite_package_hallucination::PackageHallucinationChecker<ignite_package_hallucination::HttpRegistryChecker>,
+    /// Background fix-PR preview jobs, keyed by pipeline job id. See
+    /// [`FixPrPreviewJob`].
+    pub fix_pr_previews: Mutex<HashMap<String, FixPrPreviewJob>>,
 }
 
 pub fn default_package_hallucination_checker() -> ignite_package_hallucination::PackageHallucinationChecker<ignite_package_hallucination::HttpRegistryChecker> {

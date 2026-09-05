@@ -256,7 +256,11 @@ async fn rescan(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) 
 
     let http_client = reqwest::Client::new();
     let client = ignite_deps_dev_client::DepsDevClient::new();
-    fresh_issues.extend(ignite_dependency_license_scan::run_license_compliance_check(&ctx.root, &state.runner, &client, &http_client, |_| {}).await);
+    let (license_issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&ctx.root, &state.runner, &client, &http_client, |_| {}).await;
+    if let (Some(project_id), Some(scan_json)) = (ctx.project_id, &dep_scan_json) {
+        state.db.save_dependency_scan_cache(project_id, scan_json);
+    }
+    fresh_issues.extend(license_issues);
     fresh_issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&ctx.root, &client, |_| {}).await);
 
     let (resolved_ids, new_ids) = replace_issue_batch(&state, &job_id, &ctx, fresh_issues, RESCAN_PURGE_CATEGORIES);
@@ -437,10 +441,28 @@ async fn dependencies(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
         Ok(c) => c,
         Err(r) => return r,
     };
+
+    // Try the DB cache first — populated during Phase 3 of the regular
+    // scan pipeline, so the Dependencies tab opens instantly instead of
+    // re-running ORT + deps.dev from scratch.
+    if let Some(project_id) = ctx.project_id {
+        if let Some(cached) = state.db.get_dependency_scan_cache(project_id) {
+            return Json(cached).into_response();
+        }
+    }
+
+    // Cache miss (project scanned before caching was added, or no
+    // project_id) — fall back to a live scan and cache the result.
     let client = ignite_deps_dev_client::DepsDevClient::new();
     let npm_http = reqwest::Client::new();
     match ignite_dependency_license_scan::scan_dependency_licenses(&ctx.root, &state.runner, &client, &npm_http, |_| {}).await {
-        Ok(scan) => Json(json!({ "ok": true, "engine": scan.engine, "projectLicense": scan.project_license.map(|p| json!({ "spdxId": p.spdx_id, "confidence": p.confidence, "tier": p.tier, "reason": p.reason })), "manifests": scan.manifests })).into_response(),
+        Ok(scan) => {
+            let result = json!({ "ok": true, "engine": scan.engine, "projectLicense": scan.project_license.map(|p| json!({ "spdxId": p.spdx_id, "confidence": p.confidence, "tier": p.tier, "reason": p.reason })), "manifests": scan.manifests });
+            if let Some(project_id) = ctx.project_id {
+                state.db.save_dependency_scan_cache(project_id, &result);
+            }
+            Json(result).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -554,6 +576,7 @@ mod tests {
             llm_config: state::default_llm_config(),
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
         });
         app_state.running_runs.lock().unwrap().insert(
             job_id.clone(),

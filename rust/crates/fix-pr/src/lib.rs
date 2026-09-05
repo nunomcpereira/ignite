@@ -107,44 +107,97 @@ fn parse_suggest_fix_response(text: &str) -> Option<(String, String)> {
     Some((explanation, replacement))
 }
 
+/// How many issues' LLM calls run at once. Each call already has its own
+/// 60s timeout (`llm_complete`'s hardcoded call below); running them one
+/// at a time made a scan with more than a handful of open issues take
+/// minutes for no reason — the calls are independent, so there's nothing
+/// to serialize for. 5 is conservative enough not to hammer a
+/// locally-hosted model into the ground while still cutting wall-clock
+/// time roughly 5x for an API-backed provider.
+const FIX_PR_CONCURRENCY: usize = 5;
+
 /// Generates one `FixCandidate` per issue that has a stored snippet and
 /// got back a real (non-`NONE`) replacement. Issues without a snippet,
 /// LLM errors, and `REPLACEMENT: NONE` responses are silently dropped —
 /// `log` still records why, for the caller's job log / response
 /// metadata, but a single issue failing never aborts the batch.
-pub async fn generate_fix_candidates(http: &reqwest::Client, llm_config: &LlmClientConfig, issues: &[FixIssueInput], mut log: impl FnMut(&str)) -> Vec<FixCandidate> {
-    let mut candidates = Vec::new();
-    for issue in issues {
-        let Some(snippet_value) = &issue.snippet else {
-            log(&format!("[fix-pr] skip {} ({}:{}) — no stored snippet", issue.issue_id, issue.file, issue.line));
-            continue;
-        };
-        let Ok(snippet) = serde_json::from_value::<Snippet>(snippet_value.clone()) else {
-            log(&format!("[fix-pr] skip {} ({}:{}) — snippet did not deserialize", issue.issue_id, issue.file, issue.line));
-            continue;
-        };
-        if snippet.lines.is_empty() {
-            continue;
+pub async fn generate_fix_candidates(http: &reqwest::Client, llm_config: &LlmClientConfig, issues: &[FixIssueInput], log: impl FnMut(&str)) -> Vec<FixCandidate> {
+    generate_fix_candidates_with_progress(http, llm_config, issues, log, |_, _| {}).await
+}
+
+/// One issue's worth of work, run concurrently with others via
+/// `buffer_unordered` below. Returns its own log lines instead of calling
+/// a shared `log` closure directly — `buffer_unordered` polls multiple of
+/// these at once within the same task, so nothing here can hold a `&mut`
+/// borrow of state shared across them; the caller replays the lines
+/// through the real `log` sequentially as each future actually completes.
+async fn process_one_issue(http: &reqwest::Client, llm_config: &LlmClientConfig, issue: &FixIssueInput) -> (Vec<String>, Option<FixCandidate>) {
+    let mut logs = Vec::new();
+    let Some(snippet_value) = &issue.snippet else {
+        logs.push(format!("[fix-pr] skip {} ({}:{}) — no stored snippet", issue.issue_id, issue.file, issue.line));
+        return (logs, None);
+    };
+    let Ok(snippet) = serde_json::from_value::<Snippet>(snippet_value.clone()) else {
+        logs.push(format!("[fix-pr] skip {} ({}:{}) — snippet did not deserialize", issue.issue_id, issue.file, issue.line));
+        return (logs, None);
+    };
+    if snippet.lines.is_empty() {
+        return (logs, None);
+    }
+
+    let user = issue_user_prompt(issue, &snippet);
+    let label = format!("fix-pr {}:{}:{}", issue.category, issue.file, issue.line);
+    let response = match ignite_llm_client::llm_complete(http, llm_config, ISSUE_SUGGEST_FIX_PROMPT, &user, 0.2, 60_000, &label, |l| logs.push(l.to_string())).await {
+        Ok(text) => text,
+        Err(e) => {
+            logs.push(format!("[fix-pr] skip {} — AI request failed: {e}", issue.issue_id));
+            return (logs, None);
         }
+    };
+    let Some((explanation, replacement)) = parse_suggest_fix_response(&response) else {
+        logs.push(format!("[fix-pr] skip {} — no safe fix proposed", issue.issue_id));
+        return (logs, None);
+    };
 
-        let user = issue_user_prompt(issue, &snippet);
-        let label = format!("fix-pr {}:{}:{}", issue.category, issue.file, issue.line);
-        let response = match ignite_llm_client::llm_complete(http, llm_config, ISSUE_SUGGEST_FIX_PROMPT, &user, 0.2, 60_000, &label, |l| log(l)).await {
-            Ok(text) => text,
-            Err(e) => {
-                log(&format!("[fix-pr] skip {} — AI request failed: {e}", issue.issue_id));
-                continue;
-            }
-        };
-        let Some((explanation, replacement)) = parse_suggest_fix_response(&response) else {
-            log(&format!("[fix-pr] skip {} — no safe fix proposed", issue.issue_id));
-            continue;
-        };
+    let start_line = snippet.start_line as i64;
+    let end_line = snippet.lines.last().map(|l| l.number as i64).unwrap_or(start_line);
+    let original = snippet.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n");
+    let candidate = FixCandidate { issue_id: issue.issue_id.clone(), file: issue.file.clone(), category: issue.category.clone(), severity: issue.severity.clone(), summary: issue.summary.clone(), start_line, end_line, explanation, original, replacement };
+    (logs, Some(candidate))
+}
 
-        let start_line = snippet.start_line as i64;
-        let end_line = snippet.lines.last().map(|l| l.number as i64).unwrap_or(start_line);
-        let original = snippet.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n");
-        candidates.push(FixCandidate { issue_id: issue.issue_id.clone(), file: issue.file.clone(), category: issue.category.clone(), severity: issue.severity.clone(), summary: issue.summary.clone(), start_line, end_line, explanation, original, replacement });
+/// Same as [`generate_fix_candidates`], but calls `on_progress(completed,
+/// total)` after every issue is processed (skipped, failed, or turned
+/// into a candidate) — the seam a caller running this as a background
+/// job uses to report real per-issue progress instead of a fake timer.
+/// Runs up to [`FIX_PR_CONCURRENCY`] issues' LLM calls at once — each
+/// issue is independent, so there's no reason to wait for one before
+/// starting the next.
+pub async fn generate_fix_candidates_with_progress(http: &reqwest::Client, llm_config: &LlmClientConfig, issues: &[FixIssueInput], mut log: impl FnMut(&str), mut on_progress: impl FnMut(usize, usize)) -> Vec<FixCandidate> {
+    use futures::stream::StreamExt;
+
+    let total = issues.len();
+    let mut candidates = Vec::new();
+    let mut completed = 0usize;
+
+    // Collected into a `Vec` up front rather than a lazy `.map(...)` over
+    // the iterator — `stream::iter` over a `Map` whose closure returns a
+    // borrowed-lifetime future hits a known rustc HRTB limitation
+    // ("implementation of `FnOnce` is not general enough") once the
+    // resulting stream gets driven inside a `tokio::spawn`'d future;
+    // eagerly building the futures first sidesteps it.
+    let pending: Vec<_> = issues.iter().map(|issue| process_one_issue(http, llm_config, issue)).collect();
+    let mut in_flight = futures::stream::iter(pending).buffer_unordered(FIX_PR_CONCURRENCY.max(1));
+
+    while let Some((issue_logs, candidate)) = in_flight.next().await {
+        completed += 1;
+        for line in issue_logs {
+            log(&line);
+        }
+        if let Some(candidate) = candidate {
+            candidates.push(candidate);
+        }
+        on_progress(completed, total);
     }
     candidates
 }
