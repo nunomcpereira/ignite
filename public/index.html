@@ -4156,7 +4156,17 @@
         </div>`;
         return;
       }
-      const optionsHtml = languages.map((l) => `<option value="${escapeAttr(l)}">${escapeHtml(l)}</option>`).join('');
+      // Restores the last typed query/language (studioQueryDraft, set as
+      // the user types) and the last results (studioQueryResultState, set
+      // by studioRunCustomCodeqlQuery) instead of always rebuilding from
+      // the placeholder example — this panel gets torn down and rebuilt
+      // from scratch every time the user navigates to a file (including
+      // clicking a result row's own Location jump link) and back, and
+      // losing an in-progress query on every such click made the jump
+      // link actively unpleasant to use.
+      const defaultLanguage = studioQueryDraft.language && languages.includes(studioQueryDraft.language) ? studioQueryDraft.language : languages[0];
+      const optionsHtml = languages.map((l) => `<option value="${escapeAttr(l)}" ${l === defaultLanguage ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('');
+      const initialText = studioQueryDraft.touched ? studioQueryDraft.text : (STUDIO_QUERY_EXAMPLES[defaultLanguage] || '');
       $('studioCodeWrap').innerHTML = `<div class="p-4 flex flex-col h-full">
         <div class="flex items-center gap-2 mb-2">
           <label class="text-[11px] font-semibold text-slate-500">Language</label>
@@ -4164,15 +4174,22 @@
           <button type="button" id="studioQueryCancelBtn" class="ml-auto text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-slate-200 text-slate-600 hover:bg-slate-300 hidden">■ Cancel</button>
           <button type="button" id="studioQueryRunBtn" class="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:bg-orange-700">▶ Run query</button>
         </div>
-        <textarea id="studioQueryText" class="w-full flex-1 min-h-[180px] font-mono text-[12px] leading-relaxed border border-slate-200 rounded-lg p-2" spellcheck="false" placeholder="import ${escapeHtml(languages[0])}\n\nfrom ...\nselect ...">${STUDIO_QUERY_EXAMPLES[languages[0]] || ''}</textarea>
-        <p class="text-[10px] text-slate-400 mt-1">Runs against the database "Run CodeQL" already built for this language — no rebuild. <kbd class="px-1 py-0.5 border border-slate-300 rounded bg-slate-50 font-mono">${isMac ? '⌘' : 'Ctrl'}+Enter</kbd> runs it. Results below, and the file tree narrows to files your query's rows point at.</p>
+        <textarea id="studioQueryText" class="w-full flex-1 min-h-[180px] font-mono text-[12px] leading-relaxed border border-slate-200 rounded-lg p-2" spellcheck="false" placeholder="import ${escapeHtml(defaultLanguage)}\n\nfrom ...\nselect ...">${escapeHtml(initialText)}</textarea>
+        <p class="text-[10px] text-slate-400 mt-1">Runs against the database "Run CodeQL" already built for this language — no rebuild. <kbd class="px-1 py-0.5 border border-slate-300 rounded bg-slate-50 font-mono">${isMac ? '⌘' : 'Ctrl'}+Enter</kbd> runs it. Results below, and the file tree narrows to files your query's rows point at. An entity column's abbreviated text (e.g. "functio ... dex) {}") is CodeQL's own label for that node, not a display truncation — hover a Location cell for the real code, or click it to jump to the source.</p>
         <div id="studioQueryResultsWrap" class="mt-3"></div>
       </div>`;
+      if (studioQueryDraft.touched) $('studioQueryText').dataset.touched = '1';
       $('studioQueryLanguage').addEventListener('change', () => {
+        studioQueryDraft.language = $('studioQueryLanguage').value;
         const ta = $('studioQueryText');
-        if (!ta.dataset.touched) ta.value = STUDIO_QUERY_EXAMPLES[$('studioQueryLanguage').value] || '';
+        if (!ta.dataset.touched) ta.value = STUDIO_QUERY_EXAMPLES[studioQueryDraft.language] || '';
       });
-      $('studioQueryText').addEventListener('input', (e) => { e.target.dataset.touched = '1'; });
+      $('studioQueryText').addEventListener('input', (e) => {
+        e.target.dataset.touched = '1';
+        studioQueryDraft.touched = true;
+        studioQueryDraft.text = e.target.value;
+        studioQueryDraft.language = $('studioQueryLanguage').value;
+      });
       $('studioQueryText').addEventListener('keydown', (e) => {
         const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
         if (cmdOrCtrl && e.key === 'Enter' && !$('studioQueryRunBtn').disabled) {
@@ -4182,17 +4199,30 @@
       });
       $('studioQueryRunBtn').addEventListener('click', () => studioRunCustomCodeqlQuery());
       $('studioQueryCancelBtn').addEventListener('click', () => studioCancelCustomCodeqlQuery());
+      // Restore the last run's results (if any) instead of leaving the
+      // panel looking like a fresh, never-run query.
+      if (studioQueryResultState.rows.length > 0) renderStudioQueryResultsFromState();
     }
+    // See renderStudioCodeqlQueryPanel's comment above — survives the panel
+    // being torn down and rebuilt on every navigation away and back.
+    let studioQueryDraft = { language: null, text: '', touched: false };
     const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent || '');
     $('studioCodeqlQueryBtn').addEventListener('click', () => renderStudioCodeqlQueryPanel());
 
     // Placeholder query text per language — just enough to compile so a
     // first-time user has something to run/adapt rather than a blank box.
+    // `where exists(f.getFile().getRelativePath())` restricts every example
+    // to files inside the project's own source root — without it, `from
+    // Function f select f, ...` also matches every Function CodeQL loads
+    // from its own bundled library/extern models (thousands of them for
+    // JS's Node/DOM globals alone), swamping the results table with rows
+    // whose Location is correctly empty because they're genuinely outside
+    // the project, not a bug in location parsing.
     const STUDIO_QUERY_EXAMPLES = {
-      javascript: 'import javascript\n\nfrom Function f\nselect f, "A function."',
-      python: 'import python\n\nfrom Function f\nselect f, "A function."',
-      java: 'import java\n\nfrom Method m\nselect m, "A method."',
-      go: 'import go\n\nfrom FuncDecl f\nselect f, "A function declaration."',
+      javascript: 'import javascript\n\nfrom Function f\nwhere exists(f.getFile().getRelativePath())\nselect f, "A function."',
+      python: 'import python\n\nfrom Function f\nwhere exists(f.getFile().getRelativePath())\nselect f, "A function."',
+      java: 'import java\n\nfrom Method m\nwhere exists(m.getFile().getRelativePath())\nselect m, "A method."',
+      go: 'import go\n\nfrom FuncDecl f\nwhere exists(f.getFile().getRelativePath())\nselect f, "A function declaration."',
     };
 
     // Cancelling only aborts *this browser's* fetch read immediately — the
@@ -4317,7 +4347,7 @@
       const rowsHtml = visibleRows.map((r, i) => {
         const cellsHtml = r.cells.map((c) => `<td class="studio-query-cell px-2.5 py-1.5 border-r border-slate-100 last:border-r-0 align-top font-mono text-[11px] whitespace-pre-wrap break-words max-w-[32rem]" data-copy="${escapeAttr(c)}" title="Click to copy">${escapeHtml(c)}</td>`).join('');
         const jumpBtn = r.location
-          ? `<button type="button" class="studio-query-row-jump text-[10px] font-semibold text-brand-600 hover:underline whitespace-nowrap" data-file="${escapeAttr(r.location.file)}" data-line="${r.location.line}">${escapeHtml(r.location.file)}:${r.location.line}</button>`
+          ? `<button type="button" class="studio-query-row-jump text-[10px] font-semibold text-brand-600 hover:underline whitespace-nowrap" data-file="${escapeAttr(r.location.file)}" data-line="${r.location.line}"${r.location.snippet ? ` data-snippet="${escapeAttr(JSON.stringify(r.location.snippet))}"` : ''}>${escapeHtml(r.location.file)}:${r.location.line}</button>`
           : '<span class="text-[10px] text-slate-300">—</span>';
         return `<tr class="${i % 2 === 1 ? 'bg-slate-50/60' : ''} border-b border-slate-100 hover:bg-amber-50/40">${cellsHtml}<td class="px-2.5 py-1.5 align-top">${jumpBtn}</td></tr>`;
       }).join('');
@@ -4358,11 +4388,16 @@
       });
       wrap.querySelectorAll('.studio-query-row-jump').forEach((b) => {
         b.addEventListener('click', async () => {
+          ensureCodeqlLocationTooltipEl().classList.add('hidden');
           await openStudioFile(b.dataset.file);
           studioState.jumpHighlightRange = { line: Number(b.dataset.line), endLine: Number(b.dataset.line) };
           renderStudioCodeView(studioState.originalContent);
           scrollStudioToLine(Number(b.dataset.line));
         });
+        if (b.dataset.snippet) {
+          b.addEventListener('mouseenter', () => showCodeqlLocationTooltip(b));
+          b.addEventListener('mouseleave', () => ensureCodeqlLocationTooltipEl().classList.add('hidden'));
+        }
       });
       wrap.querySelectorAll('.studio-query-cell').forEach((cell) => {
         cell.addEventListener('click', async () => {
@@ -4374,6 +4409,39 @@
           } catch { /* clipboard permission denied — non-critical, cell is still selectable/readable as-is */ }
         });
       });
+    }
+
+    // Hover preview of a Location cell's actual function source — reuses
+    // renderSnippet(), the same code-preview component every other
+    // finding's snippet already renders with, so this looks and behaves
+    // like the rest of the app rather than a one-off. Click still
+    // navigates (the row-jump click handler above); this is purely a
+    // peek, same fixed-position-floating-div pattern as ensureAiTooltipEl.
+    function ensureCodeqlLocationTooltipEl() {
+      let el = document.getElementById('codeqlLocationTooltip');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'codeqlLocationTooltip';
+        el.className = 'hidden fixed z-[70] w-96 max-w-[90vw] shadow-xl';
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+
+    function showCodeqlLocationTooltip(button) {
+      const snippet = JSON.parse(button.dataset.snippet);
+      const tooltip = ensureCodeqlLocationTooltipEl();
+      tooltip.innerHTML = renderSnippet(snippet, { category: 'codeql-query', severity: 'error', file: button.dataset.file, line: snippet.highlightLine, summary: '' });
+      const rect = button.getBoundingClientRect();
+      const width = 384; // w-96
+      tooltip.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+      const estHeight = Math.min(320, 24 * snippet.lines.length + 32);
+      const opensUp = rect.bottom + 6 + estHeight > window.innerHeight;
+      tooltip.style.top = opensUp ? '' : `${rect.bottom + 6}px`;
+      tooltip.style.bottom = opensUp ? `${window.innerHeight - rect.top + 6}px` : '';
+      tooltip.style.maxHeight = '20rem';
+      tooltip.querySelector('pre')?.classList.add('overflow-y-auto', 'max-h-80');
+      tooltip.classList.remove('hidden');
     }
 
     // CSV of whatever's currently visible (post-filter/sort) — an exported

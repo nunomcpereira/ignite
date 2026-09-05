@@ -499,6 +499,15 @@ pub async fn check_codeql_cross_file_with_log(
 pub struct QueryLocation {
     pub file: String,
     pub line: usize,
+    /// Best-effort exact source text for the entity's start/end line span
+    /// (`build_snippet` with `radius: 0` — no extra context padding), so
+    /// Studio's ad-hoc query results can show a hover preview of the real
+    /// code without a second per-row file fetch, reusing the same
+    /// `Snippet` shape (and the existing `renderSnippet()` UI) every other
+    /// finding's code preview already uses. `None` only on a read failure
+    /// (file since deleted/moved, non-UTF8 content, etc.) — never blocks
+    /// showing the row/location link itself.
+    pub snippet: Option<Snippet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -528,7 +537,17 @@ fn parse_query_result_json(root: &Path, json: &serde_json::Value) -> QueryResult
         })
         .unwrap_or_default();
 
-    let root_prefix = format!("{}{}", root.to_string_lossy(), std::path::MAIN_SEPARATOR);
+    // CodeQL's own `database create --source-root` always resolves symlinks
+    // internally, so every file URI it reports back is already canonical —
+    // e.g. macOS's staging dirs live under `std::env::temp_dir()`
+    // (`/var/folders/...`), a symlink to the real `/private/var/folders/...`
+    // CodeQL actually records. Comparing that canonical URI against a
+    // non-canonical `root` made every single in-project row fail this
+    // `starts_with` guard, silently discarding its location as if it were
+    // outside the project (`relative_to_root` below already canonicalizes
+    // both sides internally and got this right — this guard didn't).
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root_prefix = format!("{}{}", canonical_root.to_string_lossy(), std::path::MAIN_SEPARATOR);
     let mut rows = Vec::new();
     for tuple in select.get("tuples").and_then(|t| t.as_array()).into_iter().flatten() {
         let mut cells = Vec::new();
@@ -537,13 +556,19 @@ fn parse_query_result_json(root: &Path, json: &serde_json::Value) -> QueryResult
             if let Some(label) = cell.get("label").and_then(|l| l.as_str()) {
                 cells.push(label.to_string());
                 if location.is_none() {
-                    if let Some(uri) = cell.get("url").and_then(|u| u.get("uri")).and_then(|u| u.as_str()) {
-                        if let Some(encoded) = uri.strip_prefix("file://") {
-                            if let Ok(decoded) = urlencoding_decode(encoded) {
-                                if decoded.starts_with(&root_prefix) {
-                                    let line = cell.get("url").and_then(|u| u.get("startLine")).and_then(|l| l.as_i64()).unwrap_or(1).max(1) as usize;
-                                    let rel = relative_to_root(root, &decoded).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-                                    location = Some(QueryLocation { file: rel, line });
+                    if let Some(url) = cell.get("url") {
+                        if let Some(uri) = url.get("uri").and_then(|u| u.as_str()) {
+                            if let Some(encoded) = uri.strip_prefix("file://") {
+                                if let Ok(decoded) = urlencoding_decode(encoded) {
+                                    if decoded.starts_with(&root_prefix) {
+                                        let line = url.get("startLine").and_then(|l| l.as_i64()).unwrap_or(1).max(1) as usize;
+                                        let end_line = url.get("endLine").and_then(|l| l.as_i64()).map(|v| (v.max(line as i64)) as usize);
+                                        let rel = relative_to_root(root, &decoded).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+                                        let snippet = std::fs::read_to_string(&decoded)
+                                            .ok()
+                                            .and_then(|content| build_snippet(&content, line, SnippetOptions { end_line, radius: Some(0), ..Default::default() }));
+                                        location = Some(QueryLocation { file: rel, line, snippet });
+                                    }
                                 }
                             }
                         }
@@ -874,6 +899,13 @@ mod tests {
         let query_result = run_custom_codeql_query(root, &db_dir, "javascript", query, &runner(), 5 * 60_000, |_| {}).await.unwrap();
         assert_eq!(query_result.columns.len(), 2);
         assert!(!query_result.rows.is_empty(), "expected at least one row for the `add` function");
+
+        // Studio's Location-cell hover preview depends on a real snippet
+        // being captured alongside the row/location itself — not just a
+        // file:line pair — since app.js still exists on disk at query time.
+        let row = query_result.rows.iter().find(|r| r.location.as_ref().is_some_and(|l| l.file == "app.js")).expect("expected a row located in app.js");
+        let snippet = row.location.as_ref().unwrap().snippet.as_ref().expect("expected a snippet captured for app.js's still-on-disk source");
+        assert!(snippet.lines.iter().any(|l| l.text.contains("function add")), "expected the captured snippet to contain the real function source, got {:?}", snippet.lines);
 
         ignite_fs_utils::invalidate_walk_cache(root);
     }

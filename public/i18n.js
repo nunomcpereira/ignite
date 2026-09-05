@@ -60,7 +60,7 @@ window.IGNITE_I18N = {
       'onboardedRepos.scanning': 'Scanning…',
       'onboardedRepos.scanFailed': 'Scan failed: {error}',
 
-      'history.title': 'Recent Checks &amp; Effectivated Repos',
+      'history.title': 'Recent Checks & Effectivated Repos',
       'history.recentChecks': 'Recent Checks',
       'history.clearAll': 'Delete every recent check from history',
       'history.clearAllConfirm': 'Clear all recent checks? This permanently deletes every project record, including its issues, overrides, and Studio history. This cannot be undone.',
@@ -94,7 +94,7 @@ window.IGNITE_I18N = {
 
       'upload.title': 'Initialize Project Pipeline',
       'upload.subtitle': 'Upload your project payload to begin automated analysis and provisioning.',
-      'upload.dropTitle': 'Drag &amp; Drop Project Payload',
+      'upload.dropTitle': 'Drag & Drop Project Payload',
       'upload.dropSubtitle': 'Upload a project <span class="text-slate-800 font-semibold">folder</span> or <span class="text-slate-800 font-semibold">.zip</span> to initiate the pipeline sequence.',
       'upload.chooseFile': 'Choose File…',
       'upload.chooseFolder': 'or choose a folder',
@@ -109,7 +109,7 @@ window.IGNITE_I18N = {
       'upload.gxpAddLinkTitle': 'Add another GxP validation document link',
       'upload.gxpUploadDocs': 'Upload documents…',
       'upload.gxpUploadTitle': 'Upload GxP validation documents',
-      'upload.simulationNote': "Every run first executes as a simulation — every check runs, nothing is created on GitHub. Once it passes, you'll get an option to provision &amp; push for real.",
+      'upload.simulationNote': "Every run first executes as a simulation — every check runs, nothing is created on GitHub. Once it passes, you'll get an option to provision & push for real.",
       'upload.initiateBtn': 'Initiate Onboarding Pipeline',
       'upload.newScanBtn': 'New scan',
       'upload.newScanTitle': 'Clear this view and start a new scan — any other extraction still running keeps running untouched',
@@ -149,7 +149,7 @@ window.IGNITE_I18N = {
 
       'footer.note': 'Includes a local LLM security deep-scan — your code never leaves this machine until it ships to GitHub.<br/>Staging files are wiped from disk after every run, pass or fail.',
 
-      'review.title': 'Final review — all flagged issues, before provisioning &amp; push',
+      'review.title': 'Final review — all flagged issues, before provisioning & push',
       'review.subtitle': "Every phase ran to completion; these are the issues raised along the way. Blocking findings must be overridden with a justification before you can push. Every override is emailed and saved to the project's audit log.",
       'review.importBtn': 'Import acknowledgments ⤒',
       'review.importTitle': "Import a Download ⤓'d report you've filled in Acknowledge: lines on — checks the matching box and fills its justification for every issue with one",
@@ -339,7 +339,7 @@ window.IGNITE_I18N = {
       'onboardedRepos.scanning': 'Scan en cours…',
       'onboardedRepos.scanFailed': 'Échec du scan : {error}',
 
-      'history.title': 'Contrôles récents &amp; dépôts effectivés',
+      'history.title': 'Contrôles récents & dépôts effectivés',
       'history.recentChecks': 'Contrôles récents',
       'history.clearAll': "Supprimer tout l'historique des contrôles récents",
       'history.clearAllConfirm': "Effacer tous les contrôles récents ? Cela supprime définitivement chaque enregistrement de projet, y compris ses problèmes, dérogations et historique Studio. Cette action est irréversible.",
@@ -428,7 +428,7 @@ window.IGNITE_I18N = {
 
       'footer.note': "Inclut une analyse de sécurité approfondie par LLM local — votre code ne quitte jamais cette machine avant d'être livré sur GitHub.<br/>Les fichiers de préparation sont effacés du disque après chaque exécution, réussie ou non.",
 
-      'review.title': 'Revue finale — tous les problèmes signalés, avant provisionnement &amp; envoi',
+      'review.title': 'Revue finale — tous les problèmes signalés, avant provisionnement & envoi',
       'review.subtitle': "Toutes les phases se sont terminées ; voici les problèmes soulevés en cours de route. Les problèmes bloquants doivent être dérogés avec une justification avant de pouvoir pousser le code. Chaque dérogation est envoyée par e-mail et enregistrée dans le journal d'audit du projet.",
       'review.importBtn': 'Importer des accusés de réception ⤒',
       'review.importTitle': "Importer un rapport téléchargé ⤓ dans lequel vous avez rempli des lignes Acknowledge: — coche la case correspondante et remplit sa justification pour chaque problème d'un coup",
@@ -618,7 +618,7 @@ window.IGNITE_I18N = {
       'onboardedRepos.scanning': 'A digitalizar…',
       'onboardedRepos.scanFailed': 'Falha no scan: {error}',
 
-      'history.title': 'Verificações recentes &amp; repositórios efetivados',
+      'history.title': 'Verificações recentes & repositórios efetivados',
       'history.recentChecks': 'Verificações recentes',
       'history.clearAll': 'Excluir todo o histórico de verificações recentes',
       'history.clearAllConfirm': 'Limpar todas as verificações recentes? Isso exclui permanentemente cada registro de projeto, incluindo seus problemas, exceções e histórico do Studio. Esta ação não pode ser desfeita.',
@@ -707,7 +707,7 @@ window.IGNITE_I18N = {
 
       'footer.note': 'Inclui uma análise profunda de segurança por LLM local — seu código nunca sai desta máquina até ser enviado ao GitHub.<br/>Os arquivos de preparo são apagados do disco após cada execução, aprovada ou não.',
 
-      'review.title': 'Revisão final — todos os problemas sinalizados, antes do provisionamento &amp; envio',
+      'review.title': 'Revisão final — todos os problemas sinalizados, antes do provisionamento & envio',
       'review.subtitle': 'Todas as fases foram concluídas; estes são os problemas levantados ao longo do caminho. Problemas bloqueantes devem receber uma exceção justificada antes de você poder enviar o código. Cada exceção é enviada por e-mail e salva no log de auditoria do projeto.',
       'review.importBtn': 'Importar confirmações ⤒',
       'review.importTitle': 'Importar um relatório baixado ⤓ no qual você preencheu linhas Acknowledge: — marca a caixa correspondente e preenche a justificativa de cada problema de uma vez',
@@ -897,7 +897,7 @@ window.IGNITE_I18N = {
       'onboardedRepos.scanning': 'Scan läuft…',
       'onboardedRepos.scanFailed': 'Scan fehlgeschlagen: {error}',
 
-      'history.title': 'Letzte Prüfungen &amp; effektivierte Repos',
+      'history.title': 'Letzte Prüfungen & effektivierte Repos',
       'history.recentChecks': 'Letzte Prüfungen',
       'history.clearAll': 'Gesamten Prüfverlauf löschen',
       'history.clearAllConfirm': 'Alle letzten Prüfungen löschen? Dadurch wird jeder Projekteintrag dauerhaft gelöscht, einschließlich seiner Probleme, Ausnahmen und des Studio-Verlaufs. Dies kann nicht rückgängig gemacht werden.',
@@ -986,7 +986,7 @@ window.IGNITE_I18N = {
 
       'footer.note': 'Enthält einen lokalen LLM-Sicherheits-Deep-Scan — Ihr Code verlässt diesen Rechner erst, wenn er an GitHub ausgeliefert wird.<br/>Staging-Dateien werden nach jedem Lauf von der Festplatte gelöscht, egal ob erfolgreich oder nicht.',
 
-      'review.title': 'Abschließende Prüfung — alle gemeldeten Probleme vor Bereitstellung &amp; Push',
+      'review.title': 'Abschließende Prüfung — alle gemeldeten Probleme vor Bereitstellung & Push',
       'review.subtitle': 'Alle Phasen sind vollständig durchgelaufen; dies sind die dabei aufgetretenen Probleme. Blockierende Befunde müssen vor dem Push mit einer Begründung als Ausnahme markiert werden. Jede Ausnahme wird per E-Mail versendet und im Audit-Log des Projekts gespeichert.',
       'review.importBtn': 'Bestätigungen importieren ⤒',
       'review.importTitle': 'Einen heruntergeladenen ⤓ Bericht importieren, in dem Sie Acknowledge:-Zeilen ausgefüllt haben — markiert das passende Kästchen und füllt dessen Begründung für jedes Problem auf einmal aus',

@@ -616,11 +616,23 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/pipeline/:job_id/studio/loc-metrics", get(loc_metrics))
         .route("/api/pipeline/:job_id/studio/posture", get(posture))
         .route("/api/pipeline/:job_id/studio/provenance", get(provenance))
+        // Ad-hoc CodeQL query: reads whichever database `/studio/codeql`
+        // already built and returns rows, same as every other read-only
+        // report route above — unlike `/studio/codeql` itself (which
+        // persists real `codeql-sast`/`codeql-analysis-failed` issues via
+        // replace_issue_batch), an ad-hoc query's own doc comment already
+        // says "Purely exploratory — results aren't persisted as issues or
+        // cached", so it can't change what a run will push and belongs
+        // here, not behind auth in mutating_router below.
+        .route(
+            "/api/pipeline/:job_id/studio/codeql/query",
+            axum::routing::post(codeql_query).delete(codeql_query_cancel),
+        )
 }
 
 /// Everything that can change what actually gets scanned or pushed:
-/// editing a file mid-run, forcing a rescan, or running an arbitrary
-/// CodeQL query. Requires auth — see the finding this closes in
+/// editing a file mid-run, forcing a rescan, or building/persisting a real
+/// CodeQL scan's findings. Requires auth — see the finding this closes in
 /// `main.rs`'s `require_auth_middleware` wiring: an unauthenticated
 /// caller reaching any of these could tamper with a run before Phase 6
 /// pushes it.
@@ -629,10 +641,6 @@ pub fn mutating_router() -> Router<Arc<AppState>> {
         .route("/api/pipeline/:job_id/studio/file", axum::routing::put(put_file))
         .route("/api/pipeline/:job_id/studio/rescan", axum::routing::post(rescan))
         .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
-        .route(
-            "/api/pipeline/:job_id/studio/codeql/query",
-            axum::routing::post(codeql_query).delete(codeql_query_cancel),
-        )
 }
 
 #[cfg(test)]
