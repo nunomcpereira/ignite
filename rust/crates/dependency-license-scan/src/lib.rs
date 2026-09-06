@@ -463,7 +463,7 @@ pub async fn run_licensee_detect(root: &Path, runner: &ToolRunner) -> Option<Pro
     let spdx_id = best.get("spdx_id").and_then(|v| v.as_str())?.to_string();
     let has_attribution = data.get("matched_files").and_then(|f| f.as_array()).and_then(|a| a.first()).and_then(|f| f.get("attribution")).map(|v| !v.is_null()).unwrap_or(false);
     let confidence = if has_attribution { Some(100.0) } else { best.get("similarity").and_then(|v| v.as_f64()) };
-    let classification = classify_license_tier(&[spdx_id.clone()]);
+    let classification = classify_license_tier(std::slice::from_ref(&spdx_id));
     Some(ProjectLicenseDetection { spdx_id, confidence, tier: tier_to_str(&classification.tier), reason: classification.reason })
 }
 
@@ -952,6 +952,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn run_license_compliance_check_logs_and_returns_no_issues_for_internal_only_deps() {
         let _guard = PATH_LOCK.lock().unwrap(); // real `ort`/`licensee` run here — must not race the PATH-mutating test
         let dir = tempdir().unwrap();
@@ -1274,6 +1275,7 @@ mod tests {
     static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn run_ort_analyze_returns_none_when_not_installed() {
         // "ort" is a FIXED_COMMANDS entry (resolved directly off PATH, not
         // via ToolRunner's binaries map), so an empty ToolRunner alone
@@ -1306,6 +1308,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn run_ort_analyze_resolves_a_real_npm_project_when_ort_is_installed() {
         let _guard = PATH_LOCK.lock().unwrap(); // must not race the PATH-mutating test
         let binaries: HashMap<&'static str, String> = [("ort", "ort".to_string())].into_iter().collect();

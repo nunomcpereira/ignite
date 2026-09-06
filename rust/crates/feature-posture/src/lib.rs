@@ -126,7 +126,7 @@ fn empty_posture_report() -> PostureReport {
 }
 
 /// >=1 "strong" (confirmed usage) match => DETECTED. Only "weak" (import/
-/// dependency-only) matches => PARTIAL. Neither => MISSING.
+/// > dependency-only) matches => PARTIAL. Neither => MISSING.
 fn classify_posture_matches(matches: &[PostureMatch]) -> &'static str {
     if matches.iter().any(|m| m.tier == "strong") {
         "DETECTED"

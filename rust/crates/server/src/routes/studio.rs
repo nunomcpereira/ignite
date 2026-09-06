@@ -809,6 +809,7 @@ mod tests {
     /// a clear message and never shell out to `codeql` at all — this
     /// doesn't need the real binary installed.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn codeql_query_without_a_built_database_reports_a_clear_error() {
         // `codeql_db_dir_for` keys a real, process-global directory
         // (`IGNITE_DATA_DIR`/`~/.ignite`) off of a numeric project id —
@@ -863,6 +864,7 @@ mod tests {
     /// function. Skips (not fails) if the `codeql` CLI isn't on PATH in
     /// this environment.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn codeql_run_persists_database_and_query_can_reuse_it() {
         let mut check = std::process::Command::new("codeql");
         check.arg("version");

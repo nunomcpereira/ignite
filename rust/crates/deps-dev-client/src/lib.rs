@@ -355,7 +355,7 @@ pub fn find_manifest_dep_line(content: &str, dep_name: &str, ecosystem: &str) ->
                         return false;
                     }
                     let normalized = normalize(trimmed);
-                    normalized.strip_prefix(target.as_str()).is_some_and(|rest| rest.is_empty() || !rest.chars().next().unwrap().is_alphanumeric() && rest.chars().next() != Some('-'))
+                    normalized.strip_prefix(target.as_str()).is_some_and(|rest| rest.is_empty() || !rest.chars().next().unwrap().is_alphanumeric() && !rest.starts_with('-'))
                 })
                 .map(|i| i + 1)
         }

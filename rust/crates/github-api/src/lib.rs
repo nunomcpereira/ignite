@@ -442,6 +442,7 @@ exit 1
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn default_branch_resolves_via_gh_cli() {
         let _guard = PATH_LOCK.lock().unwrap();
         let fake_gh_dir = tempfile::tempdir().unwrap();
@@ -458,6 +459,7 @@ exit 1
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn head_sha_resolves_via_gh_cli() {
         let _guard = PATH_LOCK.lock().unwrap();
         let fake_gh_dir = tempfile::tempdir().unwrap();
@@ -474,6 +476,7 @@ exit 1
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn gh_comment_on_pr_writes_multiline_body_to_body_file_not_body() {
         let _guard = PATH_LOCK.lock().unwrap();
         let fake_gh_dir = tempfile::tempdir().unwrap();

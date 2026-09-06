@@ -102,7 +102,7 @@ pub fn stage_existing_project(source_dir: &Path, dest_dir: &Path, mut log: impl 
         let file_size = std::fs::metadata(&file)?.len();
         total_bytes += file_size;
         if total_bytes > MAX_EXTRACTED_BYTES {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Project exceeds maximum staged size. Aborting validation."));
+            return Err(std::io::Error::other("Project exceeds maximum staged size. Aborting validation."));
         }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;

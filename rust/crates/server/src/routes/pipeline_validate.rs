@@ -587,8 +587,7 @@ mod phase_gating_tests {
     #[tokio::test]
     async fn phase_4_disabled_via_config_skips_secrets_scan_but_still_runs() {
         let dir = secret_fixture_dir();
-        let mut cfg = ignite_config::Config::default();
-        cfg.phases = vec![json!({ "id": 4, "enabled": false })];
+        let cfg = ignite_config::Config { phases: vec![json!({ "id": 4, "enabled": false })], ..Default::default() };
         let (state, _db_dir) = build_state(cfg);
         let base = spawn_test_server(state).await;
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();

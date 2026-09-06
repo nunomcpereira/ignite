@@ -376,6 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn onboard_rejects_missing_gh_token_when_not_dry_run() {
         // See `state::GH_TOKEN_ENV_GUARD`: this depends on the ambient
         // absence of GH_TOKEN/GITHUB_TOKEN, shared with the tests in

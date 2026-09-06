@@ -242,6 +242,7 @@ exit 1
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn plan_for_repo_resolves_default_branch_via_fake_gh_and_never_mutates() {
         let _guard = PATH_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();

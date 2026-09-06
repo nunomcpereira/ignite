@@ -153,7 +153,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         move |m: &str| {
             let mut l = logs.lock();
             l.push(m.to_string());
-            let _ = db.upsert_step(project_id, 6, &phase6_title, "running", &l.join("\n"));
+            db.upsert_step(project_id, 6, &phase6_title, "running", &l.join("\n"));
         }
     };
 
@@ -196,7 +196,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     let _ = std::fs::remove_dir_all(&publish_dir);
     if let Err(e) = ignite_staging::clone_directory_without_symlinks(&source_backup_dir, &publish_dir) {
         log(&format!("✗ Effectivate failed: {e}"));
-        let _ = state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
+        state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
         return (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Effectivate failed: {e}") }))).into_response();
     }
 
@@ -208,7 +208,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         Ok(ship_result) => {
             state.db.finish_project("success", None, Some(&ship_result.repo_url), ship_result.pr_url.as_deref(), project_id);
             log(&format!("✓ Effectivated — repository live at {}", ship_result.repo_url));
-            let _ = state.db.upsert_step(project_id, 6, &phase6_title, "success", &effectivate_logs.lock().join("\n"));
+            state.db.upsert_step(project_id, 6, &phase6_title, "success", &effectivate_logs.lock().join("\n"));
             state.pending_effectivations.lock().remove(&project_id);
             let _ = std::fs::remove_dir_all(&source_backup_dir);
             let _ = std::fs::remove_dir_all(&publish_dir);
@@ -216,7 +216,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         }
         Err(e) => {
             log(&format!("✗ Effectivate failed: {e}"));
-            let _ = state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
+            state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
             (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Effectivate failed: {e}") }))).into_response()
         }
     }
@@ -265,6 +265,7 @@ mod tests {
     use crate::state::GH_TOKEN_ENV_GUARD as ENV_GUARD;
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn returns_401_without_a_github_token() {
         let _guard = ENV_GUARD.lock();
         std::env::remove_var("GH_TOKEN");
@@ -277,6 +278,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn returns_404_when_no_pending_effectivation() {
         let _guard = ENV_GUARD.lock();
         std::env::set_var("GH_TOKEN", "test-token");
@@ -289,6 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn returns_409_when_blocking_issue_is_unresolved() {
         let _guard = ENV_GUARD.lock();
         std::env::set_var("GH_TOKEN", "test-token");

@@ -150,8 +150,8 @@ mod tests {
         let res = client.get(format!("{base}/guidelines")).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
-        assert!(body["guidelines"].as_array().unwrap().len() > 0);
-        assert!(body["categories"].as_array().unwrap().len() > 0);
+        assert!(!body["guidelines"].as_array().unwrap().is_empty());
+        assert!(!body["categories"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

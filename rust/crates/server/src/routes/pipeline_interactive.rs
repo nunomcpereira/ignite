@@ -411,7 +411,7 @@ mod tests {
             let mut writer = zip::ZipWriter::new(cursor);
             let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
             for (name, data) in files {
-                writer.start_file(*name, opts.clone()).unwrap();
+                writer.start_file(*name, opts).unwrap();
                 std::io::Write::write_all(&mut writer, data).unwrap();
             }
             writer.finish().unwrap();
@@ -488,12 +488,12 @@ mod tests {
                 // file) - add it back in by hand so the fixture keeps its
                 // real commit history through the zip round trip.
                 let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-                writer.start_file(&rel, opts.clone()).unwrap();
+                writer.start_file(&rel, opts).unwrap();
                 std::io::Write::write_all(&mut writer, &std::fs::read(&path).unwrap()).unwrap();
             }
             for git_file in walkdir_git(&root.join(".git")) {
                 let rel = git_file.strip_prefix(root).unwrap().to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-                writer.start_file(&rel, opts.clone()).unwrap();
+                writer.start_file(&rel, opts).unwrap();
                 std::io::Write::write_all(&mut writer, &std::fs::read(&git_file).unwrap()).unwrap();
             }
             writer.finish().unwrap();

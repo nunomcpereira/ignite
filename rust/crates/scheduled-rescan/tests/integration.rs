@@ -78,6 +78,7 @@ async fn spawn_fake_server(state: FakeServerState) -> String {
 static PATH_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn rescan_one_posts_github_check_when_issues_found() {
     let _guard = PATH_LOCK.lock().unwrap();
     let fake_gh_dir = tempfile::tempdir().unwrap();
@@ -106,6 +107,7 @@ async fn rescan_one_posts_github_check_when_issues_found() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn rescan_one_is_a_noop_when_no_issues_found() {
     let _guard = PATH_LOCK.lock().unwrap();
     let fake_gh_dir = tempfile::tempdir().unwrap();
@@ -130,6 +132,7 @@ async fn rescan_one_is_a_noop_when_no_issues_found() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn rescan_one_reports_error_not_silent_clean_on_structural_pipeline_failure() {
     let _guard = PATH_LOCK.lock().unwrap();
     let fake_gh_dir = tempfile::tempdir().unwrap();

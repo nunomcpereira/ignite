@@ -82,8 +82,7 @@ mod tests {
 
     #[test]
     fn config_can_disable_phase_4_and_override_title() {
-        let mut cfg = ignite_config::Config::default();
-        cfg.phases = vec![serde_json::json!({ "id": 4, "enabled": false, "title": "Custom Scan" })];
+        let cfg = ignite_config::Config { phases: vec![serde_json::json!({ "id": 4, "enabled": false, "title": "Custom Scan" })], ..Default::default() };
         let meta = resolve_phase_meta(&cfg);
         assert!(!phase_enabled(&meta, 4));
         assert_eq!(phase_title(&meta, 4), "Custom Scan");
@@ -91,12 +90,14 @@ mod tests {
 
     #[test]
     fn phase_always_enabled_ids_ignore_disable_override() {
-        let mut cfg = ignite_config::Config::default();
-        cfg.phases = vec![
-            serde_json::json!({ "id": 1, "enabled": false }),
-            serde_json::json!({ "id": 3, "enabled": false }),
-            serde_json::json!({ "id": 6, "enabled": false }),
-        ];
+        let cfg = ignite_config::Config {
+            phases: vec![
+                serde_json::json!({ "id": 1, "enabled": false }),
+                serde_json::json!({ "id": 3, "enabled": false }),
+                serde_json::json!({ "id": 6, "enabled": false }),
+            ],
+            ..Default::default()
+        };
         let meta = resolve_phase_meta(&cfg);
         assert!(phase_enabled(&meta, 1));
         assert!(phase_enabled(&meta, 3));
@@ -105,8 +106,7 @@ mod tests {
 
     #[test]
     fn phase_2_can_be_toggled_since_its_not_in_always_enabled_set() {
-        let mut cfg = ignite_config::Config::default();
-        cfg.phases = vec![serde_json::json!({ "id": 2, "enabled": true })];
+        let cfg = ignite_config::Config { phases: vec![serde_json::json!({ "id": 2, "enabled": true })], ..Default::default() };
         let meta = resolve_phase_meta(&cfg);
         assert!(phase_enabled(&meta, 2));
     }

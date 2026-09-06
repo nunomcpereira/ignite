@@ -337,6 +337,16 @@ pub async fn llm_available(client: &reqwest::Client, config: &LlmClientConfig) -
     }
 }
 
+pub struct LlmCompleteRequest<'a> {
+    pub client: &'a reqwest::Client,
+    pub config: &'a LlmClientConfig,
+    pub system_prompt: &'a str,
+    pub user_content: &'a str,
+    pub temperature: f64,
+    pub timeout_ms: u64,
+    pub label: &'a str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,14 +482,4 @@ mod tests {
         assert!(matches!(result, Err(LlmError::NetworkError(_))));
         assert!(logs.iter().any(|l| l.contains("→ complete [local]")));
     }
-}
-
-pub struct LlmCompleteRequest<'a> {
-    pub client: &'a reqwest::Client,
-    pub config: &'a LlmClientConfig,
-    pub system_prompt: &'a str,
-    pub user_content: &'a str,
-    pub temperature: f64,
-    pub timeout_ms: u64,
-    pub label: &'a str,
 }

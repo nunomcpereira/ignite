@@ -10,12 +10,12 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-fn resolve_project_path(body: &Value) -> Result<PathBuf, Response> {
+fn resolve_project_path(body: &Value) -> Result<PathBuf, Box<Response>> {
     let raw_path = body.get("projectPath").and_then(|v| v.as_str()).unwrap_or("");
-    let project_path = ignite_tool_runner::sanitize_absolute_project_path(raw_path).map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response())?;
+    let project_path = ignite_tool_runner::sanitize_absolute_project_path(raw_path).map_err(|e| Box::new((StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response()))?;
     let meta = std::fs::metadata(&project_path).ok();
     if meta.as_ref().map(|m| !m.is_dir()).unwrap_or(true) {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": format!("projectPath does not exist or is not a directory: {}", project_path.display()) }))).into_response());
+        return Err(Box::new((StatusCode::BAD_REQUEST, Json(json!({ "error": format!("projectPath does not exist or is not a directory: {}", project_path.display()) }))).into_response()));
     }
     Ok(project_path)
 }
@@ -23,7 +23,7 @@ fn resolve_project_path(body: &Value) -> Result<PathBuf, Response> {
 async fn sbom(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let project_path = match resolve_project_path(&body) {
         Ok(p) => p,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let manifests = ignite_package_hallucination::default_manifests();
     match ignite_sbom::generate_sbom(&project_path, &state.runner, state.config.sbom.syft.enabled, &manifests, 1000).await {
@@ -35,7 +35,7 @@ async fn sbom(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Re
 async fn loc_metrics(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let project_path = match resolve_project_path(&body) {
         Ok(p) => p,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let result = ignite_loc_metrics::generate_loc_metrics(&project_path, &state.runner, state.config.metrics.gocloc.enabled).await;
     Json(json!({ "ok": true, "projectPath": project_path, "engine": result.engine, "metrics": result.metrics })).into_response()
@@ -44,7 +44,7 @@ async fn loc_metrics(State(state): State<Arc<AppState>>, Json(body): Json<Value>
 async fn posture(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let project_path = match resolve_project_path(&body) {
         Ok(p) => p,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     // See studio.rs's posture handler: an empty ruleset makes semgrep run
     // "successfully" with zero rules, silently reporting every category

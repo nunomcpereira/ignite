@@ -53,7 +53,7 @@ mod tests {
         let refs = build_references(["RUSTSEC-2023-0001", "GO-2023-1234", "not-an-advisory-id"]);
         assert_eq!(refs.rustsec, vec!["RUSTSEC-2023-0001"]);
         assert_eq!(refs.go, vec!["GO-2023-1234"]);
-        assert!(refs.is_empty() == false);
+        assert!(!refs.is_empty());
         assert!(refs.cve.is_empty() && refs.cwe.is_empty() && refs.ghsa.is_empty() && refs.pysec.is_empty());
     }
 

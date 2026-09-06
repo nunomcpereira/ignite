@@ -469,7 +469,7 @@ mod http_transport_tests {
             .unwrap()
             .to_string();
         let init_body: Value = parse_sse_or_json(init_resp).await;
-        assert_eq!(init_body["result"]["serverInfo"].is_object(), true);
+        assert!(init_body["result"]["serverInfo"].is_object());
 
         // Required by the spec before any further requests on this session.
         client
