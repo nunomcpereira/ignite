@@ -386,7 +386,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     actor_name: Some("Carried forward (previous scan)"),
                     email_sent: false,
                 });
-                pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification });
+                pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification, code: None });
                 pre_ids.insert(issue.id.clone());
                 carried_count += 1;
             }
@@ -421,7 +421,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         actor_name: Some("Ignite AI Assist"),
                         email_sent: false,
                     });
-                    pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification: justification.clone() });
+                    pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification: justification.clone(), code: None });
                     pre_ids.insert(issue.id.clone());
                     ai_count += 1;
                 }

@@ -157,7 +157,11 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
     let requested_overrides: Vec<SubmittedOverride> = body
         .get("overrides")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(|o| SubmittedOverride { issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string() }).collect())
+        .map(|a| a.iter().map(|o| SubmittedOverride { 
+            issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), 
+            justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        }).collect())
         .unwrap_or_default();
     let changed_files: Option<std::collections::HashSet<String>> = body.get("changedFiles").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect());
     let baseline_mode = body.get("baselineMode").and_then(|v| v.as_str()).filter(|m| *m == "gate" || *m == "save").map(str::to_string);

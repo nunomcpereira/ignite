@@ -107,7 +107,11 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     let requested_overrides: Vec<SubmittedOverride> = body
         .get("overrides")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(|o| SubmittedOverride { issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string() }).collect())
+        .map(|a| a.iter().map(|o| SubmittedOverride { 
+            issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), 
+            justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        }).collect())
         .unwrap_or_default();
 
     let result = validate_overrides(&still_open, &requested_overrides);

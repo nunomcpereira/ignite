@@ -42,7 +42,11 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
     let overrides: Vec<SubmittedOverride> = body
         .get("overrides")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(|o| SubmittedOverride { issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string() }).collect())
+        .map(|a| a.iter().map(|o| SubmittedOverride { 
+            issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), 
+            justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        }).collect())
         .unwrap_or_default();
     // The actor comes from the authenticated session when there is one,
     // else from a client-supplied {email, name} in the body — same

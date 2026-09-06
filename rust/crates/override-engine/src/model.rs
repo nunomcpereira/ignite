@@ -319,6 +319,7 @@ pub struct VulnManifest {
 pub struct SubmittedOverride {
     pub issue_id: String,
     pub justification: String,
+    pub code: Option<String>,
 }
 
 pub struct ValidateOverridesResult<'a> {

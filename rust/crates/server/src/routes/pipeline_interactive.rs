@@ -583,7 +583,7 @@ mod tests {
             // this run can actually reach `done` with `ok: true` — this
             // test only cares about the source-commit-sha capture, not
             // about exercising blocking-finding handling.
-            let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string() }).collect();
+            let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string(), code: None }).collect();
             let resolved = state.review_gate.resolve(
                 &job_id,
                 ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
@@ -740,7 +740,7 @@ mod tests {
         // secret — a config-level check (e.g. "codeql-query-suite-stale",
         // always overdue for a default test config) can also be blocking
         // and is otherwise unrelated to what this test is checking.
-        let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string() }).collect();
+        let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string(), code: None }).collect();
         let resolved = state.review_gate.resolve(
             &job_id,
             ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
@@ -793,7 +793,7 @@ mod tests {
             .into_iter()
             .map(|issue_id| {
                 let justification = if issue_id == secret_issue_id { "Test fixture literal, not a real credential.".to_string() } else { "not relevant to this test".to_string() };
-                SubmittedOverride { issue_id, justification }
+                SubmittedOverride { issue_id, justification, code: None }
             })
             .collect();
         assert!(state.review_gate.resolve(&job1, ReviewDecisionInput { proceed: true, overrides: overrides1, actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }));

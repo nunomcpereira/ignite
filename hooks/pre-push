@@ -143,15 +143,16 @@ REVIEW_TEXT=""
 # has nothing filled in yet.
 OVERRIDES_JSON="$(jq -n --arg text "$REVIEW_TEXT" '
   def trim: gsub("^\\s+|\\s+$"; "");
-  [$text | splits("\n(?=ID: )")]
+  ([$text | splits("\n(?=ID: )")]
   | map(select(test("^ID:")))
   | map({
       id: (capture("^ID:\\s*(?<v>[^\\n]+)").v),
-      ack: (((capture("Acknowledge:\\s*(?<v>[^\\n]*)").v) // "") | trim)
+      ack: (((capture("Acknowledge:\\s*(?<v>[^\\n]*)").v) // "") | trim),
+      code: ((capture("(?m)^# Code:\\s*(?<v>[^\\n]*)") // {v:null}).v)
     })
   | map(select(.ack | length > 0))
-  | map({issueId: .id, justification: .ack})
-')"
+  | map({issueId: .id, justification: .ack} + (if .code then {code: .code} else {} end))
+)')
 
 echo "→ Running Ignite checks against $REPO_PATH ..."
 if [ "$OVERRIDES_JSON" != "[]" ]; then

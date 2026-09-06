@@ -330,11 +330,11 @@ mod tests {
         assert!(!no_overrides.ok);
         assert_eq!(no_overrides.unresolved_errors.len(), 1);
 
-        let with_override = validate_overrides(&issues, &[SubmittedOverride { issue_id: issue_id.clone(), justification: "reviewed, it's a test fixture".into() }]);
+        let with_override = validate_overrides(&issues, &[SubmittedOverride { issue_id: issue_id.clone(), justification: "reviewed, it's a test fixture".into(), code: None }]);
         assert!(with_override.ok);
         assert_eq!(with_override.applied.len(), 1);
 
-        let blank_justification = validate_overrides(&issues, &[SubmittedOverride { issue_id, justification: "   ".into() }]);
+        let blank_justification = validate_overrides(&issues, &[SubmittedOverride { issue_id, justification: "   ".into(), code: None }]);
         assert!(!blank_justification.ok, "a whitespace-only justification must not count as an override");
     }
 
