@@ -242,9 +242,43 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
     Json(json!({ "ok": true, "prUrl": outcome.pr_url, "branch": outcome.branch, "filesChanged": outcome.files_changed })).into_response()
 }
 
+async fn generate_diff(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    let job_id = job_id.trim();
+    let Some((_, org, repo)) = resolve_org_repo(&state, job_id) else {
+        return err(StatusCode::NOT_FOUND, "This job has no associated GitHub repository yet.");
+    };
+
+    let candidates: Vec<FixCandidate> = match body.get("candidates").cloned().map(serde_json::from_value) {
+        Some(Ok(c)) => c,
+        Some(Err(e)) => return err(StatusCode::BAD_REQUEST, format!("Invalid candidates: {e}")),
+        None => return err(StatusCode::BAD_REQUEST, "candidates is required."),
+    };
+    if candidates.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "candidates must not be empty.");
+    }
+
+    let token = crate::auth::resolve_effective_github_token(&headers, &state.db);
+    if token.is_empty() {
+        return err(StatusCode::UNAUTHORIZED, "No GitHub token available.");
+    }
+
+    let full_name = format!("{org}/{repo}");
+    let github_api = ignite_github_api::GithubApi::new(&state.runner);
+    let base_branch = match github_api.default_branch(&full_name, &token).await {
+        Ok(b) => b,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("Failed to resolve default branch for {full_name}: {e}")),
+    };
+
+    match ignite_fix_pr::generate_fix_diff(&state.runner, &github_api, &full_name, &base_branch, &candidates, &token).await {
+        Ok(diff) => Json(json!({ "ok": true, "diff": diff })).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/pipeline/:job_id/fix-pr/preview", post(preview).delete(cancel_preview))
         .route("/api/pipeline/:job_id/fix-pr/preview/status", get(preview_status))
         .route("/api/pipeline/:job_id/fix-pr/apply", post(apply))
+        .route("/api/pipeline/:job_id/fix-pr/diff", post(generate_diff))
 }

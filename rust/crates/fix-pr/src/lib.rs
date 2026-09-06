@@ -287,6 +287,33 @@ pub struct FixPrOutcome {
 /// candidate, and opens one PR for all of them. `already_open` (branch
 /// already exists on `origin`) short-circuits before cloning — same
 /// idempotency check `ignite-auto-fix-pr` uses.
+pub async fn generate_fix_diff(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, candidates: &[FixCandidate], token: &str) -> Result<String, String> {
+    if candidates.is_empty() {
+        return Err("no candidates to apply".to_string());
+    }
+
+    let staging = tempfile::tempdir().map_err(|e| format!("failed to create staging dir: {e}"))?;
+    let clone_dir = staging.path().join("clone");
+    let clone_dir_str = clone_dir.to_string_lossy().to_string();
+
+    github_api.gh_clone_repo_branch(full_name, base_branch, &clone_dir_str, token)
+        .await
+        .map_err(|e| format!("failed to clone {full_name}@{base_branch}: {e}"))?;
+
+    let files_changed = apply_candidates_to_files(&clone_dir, candidates)
+        .map_err(|e| format!("failed to apply fixes: {e}"))?;
+
+    if files_changed.is_empty() {
+        return Err("none of the candidates' line ranges matched the current file contents".to_string());
+    }
+
+    let diff_out = runner.run_tool("git", &["diff".to_string()], &clone_dir_str, RunToolOptions::default())
+        .await
+        .map_err(|e| format!("git diff: {e}"))?;
+
+    Ok(diff_out.stdout)
+}
+
 pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, job_id: &str, candidates: &[FixCandidate], token: &str) -> FixPrOutcome {
     let branch = branch_name_for_job(job_id);
     if candidates.is_empty() {

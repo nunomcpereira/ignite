@@ -711,9 +711,14 @@
       <div id="fixPrList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
       <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
         <p id="fixPrStatus" class="text-xs text-slate-500"></p>
-        <button id="fixPrOpenBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed" data-i18n-title="fixPr.openPrTitle">
-          <span data-i18n="fixPr.openPr">Open PR</span>
-        </button>
+        <div class="flex items-center gap-2">
+          <button id="fixPrDownloadBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed" data-i18n-title="fixPr.downloadTitle">
+            <span>Download .diff</span>
+          </button>
+          <button id="fixPrOpenBtn" type="button" class="hidden text-xs font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed" data-i18n-title="fixPr.openPrTitle">
+            <span data-i18n="fixPr.openPr">Open PR</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -2161,7 +2166,9 @@
     function updateFixPrOpenBtn() {
       const anyIncluded = fixPrCandidates.some((c) => c.included);
       $('fixPrOpenBtn').classList.toggle('hidden', fixPrCandidates.length === 0);
+      $('fixPrDownloadBtn').classList.toggle('hidden', fixPrCandidates.length === 0);
       $('fixPrOpenBtn').disabled = !anyIncluded;
+      $('fixPrDownloadBtn').disabled = !anyIncluded;
     }
 
     function setFixPrProgress(pct) {
@@ -2237,6 +2244,7 @@
       $('fixPrModal').classList.add('hidden');
       $('fixPrStatus').textContent = '';
       $('fixPrOpenBtn').classList.add('hidden');
+      $('fixPrDownloadBtn').classList.add('hidden');
       $('fixPrList').innerHTML = '<p class="text-sm text-slate-500 py-6 text-center">Loading AI-suggested fixes…</p>';
       setFixPrProgress(0);
 
@@ -2301,6 +2309,41 @@
         $('fixPrStatus').textContent = 'Could not reach the server.';
         $('fixPrOpenBtn').disabled = false;
       }
+    });
+
+    $('fixPrDownloadBtn').addEventListener('click', async () => {
+      const selected = fixPrCandidates.filter((c) => c.included).map(({ included, ...rest }) => rest);
+      if (selected.length === 0) return;
+      $('fixPrDownloadBtn').disabled = true;
+      $('fixPrOpenBtn').disabled = true;
+      const originalStatus = $('fixPrStatus').innerHTML;
+      $('fixPrStatus').textContent = 'Generating diff...';
+      try {
+        const res = await fetch(`/api/pipeline/${fixPrJobId}/fix-pr/diff`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ candidates: selected }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          $('fixPrStatus').textContent = data.error || 'Failed to generate diff.';
+        } else {
+          $('fixPrStatus').innerHTML = originalStatus;
+          const blob = new Blob([data.diff], { type: 'text/plain' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `fix-pr-${fixPrJobId}.diff`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+        }
+      } catch {
+        $('fixPrStatus').textContent = 'Could not reach the server.';
+      }
+      $('fixPrDownloadBtn').disabled = false;
+      $('fixPrOpenBtn').disabled = false;
     });
 
     /* ---------------- Checks report — every check, split by area --------
