@@ -14,7 +14,8 @@ mod state;
 use state::AppState;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tower_http::services::ServeDir;
 
 /// Mirrors server.js's `app.use(express.static(path.join(__dirname,
@@ -364,7 +365,7 @@ mod tests {
         // See `state::GH_TOKEN_ENV_GUARD`: this depends on the ambient
         // absence of GH_TOKEN/GITHUB_TOKEN, shared with the tests in
         // `routes/effectivate.rs` that set/unset those vars.
-        let _guard = crate::state::GH_TOKEN_ENV_GUARD.lock().unwrap();
+        let _guard = crate::state::GH_TOKEN_ENV_GUARD.lock();
         std::env::remove_var("GH_TOKEN");
         std::env::remove_var("GITHUB_TOKEN");
         let dir = tempfile::tempdir().unwrap();

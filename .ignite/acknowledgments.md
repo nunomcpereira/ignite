@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: 9f5a1a06d93f4a2ffda7c6f9ce1f0cb493d1231b (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: a31db4f70a2a8f4072bb3b122e33ff2c16a26c44 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -53,77 +53,64 @@ ID: secret::rust/crates/llm-client/src/lib.rs::327
 #   rust/crates/llm-client/src/lib.rs:327
 Acknowledge: Fake Anthropic API key literal ("sk-ant-test") used as test-fixture input to verify the new Anthropic-provider request/auth-header wiring, not a real credential.
 
-ID: secret::rust/crates/server/src/auth/oidc.rs::317
-# Issue #7
-# [ERROR] secret - Hardcoded secret
-#   rust/crates/server/src/auth/oidc.rs:317
-# Code: config.auth.oidc.client_secret = "test-secret".into();
-Acknowledge: Literal test-fixture OIDC client secret used only to construct an in-process test Config for oidc.rs's own unit tests, not a real credential.
-
 ID: secret::rust/crates/server/src/auth/github_oauth.rs::289
-# Issue #8
+# Issue #7
 # [ERROR] secret - Hardcoded secret
 #   rust/crates/server/src/auth/github_oauth.rs:289
 # Code: config.github.oauth.client_secret = "secret-123".into();
 Acknowledge: Literal test-fixture GitHub OAuth client secret used only to construct an in-process test Config for github_oauth.rs's own unit tests, not a real credential.
 
-ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1401
-# Issue #9
-# [ERROR] secret - Hardcoded aws_secret
-#   rust/crates/server/src/routes/pipeline_interactive.rs:1401
-# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
-Acknowledge: Fake AWS access key literal used as a fixture file inside a review-gate integration test (uploaded as a zip so the secret scanner flags a real blocking finding to pause the run for review), not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1397 - pure line-number drift, flagged code unchanged)
-
-ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1457
-# Issue #10
-# [ERROR] secret - Hardcoded aws_secret
-#   rust/crates/server/src/routes/pipeline_interactive.rs:1457
-# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
-Acknowledge: Same fake AWS access key literal as the entry above, reused in a second review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1453 - pure line-number drift, flagged code unchanged)
-
-ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1527
-# Issue #11
-# [ERROR] secret - Hardcoded aws_secret
-#   rust/crates/server/src/routes/pipeline_interactive.rs:1527
-# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
-Acknowledge: Same fake AWS access key literal as the entries above, reused in a third review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1523 - pure line-number drift, flagged code unchanged)
-
-ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::1571
-# Issue #12
-# [ERROR] secret - Hardcoded aws_secret
-#   rust/crates/server/src/routes/pipeline_interactive.rs:1571
-# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
-Acknowledge: Same fake AWS access key literal as the entries above, reused in a fourth review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1567 - pure line-number drift, flagged code unchanged)
-
 ID: codeql-sast::public/index.html::813::js/xss-through-dom
-# Issue #13
+# Issue #8
 # [ERROR] codeql-sast - DOM text is reinterpreted as HTML without escaping meta-characters.
 #   public/index.html:813
 # Code: document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n-html')); });
 Acknowledge: Narrowed replacement for the previously-acknowledged finding at the old [data-i18n] innerHTML call (now textContent - see the applyStaticTranslations doc comment above it). Only elements explicitly opted in via data-i18n-html still use innerHTML, for the handful of translation keys whose copy deliberately carries inline markup (bold spans in upload.dropSubtitle, a line break in footer.note, etc). t()'s only inputs remain (1) the fixed attribute-name string 'data-i18n-html' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. No untrusted data reaches this call. (auto-carried-forward from codeql-sast::public/index.html::781::js/xss-through-dom - pure line-number drift, flagged code unchanged)
 
 ID: secret::config.json::14
-# Issue #15
+# Issue #9
 # [ERROR] secret - Base64 High Entropy String
 #   config.json:14
 Acknowledge: Real GitHub OAuth client secret in this developer's local config.json, per CLAUDE.md's own documented note that this file "contain[s] this developer's real org name, SMTP creds, etc." — confirmed gitignored (`git check-ignore` matches `.gitignore:3:config.json`), never committed or pushed. The pre-push gate scans the whole working tree regardless of git tracking, so a real local-only secret still needs an override to unblock a push whose diff never touches this file.
 
 ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::875
-# Issue #14
+# Issue #10
 # [ERROR] secret - Hardcoded gcp-api-key
 #   rust/crates/phase4-orchestrator/src/lib.rs:875
 # Code: fs::write(root.join("config.js"), format!("export const environment = {{ firebase: {{ apiKey: '{}' }} }};\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
 Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the built-in secret scanner (SECRET_RE) doesn't false-positive on a `firebase: { apiKey: ... }` nested property shape, not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::868 - pure line-number drift, flagged code unchanged)
 
-ID: secret::config.json::14
-# Issue #15
-# [ERROR] secret - Base64 High Entropy String
-#   config.json:14
-# Code: "clientSecret": "59121bde39f195d1d18562a131e1e7d05d32175d",
-Acknowledge: 
+ID: secret::rust/crates/server/src/auth/oidc.rs::318
+# Issue #11
+# [ERROR] secret - Hardcoded secret
+#   rust/crates/server/src/auth/oidc.rs:318
+# Code: config.auth.oidc.client_secret = "test-secret".into();
+Acknowledge: Literal test-fixture OIDC client secret used only to construct an in-process test Config for oidc.rs's own unit tests, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/auth/oidc.rs::317 - pure line-number drift, flagged code unchanged)
 
-ID: codeql-query-suite-stale::unknown::0
-# Issue #16
-# [ERROR] codeql-query-suite-stale - CodeQL's pinned query-suite versions haven't been reviewed within their configured cadence (security.codeql.reviewCadenceDays/lastReviewedAt). Re-verify each pinned version is still current and bump lastReviewedAt.
-#   (no file)
-Acknowledge: 
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::676
+# Issue #12
+# [ERROR] secret - Hardcoded aws_secret
+#   rust/crates/server/src/routes/pipeline_interactive.rs:676
+# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
+Acknowledge: Fake AWS access key literal used as a fixture file inside a review-gate integration test (uploaded as a zip so the secret scanner flags a real blocking finding to pause the run for review), not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1397 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1401 - pure line-number drift, flagged code unchanged)
+
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::732
+# Issue #13
+# [ERROR] secret - Hardcoded aws_secret
+#   rust/crates/server/src/routes/pipeline_interactive.rs:732
+# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
+Acknowledge: Same fake AWS access key literal as the entry above, reused in a second review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1453 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1457 - pure line-number drift, flagged code unchanged)
+
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::802
+# Issue #14
+# [ERROR] secret - Hardcoded aws_secret
+#   rust/crates/server/src/routes/pipeline_interactive.rs:802
+# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
+Acknowledge: Same fake AWS access key literal as the entries above, reused in a third review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1523 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1527 - pure line-number drift, flagged code unchanged)
+
+ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::846
+# Issue #15
+# [ERROR] secret - Hardcoded aws_secret
+#   rust/crates/server/src/routes/pipeline_interactive.rs:846
+# Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
+Acknowledge: Same fake AWS access key literal as the entries above, reused in a fourth review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1567 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1571 - pure line-number drift, flagged code unchanged)

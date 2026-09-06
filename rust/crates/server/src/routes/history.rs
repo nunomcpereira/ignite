@@ -66,7 +66,7 @@ async fn job_issues_handler(State(state): State<Arc<AppState>>, Path(job_id): Pa
     // live-run branch also needs a projectId alongside the issues, which
     // the shared job_issues helper doesn't carry — mirrored inline here
     // rather than widening that helper's return shape for one caller.
-    let running = state.running_runs.lock().unwrap();
+    let running = state.running_runs.lock();
     if running.contains_key(job_id) {
         let issues = &running.get(job_id).unwrap().all_issues;
         return Json(json!({ "ok": true, "running": true, "issues": issues, "projectId": Value::Null })).into_response();
@@ -89,7 +89,7 @@ async fn job_issues_handler(State(state): State<Arc<AppState>>, Path(job_id): Pa
 async fn job_status(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
     let (live_project_id, review_active) = {
-        let running = state.running_runs.lock().unwrap();
+        let running = state.running_runs.lock();
         match running.get(job_id) {
             Some(live) => (Some(live.project_id), live.review_active),
             None => return job_status_from_db(&state, job_id),
@@ -186,7 +186,7 @@ mod tests {
     use crate::state::{self, LiveRun};
     use serde_json::Value;
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     async fn spawn_test_server() -> (String, Arc<AppState>) {
         let db_dir = tempfile::tempdir().unwrap();
@@ -218,7 +218,7 @@ mod tests {
         let job_id = "live-job".to_string();
         let project_id = state.db.create_project(&job_id, "acme", "widgets", false, "ui", None);
         state.db.upsert_step(project_id, 3, "Extraction", "running", "line 1");
-        state.running_runs.lock().unwrap().insert(
+        state.running_runs.lock().insert(
             job_id.clone(),
             LiveRun { org: "acme".to_string(), repo: "widgets".to_string(), project_id: Some(project_id), all_issues: vec![], project_root: None, source_backup_dir: None, review_active: false },
         );

@@ -158,12 +158,28 @@ fn clear_session_cookie() -> String {
     format!("{}=; Path=/; HttpOnly; Max-Age=0", ignite_auth::SESSION_COOKIE)
 }
 
+/// Sets `Set-Cookie` without panicking if the value ever contains bytes
+/// invalid in an HTTP header — `session_id`/the fixed cookie attributes are
+/// controlled internally today, but a future refactor shouldn't be able to
+/// turn a malformed cookie value into a 500-causing panic instead of an
+/// actual 500 response.
+fn insert_session_cookie(res: &mut Response, cookie: String) {
+    match cookie.parse() {
+        Ok(value) => {
+            res.headers_mut().insert(axum::http::header::SET_COOKIE, value);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build Set-Cookie header value");
+        }
+    }
+}
+
 pub(crate) fn issue_session_response(db: &ignite_db_store::DbStore, user_id: i64, body: Value, status: StatusCode) -> Response {
     let session_id = ignite_auth::generate_session_id();
     let expires_at = (chrono::Utc::now() + chrono::Duration::milliseconds(ignite_auth::SESSION_TTL_MS as i64)).to_rfc3339();
     db.create_session(&session_id, user_id, &expires_at);
     let mut res = (status, Json(body)).into_response();
-    res.headers_mut().insert(axum::http::header::SET_COOKIE, set_session_cookie(&session_id).parse().unwrap());
+    insert_session_cookie(&mut res, set_session_cookie(&session_id));
     res
 }
 
@@ -179,7 +195,7 @@ pub(crate) fn issue_session_redirect(db: &ignite_db_store::DbStore, user_id: i64
     let expires_at = (chrono::Utc::now() + chrono::Duration::milliseconds(ignite_auth::SESSION_TTL_MS as i64)).to_rfc3339();
     db.create_session(&session_id, user_id, &expires_at);
     let mut res = axum::response::Redirect::to(redirect_to).into_response();
-    res.headers_mut().insert(axum::http::header::SET_COOKIE, set_session_cookie(&session_id).parse().unwrap());
+    insert_session_cookie(&mut res, set_session_cookie(&session_id));
     res
 }
 
@@ -199,7 +215,7 @@ async fn auth_logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         state.db.delete_session(session_id);
     }
     let mut res = Json(json!({ "ok": true })).into_response();
-    res.headers_mut().insert(axum::http::header::SET_COOKIE, clear_session_cookie().parse().unwrap());
+    insert_session_cookie(&mut res, clear_session_cookie());
     res
 }
 
@@ -308,8 +324,8 @@ mod tests {
     use crate::review_gate::ReviewGate;
     use axum::body::Body;
     use axum::http::Request;
+    use parking_lot::Mutex;
     use std::collections::HashMap;
-    use std::sync::Mutex;
     use tower::ServiceExt;
 
     fn test_state() -> Arc<AppState> {

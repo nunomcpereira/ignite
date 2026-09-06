@@ -213,6 +213,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    use parking_lot::Mutex;
     use rsa::pkcs1::EncodeRsaPrivateKey;
     use rsa::traits::PublicKeyParts;
     use rsa::RsaPrivateKey;

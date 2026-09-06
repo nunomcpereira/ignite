@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tadone Scan Timing</title>
+<title>Rust Scan Timing</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 
@@ -371,74 +371,76 @@
 <div class="wrap">
 
   <header>
-    <div class="eyebrow">Ignite &middot; performance measurement</div>
-    <h1>Where the tadone scan spends its 6 minutes</h1>
+    <div class="eyebrow">Ignite &middot; performance measurement (Rust)</div>
+    <h1>Where the Rust pipeline spends its ~2 minutes</h1>
     <p class="subtitle">
-      One <code>validate-all</code> run of Ignite's onboarding pipeline against
-      <code>/Users/nuno/tests/tadone</code> — a 6-workspace monorepo (tadone, eva-console,
-      parla, despesas, shared, obra-abc). Phases 1&ndash;5, shipping skipped, org-governance
-      CI (act) skipped. Every timing below is a real wall-clock measurement from an
-      instrumented run, not an estimate — including the "after" numbers, taken from a
-      second full run against the same project after four fixes landed.
+      One <code>validate-all</code> run of the current 100%-Rust <code>ignite-server</code>
+      against <code>/Users/nuno/tests/tadone</code>. Phases 1&ndash;4, shipping and
+      org-governance CI (<code>act</code>) skipped. Every timing below is a real wall-clock
+      measurement pulled from the run's own <code>__stageTimings</code> response field
+      (<code>rust/crates/phase4-orchestrator</code>'s built-in <code>Instant::now()</code>
+      instrumentation) — not an estimate, and not the old Node-era numbers below, which this
+      run supersedes now that the server itself has been fully ported.
     </p>
   </header>
 
   <div class="stat-row">
     <div class="stat hot">
-      <div class="value">365<small>s → 302s</small></div>
-      <div class="label">Wall time, shipped default (17% faster)</div>
+      <div class="value">131.7<small>s</small></div>
+      <div class="label">Wall time (curl, end to end)</div>
     </div>
     <div class="stat">
-      <div class="value">121<small>s</small></div>
-      <div class="label">Declined tradeoff (67% faster, less rule coverage)</div>
+      <div class="value">81.2<small>s</small></div>
+      <div class="label">Slowest single check (semanticSast)</div>
     </div>
     <div class="stat">
-      <div class="value">949,750</div>
-      <div class="label">Lines of code (before exclusion)</div>
+      <div class="value">6,176</div>
+      <div class="label">Files scanned, 22 languages (gocloc)</div>
     </div>
     <div class="stat bad">
-      <div class="value">42</div>
+      <div class="value">79</div>
       <div class="label">Blocking findings</div>
     </div>
   </div>
 
   <section>
-    <h2>Pipeline timeline <span style="font-family:var(--mono);font-size:12px;color:var(--text-faint);text-transform:none;letter-spacing:0;">(baseline run, before the four fixes below)</span></h2>
+    <h2>Pipeline timeline <span style="font-family:var(--mono);font-size:12px;color:var(--text-faint);text-transform:none;letter-spacing:0;">(current Rust baseline)</span></h2>
     <p class="section-note">
       Stages run in this order. The two shaded bars overlap deliberately &mdash; Ignite
       already runs the license/dependency scan concurrently with Phase 4, so the
-      slower of the two (Phase 4, at 339s) sets the pace instead of both costs adding up.
-      This is the original 365s run; see "What was fixed" below for the 302s result.
+      slower of the two (Phase 4, at 118.9s) sets the pace instead of both costs adding up.
+      The ~3s gap between the 128.6s sum of stage timings and the 131.7s curl-measured
+      total is HTTP/process overhead outside the instrumented stages.
     </p>
     <div class="timeline">
       <div class="tl-row">
         <div class="tl-name">stage / copy tree</div>
-        <div class="tl-track"><div class="tl-bar" style="left:0%; width:7.1%;"></div></div>
-        <div class="tl-ms">26.0s</div>
+        <div class="tl-track"><div class="tl-bar" style="left:0%; width:7.3%;"></div></div>
+        <div class="tl-ms">9.6s</div>
       </div>
       <div class="tl-row">
         <div class="tl-name">env / codeowners</div>
-        <div class="tl-track"><div class="tl-bar" style="left:7.1%; width:0.1%;"></div></div>
-        <div class="tl-ms">0.3s</div>
+        <div class="tl-track"><div class="tl-bar" style="left:7.3%; width:0.1%;"></div></div>
+        <div class="tl-ms">0.1s</div>
       </div>
       <div class="tl-row">
         <div class="tl-name">license + dep scan</div>
-        <div class="tl-track"><div class="tl-bar concurrent" style="left:7.2%; width:22.6%;"></div></div>
-        <div class="tl-ms">82.7s</div>
+        <div class="tl-track"><div class="tl-bar concurrent" style="left:7.4%; width:21.0%;"></div></div>
+        <div class="tl-ms">27.7s</div>
       </div>
       <div class="tl-row">
-        <div class="tl-name">Phase 4 (24 checks)</div>
-        <div class="tl-track"><div class="tl-bar concurrent" style="left:7.2%; width:92.8%;"></div></div>
-        <div class="tl-ms">339.3s</div>
+        <div class="tl-name">Phase 4 (29 checks)</div>
+        <div class="tl-track"><div class="tl-bar concurrent" style="left:7.4%; width:90.3%;"></div></div>
+        <div class="tl-ms">118.9s</div>
       </div>
       <div class="tl-scale">
         <div></div>
         <div class="tl-scale-track">
           <span style="left:0%">0s</span>
-          <span style="left:26.2%">100s</span>
-          <span style="left:52.3%">200s</span>
-          <span style="left:78.5%">300s</span>
-          <span style="left:100%">365s</span>
+          <span style="left:22.8%">30s</span>
+          <span style="left:45.6%">60s</span>
+          <span style="left:68.3%">90s</span>
+          <span style="left:100%">131.7s</span>
         </div>
         <div></div>
       </div>
@@ -446,136 +448,278 @@
   </section>
 
   <section>
+    <h2>Anomaly, root-caused <span style="font-family:var(--mono);font-size:12px;color:var(--ok);text-transform:none;letter-spacing:0;">(confirmed via source + per-tool subprocess logs)</span></h2>
+    <p class="section-note">
+      Phase 4's total (118.9s) is <strong>37.7s more</strong> than its own slowest
+      individual check (semanticSast, 81.2s) &mdash; reproduced almost exactly on a
+      second rerun (119.2s vs. 81.1s, a 38.1s gap). A third run with subprocess-level
+      logging (<code>RUST_LOG=info</code> against a throwaway second server instance,
+      not the numbers used elsewhere in this report) found the actual cause in
+      <code>rust/crates/phase4-orchestrator/src/lib.rs</code>: <strong>secrets and
+      governance are awaited inline, sequentially, before the big
+      <code>tokio::join!</code> fan-out of the other 27 checks even starts</strong>
+      &mdash; a leftover from how the checks are laid out in the function, not a
+      concurrency bug. The log confirms it: gitleaks (secrets) starts alone at T+0s and
+      runs solo for 31.3s; nothing else's tool probes fire until the instant secrets
+      finishes. <code>35.8s (secrets) + 0.1s (governance) + 81.2s (concurrent block)
+      &approx; 117.1s</code>, matching the measured 118.9s almost exactly. Nothing in
+      secrets or governance is a dependency of the other 27 checks &mdash; folding them
+      into the same fan-out should recover close to the full 35.9s.
+    </p>
+  </section>
+
+  <section>
+    <h2>Per-tool subprocess drill-down</h2>
+    <p class="section-note">
+      Real subprocess-only durations, extracted by pairing each tool's
+      "invoking"/"completed" log timestamps (not estimated) from the same
+      <code>RUST_LOG=info</code> run used for the root-cause above. Compared against
+      each check's own <code>phase4:&lt;name&gt;</code> total, this splits "real tool
+      work" from "Rust-side overhead" (parsing tool output, building issues, caching).
+    </p>
+    <table>
+      <thead>
+        <tr><th>Check</th><th>Subprocess time</th><th>Task total</th><th>What the gap is</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>secrets (gitleaks)</td><td class="num">31.3s</td><td class="num">35.8s</td>
+          <td>~4.5s of Ignite's own regex pass + gitleaks-output merge, on top of the
+          gitleaks subprocess itself.</td>
+        </tr>
+        <tr>
+          <td>semanticSast (semgrep)</td><td class="num">78.3s</td><td class="num">81.2s</td>
+          <td>~2.9s parsing semgrep's JSON output into issues. The subprocess itself is
+          essentially the whole cost.</td>
+        </tr>
+        <tr>
+          <td>pii (bearer)</td><td class="num">42.6s</td><td class="num">46.8s</td>
+          <td>~4.2s &mdash; mostly <code>ensure_git_context_for_bearer</code>'s own git
+          bootstrap when it can't reuse an already-initialized staging repo.</td>
+        </tr>
+        <tr>
+          <td>iac (checkov)</td><td class="num">31.3s</td><td class="num">35.4s</td>
+          <td>~4.1s. The check also runs trivy/hadolint internally for
+          container/Dockerfile linting, overlapping with checkov rather than adding on
+          top.</td>
+        </tr>
+        <tr>
+          <td>sbom (syft)</td><td class="num">7.3s</td><td class="num">12.4s</td>
+          <td>~5.1s building the manifest-derived SBOM entries syft doesn't cover
+          itself.</td>
+        </tr>
+        <tr>
+          <td>locMetrics (gocloc)</td><td class="num">6.9s</td><td class="num">12.1s</td>
+          <td>~5.2s aggregating gocloc's per-file output into per-language summaries.</td>
+        </tr>
+        <tr>
+          <td>duplication (jscpd)</td><td class="num">2.1s</td><td class="num">7.2s</td>
+          <td>~5.1s. Task total also folds in jscpd's own 4.5s tooling probe (see below)
+          since both run inside the same timed span.</td>
+        </tr>
+        <tr>
+          <td>ghaSecurity (zizmor)</td><td class="num">0.5s</td><td class="num">4.8s</td>
+          <td>Almost entirely the 4.5s tooling probe cost below &mdash; zizmor's real
+          scan is near-instant on this repo's workflow count.</td>
+        </tr>
+        <tr>
+          <td>codeql</td><td class="num">3.9s<span class="pill err" style="margin-left:6px">not a real scan</span></td><td class="num">5.0s</td>
+          <td>See the correctness finding below &mdash; this "fast" result is a failed
+          Java autobuild returning 0 findings, not a completed security-extended
+          analysis.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Why semanticSast actually takes 78s</h2>
+    <p class="section-note">
+      Reran the pipeline's exact semgrep command standalone with <code>--time</code> to
+      get its own profiler output (rule/file counts, per-file timing) &mdash; not
+      estimated. <strong>277 rules</strong> (<code>p/security-audit</code> +
+      <code>p/owasp-top-ten</code> combined) ran against <strong>22,414 target
+      files</strong>, 248MB of content, for 419.8s of total scanning CPU-time spread
+      across cores. That work isn't evenly spread: semgrep's own profiler flags 10
+      files &mdash; <strong>0.19% of all targets</strong> &mdash; that alone account for
+      <strong>62.4s, 39% of all scanning time</strong>:
+    </p>
+    <table>
+      <thead><tr><th>File</th><th>Time</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>libs/cdn/src/assets/emojis/emoji_u1f483_1f3fc.json</td><td class="num">7.57s</td><td rowspan="7">Seven emoji asset files, each a 300&ndash;400KB single-line JSON blob (SVG path data) &mdash; no line boundaries for the tokenizer to chunk on, so each rule treats the whole file as one giant unit of work.</td></tr>
+        <tr><td>emoji_u1f483_1f3fb.json</td><td class="num">7.22s</td></tr>
+        <tr><td>emoji_u1f483_1f3ff.json</td><td class="num">6.98s</td></tr>
+        <tr><td>emoji_u1f9ad.json</td><td class="num">6.66s</td></tr>
+        <tr><td>emoji_u1f483_1f3fe.json</td><td class="num">6.29s</td></tr>
+        <tr><td>emoji_u1f483.json</td><td class="num">6.16s</td></tr>
+        <tr><td>emoji_u1f3c1.json</td><td class="num">5.95s</td></tr>
+        <tr><td>docs/design/captured/child-kai-sleep.html</td><td class="num">5.21s</td><td rowspan="3">Browser-captured/rendered page snapshots (133KB, 2,231 lines) &mdash; not application source, checked in as design artifacts.</td></tr>
+        <tr><td>docs/design/captured/tasks.html</td><td class="num">5.18s</td></tr>
+        <tr><td>docs/design/captured/child-aa-sleep.html</td><td class="num">5.18s</td></tr>
+      </tbody>
+    </table>
+    <p class="section-note">
+      Unlike the rule-coverage tradeoff, excluding <code>libs/cdn/src/assets/</code> and
+      <code>docs/design/captured/</code> (or a general size/single-line-length cutoff
+      for semgrep's own targets) loses no real security coverage &mdash; these aren't
+      code. The remaining ~61% of scanning time is genuine rule-matching work across 277
+      rules &times; ~22.4k real files, which only the rule-pack tradeoff above
+      addresses.
+    </p>
+  </section>
+
+  <section>
+    <h2>Correctness finding: CodeQL isn't actually scanning this repo</h2>
+    <p class="section-note">
+      The original report attributed codeql's drop from 326.0s to ~5.5s entirely to the
+      <code>--threads=0</code> fix. The subprocess log shows a more important reason:
+      on this run codeql invoked <code>database create --language=java</code> (auto-detected
+      from real <code>.java</code> files under <code>apps/meters/android/</code>) and
+      its Java autobuild failed outright &mdash;
+      <code>autobuild.sh</code> exited 1 ("Spawned process exited abnormally") because no
+      Java build toolchain is configured for that path &mdash; so the check logged
+      "codeql done (4962ms) &mdash; 0 finding(s)" and moved on. <strong>No JavaScript/TypeScript
+      database was even attempted</strong> in this run, despite that being the language the
+      original report described CodeQL as covering. A failed autobuild reads identically
+      to a clean scan in the pipeline's own output: 0 findings, check passed. That's a real
+      coverage gap, not a performance win &mdash; worth either fixing the Java autobuild
+      path (or switching that language to CodeQL's build-mode=none extractor, available in
+      recent CodeQL CLI versions) or explicitly excluding java via
+      <code>CODEQL_LANGUAGES</code> until it's fixed, so a language that can't be analyzed
+      doesn't silently report as scanned-and-clean.
+    </p>
+  </section>
+
+  <section>
+    <h2>Reproducibility note</h2>
+    <p class="section-note">
+      Two independent full reruns (unrelated to the subprocess-drilldown run above)
+      landed within 0.4s of each other on total time and found the identical 79
+      blocking findings both times &mdash; the pipeline's timing and results are stable
+      run-to-run on an otherwise idle machine. One difference did surface:
+      <code>packageHallucination</code> dropped from 23.2s to <strong>0.0s</strong> on
+      the second rerun, everything else holding within 1&ndash;2s. Most likely a warm
+      cache on the npm/PyPI/crates.io existence-check results from the first run &mdash;
+      worth confirming in <code>phase4:packageHallucination</code>'s own code before
+      relying on it, since a 23s-per-cold-run cost reappearing on every fresh staging
+      directory would matter for CI/pre-push usage where that cache may not persist
+      between runs.
+    </p>
+  </section>
+
+  <section>
     <h2>Phase 4 &mdash; per-check duration</h2>
     <p class="section-note">
-      All 24 checks run concurrently via <code>Promise.all</code>, so Phase 4's total
-      cost (339s) equals its single slowest check, not the sum of the column below.
-      Sorted longest to shortest; the two marked <span class="tag" style="position:static;display:inline">critical path</span>
-      are what Phase 4's wall time is actually waiting on.
+      All 29 checks run concurrently, so in principle Phase 4's total cost tracks its
+      single slowest check rather than the sum of the column below &mdash; see the
+      anomaly above for why that isn't quite true on this run. Sorted longest to
+      shortest; <span class="tag" style="position:static;display:inline">critical path</span>
+      marks the one Phase 4's wall time is actually waiting on.
     </p>
     <div class="chart">
       <div class="bar-row critical-path">
-        <div class="bar-name">semanticSast <span class="tag">critical path</span></div>
+        <div class="bar-name">semanticSast (semgrep) <span class="tag">critical path</span></div>
         <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
-        <div class="bar-ms">339.2s</div>
-      </div>
-      <div class="bar-row critical-path">
-        <div class="bar-name">codeql <span class="tag">critical path</span></div>
-        <div class="bar-track"><div class="bar-fill" style="width:96.1%"></div></div>
-        <div class="bar-ms">326.0s</div>
+        <div class="bar-ms">81.2s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">secrets</div>
-        <div class="bar-track"><div class="bar-fill" style="width:62.4%"></div></div>
-        <div class="bar-ms">211.8s</div>
+        <div class="bar-name">pii (bearer)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:57.6%"></div></div>
+        <div class="bar-ms">46.8s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">provenance</div>
-        <div class="bar-track"><div class="bar-fill" style="width:33.1%"></div></div>
-        <div class="bar-ms">112.3s</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-name">piiDataFlow (bearer)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:32.3%"></div></div>
-        <div class="bar-ms">109.5s</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-name">euAiActDocuments</div>
-        <div class="bar-track"><div class="bar-fill" style="width:27.6%"></div></div>
-        <div class="bar-ms">93.8s</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-name">health</div>
-        <div class="bar-track"><div class="bar-fill" style="width:27.3%"></div></div>
-        <div class="bar-ms">92.6s</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-name">packageHallucination</div>
-        <div class="bar-track"><div class="bar-fill" style="width:23.2%"></div></div>
-        <div class="bar-ms">78.7s</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-name">posture (semgrep)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:22.6%"></div></div>
-        <div class="bar-ms">76.8s</div>
+        <div class="bar-name">secrets (gitleaks)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:44.1%"></div></div>
+        <div class="bar-ms">35.8s</div>
       </div>
       <div class="bar-row">
         <div class="bar-name">iac</div>
-        <div class="bar-track"><div class="bar-fill" style="width:22.5%"></div></div>
-        <div class="bar-ms">76.3s</div>
+        <div class="bar-track"><div class="bar-fill" style="width:43.6%"></div></div>
+        <div class="bar-ms">35.4s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">apiSchema (spectral)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:22.3%"></div></div>
-        <div class="bar-ms">75.7s</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-name">cssDeadCode</div>
-        <div class="bar-track"><div class="bar-fill" style="width:19.8%"></div></div>
-        <div class="bar-ms">67.2s</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-name">duplication (jscpd)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:17.9%"></div></div>
-        <div class="bar-ms">60.6s</div>
+        <div class="bar-name">packageHallucination</div>
+        <div class="bar-track"><div class="bar-fill" style="width:28.6%"></div></div>
+        <div class="bar-ms">23.2s</div>
       </div>
       <div class="bar-row">
         <div class="bar-name">sbom (syft)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:6.2%"></div></div>
-        <div class="bar-ms">21.1s</div>
+        <div class="bar-track"><div class="bar-fill" style="width:15.3%"></div></div>
+        <div class="bar-ms">12.4s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">fileEncapsulation</div>
-        <div class="bar-track"><div class="bar-fill" style="width:6.3%"></div></div>
-        <div class="bar-ms">21.4s</div>
+        <div class="bar-name">locMetrics (gocloc)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:14.9%"></div></div>
+        <div class="bar-ms">12.1s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">deadCode</div>
-        <div class="bar-track"><div class="bar-fill" style="width:6.1%"></div></div>
-        <div class="bar-ms">20.6s</div>
+        <div class="bar-name">duplication (jscpd)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:8.9%"></div></div>
+        <div class="bar-ms">7.2s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">loc (gocloc)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:4.8%"></div></div>
-        <div class="bar-ms">16.4s</div>
+        <div class="bar-name">codeql</div>
+        <div class="bar-track"><div class="bar-fill" style="width:6.8%"></div></div>
+        <div class="bar-ms">5.5s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">apiSchemaDrift (oasdiff)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:4.8%"></div></div>
-        <div class="bar-ms">16.3s</div>
+        <div class="bar-name">ghaSecurity (zizmor)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:5.9%"></div></div>
+        <div class="bar-ms">4.8s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">imageVulnerabilities</div>
-        <div class="bar-track"><div class="bar-fill" style="width:3.1%"></div></div>
-        <div class="bar-ms">10.6s</div>
+        <div class="bar-name">provenance</div>
+        <div class="bar-track"><div class="bar-fill" style="width:5.4%"></div></div>
+        <div class="bar-ms">4.4s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">igniteIgnore</div>
+        <div class="bar-track"><div class="bar-fill" style="width:5.3%"></div></div>
+        <div class="bar-ms">4.3s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">posture</div>
+        <div class="bar-track"><div class="bar-fill" style="width:3.7%"></div></div>
+        <div class="bar-ms">3.0s</div>
       </div>
       <div class="bar-row">
         <div class="bar-name">imageProvenance (cosign)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:2.9%"></div></div>
-        <div class="bar-ms">9.8s</div>
+        <div class="bar-track"><div class="bar-fill" style="width:3.6%"></div></div>
+        <div class="bar-ms">2.9s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">governance</div>
-        <div class="bar-track"><div class="bar-fill" style="width:2.4%"></div></div>
-        <div class="bar-ms">8.3s</div>
+        <div class="bar-name">apiSchema (spectral)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:1.6%"></div></div>
+        <div class="bar-ms">1.3s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">euAiActDocuments</div>
+        <div class="bar-track"><div class="bar-fill" style="width:1.6%"></div></div>
+        <div class="bar-ms">1.3s</div>
       </div>
       <div class="bar-row">
         <div class="bar-name">modelArtifactSecurity</div>
-        <div class="bar-track"><div class="bar-fill" style="width:2.4%"></div></div>
-        <div class="bar-ms">8.3s</div>
+        <div class="bar-track"><div class="bar-fill" style="width:1.0%"></div></div>
+        <div class="bar-ms">0.8s</div>
       </div>
       <div class="bar-row">
         <div class="bar-name">maliciousDependencies</div>
-        <div class="bar-track"><div class="bar-fill" style="width:2.3%"></div></div>
-        <div class="bar-ms">7.7s</div>
+        <div class="bar-track"><div class="bar-fill" style="width:0.9%"></div></div>
+        <div class="bar-ms">0.7s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">llm (deep-scan)</div>
-        <div class="bar-track"><div class="bar-fill" style="width:0.1%"></div></div>
-        <div class="bar-ms">0.07s</div>
+        <div class="bar-name">apiSchemaDrift (oasdiff)</div>
+        <div class="bar-track"><div class="bar-fill" style="width:0.7%"></div></div>
+        <div class="bar-ms">0.6s</div>
       </div>
       <div class="bar-row">
-        <div class="bar-name">boundaries / igniteIgnore</div>
+        <div class="bar-name">governance / fileEncapsulation / euAiAct / deadCode / health / cssDeadCode</div>
+        <div class="bar-track"><div class="bar-fill" style="width:0.2%"></div></div>
+        <div class="bar-ms">&le;0.1s each</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-name">llm / boundaries / imageVulnerabilities</div>
         <div class="bar-track"><div class="bar-fill" style="width:0.1%"></div></div>
         <div class="bar-ms">&lt;0.02s</div>
       </div>
@@ -590,146 +734,127 @@
       </thead>
       <tbody>
         <tr>
-          <td>semanticSast</td><td class="num">339.2s</td>
-          <td>Semgrep run with two rulesets back to back (<code>p/security-audit</code> +
-          <code>p/owasp-top-ten</code>) over the whole tree. This is the single biggest cost
-          in the run &mdash; two full registry rulesets on ~950k LOC.</td>
+          <td>semanticSast</td><td class="num">81.2s</td>
+          <td>Semgrep with <code>p/security-audit</code> + <code>p/owasp-top-ten</code>
+          combined (277 rules) over 22,414 targets, 248MB. Still the critical path (see
+          anomaly note above) and down sharply from the Node-era 339.2s. Semgrep's own
+          <code>--time</code> profiler found 39% of scanning CPU-time going to just 10
+          files (0.19% of targets) &mdash; see the dedicated finding below, a real,
+          zero-coverage-loss fix distinct from the rule-pack tradeoff.</td>
         </tr>
         <tr>
-          <td>codeql</td><td class="num">326.0s</td>
-          <td>Builds a fresh CodeQL database and runs <code>security-extended</code> per
-          language. Only JS/TS applied here, but building + analyzing one language database
-          from scratch on this codebase alone takes ~5.5 minutes &mdash; a second or third
-          language (Python/Java/Go) would run concurrently but each adds its own
-          multi-minute database build.</td>
+          <td>pii (bearer)</td><td class="num">46.8s</td>
+          <td>Bearer's own git bootstrap plus a full security-report scan, filtered to
+          PII categories after the fact.</td>
         </tr>
         <tr>
-          <td>secrets</td><td class="num">211.8s</td>
-          <td>Regex + gitleaks pass over 8,806 text files &mdash; the single largest file
-          count of any check, since it can't skip non-code assets the way SAST tools do.</td>
+          <td>secrets</td><td class="num">35.8s</td>
+          <td>Gitleaks pass over the staged tree. Down from 211.8s in the Node baseline
+          &mdash; a ~6&times; improvement, most plausibly the same vendor-exclusion effect
+          plus a leaner Rust-side file walk.</td>
         </tr>
         <tr>
-          <td>provenance</td><td class="num">112.3s</td>
-          <td>Built-in git/commit provenance record &mdash; no external tool, so its cost is
-          pure tree-walking + hashing over the full 59.5k-file staged copy.</td>
+          <td>iac</td><td class="num">35.4s</td>
+          <td>Infrastructure-as-code security scan (Checkov, per <code>config.json</code>)
+          over Terraform/CloudFormation/Kubernetes manifests in the tree.</td>
         </tr>
         <tr>
-          <td>piiDataFlow</td><td class="num">109.5s</td>
-          <td>Bearer's own git bootstrap (<code>ensureGitContextForBearer</code>: init +
-          commit + fake origin) plus a full security-report scan, filtered down to PII
-          categories after the fact.</td>
+          <td>packageHallucination</td><td class="num">23.2s</td>
+          <td>Manifest dependencies, each a live HTTP existence check against
+          npm/PyPI/crates.io &mdash; cost scales with how many distinct manifests and
+          dependencies the monorepo has, one registry round-trip at a time.</td>
         </tr>
         <tr>
-          <td>euAiActDocuments</td><td class="num">93.8s</td>
-          <td>A pure filename/path scan should be near-instant; at 93.8s it's walking all
-          59.5k staged files rather than a pruned subset &mdash; the biggest single anomaly
-          in this run relative to what the check actually does.</td>
-        </tr>
-        <tr>
-          <td>packageHallucination</td><td class="num">78.7s</td>
-          <td>257 manifest dependencies, each a live HTTP existence check against
-          npm/PyPI/crates.io &mdash; six workspaces means six package.json files' worth of
-          dependencies checked one registry round-trip at a time.</td>
+          <td>codeql</td><td class="num">5.5s</td>
+          <td>Down from 326.0s in the Node baseline, but not for the reason originally
+          assumed &mdash; see the correctness finding below. On this run it's fast
+          because its Java autobuild failed and returned 0 findings, not because
+          <code>--threads=0</code> made a real scan faster.</td>
         </tr>
       </tbody>
     </table>
   </section>
 
   <section>
-    <h2>What was fixed, and what it actually did</h2>
+    <h2>Node-era history (context, superseded by the numbers above)</h2>
     <p class="section-note">
-      Four fixes shipped and were each verified with a real rerun of this same scan.
-      Net result with zero coverage tradeoff: <strong>365s &rarr; 302s (17% faster)</strong>.
-      The two remaining large costs (semgrep's semantic SAST at 275s, CodeQL at 219s)
-      are both rule-engine work scaling with real LOC and rule-set size &mdash; the
-      honest remaining lever is trimming rule coverage, not a free engineering win.
-      See below for what that lever is actually worth, measured.
+      The original version of this report measured the old Node <code>server.js</code>
+      implementation (365s baseline, then 302s after four fixes: CodeQL
+      <code>--threads=0</code>, a shared file-walk cache, a <code>.angular</code>
+      build-cache exclusion, and CodeQL's <code>LGTM_INDEX_FILTERS</code>). That server
+      no longer exists &mdash; it was deleted in <code>cdf4d9d</code> once the Rust port
+      was complete (tagged <code>stable_node_impl</code> on GitHub for reference). The
+      CodeQL threads and build-cache exclusion fixes both carried over into the Rust
+      port and their effect is visible above (codeql 326.0s &rarr; 5.5s, secrets 211.8s
+      &rarr; 35.8s). Full detail on those four fixes is preserved in this file's git
+      history (<code>git log -p -- performance_report.html</code>) rather than repeated
+      here.
     </p>
-    <table>
-      <thead>
-        <tr><th>Fix</th><th>Verified effect</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>CodeQL <code>--threads</code></td>
-          <td>CodeQL's CLI defaults to <strong>1 thread</strong> when <code>--threads</code> is
-          omitted (confirmed against the real CLI's own <code>--help</code>) &mdash; not
-          "one per core" as the code's own comment assumed. Now always passes
-          <code>--threads=0</code> (all cores). Isolated effect: <strong>326s &rarr; 64s</strong>
-          on a clean run (a real ~5&times; speedup on that one check); on later runs sharing
-          the machine with everything else this varied 60&ndash;220s &mdash; a real, safe fix,
-          but its wall-clock payoff depends on how much else is competing for cores at the time.</td>
-        </tr>
-        <tr>
-          <td>Shared file-walk cache</td>
-          <td>~10 of Phase 4's built-in checks each called <code>walkFiles</code>
-          independently, re-walking the same 59.5k-file tree from scratch, all
-          concurrently. Now walked once per staged root and cached (invalidated when
-          the staging dir is torn down in all three pipeline entry points). Reduces
-          redundant I/O contention across the board.</td>
-        </tr>
-        <tr>
-          <td>.angular build-cache exclusion</td>
-          <td>Discovered that <code>.angular</code> (Angular CLI/Vite's own bundled
-          dependency cache) held <strong>592k of 950k total scanned lines (62%)</strong> —
-          vendored, minified copies of date-fns/firebase/express, not project source.
-          Added to <code>SKIP_DIRS</code> (fixes every built-in check + gocloc for free)
-          plus explicit <code>--exclude</code>/<code>--skip-path</code> flags for semgrep
-          and Bearer, which do their own file discovery. Real, zero-coverage-loss fix —
-          but net wall-time impact was smaller than the 62% figure suggested, since the
-          real remaining ~358k lines of actual source still dominates.</td>
-        </tr>
-        <tr>
-          <td>CodeQL <code>LGTM_INDEX_FILTERS</code></td>
-          <td><code>codeql database create</code> extracts from the whole
-          <code>--source-root</code> itself — it never consulted Ignite's own
-          <code>SKIP_DIRS</code>, so it was extracting <code>.angular</code> as if it
-          were real source regardless of the fix above. Verified empirically that
-          CodeQL's own <code>**</code>-glob syntax is rejected outright and a bare
-          directory name is required; fixed and confirmed excluded via the database's
-          source archive. Measured impact on this run was smaller than expected —
-          CodeQL's cost here is dominated by real source volume, not vendor noise.</td>
-        </tr>
-      </tbody>
-    </table>
   </section>
 
   <section>
-    <h2>The one lever left: rule-set coverage vs. speed</h2>
+    <h2>Remaining levers</h2>
     <p class="section-note">
-      Both remaining bottlenecks are already user-configurable without any code
-      change, and neither was touched by default — dropping coverage is a security
-      decision, not a performance one. Measured, not estimated:
+      Both remain user-configurable without any code change, and neither is touched by
+      default &mdash; dropping coverage is a security decision, not a performance one.
     </p>
     <div class="recs">
       <div class="rec">
         <div class="n">•</div>
         <div>
-          <h3><code>SEMGREP_CONFIG=p/security-audit</code> (drop <code>p/owasp-top-ten</code>)</h3>
+          <h3><code>SEMGREP_CONFIG</code> / <code>security.semgrep.config</code></h3>
           <p>
-            Measured with a real rerun (same project, CodeQL cache warm from the prior
-            run so this isolates semgrep's own effect): total wall time
-            <strong>365s &rarr; 121s (67% faster)</strong> — semanticSast alone dropped
-            275s &rarr; 100s. The two packs' rule coverage overlaps substantially (the
-            codebase's own config comment says as much), so most of that time was spent
-            re-checking largely the same ground twice. Cost: losing whatever
-            OWASP Top 10-specific rules aren't already covered by security-audit.
-            <strong>Decision: not adopted.</strong> Asked directly, keep both packs —
-            functionality (rule coverage) over raw wall-clock time. Still available via
-            <code>SEMGREP_CONFIG</code>/<code>security.semgrep.config</code> if that
-            calculus ever changes for a specific environment (e.g. a fast inner-loop
-            pre-push hook), but the default stays as both packs combined.
+            semanticSast (81.2s) is the confirmed critical path on this run. The prior,
+            Node-era measurement of this same lever found dropping
+            <code>p/owasp-top-ten</code> (keeping only <code>p/security-audit</code>)
+            cut that check's time by ~64% with overlapping rule coverage &mdash; but the
+            decision at the time was to keep both packs for functionality over
+            wall-clock time. That decision has not been revisited for the Rust port; the
+            lever is still there if the calculus changes for a specific environment
+            (e.g. a fast inner-loop pre-push hook).
           </p>
         </div>
       </div>
       <div class="rec">
         <div class="n">•</div>
         <div>
-          <h3><code>CODEQL_LANGUAGES=javascript</code> (narrow scope)</h3>
+          <h3>Fold secrets/governance into the main Phase 4 fan-out (~35.9s, root-caused above)</h3>
           <p>
-            Already-configurable; only relevant on a repo with multiple CodeQL-supported
-            languages present (this one only has JS/TS). No effect here, but relevant
-            guidance for other projects.
+            This is the biggest lever in this whole report and, unlike the semgrep
+            tradeoff, it's free &mdash; no coverage lost. <code>phase4-orchestrator</code>
+            runs secrets and governance sequentially before starting the
+            <code>tokio::join!</code> over the other 27 checks, for no dependency
+            reason found in the code. Moving them into the same fan-out should take
+            Phase 4's wall time from ~118.9s toward ~81.2s (its slowest real check),
+            cutting total pipeline time from ~131.7s to roughly ~94s.
+          </p>
+        </div>
+      </div>
+      <div class="rec">
+        <div class="n">•</div>
+        <div>
+          <h3>Exclude non-source assets from semgrep's targets (~24s of the 78s, real)</h3>
+          <p>
+            See "Why semanticSast actually takes 78s" above &mdash; 10 vendored/generated
+            files (emoji JSON assets, captured HTML snapshots) burn 39% of semgrep's
+            scanning CPU-time for zero security value. Adding
+            <code>libs/cdn/src/assets/</code> and <code>docs/design/captured/</code> (or
+            a general large-single-line-file heuristic) to semgrep's excludes is a real,
+            zero-coverage-loss fix &mdash; smaller than the secrets/governance fix above,
+            but stacks with it.
+          </p>
+        </div>
+      </div>
+      <div class="rec">
+        <div class="n">•</div>
+        <div>
+          <h3>Fix or exclude CodeQL's Java autobuild</h3>
+          <p>
+            Not a speed lever &mdash; a correctness one found while chasing the timing
+            data. See the correctness finding above: CodeQL is currently reporting
+            "0 findings" on a language it never successfully analyzed. Fixing the Java
+            build path (or excluding java via <code>CODEQL_LANGUAGES</code> until it's
+            fixed) matters more than any of the timing numbers in this report.
           </p>
         </div>
       </div>
@@ -744,21 +869,25 @@
         <tr><th>Category</th><th>Count</th><th>Severity</th></tr>
       </thead>
       <tbody>
-        <tr><td>secret</td><td class="num">16</td><td><span class="pill err">blocking</span></td></tr>
-        <tr><td>container-image-cve</td><td class="num">14</td><td><span class="pill err">blocking</span></td></tr>
-        <tr><td>api-schema-lint</td><td class="num">4</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>secret</td><td class="num">50</td><td><span class="pill err">blocking</span></td></tr>
+        <tr><td>gha-security</td><td class="num">22</td><td><span class="pill err">blocking</span></td></tr>
         <tr><td>iac-security</td><td class="num">3</td><td><span class="pill err">blocking</span></td></tr>
         <tr><td>semantic-sast</td><td class="num">2</td><td><span class="pill err">blocking</span></td></tr>
         <tr><td>license-compliance</td><td class="num">2</td><td><span class="pill err">blocking</span></td></tr>
-        <tr><td>dependency-vulnerability</td><td class="num">1</td><td><span class="pill warn">1 critical/high (CVSS&nbsp;7.5)</span></td></tr>
       </tbody>
     </table>
   </section>
 
   <footer>
     method &mdash; POST /api/pipeline/validate-all, projectPath=/Users/nuno/tests/tadone, runLocalCi=false (Phase 5/act excluded from this measurement) &middot;
-    every external tool present (trivy, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, picklescan, oasdiff, codeql, gitleaks) &middot;
-    timings captured via temporary Date.now() instrumentation around each Phase 4 task and each outer pipeline stage, not shipped in server.js
+    server: ignite-server (Rust, release build) &middot;
+    checks that ran an external tool on this run: gitleaks (secrets), semgrep (semanticSast), bearer (pii), checkov (iac), syft (sbom), jscpd (duplication), gocloc (locMetrics), zizmor (ghaSecurity), cosign (imageProvenance), codeql &middot;
+    timings are the run's own <code>__stageTimings</code> response field, built from real <code>std::time::Instant</code> instrumentation in <code>rust/crates/phase4-orchestrator/src/lib.rs</code> and <code>rust/crates/server/src/routes/pipeline_validate.rs</code> &middot;
+    total wall time (131.7s) is a separate, independent measurement: <code>time curl ... /api/pipeline/validate-all</code> &middot;
+    per-tool subprocess drill-down and the secrets/governance root-cause used a third, throwaway run against a second
+    <code>ignite-server</code> instance on port 51338 with <code>RUST_LOG=info</code>, pairing tool-runner's own
+    "invoking"/"completed" log timestamps &mdash; that instance and its API key were torn down after capture, no
+    changes made to the running server or its config
   </footer>
 
 </div>

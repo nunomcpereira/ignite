@@ -537,7 +537,8 @@ mod phase_gating_tests {
     use axum::Router;
     use serde_json::{json, Value};
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
 
     fn build_state(config: ignite_config::Config) -> (Arc<AppState>, tempfile::TempDir) {
         let db_dir = tempfile::tempdir().unwrap();

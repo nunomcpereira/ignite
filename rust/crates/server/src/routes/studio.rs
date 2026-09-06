@@ -35,7 +35,8 @@ use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
@@ -61,7 +62,7 @@ fn issue_row_to_input(r: &IssueRow) -> IssueInput {
 }
 
 fn get_issues(state: &AppState, job_id: &str, ctx: &StudioContext) -> Vec<IssueRow> {
-    if let Some(live) = state.running_runs.lock().unwrap().get(job_id) {
+    if let Some(live) = state.running_runs.lock().get(job_id) {
         if live.review_active && live.project_root.is_some() {
             return live.all_issues.clone();
         }
@@ -95,7 +96,7 @@ fn replace_issue_batch(state: &AppState, job_id: &str, ctx: &StudioContext, fres
 
     state.db.replace_project_issues(project_id, &inputs, &overridden_ids);
     let rows = state.db.get_project_issues(project_id);
-    if let Some(live) = state.running_runs.lock().unwrap().get_mut(job_id) {
+    if let Some(live) = state.running_runs.lock().get_mut(job_id) {
         if live.review_active {
             live.all_issues = rows;
         }
@@ -113,7 +114,7 @@ fn codeql_db_dir_for(project_id: Option<i64>) -> Option<PathBuf> {
 }
 
 fn resolve_studio_context(state: &AppState, job_id: &str) -> Result<StudioContext, Response> {
-    if let Some(live) = state.running_runs.lock().unwrap().get(job_id) {
+    if let Some(live) = state.running_runs.lock().get(job_id) {
         if live.review_active {
             if let (Some(root), Some(backup)) = (&live.project_root, &live.source_backup_dir) {
                 return Ok(StudioContext { project_id: live.project_id, root: root.clone(), backup_root: backup.clone(), org: live.org.clone(), repo: live.repo.clone() });
@@ -122,7 +123,7 @@ fn resolve_studio_context(state: &AppState, job_id: &str) -> Result<StudioContex
     }
 
     if let Some(project_id) = state.db.get_project_id_by_job_id(job_id) {
-        let mut pending = state.pending_effectivations.lock().unwrap();
+        let mut pending = state.pending_effectivations.lock();
         if let Some(entry) = pending.get(&project_id) {
             if entry.created_at.elapsed() >= EFFECTIVATION_TTL {
                 pending.remove(&project_id);
@@ -411,7 +412,7 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
     let query_text = body.query;
 
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-    CODEQL_QUERY_CANCELLATIONS.lock().unwrap().insert(job_id.clone(), cancel_tx);
+    CODEQL_QUERY_CANCELLATIONS.lock().insert(job_id.clone(), cancel_tx);
 
     tokio::spawn(async move {
         // Validated up front, outside the select! below: these are
@@ -472,7 +473,7 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
                 }
             }
         };
-        CODEQL_QUERY_CANCELLATIONS.lock().unwrap().remove(&job_id);
+        CODEQL_QUERY_CANCELLATIONS.lock().remove(&job_id);
 
         match result {
             Ok(r) => {
@@ -508,7 +509,6 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
 async fn codeql_query_cancel(Path(job_id): Path<String>) -> Response {
     let cancelled = CODEQL_QUERY_CANCELLATIONS
         .lock()
-        .unwrap()
         .get(&job_id)
         .map(|tx| tx.send(true).is_ok())
         .unwrap_or(false);
@@ -649,7 +649,7 @@ mod tests {
     use crate::review_gate::ReviewGate;
     use crate::state::{self, LiveRun};
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     async fn spawn_test_server_with_live_run(root: PathBuf, backup: PathBuf) -> (String, Arc<AppState>, String) {
         let db_dir = tempfile::tempdir().unwrap();
@@ -668,7 +668,7 @@ mod tests {
             package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
         });
-        app_state.running_runs.lock().unwrap().insert(
+        app_state.running_runs.lock().insert(
             job_id.clone(),
             LiveRun { org: "acme".to_string(), repo: "widgets".to_string(), project_id: Some(project_id), all_issues: vec![], project_root: Some(root), source_backup_dir: Some(backup), review_active: true },
         );
@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(done["ok"], true, "codeql run failed: {done:?}");
         assert_eq!(done["languages"].as_array().unwrap(), &vec![json!("javascript")]);
 
-        let project_id = state.running_runs.lock().unwrap().get(&job_id).unwrap().project_id.unwrap();
+        let project_id = state.running_runs.lock().get(&job_id).unwrap().project_id.unwrap();
         let db_dir = codeql_db_dir_for(Some(project_id)).unwrap().join("javascript").join("db");
         assert!(db_dir.exists(), "expected the CodeQL database to be persisted at {db_dir:?}");
 

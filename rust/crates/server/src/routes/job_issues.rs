@@ -6,7 +6,7 @@ use crate::state::AppState;
 use ignite_db_store::IssueRow;
 
 pub fn lookup_job_issues(state: &AppState, job_id: &str) -> Option<Vec<IssueRow>> {
-    let running = state.running_runs.lock().unwrap();
+    let running = state.running_runs.lock();
     if let Some(live) = running.get(job_id) {
         return Some(live.all_issues.clone());
     }
@@ -20,7 +20,7 @@ pub fn lookup_job_issues(state: &AppState, job_id: &str) -> Option<Vec<IssueRow>
 /// route) can verify the caller isn't reusing a clean job id from an
 /// unrelated repo to post a forged status somewhere else.
 pub fn lookup_job_owner_repo(state: &AppState, job_id: &str) -> Option<(String, String)> {
-    let running = state.running_runs.lock().unwrap();
+    let running = state.running_runs.lock();
     if let Some(live) = running.get(job_id) {
         return Some((live.org.clone(), live.repo.clone()));
     }

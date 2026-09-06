@@ -246,7 +246,7 @@ mod tests {
     use axum::http::Request;
     use serde_json::Value;
     use std::collections::HashMap as Map;
-    use std::sync::Mutex as StdMutex;
+    use parking_lot::Mutex as PlMutex;
     use tower::ServiceExt;
 
     fn test_state(config: ignite_config::Config) -> Arc<AppState> {
@@ -256,13 +256,13 @@ mod tests {
         Arc::new(AppState {
             runner: crate::state::default_runner(),
             db,
-            running_runs: StdMutex::new(Map::new()),
-            pending_effectivations: StdMutex::new(Map::new()),
+            running_runs: PlMutex::new(Map::new()),
+            pending_effectivations: PlMutex::new(Map::new()),
             review_gate: ReviewGate::default(),
             llm_config: crate::state::default_llm_config(),
             config,
             package_hallucination_checker: crate::state::default_package_hallucination_checker(),
-            fix_pr_previews: Mutex::new(HashMap::new()),
+            fix_pr_previews: PlMutex::new(HashMap::new()),
         })
     }
 

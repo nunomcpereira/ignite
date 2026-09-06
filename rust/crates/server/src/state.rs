@@ -4,7 +4,7 @@ use ignite_fix_pr::FixCandidate;
 use ignite_tool_runner::ToolRunner;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::Instant;
 
 /// In-flight/finished state of one `POST /api/pipeline/:job_id/fix-pr/preview`

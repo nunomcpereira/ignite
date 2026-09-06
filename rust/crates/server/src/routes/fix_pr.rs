@@ -85,15 +85,15 @@ fn job_from_saved_row(row: ignite_db_store::FixPrPreviewRow) -> FixPrPreviewJob 
 async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim().to_string();
 
-    if state.fix_pr_previews.lock().unwrap().contains_key(&job_id) {
-        let job = state.fix_pr_previews.lock().unwrap();
+    if state.fix_pr_previews.lock().contains_key(&job_id) {
+        let job = state.fix_pr_previews.lock();
         return Json(job_status_json(job.get(&job_id).unwrap())).into_response();
     }
 
     if let Some(row) = state.db.get_fix_pr_preview(&job_id) {
         let job = job_from_saved_row(row);
         let response = job_status_json(&job);
-        state.fix_pr_previews.lock().unwrap().insert(job_id, job);
+        state.fix_pr_previews.lock().insert(job_id, job);
         return Json(response).into_response();
     }
 
@@ -106,7 +106,7 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
         let job = FixPrPreviewJob { done: true, reason: Some("AI service unavailable.".to_string()), considered_count: issues.len(), ..Default::default() };
         let response = job_status_json(&job);
         persist_finished_job(&state.db, &job_id, &job);
-        state.fix_pr_previews.lock().unwrap().insert(job_id, job);
+        state.fix_pr_previews.lock().insert(job_id, job);
         return Json(response).into_response();
     }
 
@@ -119,7 +119,7 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
 
     let job = FixPrPreviewJob { total: considered_count, considered_count, ..Default::default() };
     let response = job_status_json(&job);
-    state.fix_pr_previews.lock().unwrap().insert(job_id.clone(), job);
+    state.fix_pr_previews.lock().insert(job_id.clone(), job);
 
     let task_state = state.clone();
     let task_job_id = job_id.clone();
@@ -128,14 +128,14 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
         let progress_state = task_state.clone();
         let progress_job_id = task_job_id.clone();
         let candidates = ignite_fix_pr::generate_fix_candidates_with_progress(&http, &llm_config, &inputs, |_| {}, move |completed, total| {
-            if let Some(job) = progress_state.fix_pr_previews.lock().unwrap().get_mut(&progress_job_id) {
+            if let Some(job) = progress_state.fix_pr_previews.lock().get_mut(&progress_job_id) {
                 job.completed = completed;
                 job.total = total;
             }
         })
         .await;
 
-        let mut jobs = task_state.fix_pr_previews.lock().unwrap();
+        let mut jobs = task_state.fix_pr_previews.lock();
         if let Some(job) = jobs.get_mut(&task_job_id) {
             job.candidates = candidates;
             job.done = true;
@@ -144,7 +144,7 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
         }
     });
 
-    if let Some(job) = state.fix_pr_previews.lock().unwrap().get_mut(&job_id) {
+    if let Some(job) = state.fix_pr_previews.lock().get_mut(&job_id) {
         // Guard against the (rare, e.g. zero eligible issues) race where the
         // spawned task already finished and cleared `abort_handle` before
         // we got the lock back here — don't resurrect a handle to a
@@ -159,7 +159,7 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
 
 async fn preview_status(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
-    if let Some(job) = state.fix_pr_previews.lock().unwrap().get(job_id) {
+    if let Some(job) = state.fix_pr_previews.lock().get(job_id) {
         return Json(job_status_json(job)).into_response();
     }
     // Not in memory — e.g. the server restarted after this job finished.
@@ -167,7 +167,7 @@ async fn preview_status(State(state): State<Arc<AppState>>, Path(job_id): Path<S
     if let Some(row) = state.db.get_fix_pr_preview(job_id) {
         let job = job_from_saved_row(row);
         let response = job_status_json(&job);
-        state.fix_pr_previews.lock().unwrap().insert(job_id.to_string(), job);
+        state.fix_pr_previews.lock().insert(job_id.to_string(), job);
         return Json(response).into_response();
     }
     err(StatusCode::NOT_FOUND, "No fix-PR preview job for this job id — call POST .../fix-pr/preview first.")
@@ -181,7 +181,7 @@ async fn preview_status(State(state): State<Arc<AppState>>, Path(job_id): Path<S
 /// something that's already done isn't an error.
 async fn cancel_preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
-    let mut jobs = state.fix_pr_previews.lock().unwrap();
+    let mut jobs = state.fix_pr_previews.lock();
     let Some(job) = jobs.get_mut(job_id) else {
         return Json(json!({ "ok": true, "cancelled": false })).into_response();
     };

@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 ignite-tool-runner = { path = "../tool-runner" }
+parking_lot = "0.12"
 ignite-scheduled-rescan = { path = "../scheduled-rescan" }
 ignite-dependency-license-scan = { path = "../dependency-license-scan" }
 ignite-secrets = { path = "../secrets" }
