@@ -11,7 +11,7 @@
 //! workflow is exactly the kind of supply-chain risk a compliance
 //! gatekeeper exists to catch before a repo is pushed.
 
-use ignite_fs_utils::relative_to_root;
+use ignite_fs_utils::{build_snippet, relative_to_root, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde::Serialize;
 use std::path::Path;
@@ -34,6 +34,7 @@ pub struct GhaSecurityFinding {
     pub tool: &'static str,
     pub severity: &'static str,
     pub message: String,
+    pub code: Option<Snippet>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +96,46 @@ fn find_first_num(value: &serde_json::Value, keys: &[&str]) -> Option<i64> {
     }
 }
 
+/// `locations[].symbolic.kind` — zizmor attaches one "Primary" location per
+/// finding (the exact offending span) alongside broader "Hidden"/"Related"
+/// context locations (usually the whole enclosing step/job). A `run:` block
+/// with several separate injected expressions produces one finding per
+/// expression, each sharing the same Hidden/Related step-level location —
+/// so picking `locations[0]` unconditionally (as opposed to the Primary
+/// entry) collapses every one of them onto the same line and the same
+/// whole-step text, making genuinely distinct findings look like duplicates.
+fn find_primary_location(locations: &[serde_json::Value]) -> Option<&serde_json::Value> {
+    locations.iter().find(|l| l.get("symbolic").and_then(|s| s.get("kind")).and_then(|k| k.as_str()) == Some("Primary"))
+}
+
+fn location_point(loc: &serde_json::Value, key: &str) -> Option<(usize, usize)> {
+    let p = loc.get("concrete")?.get("location")?.get(key)?;
+    let row = p.get("row")?.as_i64()?.max(0) as usize;
+    let col = p.get("column")?.as_i64()?.max(0) as usize;
+    Some((row, col))
+}
+
+/// Pulls the exact offending substring out of the real source line via the
+/// Primary location's 0-indexed column span, rather than reusing zizmor's
+/// own `feature` text — which for a Primary location is often the entire
+/// multi-line enclosing block, not the specific expression.
+fn extract_span(content: &str, start: (usize, usize), end: (usize, usize)) -> Option<String> {
+    if start.0 != end.0 {
+        return None;
+    }
+    let line = content.lines().nth(start.0)?;
+    let chars: Vec<char> = line.chars().collect();
+    if start.1 > end.1 || end.1 > chars.len() {
+        return None;
+    }
+    let span: String = chars[start.1..end.1].iter().collect();
+    if span.is_empty() {
+        None
+    } else {
+        Some(span)
+    }
+}
+
 /// Never panics on any malformed/unexpected finding shape — a finding that
 /// can't be attributed to a file is dropped rather than reported at a
 /// fabricated location.
@@ -125,15 +166,41 @@ fn parse_zizmor_output(root: &Path, stdout: &str) -> Vec<GhaSecurityFinding> {
         let Some(raw_path) = raw_path.filter(|p| !p.is_empty()) else { continue };
         let rel_file = relative_to_root(root, &raw_path).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
 
+        // Prefer the Primary location (the exact offending span) over
+        // locations[0], which is usually a broader Hidden/Related location
+        // shared by every finding in the same step/job.
+        let detail_loc = find_primary_location(&locations).unwrap_or(first_loc);
+
         // zizmor's row/column are 0-indexed (tree-sitter convention).
-        let line = find_first_num(first_loc, &["row", "line"]).map(|n| (n + 1).max(1) as usize).unwrap_or(1);
-        let feature = first_loc.get("concrete").and_then(|c| c.get("feature")).and_then(|v| v.as_str());
-        let message = match feature {
-            Some(feature) if !feature.is_empty() => format!("{desc} ({feature})"),
+        let line = find_first_num(detail_loc, &["row", "line"]).map(|n| (n + 1).max(1) as usize).unwrap_or(1);
+        let feature = detail_loc.get("concrete").and_then(|c| c.get("feature")).and_then(|v| v.as_str());
+
+        let content = std::fs::read_to_string(root.join(&rel_file)).ok();
+        let span = content.as_deref().and_then(|c| {
+            let start = location_point(detail_loc, "start_point")?;
+            let end = location_point(detail_loc, "end_point")?;
+            extract_span(c, start, end)
+        });
+
+        // Fall back to zizmor's own `feature` text only when it's a single
+        // line — for a Primary location it's frequently the entire
+        // multi-line enclosing block, which makes for an unreadable message.
+        let message = match span.or_else(|| feature.filter(|f| !f.contains('\n')).map(str::to_string)) {
+            Some(s) if !s.is_empty() => format!("{desc} ({s})"),
             _ => desc,
         };
 
-        findings.push(GhaSecurityFinding { file: rel_file, line, kind: ident, tool: "zizmor", severity, message });
+        let code = content.as_deref().and_then(|c| {
+            let (start, end) = (location_point(detail_loc, "start_point"), location_point(detail_loc, "end_point"));
+            match (start, end) {
+                (Some((srow, scol)), Some((erow, ecol))) if srow == erow => {
+                    build_snippet(c, srow + 1, SnippetOptions { col_start: Some(scol), col_end: Some(ecol), ..Default::default() })
+                }
+                _ => build_snippet(c, line, SnippetOptions::default()),
+            }
+        });
+
+        findings.push(GhaSecurityFinding { file: rel_file, line, kind: ident, tool: "zizmor", severity, message, code });
     }
     findings
 }
@@ -243,6 +310,59 @@ mod tests {
         assert_eq!(findings[0].line, 1);
     }
 
+    /// Real zizmor 1.30.0 shape: a `run:` block with two separately
+    /// injected `${{ }}` expressions produces two findings that share the
+    /// same Hidden step-level location (row 3, the whole step) but carry
+    /// distinct Primary locations (rows 4 and 5, the individual lines).
+    /// Regression test for the two findings collapsing onto one duplicated
+    /// line/message.
+    #[test]
+    fn distinguishes_findings_sharing_a_hidden_location_via_primary() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::write(
+            root.join(".github/workflows/ci.yml"),
+            "jobs:\n  build:\n    steps:\n      - run: |\n          echo \"${{ env.A }}\"\n          echo \"${{ env.B }}\"\n",
+        )
+        .unwrap();
+
+        let make_finding = |var: &str, row: usize, col_start: usize, col_end: usize| {
+            serde_json::json!({
+                "ident": "template-injection",
+                "desc": "code injection via template expansion",
+                "determinations": { "severity": "Low" },
+                "locations": [
+                    {
+                        "symbolic": { "key": { "Local": { "verbatim_path": ".github/workflows/ci.yml" } }, "kind": "Hidden" },
+                        "concrete": {
+                            "location": { "start_point": { "row": 3, "column": 6 }, "end_point": { "row": 5, "column": 0 } },
+                            "feature": "run: |\n          echo \"${{ env.A }}\"\n          echo \"${{ env.B }}\"\n"
+                        }
+                    },
+                    {
+                        "symbolic": { "key": { "Local": { "verbatim_path": ".github/workflows/ci.yml" } }, "kind": "Primary" },
+                        "concrete": {
+                            "location": { "start_point": { "row": row, "column": col_start }, "end_point": { "row": row, "column": col_end } },
+                            "feature": format!("env.{var}")
+                        }
+                    }
+                ]
+            })
+        };
+        let stdout = serde_json::json!([make_finding("A", 4, 20, 25), make_finding("B", 5, 20, 25)]).to_string();
+
+        let findings = parse_zizmor_output(root, &stdout);
+        assert_eq!(findings.len(), 2);
+        assert_ne!(findings[0].line, findings[1].line, "each injection point should map to its own line, not the shared Hidden location");
+        assert_eq!(findings[0].line, 5);
+        assert_eq!(findings[1].line, 6);
+        assert!(findings[0].message.contains("env.A"));
+        assert!(findings[1].message.contains("env.B"));
+        assert!(findings[0].code.is_some(), "a resolvable source location should produce a code snippet");
+        assert!(findings[1].code.is_some());
+    }
+
     #[test]
     fn empty_stdout_is_no_findings() {
         let dir = tempdir().unwrap();
@@ -303,4 +423,3 @@ mod tests {
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 }
-
