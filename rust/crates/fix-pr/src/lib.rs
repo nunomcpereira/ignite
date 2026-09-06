@@ -424,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn generate_fix_candidates_skips_issues_without_a_snippet() {
         let http = reqwest::Client::new();
-        let llm_config = LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), scan_url: "http://127.0.0.1:9999".to_string(), scan_model: "test".to_string() };
+        let llm_config = LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: "http://127.0.0.1:9999".to_string(), scan_model: "test".to_string() };
         let issues = vec![FixIssueInput { issue_id: "i1".to_string(), category: "secret".to_string(), severity: "error".to_string(), file: "a.py".to_string(), line: 1, summary: "s".to_string(), snippet: None }];
         let candidates = generate_fix_candidates(&http, &llm_config, &issues, |_| {}).await;
         assert!(candidates.is_empty());

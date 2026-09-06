@@ -136,6 +136,10 @@ mod tests {
             anthropic_api_key: String::new(),
             anthropic_base_url: String::new(),
             anthropic_model: String::new(),
+            azure_foundry_api_key: String::new(),
+            azure_foundry_endpoint: String::new(),
+            azure_foundry_deployment: String::new(),
+            azure_foundry_api_version: String::new(),
             scan_url: "http://127.0.0.1:1".to_string(),
             scan_model: String::new(),
         }

@@ -100,11 +100,11 @@ impl Default for AiAutoJustifyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
-    /// Which backend `llm.url`/`llm.model` below, `llm.openai`, or
-    /// `llm.anthropic` resolves against: `"local"`, `"openai"`, or
-    /// `"anthropic"`. Drives both Phase 4's deep-scan (Check 3) and
-    /// Ignite Studio's on-demand "Explain issue"/"Suggest AI fix"
-    /// buttons — both share this one connection.
+    /// Which backend `llm.url`/`llm.model` below, `llm.openai`,
+    /// `llm.anthropic`, or `llm.azureFoundry` resolves against: `"local"`,
+    /// `"openai"`, `"anthropic"`, or `"azure-foundry"`. Drives both Phase
+    /// 4's deep-scan (Check 3) and Ignite Studio's on-demand "Explain
+    /// issue"/"Suggest AI fix" buttons — both share this one connection.
     pub provider: String,
     pub url: String,
     pub model: String,
@@ -117,6 +117,7 @@ pub struct LlmConfig {
     pub advisory_level: String,
     pub openai: OpenAiLlmConfig,
     pub anthropic: AnthropicLlmConfig,
+    pub azure_foundry: AzureFoundryLlmConfig,
 }
 impl Default for LlmConfig {
     fn default() -> Self {
@@ -131,6 +132,7 @@ impl Default for LlmConfig {
             advisory_level: "info".into(),
             openai: OpenAiLlmConfig::default(),
             anthropic: AnthropicLlmConfig::default(),
+            azure_foundry: AzureFoundryLlmConfig::default(),
         }
     }
 }
@@ -158,6 +160,27 @@ pub struct AnthropicLlmConfig {
 impl Default for AnthropicLlmConfig {
     fn default() -> Self {
         AnthropicLlmConfig { api_key: String::new(), base_url: "https://api.anthropic.com/v1".into(), model: "claude-opus-5".into() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureFoundryLlmConfig {
+    pub api_key: String,
+    /// Resource endpoint only, e.g. `https://my-resource.openai.azure.com`
+    /// — no `/openai/deployments/...` suffix, that's built from
+    /// `deployment`/`api_version` at request time.
+    pub endpoint: String,
+    /// Azure Foundry addresses models by deployment name, not model name —
+    /// this is what appears in the request URL and is sent as `model` in
+    /// the request body (Azure ignores the body value; the deployment in
+    /// the URL is authoritative).
+    pub deployment: String,
+    pub api_version: String,
+}
+impl Default for AzureFoundryLlmConfig {
+    fn default() -> Self {
+        AzureFoundryLlmConfig { api_key: String::new(), endpoint: String::new(), deployment: String::new(), api_version: "2024-10-21".into() }
     }
 }
 
@@ -899,6 +922,10 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("ANTHROPIC_API_KEY") { merged.llm.anthropic.api_key = v; }
     if let Some(v) = env_str("ANTHROPIC_BASE_URL") { merged.llm.anthropic.base_url = v; }
     if let Some(v) = env_str("ANTHROPIC_MODEL") { merged.llm.anthropic.model = v; }
+    if let Some(v) = env_str("AZURE_FOUNDRY_API_KEY") { merged.llm.azure_foundry.api_key = v; }
+    if let Some(v) = env_str("AZURE_FOUNDRY_ENDPOINT") { merged.llm.azure_foundry.endpoint = v; }
+    if let Some(v) = env_str("AZURE_FOUNDRY_DEPLOYMENT") { merged.llm.azure_foundry.deployment = v; }
+    if let Some(v) = env_str("AZURE_FOUNDRY_API_VERSION") { merged.llm.azure_foundry.api_version = v; }
 }
 
 #[cfg(test)]

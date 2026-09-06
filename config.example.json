@@ -16,6 +16,12 @@
       "apiKey": "",
       "baseUrl": "https://api.anthropic.com/v1",
       "model": "claude-opus-5"
+    },
+    "azureFoundry": {
+      "apiKey": "",
+      "endpoint": "",
+      "deployment": "",
+      "apiVersion": "2024-10-21"
     }
   },
   "github": {

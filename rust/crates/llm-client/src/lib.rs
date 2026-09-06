@@ -18,6 +18,14 @@ pub enum Provider {
     /// `llm_chat`/`llm_complete`/`llm_available` rather than folded into
     /// `llm_target`/`ChatRequest`.
     Anthropic,
+    /// Azure AI Foundry (formerly Azure OpenAI Service). Shares the
+    /// OpenAI-compatible chat-completions request/response body, but the
+    /// URL is per-resource/per-deployment
+    /// (`{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=...`)
+    /// and auth is an `api-key` header, not `Authorization: Bearer` — so
+    /// like Anthropic it's branched separately rather than folded into
+    /// `llm_target`'s bearer-auth path.
+    AzureFoundry,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +37,12 @@ pub struct LlmClientConfig {
     pub anthropic_api_key: String,
     pub anthropic_base_url: String,
     pub anthropic_model: String,
+    pub azure_foundry_api_key: String,
+    /// Resource endpoint, e.g. `https://my-resource.openai.azure.com` —
+    /// no `/openai/deployments/...` suffix (that's built in `llm_target`).
+    pub azure_foundry_endpoint: String,
+    pub azure_foundry_deployment: String,
+    pub azure_foundry_api_version: String,
     pub scan_url: String,
     pub scan_model: String,
 }
@@ -49,8 +63,8 @@ pub struct LlmTarget {
 }
 
 /// Resolves the effective chat-completions endpoint/model/auth for
-/// whichever OpenAI-compatible provider is configured. Anthropic isn't
-/// resolved here — see the `Provider::Anthropic` doc comment.
+/// whichever OpenAI-compatible provider is configured. Anthropic and Azure
+/// Foundry aren't resolved here — see their `Provider` doc comments.
 pub fn llm_target(config: &LlmClientConfig) -> LlmTarget {
     match config.provider {
         Provider::OpenAi => {
@@ -61,14 +75,25 @@ pub fn llm_target(config: &LlmClientConfig) -> LlmTarget {
             let base = config.anthropic_base_url.trim_end_matches('/');
             LlmTarget { url: format!("{}/messages", base), model: config.anthropic_model.clone(), auth_header: None }
         }
+        Provider::AzureFoundry => azure_foundry_target(config),
         Provider::Local => LlmTarget { url: format!("{}/v1/chat/completions", config.scan_url), model: config.scan_model.clone(), auth_header: None },
     }
+}
+
+/// `auth_header` is always `None` here — Azure Foundry authenticates via
+/// an `api-key` header, not `Authorization`, so callers branch on
+/// `is_azure_foundry` and set it themselves, same as the Anthropic path.
+fn azure_foundry_target(config: &LlmClientConfig) -> LlmTarget {
+    let base = config.azure_foundry_endpoint.trim_end_matches('/');
+    let url = format!("{}/openai/deployments/{}/chat/completions?api-version={}", base, config.azure_foundry_deployment, config.azure_foundry_api_version);
+    LlmTarget { url, model: config.azure_foundry_deployment.clone(), auth_header: None }
 }
 
 fn provider_label(provider: &Provider) -> &'static str {
     match provider {
         Provider::OpenAi => "openai",
         Provider::Anthropic => "anthropic",
+        Provider::AzureFoundry => "azure-foundry",
         Provider::Local => "local",
     }
 }
@@ -168,6 +193,7 @@ struct ChatRequest<'a> {
 pub async fn llm_chat(client: &reqwest::Client, config: &LlmClientConfig, source_block: &str, system_prompt: &str, label: &str, mut log: impl FnMut(&str)) -> Result<Vec<LlmFinding>, LlmError> {
     let timeout_ms: u64 = 300_000;
     let is_anthropic = matches!(config.provider, Provider::Anthropic);
+    let is_azure_foundry = matches!(config.provider, Provider::AzureFoundry);
     let target = if is_anthropic { LlmTarget { url: format!("{}/messages", config.anthropic_base_url.trim_end_matches('/')), model: config.anthropic_model.clone(), auth_header: None } } else { llm_target(config) };
     let provider_label = format!("{} [{}]", label, provider_label(&config.provider));
     log(&format!("[llm] → {} POST {} model={} timeout={}ms payload={} chars", provider_label, target.url, target.model, timeout_ms, source_block.len()));
@@ -193,9 +219,7 @@ pub async fn llm_chat(client: &reqwest::Client, config: &LlmClientConfig, source
             response_format: ResponseFormat { format_type: "json_object" },
             messages: vec![ChatMessage { role: "system", content: system_prompt }, ChatMessage { role: "user", content: source_block }],
         });
-        if let Some(auth) = &target.auth_header {
-            r = r.header("Authorization", auth);
-        }
+        r = if is_azure_foundry { r.header("api-key", &config.azure_foundry_api_key) } else if let Some(auth) = &target.auth_header { r.header("Authorization", auth) } else { r };
         r
     };
 
@@ -244,6 +268,7 @@ struct ChatRequestPlain<'a> {
 /// picks its own temperature/timeout per use case.
 pub async fn llm_complete(client: &reqwest::Client, config: &LlmClientConfig, system_prompt: &str, user_content: &str, temperature: f64, timeout_ms: u64, label: &str, mut log: impl FnMut(&str)) -> Result<String, LlmError> {
     let is_anthropic = matches!(config.provider, Provider::Anthropic);
+    let is_azure_foundry = matches!(config.provider, Provider::AzureFoundry);
     let target = if is_anthropic { LlmTarget { url: format!("{}/messages", config.anthropic_base_url.trim_end_matches('/')), model: config.anthropic_model.clone(), auth_header: None } } else { llm_target(config) };
     let provider_label = format!("{} [{}]", label, provider_label(&config.provider));
     log(&format!("[llm] → {} POST {} model={} timeout={}ms chars={}", provider_label, target.url, target.model, timeout_ms, user_content.len()));
@@ -263,9 +288,7 @@ pub async fn llm_complete(client: &reqwest::Client, config: &LlmClientConfig, sy
             temperature,
             messages: vec![ChatMessage { role: "system", content: system_prompt }, ChatMessage { role: "user", content: user_content }],
         });
-        if let Some(auth) = &target.auth_header {
-            r = r.header("Authorization", auth);
-        }
+        r = if is_azure_foundry { r.header("api-key", &config.azure_foundry_api_key) } else if let Some(auth) = &target.auth_header { r.header("Authorization", auth) } else { r };
         r
     };
 
@@ -302,6 +325,9 @@ pub async fn llm_available(client: &reqwest::Client, config: &LlmClientConfig) -
     match config.provider {
         Provider::OpenAi => return !config.openai_api_key.is_empty(),
         Provider::Anthropic => return !config.anthropic_api_key.is_empty(),
+        Provider::AzureFoundry => {
+            return !config.azure_foundry_api_key.is_empty() && !config.azure_foundry_endpoint.is_empty() && !config.azure_foundry_deployment.is_empty();
+        }
         Provider::Local => {}
     }
     let url = format!("{}/health", config.scan_url);
@@ -316,15 +342,33 @@ mod tests {
     use super::*;
 
     fn local_config() -> LlmClientConfig {
-        LlmClientConfig { provider: Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), scan_url: "http://127.0.0.1:9999".to_string(), scan_model: "test-model".to_string() }
+        LlmClientConfig { provider: Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: "http://127.0.0.1:9999".to_string(), scan_model: "test-model".to_string() }
     }
 
     fn openai_config() -> LlmClientConfig {
-        LlmClientConfig { provider: Provider::OpenAi, openai_api_key: "sk-test".to_string(), openai_base_url: "https://api.openai.com/v1/".to_string(), openai_model: "gpt-4o-mini".to_string(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), scan_url: String::new(), scan_model: String::new() }
+        LlmClientConfig { provider: Provider::OpenAi, openai_api_key: "sk-test".to_string(), openai_base_url: "https://api.openai.com/v1/".to_string(), openai_model: "gpt-4o-mini".to_string(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: String::new(), scan_model: String::new() }
     }
 
     fn anthropic_config() -> LlmClientConfig {
-        LlmClientConfig { provider: Provider::Anthropic, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: "sk-ant-test".to_string(), anthropic_base_url: "https://api.anthropic.com/v1/".to_string(), anthropic_model: "claude-opus-5".to_string(), scan_url: String::new(), scan_model: String::new() }
+        LlmClientConfig { provider: Provider::Anthropic, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: "sk-ant-test".to_string(), anthropic_base_url: "https://api.anthropic.com/v1/".to_string(), anthropic_model: "claude-opus-5".to_string(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: String::new(), scan_model: String::new() }
+    }
+
+    fn azure_foundry_config() -> LlmClientConfig {
+        LlmClientConfig {
+            provider: Provider::AzureFoundry,
+            openai_api_key: String::new(),
+            openai_base_url: String::new(),
+            openai_model: String::new(),
+            anthropic_api_key: String::new(),
+            anthropic_base_url: String::new(),
+            anthropic_model: String::new(),
+            azure_foundry_api_key: "az-test".to_string(),
+            azure_foundry_endpoint: "https://my-resource.openai.azure.com/".to_string(),
+            azure_foundry_deployment: "gpt-4o-deployment".to_string(),
+            azure_foundry_api_version: "2024-10-21".to_string(),
+            scan_url: String::new(),
+            scan_model: String::new(),
+        }
     }
 
     #[test]
@@ -364,6 +408,34 @@ mod tests {
         let mut no_key = anthropic_config();
         no_key.anthropic_api_key = String::new();
         assert!(!llm_available(&client, &no_key).await);
+    }
+
+    #[test]
+    fn llm_target_azure_foundry_builds_deployment_scoped_url_with_no_auth_header() {
+        let target = llm_target(&azure_foundry_config());
+        assert_eq!(target.url, "https://my-resource.openai.azure.com/openai/deployments/gpt-4o-deployment/chat/completions?api-version=2024-10-21");
+        assert_eq!(target.model, "gpt-4o-deployment");
+        assert!(target.auth_header.is_none(), "Azure Foundry authenticates via an api-key header, set separately by callers");
+    }
+
+    #[tokio::test]
+    async fn llm_available_azure_foundry_requires_key_endpoint_and_deployment() {
+        let client = reqwest::Client::new();
+        assert!(llm_available(&client, &azure_foundry_config()).await);
+        let mut missing_deployment = azure_foundry_config();
+        missing_deployment.azure_foundry_deployment = String::new();
+        assert!(!llm_available(&client, &missing_deployment).await);
+    }
+
+    #[tokio::test]
+    async fn llm_complete_network_error_when_azure_foundry_endpoint_unreachable() {
+        let client = reqwest::Client::new();
+        let mut cfg = azure_foundry_config();
+        cfg.azure_foundry_endpoint = "http://127.0.0.1:9999".to_string();
+        let mut logs = Vec::new();
+        let result = llm_complete(&client, &cfg, "system prompt", "user content", 0.2, 5000, "complete", |l| logs.push(l.to_string())).await;
+        assert!(matches!(result, Err(LlmError::NetworkError(_))));
+        assert!(logs.iter().any(|l| l.contains("→ complete [azure-foundry]") && l.contains("/openai/deployments/gpt-4o-deployment/")));
     }
 
     #[tokio::test]

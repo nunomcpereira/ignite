@@ -99,13 +99,14 @@ pub fn default_package_hallucination_checker() -> ignite_package_hallucination::
 }
 
 /// Resolves the configured LLM provider (`cfg.llm.provider`: `"local"`
-/// (default), `"openai"`, or `"anthropic"`) into the client config both
-/// Phase 4's deep-scan and Ignite Studio's "Explain issue"/"Suggest AI
-/// fix" buttons share.
+/// (default), `"openai"`, `"anthropic"`, or `"azure-foundry"`) into the
+/// client config both Phase 4's deep-scan and Ignite Studio's "Explain
+/// issue"/"Suggest AI fix" buttons share.
 pub fn llm_config_from_config(cfg: &ignite_config::Config) -> ignite_llm_client::LlmClientConfig {
     let provider = match cfg.llm.provider.as_str() {
         "openai" => ignite_llm_client::Provider::OpenAi,
         "anthropic" => ignite_llm_client::Provider::Anthropic,
+        "azure-foundry" | "azure_foundry" | "azurefoundry" => ignite_llm_client::Provider::AzureFoundry,
         _ => ignite_llm_client::Provider::Local,
     };
     ignite_llm_client::LlmClientConfig {
@@ -116,6 +117,10 @@ pub fn llm_config_from_config(cfg: &ignite_config::Config) -> ignite_llm_client:
         anthropic_api_key: cfg.llm.anthropic.api_key.clone(),
         anthropic_base_url: cfg.llm.anthropic.base_url.clone(),
         anthropic_model: cfg.llm.anthropic.model.clone(),
+        azure_foundry_api_key: cfg.llm.azure_foundry.api_key.clone(),
+        azure_foundry_endpoint: cfg.llm.azure_foundry.endpoint.clone(),
+        azure_foundry_deployment: cfg.llm.azure_foundry.deployment.clone(),
+        azure_foundry_api_version: cfg.llm.azure_foundry.api_version.clone(),
         scan_url: cfg.llm.url.clone(),
         scan_model: cfg.llm.model.clone(),
     }
@@ -138,6 +143,19 @@ pub fn default_llm_config() -> ignite_llm_client::LlmClientConfig {
 /// same lock.
 #[cfg(test)]
 pub static GH_TOKEN_ENV_GUARD: Mutex<()> = Mutex::new(());
+
+/// Serializes tests that mutate the process-global `IGNITE_DATA_DIR` env
+/// var (`routes::pipeline_interactive::ignite_data_dir()` reads it
+/// directly, and `routes::studio::codeql_db_dir_for` keys a real CodeQL
+/// database's on-disk path off of it plus a numeric project id). Each test
+/// in this binary gets its own fresh sqlite db via `spawn_test_server*`,
+/// so its first-created project always gets id 1 — meaning two tests that
+/// both build/query a real CodeQL database for "their" project 1 would
+/// otherwise race on the exact same real directory unless this env var is
+/// pointed at a fresh per-test tempdir for the guard's duration. Same
+/// rationale/pattern as `GH_TOKEN_ENV_GUARD`.
+#[cfg(test)]
+pub static IGNITE_DATA_DIR_ENV_GUARD: Mutex<()> = Mutex::new(());
 
 /// Test/back-compat convenience: tool binaries resolved from
 /// `ignite_config::Config::default()` (every binary name equal to the

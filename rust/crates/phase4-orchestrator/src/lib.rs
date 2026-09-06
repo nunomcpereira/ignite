@@ -531,7 +531,7 @@ pub async fn run_phase4_checks(
     });
 
     let gha_security_check = Some(CheckResult {
-        findings: gha_security_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
+        findings: gha_security_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some(gha_security_result.engine.to_string()),
     });
 

@@ -647,7 +647,7 @@ pub fn mutating_router() -> Router<Arc<AppState>> {
 mod tests {
     use super::*;
     use crate::review_gate::ReviewGate;
-    use crate::state::{self, LiveRun};
+    use crate::state::{self, LiveRun, IGNITE_DATA_DIR_ENV_GUARD as ENV_GUARD};
     use std::collections::HashMap;
     use parking_lot::Mutex;
 
@@ -809,6 +809,18 @@ mod tests {
     /// doesn't need the real binary installed.
     #[tokio::test]
     async fn codeql_query_without_a_built_database_reports_a_clear_error() {
+        // `codeql_db_dir_for` keys a real, process-global directory
+        // (`IGNITE_DATA_DIR`/`~/.ignite`) off of a numeric project id —
+        // every test's own fresh sqlite db hands out the same id (1) to
+        // its first project, so without pointing IGNITE_DATA_DIR at a
+        // fresh per-test tempdir this races against any other test
+        // (e.g. `codeql_run_persists_database_and_query_can_reuse_it`)
+        // that builds a real CodeQL database for "its" project 1 at the
+        // same time. See `state::IGNITE_DATA_DIR_ENV_GUARD`.
+        let _guard = ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("app.js"), b"console.log('hi');\n").unwrap();
         let (base, _state, job_id) = spawn_test_server_with_live_run(dir.path().to_path_buf(), dir.path().to_path_buf()).await;
@@ -826,6 +838,7 @@ mod tests {
         assert_eq!(done["ok"], false);
         assert!(done["error"].as_str().unwrap().contains("No CodeQL database"), "unexpected error: {done:?}");
 
+        std::env::remove_var("IGNITE_DATA_DIR");
         std::mem::forget(dir);
     }
 
@@ -857,6 +870,14 @@ mod tests {
             return;
         }
 
+        // See `codeql_query_without_a_built_database_reports_a_clear_error`
+        // for why this needs its own IGNITE_DATA_DIR — both tests' first
+        // project gets id 1 from their own fresh sqlite db, and without
+        // this they'd race on the same real `codeql-dbs/1/...` path.
+        let _guard = ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("app.js"), b"function add(a, b) { return a + b; }\nmodule.exports = add;\n").unwrap();
         let (base, state, job_id) = spawn_test_server_with_live_run(dir.path().to_path_buf(), dir.path().to_path_buf()).await;
@@ -885,6 +906,7 @@ mod tests {
         assert!(!query_done["rows"].as_array().unwrap().is_empty(), "expected at least one row for the `add` function");
 
         let _ = std::fs::remove_dir_all(codeql_db_dir_for(Some(project_id)).unwrap());
+        std::env::remove_var("IGNITE_DATA_DIR");
         std::mem::forget(dir);
     }
 }

@@ -129,6 +129,21 @@ mod tests {
     use serde_json::Value;
 
     async fn spawn_test_server() -> String {
+        spawn_test_server_with_llm_config(state::default_llm_config()).await
+    }
+
+    /// Binds a TCP listener on an OS-assigned port and immediately drops
+    /// it, handing back a port that was free at that instant — used to
+    /// point a test's `llm.scan_url` somewhere guaranteed to have nothing
+    /// listening, instead of a hardcoded port that can collide with a real
+    /// local LLM server a developer happens to be running (the actual
+    /// `llm.url` default, `http://localhost:8050`, is indistinguishable
+    /// from a real one from inside the test).
+    fn unused_local_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+
+    async fn spawn_test_server_with_llm_config(llm_config: ignite_llm_client::LlmClientConfig) -> String {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         let state = Arc::new(AppState {
@@ -137,7 +152,7 @@ mod tests {
             running_runs: Mutex::new(HashMap::new()),
             pending_effectivations: Mutex::new(HashMap::new()),
             review_gate: review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
+            llm_config,
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
@@ -398,7 +413,19 @@ mod tests {
         assert_eq!(body["dryRun"], true);
         assert_eq!(body["repoUrl"], Value::Null);
         let phase6 = body["phases"].as_array().unwrap().iter().find(|p| p["phase"] == 6).unwrap();
-        assert_eq!(phase6["state"], "skipped");
+        if status == 200 {
+            // Every check passed (or was overridden) — dry run reaches
+            // phase 6 and explicitly marks it "skipped" (never provisions/
+            // pushes).
+            assert_eq!(phase6["state"], "skipped");
+        } else {
+            // A blocking Phase 4 finding (e.g. an unreviewed CodeQL
+            // query-suite pin — see `security.codeql.lastReviewedAt`,
+            // always "overdue" for a fresh/default config) stops the run
+            // before phase 6 ever runs, so it's still at its initial
+            // "pending" state, not "skipped".
+            assert_eq!(phase6["state"], "pending");
+        }
     }
 
     #[tokio::test]
@@ -540,7 +567,14 @@ mod tests {
 
     #[tokio::test]
     async fn issues_explain_reports_unavailable_when_no_llm_endpoint() {
-        let base = spawn_test_server().await;
+        // An ephemeral, guaranteed-free port rather than the `local`
+        // provider's default `http://localhost:8050` — a developer running
+        // a real local LLM server on that exact default port would
+        // otherwise make this test observe a genuine response instead of
+        // "unavailable".
+        let mut llm_config = state::default_llm_config();
+        llm_config.scan_url = format!("http://127.0.0.1:{}", unused_local_port());
+        let base = spawn_test_server_with_llm_config(llm_config).await;
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/issues/explain")).json(&serde_json::json!({ "category": "secret", "summary": "hardcoded key" })).send().await.unwrap();
         assert_eq!(res.status(), 200);

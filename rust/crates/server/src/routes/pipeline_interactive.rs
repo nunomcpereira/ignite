@@ -552,11 +552,46 @@ mod tests {
         let zip = zip_dir(src.path());
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 
-        // This fixture is clean (no secrets/governance/etc. findings), so
-        // unlike the sibling tests above it never reaches the review gate
-        // (review_active only flips true when a review pause actually
-        // happens) - it just runs straight through to `done`.
-        let res = client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap();
+        // This fixture itself is clean (no secrets/governance/etc.
+        // findings), but the *default* test config's CodeQL query-suite
+        // review is always "overdue" (no `lastReviewedAt` set —
+        // `is_codeql_review_overdue` treats unset as never-reviewed), which
+        // unconditionally adds one blocking `codeql-query-suite-stale`
+        // issue to every real Phase 4 run regardless of the scanned
+        // project. So this run does still reach the review gate — resolve
+        // it like the sibling tests above, rather than assuming a
+        // straight-through `done` with no pause.
+        let base_for_run = base.clone();
+        let handle = tokio::spawn(async move { client.post(format!("{base_for_run}/api/pipeline")).multipart(form).send().await.unwrap() });
+
+        let review_wait = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let running = state.running_runs.lock();
+                if let Some((id, r)) = running.iter().find(|(_, r)| r.review_active) {
+                    let open_issue_ids: Vec<String> = r.all_issues.iter().filter(|i| i.status != "overridden").map(|i| i.id.clone()).collect();
+                    return (id.clone(), open_issue_ids);
+                }
+                drop(running);
+            }
+        })
+        .await;
+        if let Ok((job_id, open_issue_ids)) = review_wait {
+            // Override every open blocking finding (e.g. the config-level
+            // "codeql-query-suite-stale" check, always overdue for a
+            // default test config regardless of the scanned project) so
+            // this run can actually reach `done` with `ok: true` — this
+            // test only cares about the source-commit-sha capture, not
+            // about exercising blocking-finding handling.
+            let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string() }).collect();
+            let resolved = state.review_gate.resolve(
+                &job_id,
+                ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
+            );
+            assert!(resolved);
+        }
+
+        let res = handle.await.unwrap();
         assert_eq!(res.status(), 200);
         let events = read_ndjson(res).await;
         let done = events.iter().find(|e| e["type"] == "done").unwrap();
@@ -687,12 +722,13 @@ mod tests {
         // the run never pauses at the review gate and `review_active`
         // never becomes true — an unbounded loop here would then spin
         // forever instead of failing with a message that says why.
-        let job_id = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let (job_id, open_issue_ids) = tokio::time::timeout(std::time::Duration::from_secs(180), async {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let running = state.running_runs.lock();
-                if let Some((id, _)) = running.iter().find(|(_, r)| r.review_active) {
-                    return id.clone();
+                if let Some((id, r)) = running.iter().find(|(_, r)| r.review_active) {
+                    let open_issue_ids: Vec<String> = r.all_issues.iter().filter(|i| i.status != "overridden").map(|i| i.id.clone()).collect();
+                    return (id.clone(), open_issue_ids);
                 }
                 drop(running);
             }
@@ -700,9 +736,14 @@ mod tests {
         .await
         .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
 
+        // Override every open blocking finding, not just the fixture's own
+        // secret — a config-level check (e.g. "codeql-query-suite-stale",
+        // always overdue for a default test config) can also be blocking
+        // and is otherwise unrelated to what this test is checking.
+        let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string() }).collect();
         let resolved = state.review_gate.resolve(
             &job_id,
-            ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
+            ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
         );
         assert!(resolved);
 
@@ -737,14 +778,25 @@ mod tests {
         let base1 = base.clone();
         let handle1 = tokio::spawn(async move { client1.post(format!("{base1}/api/pipeline")).multipart(form1).send().await.unwrap() });
         let job1 = wait_for_review_gate(&state, std::time::Duration::from_secs(180)).await;
-        let secret_issue_id = {
+        let (secret_issue_id, open_issue_ids) = {
             let running = state.running_runs.lock();
-            running[&job1].all_issues.iter().find(|i| i.category == "secret").map(|i| i.id.clone()).expect("fixture should flag a secret finding")
+            let issues = &running[&job1].all_issues;
+            let secret_issue_id = issues.iter().find(|i| i.category == "secret").map(|i| i.id.clone()).expect("fixture should flag a secret finding");
+            // Override every open blocking finding, not just the secret —
+            // a config-level check (e.g. "codeql-query-suite-stale") can
+            // also be blocking here and would otherwise need re-justifying
+            // on every scan, which isn't what this test is checking.
+            let open_issue_ids: Vec<String> = issues.iter().filter(|i| i.status != "overridden").map(|i| i.id.clone()).collect();
+            (secret_issue_id, open_issue_ids)
         };
-        assert!(state.review_gate.resolve(
-            &job1,
-            ReviewDecisionInput { proceed: true, overrides: vec![SubmittedOverride { issue_id: secret_issue_id.clone(), justification: "Test fixture literal, not a real credential.".to_string() }], actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } },
-        ));
+        let overrides1 = open_issue_ids
+            .into_iter()
+            .map(|issue_id| {
+                let justification = if issue_id == secret_issue_id { "Test fixture literal, not a real credential.".to_string() } else { "not relevant to this test".to_string() };
+                SubmittedOverride { issue_id, justification }
+            })
+            .collect();
+        assert!(state.review_gate.resolve(&job1, ReviewDecisionInput { proceed: true, overrides: overrides1, actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }));
         let res1 = handle1.await.unwrap();
         assert_eq!(res1.status(), 200);
         let events1 = read_ndjson(res1).await;

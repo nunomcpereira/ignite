@@ -375,6 +375,7 @@ pub async fn check_llm_deep_scan(root: &Path, config: &LlmDeepScanConfig, store:
         let reason = match config.llm.provider {
             ignite_llm_client::Provider::OpenAi => "OPENAI_API_KEY is not set (LLM_PROVIDER=openai).".to_string(),
             ignite_llm_client::Provider::Anthropic => "ANTHROPIC_API_KEY is not set (LLM_PROVIDER=anthropic).".to_string(),
+            ignite_llm_client::Provider::AzureFoundry => "AZURE_FOUNDRY_API_KEY/AZURE_FOUNDRY_ENDPOINT/AZURE_FOUNDRY_DEPLOYMENT are not fully set (LLM_PROVIDER=azure-foundry).".to_string(),
             ignite_llm_client::Provider::Local => format!("No LLM endpoint at {}", config.llm.scan_url),
         };
         return Ok(DeepScanResult { available: false, reason: Some(reason), findings: vec![], scanned: 0, cache_hits: 0 });
@@ -621,7 +622,7 @@ mod tests {
         // unit-testable in isolation via the config alone.
         let config = LlmDeepScanConfig {
             enabled: false,
-            llm: LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), scan_url: String::new(), scan_model: String::new() },
+            llm: LlmClientConfig { provider: ignite_llm_client::Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: String::new(), scan_model: String::new() },
             advisory_level: "warning",
             max_files: 40,
             chunk_chars: 10_000,
