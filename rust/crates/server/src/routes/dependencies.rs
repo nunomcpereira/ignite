@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[allow(clippy::result_large_err)]
 fn sanitize_project_path(body: &Value) -> Result<PathBuf, Response> {
     let raw_path = body.get("projectPath").and_then(|v| v.as_str()).unwrap_or("");
     let project_path = ignite_tool_runner::sanitize_absolute_project_path(raw_path).map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response())?;

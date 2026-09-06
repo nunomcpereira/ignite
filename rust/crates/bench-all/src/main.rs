@@ -28,7 +28,7 @@ fn main() {
     let fe = ignite_file_encapsulation::check_file_encapsulation(&root, &ignite_file_encapsulation::FileEncapsulationConfig { enabled: true, max_lines: 1000 }).unwrap();
     let t7 = Instant::now();
 
-    let cd = ignite_compliance_documents::check_compliance_documents(&root, true).unwrap();
+    let _cd = ignite_compliance_documents::check_compliance_documents(&root, true).unwrap();
     let t8 = Instant::now();
 
     println!("dead_code:       {:>8.2}ms  ({} findings)", (t1 - t0).as_secs_f64() * 1000.0, dc.findings.len());

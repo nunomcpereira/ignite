@@ -59,7 +59,7 @@ pub async fn suggest_justifications(config: &AiAutoJustifyConfig, llm_config: &L
         .collect();
     let user_content = serde_json::to_string(&payload).unwrap_or_else(|_| "[]".to_string());
 
-    match llm_complete(&http, llm_config, SYSTEM_PROMPT, &user_content, 0.0, 60_000, "ai-justify", &mut log).await {
+    match llm_complete(&ignite_llm_client::LlmCompleteRequest { client: &http, config: llm_config, system_prompt: SYSTEM_PROMPT, user_content: &user_content, temperature: 0.0, timeout_ms: 60_000, label: "ai-justify" }, &mut log).await {
         Ok(text) => {
             let cleaned = text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
             match serde_json::from_str::<JustifyResponse>(cleaned) {

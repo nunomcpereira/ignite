@@ -497,7 +497,7 @@ mod tests {
         {
             let store = DbStore::open(&path).unwrap();
             assert!(store.get_fix_pr_preview("job-1").is_none());
-            store.save_fix_pr_preview("job-1", 3, 3, false, 3, None, &candidates);
+            store.save_fix_pr_preview(&crate::types::SaveFixPrPreviewParams { job_id: "job-1", total: 3, completed: 3, cancelled: false, considered_count: 3, reason: None, candidates: &candidates });
             let row = store.get_fix_pr_preview("job-1").unwrap();
             assert_eq!(row.total, 3);
             assert_eq!(row.completed, 3);
@@ -515,8 +515,8 @@ mod tests {
     #[test]
     fn fix_pr_preview_save_overwrites_a_prior_save_for_the_same_job() {
         let (_dir, store) = open_test_db();
-        store.save_fix_pr_preview("job-1", 5, 2, false, 5, None, &serde_json::json!([]));
-        store.save_fix_pr_preview("job-1", 5, 5, true, 5, Some("cancelled by user"), &serde_json::json!([{ "issueId": "a" }]));
+        store.save_fix_pr_preview(&crate::types::SaveFixPrPreviewParams { job_id: "job-1", total: 5, completed: 2, cancelled: false, considered_count: 5, reason: None, candidates: &serde_json::json!([]) });
+        store.save_fix_pr_preview(&crate::types::SaveFixPrPreviewParams { job_id: "job-1", total: 5, completed: 5, cancelled: true, considered_count: 5, reason: Some("cancelled by user"), candidates: &serde_json::json!([{ "issueId": "a" }]) });
         let row = store.get_fix_pr_preview("job-1").unwrap();
         assert_eq!(row.completed, 5);
         assert!(row.cancelled);

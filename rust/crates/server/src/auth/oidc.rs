@@ -180,8 +180,8 @@ async fn oidc_callback(State(state): State<Arc<AppState>>, Query(q): Query<Callb
         Err(err) => return error_page(axum::http::StatusCode::UNAUTHORIZED, &format!("invalid signing key: {err}")),
     };
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
-    validation.set_audience(&[oidc.client_id.clone()]);
-    validation.set_issuer(&[oidc.issuer.clone()]);
+    validation.set_audience(&[&oidc.client_id]);
+    validation.set_issuer(&[&oidc.issuer]);
     let token_data = match jsonwebtoken::decode::<Value>(&token_body.id_token, &decoding_key, &validation) {
         Ok(t) => t,
         Err(err) => return error_page(axum::http::StatusCode::UNAUTHORIZED, &format!("id_token verification failed: {err}")),

@@ -343,3 +343,13 @@ pub struct FixPrPreviewRow {
     pub reason: Option<String>,
     pub candidates: serde_json::Value,
 }
+
+pub struct SaveFixPrPreviewParams<'a> {
+    pub job_id: &'a str,
+    pub total: i64,
+    pub completed: i64,
+    pub cancelled: bool,
+    pub considered_count: i64,
+    pub reason: Option<&'a str>,
+    pub candidates: &'a serde_json::Value,
+}

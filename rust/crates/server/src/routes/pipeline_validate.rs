@@ -141,6 +141,7 @@ impl PipelineError {
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (Value, Value)> {
     let org = body.get("org").and_then(|v| v.as_str()).unwrap_or("local-validation").trim().to_string();
     let org = if org.is_empty() { "local-validation".to_string() } else { org };

@@ -53,16 +53,16 @@ impl DbStore {
     /// `candidates` is stored as opaque JSON (this crate stays decoupled
     /// from `ignite-fix-pr`, like every other check crate); the caller
     /// (`routes/fix_pr.rs`) owns the typed `FixCandidate` shape.
-    pub fn save_fix_pr_preview(&self, job_id: &str, total: i64, completed: i64, cancelled: bool, considered_count: i64, reason: Option<&str>, candidates: &serde_json::Value) {
+    pub fn save_fix_pr_preview(&self, params: &crate::types::SaveFixPrPreviewParams<'_>) {
         let conn = self.conn.lock();
-        let candidates_json = serde_json::to_string(candidates).unwrap_or_else(|_| "[]".to_string());
+        let candidates_json = serde_json::to_string(params.candidates).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
             "INSERT INTO fix_pr_previews (job_id, total, completed, done, cancelled, considered_count, reason, candidates_json, updated_at)
              VALUES (?, ?, ?, 1, ?, ?, ?, ?, datetime('now'))
              ON CONFLICT(job_id) DO UPDATE SET total = excluded.total, completed = excluded.completed, done = 1,
                  cancelled = excluded.cancelled, considered_count = excluded.considered_count,
                  reason = excluded.reason, candidates_json = excluded.candidates_json, updated_at = datetime('now')",
-            params![job_id, total, completed, cancelled as i64, considered_count, reason, candidates_json],
+            rusqlite::params![params.job_id, params.total, params.completed, params.cancelled as i64, params.considered_count, params.reason, candidates_json],
         )
         .unwrap();
     }

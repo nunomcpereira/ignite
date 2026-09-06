@@ -41,7 +41,7 @@ fn text_result(text: String, is_error: bool) -> CallToolResult {
 
 #[derive(Debug, Clone)]
 pub struct IgniteMcp {
-    tool_router: ToolRouter<Self>,
+    _tool_router: ToolRouter<Self>,
     http: reqwest::Client,
 }
 
@@ -160,7 +160,7 @@ struct ApplyFixPrRequest {
 #[tool_router]
 impl IgniteMcp {
     fn new() -> Self {
-        Self { tool_router: Self::tool_router(), http: reqwest::Client::new() }
+        Self { _tool_router: Self::tool_router(), http: reqwest::Client::new() }
     }
 
     /// Shared by every proxy tool below — same "thin proxy to a running

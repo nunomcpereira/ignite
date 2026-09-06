@@ -59,7 +59,15 @@ fn job_status_json(job: &FixPrPreviewJob) -> Value {
 /// own doc comment for why.
 fn persist_finished_job(db: &ignite_db_store::DbStore, job_id: &str, job: &FixPrPreviewJob) {
     let candidates_value = serde_json::to_value(&job.candidates).unwrap_or(Value::Array(Vec::new()));
-    db.save_fix_pr_preview(job_id, job.total as i64, job.completed as i64, job.cancelled, job.considered_count as i64, job.reason.as_deref(), &candidates_value);
+    db.save_fix_pr_preview(&ignite_db_store::SaveFixPrPreviewParams {
+        job_id,
+        total: job.total as i64,
+        completed: job.completed as i64,
+        cancelled: job.cancelled,
+        considered_count: job.considered_count as i64,
+        reason: job.reason.as_deref(),
+        candidates: &candidates_value,
+    });
 }
 
 fn job_from_saved_row(row: ignite_db_store::FixPrPreviewRow) -> FixPrPreviewJob {

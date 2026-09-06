@@ -171,7 +171,7 @@ async fn explain(State(state): State<Arc<AppState>>, Json(body): Json<Value>) ->
 
     let user = issue_user_prompt(&issue);
     let label = format!("issue-explain {}:{}:{}", issue.category, issue.file.as_deref().unwrap_or("?"), issue.line.unwrap_or(0));
-    match ignite_llm_client::llm_complete(&http, &state.llm_config, ISSUE_EXPLAIN_PROMPT, &user, 0.3, 60_000, &label, |_| {}).await {
+    match ignite_llm_client::llm_complete(&ignite_llm_client::LlmCompleteRequest { client: &http, config: &state.llm_config, system_prompt: ISSUE_EXPLAIN_PROMPT, user_content: &user, temperature: 0.3, timeout_ms: 60_000, label: &label }, |_| {}).await {
         Ok(explanation) => {
             state.db.cache_issue_explanation(&hash, &explanation);
             Json(json!({ "ok": true, "explanation": explanation, "cached": false })).into_response()
@@ -198,7 +198,7 @@ async fn suggest_fix(State(state): State<Arc<AppState>>, Json(body): Json<Value>
 
     let user = issue_user_prompt(&issue);
     let label = format!("issue-suggest-fix {}:{}:{}", issue.category, issue.file.as_deref().unwrap_or("?"), issue.line.unwrap_or(0));
-    match ignite_llm_client::llm_complete(&http, &state.llm_config, ISSUE_SUGGEST_FIX_PROMPT, &user, 0.2, 60_000, &label, |_| {}).await {
+    match ignite_llm_client::llm_complete(&ignite_llm_client::LlmCompleteRequest { client: &http, config: &state.llm_config, system_prompt: ISSUE_SUGGEST_FIX_PROMPT, user_content: &user, temperature: 0.2, timeout_ms: 60_000, label: &label }, |_| {}).await {
         Ok(text) => match parse_suggest_fix_response(&text) {
             Ok(parsed) => {
                 let start_line = snippet.start_line;

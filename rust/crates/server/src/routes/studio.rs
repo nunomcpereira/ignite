@@ -113,6 +113,7 @@ fn codeql_db_dir_for(project_id: Option<i64>) -> Option<PathBuf> {
     project_id.map(|id| ignite_data_dir().join("codeql-dbs").join(id.to_string()))
 }
 
+#[allow(clippy::result_large_err)]
 fn resolve_studio_context(state: &AppState, job_id: &str) -> Result<StudioContext, Response> {
     if let Some(live) = state.running_runs.lock().get(job_id) {
         if live.review_active {

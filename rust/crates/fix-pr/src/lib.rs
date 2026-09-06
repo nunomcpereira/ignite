@@ -147,7 +147,7 @@ async fn process_one_issue(http: &reqwest::Client, llm_config: &LlmClientConfig,
 
     let user = issue_user_prompt(issue, &snippet);
     let label = format!("fix-pr {}:{}:{}", issue.category, issue.file, issue.line);
-    let response = match ignite_llm_client::llm_complete(http, llm_config, ISSUE_SUGGEST_FIX_PROMPT, &user, 0.2, 60_000, &label, |l| logs.push(l.to_string())).await {
+    let response = match ignite_llm_client::llm_complete(&ignite_llm_client::LlmCompleteRequest { client: http, config: llm_config, system_prompt: ISSUE_SUGGEST_FIX_PROMPT, user_content: &user, temperature: 0.2, timeout_ms: 60_000, label: &label }, |l| logs.push(l.to_string())).await {
         Ok(text) => text,
         Err(e) => {
             logs.push(format!("[fix-pr] skip {} — AI request failed: {e}", issue.issue_id));
@@ -236,7 +236,7 @@ pub fn apply_candidates_to_files(root: &Path, candidates: &[FixCandidate]) -> st
 
     let mut touched = Vec::new();
     for (file, mut file_candidates) in by_file {
-        file_candidates.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+        file_candidates.sort_by_key(|c| std::cmp::Reverse(c.start_line));
         // `file` is a client-supplied path (round-tripped from
         // /fix-pr/preview, but the /apply request body is trusted only up
         // to this point) — confine it to the cloned repo root the same way

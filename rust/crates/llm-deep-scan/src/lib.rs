@@ -98,7 +98,7 @@ async fn fetch_latest_npm_version(client: &reqwest::Client, pkg_name: &str, cach
         let mut latest: Option<(u64, u64, u64)> = None;
         for key in versions.keys() {
             let Some(sv) = parse_semver(key) else { continue };
-            if latest.map_or(true, |l| compare_semver(sv, l) == std::cmp::Ordering::Greater) {
+            if latest.is_none_or(|l| compare_semver(sv, l) == std::cmp::Ordering::Greater) {
                 latest = Some(sv);
             }
         }

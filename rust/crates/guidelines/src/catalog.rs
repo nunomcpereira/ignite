@@ -224,7 +224,7 @@ pub fn guidelines() -> &'static [Guideline] {
 }
 
 pub fn list_guidelines(category: Option<&str>, severity: Option<Severity>) -> Vec<&'static Guideline> {
-    guidelines().iter().filter(|g| category.map_or(true, |c| g.category == c) && severity.map_or(true, |s| g.severity == s)).collect()
+    guidelines().iter().filter(|g| category.is_none_or(|c| g.category == c) && severity.is_none_or(|s| g.severity == s)).collect()
 }
 
 pub fn get_guideline(id: &str) -> Option<&'static Guideline> {

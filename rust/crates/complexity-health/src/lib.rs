@@ -278,7 +278,7 @@ pub fn check_complexity_health(
     }
 
     let mut by_hotspot: Vec<&FileMetrics> = per_file.iter().collect();
-    by_hotspot.sort_by(|a, b| b.hotspot.cmp(&a.hotspot));
+    by_hotspot.sort_by_key(|a| std::cmp::Reverse(a.hotspot));
     let hotspots: Vec<HotspotEntry> = by_hotspot
         .iter()
         .take(config.top_hotspots)

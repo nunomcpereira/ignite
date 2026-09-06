@@ -279,11 +279,11 @@ pub fn check_dead_code(root: &Path, config: &DeadCodeConfig) -> std::io::Result<
     // engine always stays "built-in".
     let engine = "built-in";
 
+    let export_word_re = Regex::new("export").unwrap();
     for cand in &unused_export_candidates {
         let rel = rel_str(root, cand.file);
         let node = graph.get(cand.file).unwrap();
         let name_re = Regex::new(&format!(r"\b{}\b", regex::escape(&cand.name))).unwrap();
-        let export_word_re = Regex::new("export").unwrap();
         let line_idx = node
             .content
             .split('\n')

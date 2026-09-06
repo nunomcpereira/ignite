@@ -266,39 +266,39 @@ struct ChatRequestPlain<'a> {
 /// chat completion (no JSON response-format constraint), backing Studio's
 /// AI-explain/AI-suggest-fix features. Unlike `llm_chat`, the caller
 /// picks its own temperature/timeout per use case.
-pub async fn llm_complete(client: &reqwest::Client, config: &LlmClientConfig, system_prompt: &str, user_content: &str, temperature: f64, timeout_ms: u64, label: &str, mut log: impl FnMut(&str)) -> Result<String, LlmError> {
-    let is_anthropic = matches!(config.provider, Provider::Anthropic);
-    let is_azure_foundry = matches!(config.provider, Provider::AzureFoundry);
-    let target = if is_anthropic { LlmTarget { url: format!("{}/messages", config.anthropic_base_url.trim_end_matches('/')), model: config.anthropic_model.clone(), auth_header: None } } else { llm_target(config) };
-    let provider_label = format!("{} [{}]", label, provider_label(&config.provider));
-    log(&format!("[llm] → {} POST {} model={} timeout={}ms chars={}", provider_label, target.url, target.model, timeout_ms, user_content.len()));
+pub async fn llm_complete(req: &LlmCompleteRequest<'_>, mut log: impl FnMut(&str)) -> Result<String, LlmError> {
+    let is_anthropic = matches!(req.config.provider, Provider::Anthropic);
+    let is_azure_foundry = matches!(req.config.provider, Provider::AzureFoundry);
+    let target = if is_anthropic { LlmTarget { url: format!("{}/messages", req.config.anthropic_base_url.trim_end_matches('/')), model: req.config.anthropic_model.clone(), auth_header: None } } else { llm_target(req.config) };
+    let provider_label = format!("{} [{}]", req.label, provider_label(&req.config.provider));
+    log(&format!("[llm] → {} POST {} model={} timeout={}ms chars={}", provider_label, target.url, target.model, req.timeout_ms, req.user_content.len()));
     let started_at = std::time::Instant::now();
 
-    let req = if is_anthropic {
-        client.post(&target.url).timeout(Duration::from_millis(timeout_ms)).header("x-api-key", &config.anthropic_api_key).header("anthropic-version", ANTHROPIC_VERSION).json(&AnthropicRequest {
+    let client_req = if is_anthropic {
+        req.client.post(&target.url).timeout(Duration::from_millis(req.timeout_ms)).header("x-api-key", &req.config.anthropic_api_key).header("anthropic-version", ANTHROPIC_VERSION).json(&AnthropicRequest {
             model: &target.model,
             max_tokens: ANTHROPIC_MAX_TOKENS,
-            system: system_prompt,
-            messages: vec![AnthropicMessage { role: "user", content: user_content }],
+            system: req.system_prompt,
+            messages: vec![AnthropicMessage { role: "user", content: req.user_content }],
         })
     } else {
-        let mut r = client.post(&target.url).timeout(Duration::from_millis(timeout_ms)).json(&ChatRequestPlain {
+        let mut r = req.client.post(&target.url).timeout(Duration::from_millis(req.timeout_ms)).json(&ChatRequestPlain {
             model: &target.model,
             stream: false,
-            temperature,
-            messages: vec![ChatMessage { role: "system", content: system_prompt }, ChatMessage { role: "user", content: user_content }],
+            temperature: req.temperature,
+            messages: vec![ChatMessage { role: "system", content: req.system_prompt }, ChatMessage { role: "user", content: req.user_content }],
         });
-        r = if is_azure_foundry { r.header("api-key", &config.azure_foundry_api_key) } else if let Some(auth) = &target.auth_header { r.header("Authorization", auth) } else { r };
+        r = if is_azure_foundry { r.header("api-key", &req.config.azure_foundry_api_key) } else if let Some(auth) = &target.auth_header { r.header("Authorization", auth) } else { r };
         r
     };
 
-    let response = match req.send().await {
+    let response = match client_req.send().await {
         Ok(r) => r,
         Err(e) => {
             let elapsed = started_at.elapsed().as_millis();
             if e.is_timeout() {
                 log(&format!("[llm] ← {} TIMED OUT in {}ms", provider_label, elapsed));
-                return Err(LlmError::Timeout(timeout_ms));
+                return Err(LlmError::Timeout(req.timeout_ms));
             }
             log(&format!("[llm] ← {} FAILED in {}ms — {}", provider_label, elapsed, e));
             return Err(LlmError::NetworkError(e.to_string()));
@@ -433,7 +433,7 @@ mod tests {
         let mut cfg = azure_foundry_config();
         cfg.azure_foundry_endpoint = "http://127.0.0.1:9999".to_string();
         let mut logs = Vec::new();
-        let result = llm_complete(&client, &cfg, "system prompt", "user content", 0.2, 5000, "complete", |l| logs.push(l.to_string())).await;
+        let result = llm_complete(&LlmCompleteRequest { client: &client, config: &cfg, system_prompt: "system prompt", user_content: "user content", temperature: 0.2, timeout_ms: 5000, label: "complete" }, |l| logs.push(l.to_string())).await;
         assert!(matches!(result, Err(LlmError::NetworkError(_))));
         assert!(logs.iter().any(|l| l.contains("→ complete [azure-foundry]") && l.contains("/openai/deployments/gpt-4o-deployment/")));
     }
@@ -444,7 +444,7 @@ mod tests {
         let mut cfg = anthropic_config();
         cfg.anthropic_base_url = "http://127.0.0.1:9999".to_string();
         let mut logs = Vec::new();
-        let result = llm_complete(&client, &cfg, "system prompt", "user content", 0.2, 5000, "complete", |l| logs.push(l.to_string())).await;
+        let result = llm_complete(&LlmCompleteRequest { client: &client, config: &cfg, system_prompt: "system prompt", user_content: "user content", temperature: 0.2, timeout_ms: 5000, label: "complete" }, |l| logs.push(l.to_string())).await;
         assert!(matches!(result, Err(LlmError::NetworkError(_))));
         assert!(logs.iter().any(|l| l.contains("→ complete [anthropic]") && l.contains("/messages")));
     }
@@ -468,8 +468,18 @@ mod tests {
     async fn llm_complete_network_error_when_endpoint_unreachable() {
         let client = reqwest::Client::new();
         let mut logs = Vec::new();
-        let result = llm_complete(&client, &local_config(), "system prompt", "user content", 0.2, 5000, "complete", |l| logs.push(l.to_string())).await;
+        let result = llm_complete(&LlmCompleteRequest { client: &client, config: &local_config(), system_prompt: "system prompt", user_content: "user content", temperature: 0.2, timeout_ms: 5000, label: "complete" }, |l| logs.push(l.to_string())).await;
         assert!(matches!(result, Err(LlmError::NetworkError(_))));
         assert!(logs.iter().any(|l| l.contains("→ complete [local]")));
     }
+}
+
+pub struct LlmCompleteRequest<'a> {
+    pub client: &'a reqwest::Client,
+    pub config: &'a LlmClientConfig,
+    pub system_prompt: &'a str,
+    pub user_content: &'a str,
+    pub temperature: f64,
+    pub timeout_ms: u64,
+    pub label: &'a str,
 }

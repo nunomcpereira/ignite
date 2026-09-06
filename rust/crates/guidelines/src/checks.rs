@@ -208,7 +208,7 @@ fn no_weak_crypto(content: &str) -> Vec<CheckHit> {
                 hits.push(CheckHit { line: i + 1, snippet: line.trim().chars().take(160).collect(), kind: None });
             }
         }
-        for re in [&*WEAK_CRYPTO_REGEXES.get(0).unwrap(), &WEAK_CRYPTO_REGEXES[2], &WEAK_CRYPTO_REGEXES[3], &WEAK_CRYPTO_REGEXES[4]] {
+        for re in [&WEAK_CRYPTO_REGEXES[0], &WEAK_CRYPTO_REGEXES[2], &WEAK_CRYPTO_REGEXES[3], &WEAK_CRYPTO_REGEXES[4]] {
             if re.is_match(line) {
                 hits.push(CheckHit { line: i + 1, snippet: line.trim().chars().take(160).collect(), kind: None });
             }
