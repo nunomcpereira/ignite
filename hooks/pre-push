@@ -30,15 +30,15 @@
 # Each surviving entry also carries a running "# Issue #N" count,
 # recomputed every run.
 #
-# Staying in sync with what actually got pushed: the file's own header
-# names the commit it was scanned against, which only exists once that
-# commit is already made - so a clean pass whose file is still stale (old
-# sha, or a justification whose line number has since drifted) can't fold
-# the refresh into that same commit atomically. Instead it refreshes the
-# file, folds it into the just-made commit with `git commit --amend`, and
-# blocks that one push (exit 1) so you push again and send the amended
-# commit - rather than letting the committed file quietly go stale until
-# some later failing push happens to touch it again.
+# Staying in sync with what actually got pushed: the file carries no commit
+# sha (that would drift on literally every commit and force a fold-and-repush
+# loop for no reason) - it only changes when the actual set of findings
+# changes, or a justification's line number has drifted. When that happens,
+# and a clean pass leaves the file still stale, it refreshes the file, folds
+# it into the just-made commit with `git commit --amend`, and blocks that one
+# push (exit 1) so you push again and send the amended commit - rather than
+# letting the committed file quietly go stale until some later failing push
+# happens to touch it again.
 #
 # Every run (pass or fail) also drops a point-in-time snapshot of every
 # reported finding at .ignite/scans/<timestamp>/findings.md - a full,
@@ -275,7 +275,6 @@ if [ "$ISSUES_COUNT" -gt 0 ] || [ -s "$REVIEW_FILE" ]; then
 # refer to a specific finding.
 
 HEADER
-  printf '# Scanned against commit: %s (working tree at push time - findings/justifications below reflect this commit'"'"'s code, not necessarily what ends up pushed if the tree changes after)\n\n' "$CURRENT_SHA"
   echo "$RESPONSE" | jq -r --arg existingText "$REVIEW_TEXT" '
     def trim: gsub("^\\s+|\\s+$"; "");
 

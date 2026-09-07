@@ -15,8 +15,6 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: aa3cee4b80a84245bcd77b5c7c0fa660c1f98180 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
-
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
 # [ERROR] secret - Hardcoded generic-api-key
