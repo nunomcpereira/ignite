@@ -253,7 +253,7 @@ layout: default
   <div style="display:contents;">
     <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:12px;font-weight:600;">Secret scanning</div>
     <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px;"><span style="color:var(--teal);font-weight:700;">✓</span><span>Push protection + scanning</span></div>
-    <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px;"><span style="color:var(--teal);font-weight:700;">✓</span><span>Gitleaks + custom regex</span></div>
+    <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px;"><span style="color:var(--teal);font-weight:700;">✓</span><span>Gitleaks + custom regex, incl. full git history</span></div>
   </div>
   <div style="display:contents;">
     <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:12px;font-weight:600;">Static analysis (SAST)</div>
@@ -289,6 +289,11 @@ layout: default
     <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:12px;font-weight:600;">Pre-push blocking gate</div>
     <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px;"><span style="color:var(--faint);font-weight:700;">–</span><span>PR annotation only</span></div>
     <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px;"><span style="color:var(--teal);font-weight:700;">✓</span><span>Blocks provisioning until fixed/overridden</span></div>
+  </div>
+  <div style="display:contents;">
+    <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:12px;font-weight:600;">Findings in GitHub's native UI</div>
+    <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px;"><span style="color:var(--teal);font-weight:700;">✓</span><span>Security &amp; Insights tabs</span></div>
+    <div style="padding:7px 10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px;"><span style="color:var(--teal);font-weight:700;">✓</span><span>SARIF + dependency-graph push into the same tabs</span></div>
   </div>
 </div>
 <p style="font-size:10.5px;color:var(--faint);text-align:center;margin-top:8px;">Not a replacement for GHAS where it's already licensed — Ignite folds it in as one of twenty-plus engines behind a single go/no-go gate.</p>

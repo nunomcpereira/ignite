@@ -192,6 +192,47 @@ skipped for a human to review, never silently applied — this is the same
 any repo with `./target/release/auto-fix-pr <org/repo> [--apply]`), just
 triggered automatically here instead of by hand.
 
+## Native GitHub UI parity for SARIF and dependency graph
+
+Ignite's own findings and dependency data used to live only in Ignite's UI
+— GHAS surfaces the equivalent in GitHub's own Security and Insights tabs.
+Two pushes close that gap, both triggered from the same `POST
+/api/pipeline/:jobId/github-check` call this page already covers (the
+pre-push hook/CI caller that posts the `ignite/gate` commit status) —
+that's the one place `(owner, repo, sha)` are already validated together
+against a commit guaranteed to already exist on GitHub, which both of
+these APIs require:
+
+- **SARIF upload** — the job's findings, reshaped into the same SARIF this
+  server already serves at `GET /api/pipeline/:jobId/sarif`, get pushed to
+  `POST repos/{owner}/{repo}/code-scanning/sarifs` so they show up under
+  the repo's **Security → Code scanning** tab natively, not only in
+  Ignite's own UI.
+- **Dependency graph submission** — the manifests/dependencies already
+  resolved during the scan (the same cached result the Studio Dependencies
+  tab reads back) get pushed to `PUT
+  repos/{owner}/{repo}/dependency-graph/snapshots` (GitHub's Dependency
+  Submission API) so they populate the repo's **Insights → Dependency
+  graph** tab the same way a Dependabot-enabled repo's would.
+
+Both are best-effort and non-fatal — a failure is logged and never fails
+the gate-status response the caller already got. Each is independently
+toggleable in `config.json` (on by default):
+
+```json
+"security": {
+  "codeScanning": { "enabled": true },
+  "dependencyGraph": { "enabled": true }
+}
+```
+
+Or via env vars: `CODE_SCANNING_ENABLED=false` / `DEPENDENCY_GRAPH_ENABLED=false`.
+
+The `github-check` request body accepts an optional `ref` field (e.g.
+`"refs/heads/main"`) for the branch/ref these pushes should attach to —
+when omitted, Ignite looks up the repo's current default branch and uses
+that.
+
 ## Keep GitHub's secret push-protection even without full GHAS
 
 If you're dropping GitHub Advanced Security in favor of Ignite's gate
@@ -212,6 +253,20 @@ separately from the rest of GHAS varies by plan and has changed over time;
 this doc is flagging it as something to check, not asserting today's
 pricing.
 
+Ignite does close the adjacent, narrower gap — a secret that's *already*
+been pushed, then removed in a later commit, sitting exposed in git
+history in the meantime. Set `security.gitleaks.scanHistory: true` (or
+`GITLEAKS_SCAN_HISTORY=true`) to have the secrets check also run
+`gitleaks detect` against full commit history, not just the current
+working tree, tagging anything it finds there `gitleaks-history` so it's
+distinguishable from a still-present working-tree secret. Off by default
+— a full-history scan costs meaningfully more time than a working-tree
+scan on a repo with a long history — and a no-op on a checkout with no
+`.git` directory (an uploaded ZIP). This still isn't push-protection: it
+finds an already-exposed secret after the fact rather than blocking the
+push that introduced it, which is exactly why push-protection itself stays
+worth keeping regardless.
+
 ## Branch-protection enforcement
 
 Ignite's gate only fires if someone actually routes code through it — a
@@ -231,3 +286,44 @@ blocks direct/admin-bypass pushes) on a given repo's default branch.
 
 Dry-run by default; this is a deliberate, operator-run tool, not something
 wired into any pipeline or schedule.
+
+## Private vulnerability reporting
+
+GHAS lets a maintainer privately draft a Security Advisory to coordinate a
+fix before public disclosure. Ignite's own [`auto-fix-pr`](#auto-opening-a-fix-pr-for-what-it-finds)
+does the opposite by design — it goes straight to a public fix PR the
+moment it finds a safe, single-version-bump fix — so it can't cover this
+case, and deliberately shouldn't: whether a finding needs private
+coordination at all is a judgment call, not something a scan should decide
+unattended.
+
+`report-vulnerability` (`rust/crates/report-vulnerability`) is a separate,
+always-manual CLI for exactly that judgment call. Same dry-run-by-default
+convention as `enforce-gate-branch-protection`:
+
+```bash
+# Prints the exact gh api call it would make, plus the JSON body — no changes made.
+./target/release/report-vulnerability my-org/my-repo \
+  --summary "SQL injection in query builder" \
+  --severity high \
+  --ecosystem npm \
+  --package acme-query-builder \
+  --vulnerable-range "< 2.1.0" \
+  --patched 2.1.0 \
+  --cwe CWE-89
+
+# Actually creates the draft advisory.
+./target/release/report-vulnerability my-org/my-repo \
+  --summary "SQL injection in query builder" \
+  --severity high \
+  --ecosystem npm \
+  --package acme-query-builder \
+  --vulnerable-range "< 2.1.0" \
+  --apply
+```
+
+`--severity` is one of `critical`/`high`/`medium`/`low`; `--patched`,
+`--description`, and repeated `--cwe` flags are optional. On success it
+prints the created advisory's GHSA id and URL. Never wired into any
+scan/pipeline path — an operator runs it deliberately once they've decided
+a finding warrants private coordination.

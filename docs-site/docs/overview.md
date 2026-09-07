@@ -138,7 +138,11 @@ entirely on your machine. A local LLM adds one *additional*, optional layer
 for logic-level review; it is not what does the SAST or CVE detection
 above. Every finding is exportable as
 [SARIF](https://github.com/nunomcpereira/ignite#sarif-export) for GitHub
-code scanning or any SARIF-speaking dashboard.
+code scanning or any SARIF-speaking dashboard — and, once a scan's commit
+lands on GitHub, Ignite can push that SARIF and the resolved dependency
+graph straight into GitHub's own Security and Insights tabs, so results
+show up natively there too, not only in Ignite's own UI (see
+[Native GitHub UI parity](./ci-integration#native-github-ui-parity-for-sarif-and-dependency-graph)).
 
 **Nothing gets provisioned or pushed to GitHub until every check passes —
 or every blocking issue is explicitly justified and overridden**, with that
