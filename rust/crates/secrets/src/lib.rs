@@ -196,11 +196,12 @@ pub struct SecretsConfig {
     pub max_scan_file_bytes: u64,
     pub gitleaks_config_path: Option<std::path::PathBuf>,
     pub gitleaks_enabled: bool,
+    pub gitleaks_scan_history: bool,
 }
 
 impl Default for SecretsConfig {
     fn default() -> Self {
-        SecretsConfig { known_public_key_patterns: vec![], max_scan_file_bytes: 5 * 1024 * 1024, gitleaks_config_path: None, gitleaks_enabled: false }
+        SecretsConfig { known_public_key_patterns: vec![], max_scan_file_bytes: 5 * 1024 * 1024, gitleaks_config_path: None, gitleaks_enabled: false, gitleaks_scan_history: false }
     }
 }
 
@@ -390,6 +391,71 @@ pub async fn run_gitleaks_scan(
     results
 }
 
+/// Like `run_gitleaks_scan` but scans full git commit history instead of
+/// just the current working tree — the one class of secret a
+/// working-tree-only scan structurally can't catch: a credential that was
+/// committed, then removed in a later commit, is still exposed to anyone
+/// who clones the repo. Requires a real `.git` directory (no-op — returns
+/// no findings — on a checkout with no git history, e.g. an uploaded ZIP)
+/// and omits `--no-git`/`--source` restrictions so gitleaks walks every
+/// commit reachable from HEAD.
+pub async fn run_gitleaks_history_scan(
+    root: &Path,
+    runner: &ignite_tool_runner::ToolRunner,
+    config_path: Option<&Path>,
+) -> Vec<GitleaksRawResult> {
+    if !root.join(".git").exists() {
+        return vec![];
+    }
+
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+    );
+    let report_path = std::env::temp_dir().join(format!("ignite-gitleaks-history-{unique}.json"));
+
+    let mut args = vec![
+        "detect".to_string(),
+        "--source".to_string(),
+        root.to_string_lossy().into_owned(),
+        "--report-format".to_string(),
+        "json".to_string(),
+        "--report-path".to_string(),
+        report_path.to_string_lossy().into_owned(),
+        "--exit-code".to_string(),
+        "0".to_string(),
+    ];
+    if let Some(cp) = config_path {
+        args.push("--config".to_string());
+        args.push(cp.to_string_lossy().into_owned());
+    }
+
+    // Full-history scans of a real project can take much longer than a
+    // working-tree-only scan — a generous timeout so a large history
+    // doesn't get silently truncated to "no findings" on a slow disk/CI
+    // runner, without hanging the pipeline indefinitely on a broken repo.
+    let run_result = runner
+        .run_tool(
+            "gitleaks",
+            &args,
+            &root.to_string_lossy(),
+            ignite_tool_runner::RunToolOptions { timeout_ms: Some(30 * 60_000), ..Default::default() },
+        )
+        .await;
+
+    let results = if run_result.is_err() {
+        vec![]
+    } else {
+        match std::fs::read_to_string(&report_path) {
+            Ok(raw) => parse_gitleaks_report(&raw, root, |p| std::fs::read_to_string(p).ok()),
+            Err(_) => vec![],
+        }
+    };
+    let _ = std::fs::remove_file(&report_path);
+    results
+}
+
 // --- gitleaks report parsing (pure — subprocess execution stays with the caller) ---
 
 #[derive(Debug, Clone)]
@@ -445,6 +511,29 @@ pub fn merge_gitleaks_findings(
     gitignore_patterns: &[IgnorePattern],
     known_public_key_patterns: &[Regex],
 ) -> Vec<SecretFinding> {
+    merge_gitleaks_findings_as(existing, gitleaks, gitignore_patterns, known_public_key_patterns, "gitleaks")
+}
+
+/// Same filtering/dedup as `merge_gitleaks_findings`, but for
+/// `run_gitleaks_history_scan` results — tagged with a distinct tool name
+/// (`"gitleaks-history"`) so callers/UI can tell "still in the working
+/// tree today" apart from "only in a past commit, already removed".
+pub fn merge_gitleaks_history_findings(
+    existing: &[SecretFinding],
+    gitleaks: &[GitleaksRawResult],
+    gitignore_patterns: &[IgnorePattern],
+    known_public_key_patterns: &[Regex],
+) -> Vec<SecretFinding> {
+    merge_gitleaks_findings_as(existing, gitleaks, gitignore_patterns, known_public_key_patterns, "gitleaks-history")
+}
+
+fn merge_gitleaks_findings_as(
+    existing: &[SecretFinding],
+    gitleaks: &[GitleaksRawResult],
+    gitignore_patterns: &[IgnorePattern],
+    known_public_key_patterns: &[Regex],
+    tool: &str,
+) -> Vec<SecretFinding> {
     let mut seen: HashSet<String> = existing.iter().map(|f| format!("{}:{}", f.file, f.line)).collect();
     let mut added = Vec::new();
     for f in gitleaks {
@@ -463,7 +552,7 @@ pub fn merge_gitleaks_findings(
             continue;
         }
         seen.insert(key);
-        added.push(SecretFinding { file: f.file.clone(), line: f.line, kind: f.kind.clone(), tool: "gitleaks".to_string(), code: f.code.clone() });
+        added.push(SecretFinding { file: f.file.clone(), line: f.line, kind: f.kind.clone(), tool: tool.to_string(), code: f.code.clone() });
     }
     added
 }
@@ -481,6 +570,35 @@ mod tests {
         // "gitleaks" isn't a FIXED_COMMANDS entry and no binary is registered here,
         // so resolution fails regardless of whether gitleaks is actually installed.
         assert!(!gitleaks_tooling(&runner).await);
+    }
+
+    #[tokio::test]
+    async fn run_gitleaks_history_scan_no_ops_without_a_git_directory() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("config.js"), "const api_key = 'sk-proj-abcdefghijklmnop';\n").unwrap();
+        let runner = ignite_tool_runner::ToolRunner::new(StdHashMap::new());
+        // No .git directory at all — must return no findings without even
+        // attempting to run gitleaks, regardless of whether it's installed.
+        let results = run_gitleaks_history_scan(root, &runner, None).await;
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn merge_gitleaks_history_findings_tags_tool_distinctly_from_working_tree_gitleaks() {
+        let existing = vec![];
+        let history = vec![GitleaksRawResult { file: "old-secret.js".into(), line: 4, kind: "generic-api-key".into(), code: None }];
+        let merged = merge_gitleaks_history_findings(&existing, &history, &[], &[]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].tool, "gitleaks-history");
+    }
+
+    #[test]
+    fn merge_gitleaks_history_findings_dedupes_against_working_tree_findings_at_same_location() {
+        let existing = vec![SecretFinding { file: "a.js".into(), line: 3, kind: "api_key".into(), tool: "gitleaks".to_string(), code: None }];
+        let history = vec![GitleaksRawResult { file: "a.js".into(), line: 3, kind: "generic-api-key".into(), code: None }];
+        let merged = merge_gitleaks_history_findings(&existing, &history, &[], &[]);
+        assert!(merged.is_empty());
     }
 
     fn empty_cache() -> HashMap<String, CachedFileEntry> {

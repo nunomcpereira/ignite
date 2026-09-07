@@ -6,11 +6,15 @@
 //! once per `GithubApi` instance, transparently replaced with a direct
 //! HTTPS call carrying the same token when the binary isn't installed.
 
+use base64::Engine;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::Write;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
@@ -265,6 +269,34 @@ impl<'a> GithubApi<'a> {
             return Ok(());
         }
         self.github_api_request(token, "POST", &format!("/repos/{full_name}/issues"), Some(&serde_json::json!({ "title": title, "body": body })), None).await?;
+        Ok(())
+    }
+
+    /// Pushes a dependency-graph snapshot via GitHub's Dependency
+    /// Submission API (`PUT repos/{full_name}/dependency-graph/snapshots`),
+    /// so results show up in the repo's native Insights > Dependency graph
+    /// tab the same way Dependabot's own submission would. No `gh` CLI
+    /// subcommand exists for this endpoint, so it always goes through the
+    /// raw REST call regardless of whether `gh` is installed.
+    pub async fn gh_submit_dependency_snapshot(&self, full_name: &str, snapshot: &Value, token: &str) -> Result<(), GithubApiError> {
+        self.github_api_request(token, "PUT", &format!("/repos/{full_name}/dependency-graph/snapshots"), Some(snapshot), None).await?;
+        Ok(())
+    }
+
+    /// Uploads a SARIF document via GitHub's Code Scanning API (`POST
+    /// repos/{full_name}/code-scanning/sarifs`), so findings appear
+    /// natively in the repo's Security > Code scanning alerts tab. GitHub
+    /// requires the SARIF payload gzip-compressed then base64-encoded; no
+    /// `gh` CLI subcommand exists for this endpoint, so it always goes
+    /// through the raw REST call.
+    pub async fn gh_upload_sarif(&self, full_name: &str, commit_sha: &str, git_ref: &str, sarif: &Value, token: &str) -> Result<(), GithubApiError> {
+        let sarif_bytes = serde_json::to_vec(sarif)?;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&sarif_bytes)?;
+        let gzipped = encoder.finish()?;
+        let sarif_b64 = base64::engine::general_purpose::STANDARD.encode(gzipped);
+        let body = serde_json::json!({ "commit_sha": commit_sha, "ref": git_ref, "sarif": sarif_b64 });
+        self.github_api_request(token, "POST", &format!("/repos/{full_name}/code-scanning/sarifs"), Some(&body), None).await?;
         Ok(())
     }
 

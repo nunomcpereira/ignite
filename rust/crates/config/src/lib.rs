@@ -312,10 +312,20 @@ pub struct GitleaksConfig {
     pub enabled: bool,
     pub binary: String,
     pub config_path: String,
+    /// Also runs `gitleaks detect` against full git commit history (not
+    /// just the current working tree), catching a secret that was
+    /// committed then removed in a later commit — the one class of secret
+    /// GHAS's own secret-scanning alerts catch that a working-tree-only
+    /// scan structurally cannot. Off by default: it requires a real `.git`
+    /// directory (a no-op on an uploaded ZIP with no git history) and
+    /// costs meaningfully more time than a working-tree scan on a repo
+    /// with a long history.
+    #[serde(default)]
+    pub scan_history: bool,
 }
 impl Default for GitleaksConfig {
     fn default() -> Self {
-        GitleaksConfig { enabled: false, binary: "gitleaks".into(), config_path: String::new() }
+        GitleaksConfig { enabled: false, binary: "gitleaks".into(), config_path: String::new(), scan_history: false }
     }
 }
 
@@ -487,6 +497,24 @@ impl Default for PackageHallucinationConfig {
     fn default() -> Self { PackageHallucinationConfig { enabled: true } }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyGraphConfig {
+    pub enabled: bool,
+}
+impl Default for DependencyGraphConfig {
+    fn default() -> Self { DependencyGraphConfig { enabled: true } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeScanningConfig {
+    pub enabled: bool,
+}
+impl Default for CodeScanningConfig {
+    fn default() -> Self { CodeScanningConfig { enabled: true } }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
@@ -506,6 +534,8 @@ pub struct SecurityConfig {
     pub picklescan: PicklescanConfig,
     pub package_hallucination: PackageHallucinationConfig,
     pub zizmor: ZizmorConfig,
+    pub dependency_graph: DependencyGraphConfig,
+    pub code_scanning: CodeScanningConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -835,6 +865,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("GITHUB_OAUTH_REDIRECT_URI") { merged.github.oauth.redirect_uri = v; }
     if let Some(v) = env_str("GITHUB_OAUTH_SCOPE") { merged.github.oauth.scope = v; }
     if let Some(v) = env_bool("GITLEAKS_ENABLED") { merged.security.gitleaks.enabled = v; }
+    if let Some(v) = env_bool("GITLEAKS_SCAN_HISTORY") { merged.security.gitleaks.scan_history = v; }
     if let Some(v) = env_str("GITLEAKS_BINARY") { merged.security.gitleaks.binary = v; }
     if let Some(v) = env_str("GITLEAKS_CONFIG_PATH") { merged.security.gitleaks.config_path = v; }
     if let Some(v) = env_csv("SECRETS_KNOWN_PUBLIC_KEY_PATTERNS") { merged.security.secrets.known_public_key_patterns = v; }
@@ -854,6 +885,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("PICKLESCAN_BINARY") { merged.security.picklescan.binary = v; }
     if let Some(v) = env_bool("PACKAGE_HALLUCINATION_ENABLED") { merged.security.package_hallucination.enabled = v; }
     if let Some(v) = env_bool("ZIZMOR_ENABLED") { merged.security.zizmor.enabled = v; }
+    if let Some(v) = env_bool("DEPENDENCY_GRAPH_ENABLED") { merged.security.dependency_graph.enabled = v; }
+    if let Some(v) = env_bool("CODE_SCANNING_ENABLED") { merged.security.code_scanning.enabled = v; }
     if let Some(v) = env_str("ZIZMOR_BINARY") { merged.security.zizmor.binary = v; }
     if let Some(v) = env_bool("SEMGREP_ENABLED") { merged.security.semgrep.enabled = v; }
     if let Some(v) = env_str("SEMGREP_BINARY") { merged.security.semgrep.binary = v; }

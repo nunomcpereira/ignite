@@ -193,6 +193,12 @@ pub async fn run_phase4_checks(
         let gitignore_patterns = ignite_fs_utils::load_gitignore_patterns(root);
         let added = ignite_secrets::merge_gitleaks_findings(&secrets_result.findings, &gitleaks_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
         secrets_result.findings.extend(added);
+
+        if config.secrets.gitleaks_scan_history {
+            let history_raw = ignite_secrets::run_gitleaks_history_scan(root, runner, config.secrets.gitleaks_config_path.as_deref()).await;
+            let history_added = ignite_secrets::merge_gitleaks_history_findings(&secrets_result.findings, &history_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
+            secrets_result.findings.extend(history_added);
+        }
     }
     let ms_secrets = __t_secrets.elapsed().as_millis() as u64;
     task_timings.push(("secrets", ms_secrets));

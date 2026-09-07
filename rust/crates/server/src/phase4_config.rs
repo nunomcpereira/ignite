@@ -48,6 +48,7 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
             max_scan_file_bytes: ignite_secrets::SecretsConfig::default().max_scan_file_bytes,
             gitleaks_config_path,
             gitleaks_enabled: sec.gitleaks.enabled,
+            gitleaks_scan_history: sec.gitleaks.scan_history,
         },
         llm: Some(ignite_llm_deep_scan::LlmDeepScanConfig {
             enabled: cfg.llm.deep_scan_enabled,

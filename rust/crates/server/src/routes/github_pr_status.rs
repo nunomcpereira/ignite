@@ -79,6 +79,7 @@ async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): Re
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let pr_number = body.get("prNumber").and_then(|v| v.as_i64());
+    let git_ref = body.get("ref").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
 
     if !ignite_github_api::is_valid_github_owner(&owner) {
         return err(StatusCode::BAD_REQUEST, format!("Invalid GitHub owner/org: \"{owner}\""));
@@ -123,6 +124,36 @@ async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): Re
             return err(StatusCode::BAD_GATEWAY, format!("Failed to post to GitHub: {e}"));
         }
         commented = true;
+    }
+
+    // Best-effort pushes to GitHub's own Security/Insights UI, so results
+    // are visible the same way GHAS's own Code Scanning + Dependency graph
+    // would show them — deliberately non-fatal: a failure here shouldn't
+    // fail the gate status the caller already got posted above.
+    let resolved_ref = match git_ref.filter(|r| !r.is_empty()) {
+        Some(r) => r,
+        None => match api.default_branch(&full_name, &gh_token).await {
+            Ok(branch) => format!("refs/heads/{branch}"),
+            Err(_) => format!("refs/heads/{sha}"),
+        },
+    };
+
+    if state.config.security.code_scanning.enabled {
+        let sarif_doc = serde_json::to_value(ignite_sarif::build_sarif(&issues)).unwrap_or(Value::Null);
+        if let Err(e) = api.gh_upload_sarif(&full_name, &sha, &resolved_ref, &sarif_doc, &gh_token).await {
+            tracing::warn!("SARIF upload to GitHub Code Scanning failed for {full_name}@{sha}: {e}");
+        }
+    }
+
+    if state.config.security.dependency_graph.enabled {
+        if let Some(project_id) = state.db.get_project_id_by_job_id(job_id) {
+            if let Some(scan_json) = state.db.get_dependency_scan_cache(project_id) {
+                let snapshot = ignite_dependency_license_scan::build_dependency_graph_snapshot(&scan_json, &sha, &resolved_ref, job_id);
+                if let Err(e) = api.gh_submit_dependency_snapshot(&full_name, &snapshot, &gh_token).await {
+                    tracing::warn!("Dependency graph snapshot submission failed for {full_name}@{sha}: {e}");
+                }
+            }
+        }
     }
 
     Json(json!({ "ok": true, "state": summary.state, "description": summary.description, "commented": commented })).into_response()

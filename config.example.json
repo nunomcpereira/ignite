@@ -67,7 +67,8 @@
     "gitleaks": {
       "enabled": false,
       "binary": "gitleaks",
-      "configPath": ""
+      "configPath": "",
+      "scanHistory": false
     },
     "trivy": {
       "enabled": true,
@@ -114,6 +115,12 @@
     "zizmor": {
       "enabled": true,
       "binary": "zizmor"
+    },
+    "dependencyGraph": {
+      "enabled": true
+    },
+    "codeScanning": {
+      "enabled": true
     },
     "codeql": {
       "enabled": true,

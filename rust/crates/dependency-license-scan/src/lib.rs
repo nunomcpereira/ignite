@@ -763,6 +763,82 @@ pub async fn run_license_compliance_check_with_scan(root: &Path, runner: &ToolRu
     (issues, Some(scan_json))
 }
 
+/// Maps Ignite's fixed ecosystem strings to the package-url (PURL) type
+/// GitHub's Dependency Submission API expects.
+fn purl_ecosystem(ecosystem: &str) -> &'static str {
+    match ecosystem {
+        "npm" => "npm",
+        "cargo" => "cargo",
+        "pypi" => "pypi",
+        "go" => "golang",
+        "maven" => "maven",
+        _ => "generic",
+    }
+}
+
+/// A `name:version` pair as a best-effort PURL. Maven/Go names that
+/// already carry a `group:artifact`-style separator are split into a PURL
+/// namespace/name; everything else uses a bare name. Missing versions
+/// fall back to omitting the `@version` suffix, since GitHub only requires
+/// `package_url` to identify the dependency, not resolve it.
+fn to_package_url(ecosystem: &str, name: &str, version: Option<&str>) -> String {
+    let purl_type = purl_ecosystem(ecosystem);
+    let name_part = if let Some((namespace, artifact)) = name.split_once(':') {
+        format!("{namespace}/{artifact}")
+    } else {
+        name.to_string()
+    };
+    match version {
+        Some(v) if !v.is_empty() => format!("pkg:{purl_type}/{name_part}@{v}"),
+        _ => format!("pkg:{purl_type}/{name_part}"),
+    }
+}
+
+/// Builds a GitHub Dependency Submission API snapshot
+/// (`PUT repos/{owner}/{repo}/dependency-graph/snapshots`) from a cached
+/// scan result — the same `scan_json` shape `run_license_compliance_check_with_scan`
+/// produces and `DbStore::save_dependency_scan_cache` persists. Lets
+/// dependency data already resolved during a scan reach GitHub's native
+/// Insights > Dependency graph tab without a second scan.
+pub fn build_dependency_graph_snapshot(scan_json: &serde_json::Value, sha: &str, git_ref: &str, job_id: &str) -> serde_json::Value {
+    let empty = Vec::new();
+    let manifests_in = scan_json.get("manifests").and_then(|v| v.as_array()).unwrap_or(&empty);
+
+    let mut manifests_out = serde_json::Map::new();
+    for m in manifests_in {
+        let file = m.get("file").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let ecosystem = m.get("ecosystem").and_then(|v| v.as_str()).unwrap_or("generic");
+        let deps = m.get("dependencies").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+        let mut resolved = serde_json::Map::new();
+        for dep in &deps {
+            let name = dep.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let version = dep.get("version").and_then(|v| v.as_str());
+            let package_url = to_package_url(ecosystem, name, version);
+            resolved.insert(name.to_string(), serde_json::json!({ "package_url": package_url, "relationship": "direct", "scope": "runtime" }));
+        }
+
+        manifests_out.insert(
+            file.to_string(),
+            serde_json::json!({
+                "name": file,
+                "file": { "source_location": file },
+                "resolved": resolved,
+            }),
+        );
+    }
+
+    serde_json::json!({
+        "version": 0,
+        "job": { "correlator": format!("ignite-scan/{job_id}"), "id": job_id },
+        "sha": sha,
+        "ref": git_ref,
+        "scanned": chrono::Utc::now().to_rfc3339(),
+        "detector": { "name": "ignite", "version": env!("CARGO_PKG_VERSION"), "url": "https://github.com/nunomcpereira/ignite" },
+        "manifests": manifests_out,
+    })
+}
+
 /// Faithful port of `runDependencyVulnerabilityCheck` — Phase 3's
 /// dependency-vulnerability gate. Never fails the phase on a scan error.
 pub async fn run_dependency_vulnerability_check(root: &Path, client: &DepsDevClient, mut log: impl FnMut(&str)) -> Vec<Issue> {
@@ -950,6 +1026,32 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn to_package_url_builds_purl_with_version() {
+        assert_eq!(to_package_url("npm", "lodash", Some("4.17.21")), "pkg:npm/lodash@4.17.21");
+        assert_eq!(to_package_url("go", "example.com/foo:bar", Some("1.0.0")), "pkg:golang/example.com/foo/bar@1.0.0");
+        assert_eq!(to_package_url("cargo", "serde", None), "pkg:cargo/serde");
+    }
+
+    #[test]
+    fn build_dependency_graph_snapshot_maps_manifests_and_resolved_packages() {
+        let scan_json = serde_json::json!({
+            "manifests": [
+                { "file": "package.json", "ecosystem": "npm", "dependencies": [
+                    { "name": "lodash", "version": "4.17.21" },
+                    { "name": "left-pad", "version": null },
+                ]}
+            ]
+        });
+        let snapshot = build_dependency_graph_snapshot(&scan_json, "abc123", "refs/heads/main", "job-1");
+        assert_eq!(snapshot["sha"], "abc123");
+        assert_eq!(snapshot["ref"], "refs/heads/main");
+        assert_eq!(snapshot["job"]["id"], "job-1");
+        let resolved = &snapshot["manifests"]["package.json"]["resolved"];
+        assert_eq!(resolved["lodash"]["package_url"], "pkg:npm/lodash@4.17.21");
+        assert_eq!(resolved["left-pad"]["package_url"], "pkg:npm/left-pad");
+    }
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
