@@ -30,6 +30,16 @@
 # Each surviving entry also carries a running "# Issue #N" count,
 # recomputed every run.
 #
+# Staying in sync with what actually got pushed: the file's own header
+# names the commit it was scanned against, which only exists once that
+# commit is already made - so a clean pass whose file is still stale (old
+# sha, or a justification whose line number has since drifted) can't fold
+# the refresh into that same commit atomically. Instead it refreshes the
+# file, folds it into the just-made commit with `git commit --amend`, and
+# blocks that one push (exit 1) so you push again and send the amended
+# commit - rather than letting the committed file quietly go stale until
+# some later failing push happens to touch it again.
+#
 # Every run (pass or fail) also drops a point-in-time snapshot of every
 # reported finding at .ignite/scans/<timestamp>/findings.md - a full,
 # unfiltered per-scan history, unlike acknowledgments.md which only ever
@@ -216,38 +226,36 @@ echo "$RESPONSE" | jq -r --arg now "$NOW_ISO" --arg sha "$CURRENT_SHA" '
 echo "  Findings snapshot: $SNAPSHOT_FILE"
 
 OK="$(echo "$RESPONSE" | jq -r '.ok // false')"
-if [ "$OK" = "true" ]; then
-  echo "✓ Ignite checks passed."
-  echo -n "$CURRENT_SHA" > "$STATE_FILE"
-  exit 0
-fi
-
-echo "✗ Ignite checks failed - push blocked." >&2
-echo "$RESPONSE" | jq -r '(.phases // [])[] | select(.state=="failed") | "  Phase \(.phase) - \(.title)\n" + ((.logs // [])[-10:] | map("    " + .) | join("\n"))' >&2
-
 ISSUES_COUNT="$(echo "$RESPONSE" | jq '(.issues // []) | length')"
-# .issues on a failed run now carries every error-severity finding the scan
-# reported, including ones already resolved by an override this round
-# (status:"overridden") - UNRESOLVED_COUNT excludes those so the final
-# "N blocking finding(s)" message reports what actually still needs
-# attention, matching Phase 4's own per-run "unresolved blocking" count.
+# .issues now carries every error-severity finding the scan reported,
+# including ones already resolved by an override this round (status:
+# "overridden") - UNRESOLVED_COUNT excludes those so the final "N blocking
+# finding(s)" message reports what actually still needs attention, matching
+# Phase 4's own per-run "unresolved blocking" count.
 UNRESOLVED_COUNT="$(echo "$RESPONSE" | jq '[(.issues // [])[] | select(.status != "overridden")] | length')"
-if [ "$ISSUES_COUNT" -eq 0 ]; then
-  # Not the overridable Phase 4 issue-list case (e.g. raw .env files, a
-  # failing unit test) - nothing to acknowledge from the CLI.
-  echo "" >&2
-  echo "This failure isn't something a justification can override - fix it in the source and push again." >&2
-  exit 1
+
+if [ "$OK" != "true" ]; then
+  echo "✗ Ignite checks failed - push blocked." >&2
+  echo "$RESPONSE" | jq -r '(.phases // [])[] | select(.state=="failed") | "  Phase \(.phase) - \(.title)\n" + ((.logs // [])[-10:] | map("    " + .) | join("\n"))' >&2
+
+  if [ "$ISSUES_COUNT" -eq 0 ]; then
+    # Not the overridable Phase 4 issue-list case (e.g. raw .env files, a
+    # failing unit test) - nothing to acknowledge from the CLI.
+    echo "" >&2
+    echo "This failure isn't something a justification can override - fix it in the source and push again." >&2
+    exit 1
+  fi
 fi
 
-# Refreshed every run: this file always reflects the CURRENT scan findings,
-# not a permanent ledger - an id whose finding is no longer reported (fixed
-# in source, or genuinely resolved) is dropped instead of lingering
-# forever. A justification already written for an id still being reported
-# is preserved as-is; only ids not already present get a fresh blank entry
-# appended.
-mkdir -p "$(dirname "$REVIEW_FILE")"
-{
+# Regenerated whenever there's something to reconcile: open/overridden issues
+# this run, or a stale file left over from a previous run - so a clean pass
+# can't silently leave the committed file out of date (still naming a
+# previous push's commit sha, or a justification pinned to a line number
+# that has since drifted) the way it used to until some later failing push
+# happened to touch the file again.
+if [ "$ISSUES_COUNT" -gt 0 ] || [ -s "$REVIEW_FILE" ]; then
+  mkdir -p "$(dirname "$REVIEW_FILE")"
+  NEW_REVIEW_CONTENT="$({
   cat <<'HEADER'
 # Ignite pre-push acknowledgments - meant to be committed: a filled-in
 # justification is a real audit record, reviewable like code.
@@ -369,8 +377,28 @@ HEADER
     | ( [ range(0; $combined|length) as $i | ($combined[$i] | sub("^(?<h>ID: [^\\n]*)\\n"; "\(.h)\n# Issue #\($i+1)\n")) ] )
     | join("\n\n")
   '
-} > "$REVIEW_FILE"
+  })"
+else
+  NEW_REVIEW_CONTENT=""
+fi
 
+if [ "$OK" = "true" ]; then
+  echo "✓ Ignite checks passed."
+  if [ -n "$NEW_REVIEW_CONTENT" ] && [ "$NEW_REVIEW_CONTENT" != "$REVIEW_TEXT" ]; then
+    printf '%s\n' "$NEW_REVIEW_CONTENT" > "$REVIEW_FILE"
+    git -C "$REPO_PATH" add "$REVIEW_FILE"
+    git -C "$REPO_PATH" commit --amend --no-edit -q
+    NEW_SHA="$(git -C "$REPO_PATH" rev-parse HEAD)"
+    echo -n "$NEW_SHA" > "$STATE_FILE"
+    echo "  $REVIEW_FILE was stale (old commit sha and/or a drifted line number) - refreshed and folded into this commit (amended -> $NEW_SHA)." >&2
+    echo "  Push again to send the amended commit." >&2
+    exit 1
+  fi
+  echo -n "$CURRENT_SHA" > "$STATE_FILE"
+  exit 0
+fi
+
+printf '%s\n' "$NEW_REVIEW_CONTENT" > "$REVIEW_FILE"
 echo "" >&2
 echo "✗ $UNRESOLVED_COUNT blocking finding(s) need a justification or a source fix." >&2
 echo "  Edit $REVIEW_FILE, fill in \"Acknowledge:\" for whichever you want to" >&2
