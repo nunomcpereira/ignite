@@ -242,11 +242,14 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
     Json(json!({ "ok": true, "prUrl": outcome.pr_url, "branch": outcome.branch, "filesChanged": outcome.files_changed })).into_response()
 }
 
-async fn generate_diff(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+/// Builds the `.diff`/`.patch` pair straight from the job's local source
+/// (uploaded ZIP, retained backup, or live studio copy — whatever
+/// `resolve_studio_context` finds) rather than cloning from GitHub. This
+/// download has no business requiring a GitHub token or the repo having
+/// ever been pushed — a scan of code that's only ever been uploaded
+/// still has a fix diff worth downloading.
+async fn generate_diff(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
-    let Some((_, org, repo)) = resolve_org_repo(&state, job_id) else {
-        return err(StatusCode::NOT_FOUND, "This job has no associated GitHub repository yet.");
-    };
 
     let candidates: Vec<FixCandidate> = match body.get("candidates").cloned().map(serde_json::from_value) {
         Some(Ok(c)) => c,
@@ -257,20 +260,14 @@ async fn generate_diff(State(state): State<Arc<AppState>>, crate::auth::RequireA
         return err(StatusCode::BAD_REQUEST, "candidates must not be empty.");
     }
 
-    let token = crate::auth::resolve_effective_github_token(&headers, &state.db);
-    if token.is_empty() {
-        return err(StatusCode::UNAUTHORIZED, "No GitHub token available.");
-    }
-
-    let full_name = format!("{org}/{repo}");
-    let github_api = ignite_github_api::GithubApi::new(&state.runner);
-    let base_branch = match github_api.default_branch(&full_name, &token).await {
-        Ok(b) => b,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("Failed to resolve default branch for {full_name}: {e}")),
+    let ctx = match crate::routes::studio::resolve_studio_context(&state, job_id) {
+        Ok(c) => c,
+        Err(r) => return r,
     };
 
-    match ignite_fix_pr::generate_fix_diff(&state.runner, &github_api, &full_name, &base_branch, &candidates, &token).await {
-        Ok(diff) => Json(json!({ "ok": true, "diff": diff })).into_response(),
+    let commit_subject = format!("Ignite: fix {} finding(s)", candidates.len());
+    match ignite_fix_pr::generate_fix_diff_local(&state.runner, &ctx.root, &candidates, &commit_subject).await {
+        Ok(result) => Json(json!({ "ok": true, "diff": result.diff, "patch": result.patch, "filesChanged": result.files_changed })).into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, e),
     }
 }

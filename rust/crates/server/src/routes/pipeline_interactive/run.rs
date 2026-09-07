@@ -362,6 +362,12 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
         // identified-but-justified rather than open.
         let mut pre_overrides: Vec<SubmittedOverride> = Vec::new();
         let mut pre_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // issue_id -> (justification, actorEmail, actorName), mirrored onto
+        // the `review_required` event below so the live review-gate screen
+        // shows the same "✨ AI-justified"/"↻ Carried forward" badge and
+        // justification text the read-only history/Studio views already get
+        // from `IssueRow` — `all_issues` itself carries no override fields.
+        let mut pre_meta: std::collections::HashMap<String, (String, &'static str, &'static str)> = std::collections::HashMap::new();
         if let Some(pid) = project_id {
             let carried_forward = state.db.get_carry_forward_overrides(&org, &repo, pid);
             let mut carried_count = 0;
@@ -386,6 +392,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     actor_name: Some("Carried forward (previous scan)"),
                     email_sent: false,
                 });
+                pre_meta.insert(issue.id.clone(), (justification.clone(), "carried-forward@ignite.internal", "Carried forward (previous scan)"));
                 pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification, code: None });
                 pre_ids.insert(issue.id.clone());
                 carried_count += 1;
@@ -421,6 +428,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         actor_name: Some("Ignite AI Assist"),
                         email_sent: false,
                     });
+                    pre_meta.insert(issue.id.clone(), (justification.clone(), "ai-assist@ignite.internal", "Ignite AI Assist"));
                     pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification: justification.clone(), code: None });
                     pre_ids.insert(issue.id.clone());
                     ai_count += 1;
@@ -443,7 +451,21 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             if let Some(live) = state.running_runs.lock().get_mut(&job_id) {
                 live.review_active = true;
             }
-            log.send(json!({ "type": "review_required", "phase": 6, "jobId": job_id, "issues": all_issues.iter().map(|i| serde_json::to_value(i).unwrap()).collect::<Vec<_>>() }));
+            let review_issues: Vec<serde_json::Value> = all_issues
+                .iter()
+                .map(|i| {
+                    let mut v = serde_json::to_value(i).unwrap();
+                    if let Some((justification, actor_email, actor_name)) = pre_meta.get(&i.id) {
+                        let obj = v.as_object_mut().unwrap();
+                        obj.insert("status".to_string(), json!("overridden"));
+                        obj.insert("justification".to_string(), json!(justification));
+                        obj.insert("actorEmail".to_string(), json!(actor_email));
+                        obj.insert("actorName".to_string(), json!(actor_name));
+                    }
+                    v
+                })
+                .collect();
+            log.send(json!({ "type": "review_required", "phase": 6, "jobId": job_id, "issues": review_issues }));
 
             let decision = match rx.await {
                 Ok(d) => d,

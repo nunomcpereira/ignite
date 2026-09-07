@@ -231,6 +231,8 @@ window.IGNITE_I18N = {
 
       'fixPr.title': 'Generate fix PR',
       'fixPr.subtitle': "AI-suggested fixes for this run's open issues — review each one, then open a PR with the ones you keep.",
+      'fixPr.downloadTitle': 'Download the selected fixes as a unified diff (.diff), applicable with git apply or patch -p1',
+      'fixPr.downloadPatchTitle': 'Download the selected fixes as a git am-compatible patch (.patch)',
       'fixPr.openPr': 'Open PR',
       'fixPr.openPrTitle': 'Open the pull request with the fixes selected above',
 
@@ -510,6 +512,8 @@ window.IGNITE_I18N = {
 
       'fixPr.title': 'Générer une PR de correction',
       'fixPr.subtitle': "Corrections suggérées par IA pour les problèmes ouverts de cette exécution — passez en revue chacune, puis ouvrez une PR avec celles que vous conservez.",
+      'fixPr.downloadTitle': 'Télécharger les corrections sélectionnées sous forme de diff unifié (.diff), applicable avec git apply ou patch -p1',
+      'fixPr.downloadPatchTitle': 'Télécharger les corrections sélectionnées sous forme de patch compatible git am (.patch)',
       'fixPr.openPr': 'Ouvrir la PR',
       'fixPr.openPrTitle': 'Ouvrir la pull request avec les corrections sélectionnées ci-dessus',
 
@@ -789,6 +793,8 @@ window.IGNITE_I18N = {
 
       'fixPr.title': 'Gerar PR de correção',
       'fixPr.subtitle': 'Correções sugeridas por IA para os problemas em aberto desta execução — revise cada uma e depois abra uma PR com as que você mantiver.',
+      'fixPr.downloadTitle': 'Baixar as correções selecionadas como um diff unificado (.diff), aplicável com git apply ou patch -p1',
+      'fixPr.downloadPatchTitle': 'Baixar as correções selecionadas como um patch compatível com git am (.patch)',
       'fixPr.openPr': 'Abrir PR',
       'fixPr.openPrTitle': 'Abrir o pull request com as correções selecionadas acima',
 
@@ -1068,6 +1074,8 @@ window.IGNITE_I18N = {
 
       'fixPr.title': 'Fix-PR erstellen',
       'fixPr.subtitle': 'Von KI vorgeschlagene Korrekturen für die offenen Probleme dieses Laufs — jede einzeln prüfen und dann einen PR mit den behaltenen öffnen.',
+      'fixPr.downloadTitle': 'Die ausgewählten Korrekturen als vereinheitlichten Diff (.diff) herunterladen, anwendbar mit git apply oder patch -p1',
+      'fixPr.downloadPatchTitle': 'Die ausgewählten Korrekturen als git-am-kompatiblen Patch (.patch) herunterladen',
       'fixPr.openPr': 'PR öffnen',
       'fixPr.openPrTitle': 'Den Pull Request mit den oben ausgewählten Korrekturen öffnen',
 

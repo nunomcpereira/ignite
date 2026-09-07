@@ -49,12 +49,12 @@ const EFFECTIVATION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// the truth here.
 const RESCAN_PURGE_CATEGORIES: &[&str] = &["secret", "ai-governance", "iac-security", "license-compliance", "dependency-vulnerability"];
 
-struct StudioContext {
-    project_id: Option<i64>,
-    root: PathBuf,
-    backup_root: PathBuf,
-    org: String,
-    repo: String,
+pub(crate) struct StudioContext {
+    pub(crate) project_id: Option<i64>,
+    pub(crate) root: PathBuf,
+    pub(crate) backup_root: PathBuf,
+    pub(crate) org: String,
+    pub(crate) repo: String,
 }
 
 fn issue_row_to_input(r: &IssueRow) -> IssueInput {
@@ -114,7 +114,7 @@ fn codeql_db_dir_for(project_id: Option<i64>) -> Option<PathBuf> {
 }
 
 #[allow(clippy::result_large_err)]
-fn resolve_studio_context(state: &AppState, job_id: &str) -> Result<StudioContext, Response> {
+pub(crate) fn resolve_studio_context(state: &AppState, job_id: &str) -> Result<StudioContext, Response> {
     if let Some(live) = state.running_runs.lock().get(job_id) {
         if live.review_active {
             if let (Some(root), Some(backup)) = (&live.project_root, &live.source_backup_dir) {

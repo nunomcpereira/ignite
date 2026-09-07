@@ -71,6 +71,35 @@ fn issue_user_prompt(issue: &FixIssueInput, snippet: &Snippet) -> String {
     format!("Category: {}\nSeverity: {}\nLocation: {}:{}\nTechnical summary: {}\n\nCode:\n{}", issue.category, issue.severity, issue.file, issue.line, issue.summary, code_block(snippet))
 }
 
+/// Categories whose fix is, by construction, a single-line edit — bumping
+/// one pinned version in a manifest. [`build_snippet`]'s default 3-line
+/// radius (`ignite_fs_utils`) is sized for the *review UI*, where a human
+/// benefits from seeing neighboring dependencies for context; handing
+/// that same padded window to the LLM as its *editable* range invites it
+/// to "clean up" the whole block instead of touching just the flagged
+/// line; the neighbors are indistinguishable from copy-verbatim
+/// context. Confirmed against a real scan: 89% of dependency-vulnerability
+/// candidates from a 3-line-radius snippet shrank the replacement,
+/// dropping unrelated sibling packages (`react`, `spacy`, `gliner`, ...)
+/// that just happened to sit within 3 lines of the flagged one.
+const SINGLE_LINE_FIX_CATEGORIES: &[&str] = &["dependency-vulnerability"];
+
+/// For categories in [`SINGLE_LINE_FIX_CATEGORIES`], narrows `snippet`
+/// down to just the one line at `line` — so there's no neighboring line
+/// left in the prompt for the model to prune. Falls back to the original
+/// (wider, review-oriented) snippet if `line` isn't actually one of its
+/// lines, which shouldn't happen but isn't worth failing the whole fix
+/// over.
+fn narrow_snippet_for_edit(category: &str, snippet: Snippet, line: i64) -> Snippet {
+    if !SINGLE_LINE_FIX_CATEGORIES.contains(&category) {
+        return snippet;
+    }
+    let Some(target) = snippet.lines.iter().find(|l| l.number as i64 == line).cloned() else {
+        return snippet;
+    };
+    Snippet { start_line: target.number, highlight_line: target.number, lines: vec![target], highlight_end_line: None, highlight_start: None, highlight_end: None }
+}
+
 static CODE_FENCE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^```(?:\w+)?\s*(.*?)\s*```$").unwrap());
 static SUGGEST_FIX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)EXPLANATION:\s*(.*?)\n\s*REPLACEMENT:\s*(.*)$").unwrap());
 
@@ -101,7 +130,7 @@ fn parse_suggest_fix_response(text: &str) -> Option<(String, String)> {
     let captures = SUGGEST_FIX_RE.captures(&trimmed)?;
     let explanation = captures[1].trim().to_string();
     let replacement = trim_block_lines(&strip_code_fence(&captures[2]));
-    if replacement.to_uppercase() == "NONE" || replacement.is_empty() {
+    if replacement.to_uppercase() == "NONE" || replacement.is_empty() || has_leftover_prompt_artifacts(&replacement) {
         return None;
     }
     Some((explanation, replacement))
@@ -144,6 +173,7 @@ async fn process_one_issue(http: &reqwest::Client, llm_config: &LlmClientConfig,
     if snippet.lines.is_empty() {
         return (logs, None);
     }
+    let snippet = narrow_snippet_for_edit(&issue.category, snippet, issue.line);
 
     let user = issue_user_prompt(issue, &snippet);
     let label = format!("fix-pr {}:{}:{}", issue.category, issue.file, issue.line);
@@ -204,8 +234,18 @@ pub async fn generate_fix_candidates_with_progress(http: &reqwest::Client, llm_c
 
 /// Replaces `start_line..=end_line` (1-indexed, inclusive) of `content`
 /// with `replacement`. `None` if the range doesn't fit the current
-/// content (file changed since the candidate was generated).
-fn apply_candidate_to_content(content: &str, start_line: i64, end_line: i64, replacement: &str) -> Option<String> {
+/// content, or if what's actually sitting at that range no longer
+/// matches `original` byte-for-byte (line-normalized) — either the file
+/// changed since the candidate was generated, or (the common case for a
+/// bulk run) an earlier *other* candidate on this same file already
+/// rewrote this exact span. Two CVE fixes proposed independently for the
+/// same `package.json:10-16`, say, both carry the *original* dependency
+/// block as their `original`/`start_line`/`end_line` — applying the
+/// second one after the first has already replaced that span would
+/// silently splice its replacement into whatever unrelated lines now
+/// occupy that range, corrupting the file. Requiring an exact match
+/// before splicing turns that into a clean skip instead.
+fn apply_candidate_to_content(content: &str, start_line: i64, end_line: i64, original: &str, replacement: &str) -> Option<String> {
     if start_line < 1 || end_line < start_line {
         return None;
     }
@@ -216,9 +256,176 @@ fn apply_candidate_to_content(content: &str, start_line: i64, end_line: i64, rep
     if end_idx >= lines.len() {
         return None;
     }
+    let current_slice = lines[start_idx..=end_idx].join("\n");
+    let normalized_original = original.replace("\r\n", "\n");
+    if current_slice.trim_end_matches('\n') != normalized_original.trim_end_matches('\n') {
+        return None;
+    }
+    // A replacement's bracket *nesting shape* — not just its open/close
+    // counts — must match what it's replacing. Counts alone still miss
+    // this: a `}` that closes something *before* the span, immediately
+    // followed by a `{` that opens something *within* it (one open, one
+    // close — same totals as a self-contained `{ ... }` that opens and
+    // closes entirely inside the span), yet the two are structurally
+    // opposite. Walking each span from a nominal depth of 0 and recording
+    // where it ends up (`final_depth`) and how far it dipped
+    // (`min_depth`) tells them apart: a self-contained pair never goes
+    // below 0 (`min_depth == 0`), while a `}` with no opener *inside* the
+    // span pulls it negative before the later `{` brings it back — same
+    // final depth, different journey. This is exactly the "wrap the
+    // deleted rule in a comment" failure mode (`/* .iconBtn { ... } */`
+    // is self-contained and min_depth 0; the real span it replaced dips
+    // to -1 because its own `{` has no matching `}` inside the range —
+    // that one's just outside, on a line the candidate never touches).
+    // Whole-file before/after balance ([`passes_structural_check`]) can
+    // miss this when the file already carries incidental bracket
+    // asymmetry elsewhere (a `content: "{"` in real CSS, say); comparing
+    // just the span itself sidesteps that entirely.
+    if bracket_depth_signatures(&normalized_original) != bracket_depth_signatures(replacement) {
+        return None;
+    }
     let replacement_lines: Vec<&str> = replacement.split('\n').collect();
     lines.splice(start_idx..=end_idx, replacement_lines);
     Some(lines.join("\n"))
+}
+
+/// Substrings that only show up in a suggest-fix response when the LLM
+/// echoed back part of its own instructions or left a code fence
+/// unbalanced, instead of returning clean replacement code — e.g. a
+/// literal `<the corrected text for that exact line range...>`
+/// placeholder from [`ISSUE_SUGGEST_FIX_PROMPT`] landing verbatim inside
+/// a `.tsx` file, or a dangling opening ` ``` ` that
+/// [`strip_code_fence`] couldn't pair (it only strips a fence that opens
+/// *and* closes around the whole block). Checked case-insensitively.
+/// Real source in any language essentially never contains a literal
+/// triple-backtick or these exact prompt phrases, so this is safe as a
+/// blanket reject rather than a per-language rule.
+const LEFTOVER_ARTIFACT_MARKERS: &[&str] = &["```", "replacement:", "explanation:", "copied verbatim with no escaping", "no line-number prefixes"];
+
+fn has_leftover_prompt_artifacts(replacement: &str) -> bool {
+    let lower = replacement.to_lowercase();
+    LEFTOVER_ARTIFACT_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Runs `content` through Python's own parser (`ast.parse`, via a `python3`
+/// subprocess) rather than reimplementing one — the only reliable way to
+/// tell "this LLM edit deleted a `try:`/decorator/def line and left the
+/// rest of the block dangling" from "this is fine", which no string-level
+/// heuristic (bracket counting, leftover-artifact markers) can see.
+/// `None`, not `false`, when `python3` isn't on `PATH` — this is a
+/// soft dependency like every other external-tool check in Ignite; a dev
+/// box without Python installed still gets *a* diff (falling through to
+/// [`brackets_balanced`] below) rather than every `.py` candidate being
+/// silently dropped.
+fn python_syntax_is_valid(content: &str) -> Option<bool> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("python3").arg("-c").arg("import ast, sys; ast.parse(sys.stdin.read())").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()?;
+    child.stdin.take()?.write_all(content.as_bytes()).ok()?;
+    Some(child.wait().ok()?.success())
+}
+
+/// Crude but cheap: are `()`/`{}`/`[]` each individually balanced across
+/// the whole file? Doesn't understand strings or comments, so a file that
+/// legitimately contains a lone bracket in a string literal can read as
+/// "unbalanced" even when correct — which is exactly why callers only
+/// use this to compare *before* vs *after* an edit rather than as an
+/// absolute verdict: a file that was already lopsided by this metric
+/// (some comment with a stray `)`, say) stays lopsided either way, and
+/// only a previously-balanced file flipping to unbalanced is treated as
+/// the edit's fault. Used only for the whole-file check in
+/// [`passes_structural_check`] — the per-span check in
+/// [`apply_candidate_to_content`] needs the stricter
+/// [`bracket_depth_signatures`] instead, for the reason documented there.
+fn brackets_balanced(content: &str) -> (i64, i64, i64) {
+    let mut paren = 0i64;
+    let mut brace = 0i64;
+    let mut bracket = 0i64;
+    for ch in content.chars() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '{' => brace += 1,
+            '}' => brace -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            _ => {}
+        }
+    }
+    (paren, brace, bracket)
+}
+
+/// For one bracket type in `text`, walking left to right from a nominal
+/// starting depth of 0: `(final_depth, min_depth)` — where nesting ends
+/// up, and how far below the start it ever dipped. Two spans with the
+/// same open/close *counts* can still have opposite shapes: a `}` that
+/// closes something *before* the span followed by a `{` that opens
+/// something *within* it is one open, one close — same totals as a
+/// self-contained `{ ... }` that opens and closes entirely inside the
+/// span — but the former dips to depth -1 first (`min_depth == -1`)
+/// while the latter never goes negative (`min_depth == 0`). That
+/// distinction is exactly "did this edit orphan a bracket that used to
+/// pair with something outside its own range" — the case a pure count
+/// comparison can't see.
+fn depth_signature(text: &str, open: char, close: char) -> (i64, i64) {
+    let mut depth = 0i64;
+    let mut min_depth = 0i64;
+    for ch in text.chars() {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
+            min_depth = min_depth.min(depth);
+        }
+    }
+    (depth, min_depth)
+}
+
+/// [`depth_signature`] for all three bracket types at once — what
+/// [`apply_candidate_to_content`] actually compares between a
+/// candidate's `original` and `replacement`.
+fn bracket_depth_signatures(text: &str) -> ((i64, i64), (i64, i64), (i64, i64)) {
+    (depth_signature(text, '(', ')'), depth_signature(text, '{', '}'), depth_signature(text, '[', ']'))
+}
+
+/// `true` if `new_content` is syntactically sound enough to write back to
+/// disk given it started from `original_content`. Three layers, from most
+/// to least precise:
+/// - `.json` gets an exact `serde_json` parse — cheap, and JSON corruption
+///   (e.g. `package.json`) is unusually costly (breaks `npm install` for
+///   the whole checkout).
+/// - `.yml`/`.yaml` gets an exact `serde_yaml` parse — the CI-workflow
+///   corruption this whole check exists for (a decorator-deletion-style
+///   edit turning `jobs: <mapping>` into a stray `jobs: <sequence>`, with
+///   `run:` steps' shell lines left at the wrong indentation) reliably
+///   fails to parse as YAML at all, so this alone catches it without
+///   needing a GitHub Actions-specific schema check.
+/// - `.py` gets a real `ast.parse` via [`python_syntax_is_valid`] when
+///   `python3` is available, since Python's grammar (significant
+///   indentation, no braces) makes bracket-counting useless for it —
+///   falls through to the bracket check below when it isn't.
+/// - Everything else (and Python without an interpreter to check it)
+///   gets the [`brackets_balanced`] before/after comparison — no real
+///   parser, but it catches the common LLM failure mode of deleting a
+///   decorator/`def`/call-opening line while leaving what it opened in
+///   place further down.
+fn passes_structural_check(file: &str, original_content: &str, new_content: &str) -> bool {
+    if file.ends_with(".json") {
+        return serde_json::from_str::<serde_json::Value>(new_content).is_ok();
+    }
+    if file.ends_with(".yml") || file.ends_with(".yaml") {
+        return serde_yaml::from_str::<serde_yaml::Value>(new_content).is_ok();
+    }
+    if file.ends_with(".py") {
+        if let Some(valid) = python_syntax_is_valid(new_content) {
+            return valid;
+        }
+    }
+    let before = brackets_balanced(original_content);
+    let after = brackets_balanced(new_content);
+    let was_balanced = before == (0, 0, 0);
+    let still_balanced = after == (0, 0, 0);
+    !(was_balanced && !still_balanced)
 }
 
 /// Writes every candidate's edit into `root`, one file read/write per
@@ -226,8 +433,15 @@ fn apply_candidate_to_content(content: &str, start_line: i64, end_line: i64, rep
 /// (highest `start_line` first) so an earlier edit's line-count change
 /// never shifts a not-yet-applied edit's line numbers out from under it.
 /// Returns the relative paths actually changed, for the caller's `git
-/// add`. A candidate whose range no longer matches the on-disk file
-/// (edited since the candidate was generated) is skipped, not fatal.
+/// add`. A candidate is skipped, not fatal, when: its range no longer
+/// matches the on-disk file (edited since the candidate was generated,
+/// or already consumed by an earlier overlapping candidate on the same
+/// file — see [`apply_candidate_to_content`]); its replacement carries
+/// leftover LLM prompt artifacts ([`has_leftover_prompt_artifacts`]); or
+/// applying it would leave a structured file like `package.json`
+/// invalid ([`passes_structural_check`]) — in the last case every
+/// candidate for that file is dropped, since a partially-applied file
+/// isn't a safe fallback either.
 pub fn apply_candidates_to_files(root: &Path, candidates: &[FixCandidate]) -> std::io::Result<Vec<String>> {
     let mut by_file: HashMap<&str, Vec<&FixCandidate>> = HashMap::new();
     for c in candidates {
@@ -247,15 +461,23 @@ pub fn apply_candidates_to_files(root: &Path, candidates: &[FixCandidate]) -> st
             Ok(p) => p,
             Err(_) => continue,
         };
-        let mut content = std::fs::read_to_string(&path)?;
+        let original_content = std::fs::read_to_string(&path)?;
+        let mut content = original_content.clone();
         let mut any_applied = false;
         for c in file_candidates {
-            if let Some(next) = apply_candidate_to_content(&content, c.start_line, c.end_line, &c.replacement) {
+            if has_leftover_prompt_artifacts(&c.replacement) {
+                continue;
+            }
+            if let Some(next) = apply_candidate_to_content(&content, c.start_line, c.end_line, &c.original, &c.replacement) {
                 content = next;
                 any_applied = true;
             }
         }
-        if any_applied {
+        // `any_applied` only means some candidate's range matched — an LLM
+        // that proposed a replacement identical to the original (a no-op
+        // "fix") still counts, so re-check against the actual bytes before
+        // writing anything or reporting the file as changed.
+        if any_applied && content != original_content && passes_structural_check(file, &original_content, &content) {
             std::fs::write(&path, content)?;
             touched.push(file.to_string());
         }
@@ -283,35 +505,76 @@ pub struct FixPrOutcome {
     pub error: Option<String>,
 }
 
-/// Clones `full_name`@`base_branch` fresh into a temp dir, applies every
-/// candidate, and opens one PR for all of them. `already_open` (branch
-/// already exists on `origin`) short-circuits before cloning — same
-/// idempotency check `ignite-auto-fix-pr` uses.
-pub async fn generate_fix_diff(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, candidates: &[FixCandidate], token: &str) -> Result<String, String> {
+/// Both output formats [`generate_fix_diff_local`] produces from the same
+/// throwaway repo, so the caller doesn't pay for building it twice.
+pub struct LocalFixDiff {
+    /// Plain `git diff` output — applies with `git apply`/`patch -p1`.
+    pub diff: String,
+    /// `git format-patch` output (an mbox-style, `git am`-compatible
+    /// patch carrying `commit_subject` as its commit message) — what
+    /// most people mean by "download a .patch".
+    pub patch: String,
+    pub files_changed: Vec<String>,
+}
+
+/// Builds a `.diff`/`.patch` pair for `candidates` straight from `root`
+/// on local disk — no GitHub clone, no token, and no requirement that
+/// the repo has ever been pushed anywhere. This is what the "Generate
+/// fix PR" modal's download buttons use: a scan can come from an
+/// uploaded ZIP that was never onboarded to GitHub, so gating the
+/// download on `gh api repos/<org>/<repo>` (as `generate_fix_diff` used
+/// to, before this replaced it) failed outright for exactly that case,
+/// and required a GitHub token even when the user only wanted a local
+/// diff to apply by hand.
+///
+/// Copies just the touched files (not the whole tree) into a scratch
+/// git repo, commits them as a baseline, applies every candidate, and
+/// diffs/format-patches against that baseline — so the output is a
+/// normal unified diff with real `a/<path> b/<path>` headers despite
+/// never touching a real git history.
+pub async fn generate_fix_diff_local(runner: &ToolRunner, root: &Path, candidates: &[FixCandidate], commit_subject: &str) -> Result<LocalFixDiff, String> {
     if candidates.is_empty() {
         return Err("no candidates to apply".to_string());
     }
 
-    let staging = tempfile::tempdir().map_err(|e| format!("failed to create staging dir: {e}"))?;
-    let clone_dir = staging.path().join("clone");
-    let clone_dir_str = clone_dir.to_string_lossy().to_string();
+    let scratch = tempfile::tempdir().map_err(|e| format!("failed to create scratch dir: {e}"))?;
+    let repo_dir = scratch.path();
+    let repo_dir_str = repo_dir.to_string_lossy().to_string();
 
-    github_api.gh_clone_repo_branch(full_name, base_branch, &clone_dir_str, token)
-        .await
-        .map_err(|e| format!("failed to clone {full_name}@{base_branch}: {e}"))?;
+    let mut files: Vec<&str> = candidates.iter().map(|c| c.file.as_str()).collect();
+    files.sort_unstable();
+    files.dedup();
 
-    let files_changed = apply_candidates_to_files(&clone_dir, candidates)
-        .map_err(|e| format!("failed to apply fixes: {e}"))?;
+    for file in &files {
+        let src = ignite_staging::resolve_within_root(root, file).map_err(|_| format!("invalid file path: {file}"))?;
+        let dst = repo_dir.join(file);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("failed to prepare {file}: {e}"))?;
+        }
+        std::fs::copy(&src, &dst).map_err(|e| format!("failed to read {file}: {e}"))?;
+    }
 
+    async fn git(runner: &ToolRunner, cwd: &str, args: &[&str]) -> Result<String, String> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        runner.run_tool("git", &args, cwd, RunToolOptions::default()).await.map(|o| o.stdout).map_err(|e| format!("git {}: {e}", args.join(" ")))
+    }
+
+    git(runner, &repo_dir_str, &["init", "-q"]).await?;
+    git(runner, &repo_dir_str, &["-c", "user.email=ignite-bot@localhost", "-c", "user.name=Ignite", "add", "-A"]).await?;
+    git(runner, &repo_dir_str, &["-c", "user.email=ignite-bot@localhost", "-c", "user.name=Ignite", "commit", "-q", "-m", "Original"]).await?;
+
+    let files_changed = apply_candidates_to_files(repo_dir, candidates).map_err(|e| format!("failed to apply fixes: {e}"))?;
     if files_changed.is_empty() {
         return Err("none of the candidates' line ranges matched the current file contents".to_string());
     }
 
-    let diff_out = runner.run_tool("git", &["diff".to_string()], &clone_dir_str, RunToolOptions::default())
-        .await
-        .map_err(|e| format!("git diff: {e}"))?;
+    let diff = git(runner, &repo_dir_str, &["diff"]).await?;
 
-    Ok(diff_out.stdout)
+    git(runner, &repo_dir_str, &["-c", "user.email=ignite-bot@localhost", "-c", "user.name=Ignite", "add", "-A"]).await?;
+    git(runner, &repo_dir_str, &["-c", "user.email=ignite-bot@localhost", "-c", "user.name=Ignite", "commit", "-q", "-m", commit_subject]).await?;
+    let patch = git(runner, &repo_dir_str, &["format-patch", "-1", "--stdout", "HEAD"]).await?;
+
+    Ok(LocalFixDiff { diff, patch, files_changed })
 }
 
 pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, job_id: &str, candidates: &[FixCandidate], token: &str) -> FixPrOutcome {
@@ -386,28 +649,36 @@ fn pr_body_for(candidates: &[FixCandidate], job_id: &str) -> String {
 mod tests {
     use super::*;
 
-    fn candidate(file: &str, start_line: i64, end_line: i64, replacement: &str) -> FixCandidate {
-        FixCandidate { issue_id: "i1".to_string(), file: file.to_string(), category: "secret".to_string(), severity: "error".to_string(), summary: "s".to_string(), start_line, end_line, explanation: "e".to_string(), original: "o".to_string(), replacement: replacement.to_string() }
+    fn candidate(file: &str, start_line: i64, end_line: i64, original: &str, replacement: &str) -> FixCandidate {
+        FixCandidate { issue_id: "i1".to_string(), file: file.to_string(), category: "secret".to_string(), severity: "error".to_string(), summary: "s".to_string(), start_line, end_line, explanation: "e".to_string(), original: original.to_string(), replacement: replacement.to_string() }
     }
 
     #[test]
     fn apply_candidate_to_content_replaces_exact_range() {
         let content = "a\nb\nc\nd\n";
-        let out = apply_candidate_to_content(content, 2, 3, "B\nC").unwrap();
+        let out = apply_candidate_to_content(content, 2, 3, "b\nc", "B\nC").unwrap();
         assert_eq!(out, "a\nB\nC\nd\n");
     }
 
     #[test]
     fn apply_candidate_to_content_none_when_range_out_of_bounds() {
-        assert!(apply_candidate_to_content("a\nb\n", 5, 6, "x").is_none());
-        assert!(apply_candidate_to_content("a\nb\n", 0, 1, "x").is_none());
+        assert!(apply_candidate_to_content("a\nb\n", 5, 6, "x", "x").is_none());
+        assert!(apply_candidate_to_content("a\nb\n", 0, 1, "x", "x").is_none());
+    }
+
+    #[test]
+    fn apply_candidate_to_content_none_when_original_no_longer_matches() {
+        // Same range as `apply_candidate_to_content_replaces_exact_range`, but
+        // `original` no longer matches what's actually there — e.g. a second
+        // candidate targeting a span an earlier candidate already rewrote.
+        assert!(apply_candidate_to_content("a\nb\nc\nd\n", 2, 3, "X\nY", "B\nC").is_none());
     }
 
     #[test]
     fn apply_candidates_to_files_applies_bottom_to_top_within_a_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), "1\n2\n3\n4\n5\n").unwrap();
-        let candidates = vec![candidate("f.txt", 1, 1, "ONE"), candidate("f.txt", 4, 5, "FOUR\nFIVE")];
+        let candidates = vec![candidate("f.txt", 1, 1, "1", "ONE"), candidate("f.txt", 4, 5, "4\n5", "FOUR\nFIVE")];
         let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
         assert_eq!(touched, vec!["f.txt".to_string()]);
         let result = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
@@ -415,10 +686,194 @@ mod tests {
     }
 
     #[test]
+    fn apply_candidates_to_files_skips_overlapping_duplicate_range() {
+        // Two independent candidates (e.g. two separate CVE fixes) both
+        // targeting the exact same span — applying both blindly would splice
+        // the second candidate's replacement into whatever the first one
+        // left behind. Only the first application should stick.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pkg.txt"), "\"axios\": \"^1.16.0\"\n").unwrap();
+        let candidates = vec![
+            candidate("pkg.txt", 1, 1, "\"axios\": \"^1.16.0\"", "\"axios\": \"^1.6.8\""),
+            candidate("pkg.txt", 1, 1, "\"axios\": \"^1.16.0\"", "\"axios\": \"^1.6.9\""),
+        ];
+        let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
+        assert_eq!(touched, vec!["pkg.txt".to_string()]);
+        let result = std::fs::read_to_string(dir.path().join("pkg.txt")).unwrap();
+        assert_eq!(result, "\"axios\": \"^1.6.8\"\n");
+    }
+
+    #[test]
+    fn apply_candidate_to_content_none_when_replacement_deletes_a_real_matched_pair() {
+        // Reproduces the frontend/package.json corruption from a real
+        // bulk-fix run: the candidate's range spans a `},` closing one
+        // JSON object immediately followed by the `{` opening the next
+        // (`"scripts": {...}` ending, `"dependencies": {` beginning) — one
+        // open, one close, net zero. The replacement collapses the whole
+        // span to a single bare line with neither. A *net* balance check
+        // sees 0 == 0 and waves it through; only comparing exact
+        // open/close counts catches that a real pair was deleted, not
+        // "nothing".
+        let original = "    \"preview\": \"vite preview\"\n  },\n  \"dependencies\": {\n    \"axios\": \"^1.16.0\",";
+        let content = format!("{original}\n    \"konva\": \"^10.3.0\"\n  }}\n");
+        assert!(apply_candidate_to_content(&content, 1, 4, original, "    \"axios\": \"^1.6.8\",").is_none());
+    }
+
+    #[test]
+    fn apply_candidates_to_files_rejects_replacement_with_leftover_prompt_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.tsx"), "const x = 1;\n").unwrap();
+        let candidates = vec![candidate("f.tsx", 1, 1, "const x = 1;", "<the corrected text for that exact line range, copied verbatim with no escaping>")];
+        let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
+        assert!(touched.is_empty());
+        let result = std::fs::read_to_string(dir.path().join("f.tsx")).unwrap();
+        assert_eq!(result, "const x = 1;\n");
+    }
+
+    #[test]
+    fn apply_candidates_to_files_rejects_invalid_json_result() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{\n  \"scripts\": {}\n}\n").unwrap();
+        let candidates = vec![candidate("package.json", 2, 2, "  \"scripts\": {}", "  \"dev\": \"vite@5.4.11\",")];
+        let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
+        assert!(touched.is_empty(), "an edit that leaves invalid JSON must not be written");
+        let result = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
+        assert_eq!(result, "{\n  \"scripts\": {}\n}\n");
+    }
+
+    #[test]
+    fn apply_candidates_to_files_rejects_python_syntax_error_from_deleted_decorator() {
+        // Reproduces the admin.py corruption from a real bulk-fix run: the
+        // candidate deletes a decorator + def signature, leaving the
+        // surviving `) -> ...:` line (never part of any candidate's range)
+        // dangling with no opening paren. No leftover-artifact marker, no
+        // JSON involved, ranges don't overlap — only a real parse catches it.
+        let dir = tempfile::tempdir().unwrap();
+        let original = "@router.get(\"/x\")\nasync def f(\n    a: int,\n) -> int:\n    return a\n";
+        std::fs::write(dir.path().join("admin.py"), original).unwrap();
+        let candidates = vec![candidate("admin.py", 1, 3, "@router.get(\"/x\")\nasync def f(\n    a: int,", "")];
+        let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
+        assert!(touched.is_empty(), "a candidate that leaves a dangling ')' with no opener must be rejected");
+        let result = std::fs::read_to_string(dir.path().join("admin.py")).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn apply_candidates_to_files_accepts_valid_python_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.py"), "def f(a):\n    return a\n").unwrap();
+        let candidates = vec![candidate("f.py", 2, 2, "    return a", "    return a + 1")];
+        let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
+        assert_eq!(touched, vec!["f.py".to_string()]);
+        let result = std::fs::read_to_string(dir.path().join("f.py")).unwrap();
+        assert_eq!(result, "def f(a):\n    return a + 1\n");
+    }
+
+    fn snippet_lines(pairs: &[(usize, &str)]) -> Vec<ignite_fs_utils::SnippetLine> {
+        pairs.iter().map(|(number, text)| ignite_fs_utils::SnippetLine { number: *number, text: text.to_string() }).collect()
+    }
+
+    #[test]
+    fn narrow_snippet_for_edit_keeps_only_the_flagged_line_for_dependency_vulnerability() {
+        // Reproduces the package.json/requirements.txt corruption: a
+        // 3-line-radius review snippet handing the LLM six unrelated
+        // sibling packages it then feels free to "clean up" alongside
+        // the one it was actually asked to fix.
+        let snippet = Snippet {
+            start_line: 15,
+            lines: snippet_lines(&[(15, "\"jspdf-autotable\": \"^5.0.8\","), (16, "\"konva\": \"^10.3.0\","), (17, "\"papaparse\": \"^5.5.3\","), (18, "\"pdfjs-dist\": \"^5.7.284\","), (19, "\"react\": \"^19.2.5\","), (20, "\"react-dom\": \"^19.2.5\","), (21, "\"react-konva\": \"^19.2.3\",")]),
+            highlight_line: 18,
+            highlight_end_line: None,
+            highlight_start: None,
+            highlight_end: None,
+        };
+        let narrowed = narrow_snippet_for_edit("dependency-vulnerability", snippet, 18);
+        assert_eq!(narrowed.start_line, 18);
+        assert_eq!(narrowed.lines.len(), 1);
+        assert_eq!(narrowed.lines[0].text, "\"pdfjs-dist\": \"^5.7.284\",");
+    }
+
+    #[test]
+    fn narrow_snippet_for_edit_leaves_other_categories_untouched() {
+        let snippet = Snippet { start_line: 1, lines: snippet_lines(&[(1, "a"), (2, "b"), (3, "c")]), highlight_line: 2, highlight_end_line: None, highlight_start: None, highlight_end: None };
+        let narrowed = narrow_snippet_for_edit("codeql-sast", snippet.clone(), 2);
+        assert_eq!(narrowed, snippet);
+    }
+
+    #[test]
+    fn narrow_snippet_for_edit_falls_back_when_line_not_in_snippet() {
+        let snippet = Snippet { start_line: 1, lines: snippet_lines(&[(1, "a"), (2, "b")]), highlight_line: 1, highlight_end_line: None, highlight_start: None, highlight_end: None };
+        let narrowed = narrow_snippet_for_edit("dependency-vulnerability", snippet.clone(), 99);
+        assert_eq!(narrowed, snippet);
+    }
+
+    #[test]
+    fn apply_candidates_to_files_rejects_yaml_broken_by_deleted_job_wrapper() {
+        // Reproduces the azure-deploy.yml corruption from a real bulk-fix
+        // run: deleting the `deploy: / runs-on: / steps:` wrapper lines
+        // turns `jobs:` from a mapping into a bare sequence with its
+        // former step content left at the wrong indentation — invalid
+        // YAML, not just a bad GHA schema.
+        let dir = tempfile::tempdir().unwrap();
+        let original = "jobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Checkout\n        uses: actions/checkout@v4\n";
+        std::fs::write(dir.path().join("deploy.yml"), original).unwrap();
+        let candidates = vec![candidate("deploy.yml", 2, 5, "  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Checkout", "- name: Checkout")];
+        let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
+        assert!(touched.is_empty(), "an edit that breaks YAML parsing must not be written");
+        let result = std::fs::read_to_string(dir.path().join("deploy.yml")).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn apply_candidates_to_files_skips_a_true_no_op_replacement() {
+        // The LLM sometimes "fixes" an issue by proposing the exact same
+        // text back — not corruption, just nothing worth a diff hunk or a
+        // git-add for.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "1\n2\n3\n").unwrap();
+        let candidates = vec![candidate("f.txt", 2, 2, "2", "2")];
+        let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
+        assert!(touched.is_empty());
+    }
+
+    #[test]
+    fn apply_candidate_to_content_none_when_replacement_comments_out_an_unclosed_rule() {
+        // Reproduces the SetupPanel.module.css corruption from a real
+        // bulk-fix run: the candidate's own range deliberately ends
+        // mid-rule (`.iconBtn {` opens but its `}` sits just outside the
+        // range, on an unchanged line the candidate never touches). The
+        // LLM "removed" the rule by wrapping it in a self-balanced
+        // `/* .iconBtn { ... } */` comment — same brace count as an empty
+        // replacement, but it doesn't preserve the *unclosed* debt the
+        // real span carried, so the genuine `}` still sitting outside this
+        // range (part of the original rule, never part of any candidate)
+        // ends up orphaned. A whole-file before/after balance check can
+        // miss this in a real file that already carries some unrelated
+        // brace asymmetry (e.g. a `content: "{"` string) — comparing the
+        // span itself doesn't depend on the rest of the file at all.
+        let original = ".iconBtn {\n  background: none;";
+        let replacement = "/* .iconBtn {\n  background: none;\n} */";
+        assert!(apply_candidate_to_content(&format!("{original}\n}}\n"), 1, 2, original, replacement).is_none());
+    }
+
+    #[test]
+    fn brackets_balanced_flags_a_dangling_close_paren() {
+        assert_eq!(brackets_balanced("f(a, b)"), (0, 0, 0));
+        assert_eq!(brackets_balanced("f(a, b)\n) -> int:"), (-1, 0, 0));
+    }
+
+    #[test]
+    fn depth_signature_distinguishes_self_contained_pair_from_orphaning_close() {
+        // Same open/close counts (1 and 1) either way, but opposite shape.
+        assert_eq!(depth_signature("{ x }", '{', '}'), (0, 0));
+        assert_eq!(depth_signature("} { x", '{', '}'), (0, -1));
+    }
+
+    #[test]
     fn apply_candidates_to_files_skips_stale_range() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), "1\n2\n").unwrap();
-        let candidates = vec![candidate("f.txt", 10, 11, "X")];
+        let candidates = vec![candidate("f.txt", 10, 11, "1\n2", "X")];
         let touched = apply_candidates_to_files(dir.path(), &candidates).unwrap();
         assert!(touched.is_empty());
     }
@@ -446,6 +901,28 @@ mod tests {
     #[test]
     fn parse_suggest_fix_response_none_for_malformed_text() {
         assert!(parse_suggest_fix_response("not the expected format at all").is_none());
+    }
+
+    #[tokio::test]
+    async fn generate_fix_diff_local_produces_diff_and_patch_without_git_remote() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("f.txt"), "1\n2\n3\n").unwrap();
+        let runner = ToolRunner::new(HashMap::new());
+        let candidates = vec![candidate("f.txt", 2, 2, "2", "TWO")];
+
+        let result = generate_fix_diff_local(&runner, root.path(), &candidates, "Ignite: fix 1 finding(s)").await.unwrap();
+
+        assert_eq!(result.files_changed, vec!["f.txt".to_string()]);
+        assert!(result.diff.contains("-2"), "diff should show the removed line: {}", result.diff);
+        assert!(result.diff.contains("+TWO"), "diff should show the added line: {}", result.diff);
+        assert!(result.diff.contains("a/f.txt") && result.diff.contains("b/f.txt"), "diff should use standard a/ b/ headers: {}", result.diff);
+        assert!(result.patch.contains("Subject:"), "patch should be a format-patch email with a Subject line: {}", result.patch);
+        assert!(result.patch.contains("+TWO"), "patch should carry the same hunk: {}", result.patch);
+
+        // The source directory itself is untouched — the fix was only ever
+        // applied inside the scratch repo.
+        let original = std::fs::read_to_string(root.path().join("f.txt")).unwrap();
+        assert_eq!(original, "1\n2\n3\n");
     }
 
     #[tokio::test]

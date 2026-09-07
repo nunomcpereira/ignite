@@ -12,7 +12,7 @@ use ignite_llm_client::{llm_available, llm_complete, LlmClientConfig};
 use ignite_override_engine::Issue;
 use std::collections::HashMap;
 
-const SYSTEM_PROMPT: &str = r#"You are drafting override justifications for a code-compliance gate. You will be given a JSON array of findings, each with "id", "category", "summary", "file", "line". For each finding you are highly confident is safe to acknowledge as-is (a false positive, or a genuinely low/no-risk finding needing no source change), include it in your reply. Never include a finding you are unsure about — omitting it is always safe, a wrong justification is not.
+const SYSTEM_PROMPT: &str = r#"You are drafting override justifications for a code-compliance gate. You will be given a JSON array of findings, each with "id", "category", "summary", "file", "line", and (when available) "code" — the actual matched source line, for you to judge whether this is a false positive. For each finding you are highly confident is safe to acknowledge as-is (a false positive, or a genuinely low/no-risk finding needing no source change), include it in your reply. Never include a finding you are unsure about — omitting it is always safe, a wrong justification is not.
 
 Reply with ONLY a JSON object of this exact shape, no prose, no markdown fence:
 {"justifications": [{"id": "<the finding's id, copied exactly>", "justification": "<one sentence, specific to this finding, suitable as an audit-log entry>"}]}
@@ -53,9 +53,26 @@ pub async fn suggest_justifications(config: &AiAutoJustifyConfig, llm_config: &L
     }
 
     let eligible_ids: std::collections::HashSet<&str> = eligible.iter().map(|i| i.id.as_str()).collect();
+    // The actual matched line is only ever handed to a *local* model — for
+    // openai/anthropic/azure-foundry a finding's raw code (which, for a
+    // `secret` finding that turns out NOT to be a false positive, is a real
+    // credential) would otherwise leave this machine to a third-party API
+    // before any human has reviewed it. Without it, the model only has the
+    // category/summary text to go on, which is enough for categories like
+    // `semantic-sast` (the summary itself is usually self-explanatory) but
+    // not for judging whether a matched secret value is a false positive.
+    let include_code = llm_config.provider == ignite_llm_client::Provider::Local;
     let payload: Vec<serde_json::Value> = eligible
         .iter()
-        .map(|i| serde_json::json!({ "id": i.id, "category": i.category, "summary": i.summary, "file": i.file, "line": i.line }))
+        .map(|i| {
+            let mut v = serde_json::json!({ "id": i.id, "category": i.category, "summary": i.summary, "file": i.file, "line": i.line });
+            if include_code {
+                if let Some(code) = highlighted_snippet_line(i.snippet.as_ref()) {
+                    v.as_object_mut().unwrap().insert("code".to_string(), serde_json::json!(code));
+                }
+            }
+            v
+        })
         .collect();
     let user_content = serde_json::to_string(&payload).unwrap_or_else(|_| "[]".to_string());
 
@@ -84,6 +101,23 @@ pub async fn suggest_justifications(config: &AiAutoJustifyConfig, llm_config: &L
     }
 
     result
+}
+
+/// Pulls the single highlighted line's text out of an `Issue::snippet`
+/// blob (`{ lines: [{ number, text }], highlightLine }`, see
+/// `ignite_fs_utils::Snippet`) — kept as a loose `serde_json::Value` on
+/// `Issue` itself, so this re-parses it rather than adding a dependency
+/// on `fs-utils` just for this one lookup.
+fn highlighted_snippet_line(snippet: Option<&serde_json::Value>) -> Option<String> {
+    let snippet = snippet?;
+    let highlight_line = snippet.get("highlightLine")?.as_i64()?;
+    snippet.get("lines")?.as_array()?.iter().find_map(|line| {
+        if line.get("number")?.as_i64()? == highlight_line {
+            line.get("text")?.as_str().map(str::to_string)
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]

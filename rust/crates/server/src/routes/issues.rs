@@ -87,7 +87,7 @@ fn code_block(snippet: &Option<Snippet>) -> String {
     }
 }
 
-fn issue_user_prompt(issue: &ParsedIssue) -> String {
+fn issue_user_prompt(issue: &ParsedIssue, snippet: &Option<Snippet>) -> String {
     format!(
         "Category: {}\nSeverity: {}\nLocation: {}{}\nTechnical summary: {}\n\nCode:\n{}",
         issue.category,
@@ -95,8 +95,38 @@ fn issue_user_prompt(issue: &ParsedIssue) -> String {
         issue.file.as_deref().unwrap_or("unknown"),
         issue.line.map(|l| format!(":{l}")).unwrap_or_default(),
         issue.summary,
-        code_block(&issue.snippet)
+        code_block(snippet)
     )
+}
+
+/// Categories whose fix is, by construction, a single-line edit — bumping
+/// one pinned version in a manifest. `build_snippet`'s default 3-line
+/// radius (`ignite_fs_utils`) is sized for the *review UI*, where a human
+/// benefits from seeing neighboring dependencies for context; handing
+/// that same padded window to the LLM as its *editable* range (this
+/// endpoint backs Studio's "Apply the suggested fix to this file"
+/// button, which writes the file directly) invites it to "clean up" the
+/// whole block instead of touching just the flagged line. Kept in sync
+/// with `ignite_fix_pr`'s identical constant — both crates hit the same
+/// failure mode from the same snippet source.
+const SINGLE_LINE_FIX_CATEGORIES: &[&str] = &["dependency-vulnerability"];
+
+/// For categories in [`SINGLE_LINE_FIX_CATEGORIES`], narrows `snippet`
+/// down to just the one line at `line` — so there's no neighboring line
+/// left in the prompt for the model to prune. Returns `snippet`
+/// unchanged if `line` isn't actually one of its lines (shouldn't
+/// happen, but isn't worth failing the whole fix over) or is absent.
+fn narrow_snippet_for_edit(category: &str, snippet: Snippet, line: Option<i64>) -> Snippet {
+    if !SINGLE_LINE_FIX_CATEGORIES.contains(&category) {
+        return snippet;
+    }
+    let Some(line) = line else {
+        return snippet;
+    };
+    let Some(target) = snippet.lines.iter().find(|l| l.number == line).cloned() else {
+        return snippet;
+    };
+    Snippet { start_line: target.number, lines: vec![target] }
 }
 
 fn friendly_llm_error_message(e: &LlmError) -> String {
@@ -139,6 +169,26 @@ struct FixResponse {
     replacement: Option<String>,
 }
 
+/// Substrings that only show up in a suggest-fix response when the LLM
+/// echoed back part of its own instructions or left a code fence
+/// unbalanced instead of returning clean replacement code — e.g. a
+/// literal `<the corrected text for that exact line range...>`
+/// placeholder from `ISSUE_SUGGEST_FIX_PROMPT` landing verbatim inside
+/// the file, or a dangling opening ` ``` ` that `strip_code_fence`
+/// couldn't pair (it only strips a fence that opens *and* closes around
+/// the whole block). Checked case-insensitively. Real source in any
+/// language essentially never contains a literal triple-backtick or
+/// these exact prompt phrases, so this is safe as a blanket reject
+/// rather than a per-language rule. Kept in sync with
+/// `ignite_fix_pr`'s `LEFTOVER_ARTIFACT_MARKERS` — both crates prompt
+/// the same model with the same template and hit the same failure mode.
+const LEFTOVER_ARTIFACT_MARKERS: &[&str] = &["```", "replacement:", "explanation:", "copied verbatim with no escaping", "no line-number prefixes"];
+
+fn has_leftover_prompt_artifacts(replacement: &str) -> bool {
+    let lower = replacement.to_lowercase();
+    LEFTOVER_ARTIFACT_MARKERS.iter().any(|m| lower.contains(m))
+}
+
 fn parse_suggest_fix_response(text: &str) -> Result<FixResponse, &'static str> {
     let trimmed = strip_code_fence(text);
     let Some(m) = SUGGEST_FIX_RE.captures(&trimmed) else {
@@ -146,7 +196,7 @@ fn parse_suggest_fix_response(text: &str) -> Result<FixResponse, &'static str> {
     };
     let explanation = m[1].trim().to_string();
     let replacement_block = trim_block_lines(&strip_code_fence(&m[2]));
-    let replacement = if replacement_block.to_uppercase() == "NONE" { None } else { Some(replacement_block) };
+    let replacement = if replacement_block.to_uppercase() == "NONE" || has_leftover_prompt_artifacts(&replacement_block) { None } else { Some(replacement_block) };
     Ok(FixResponse { explanation, replacement })
 }
 
@@ -169,7 +219,7 @@ async fn explain(State(state): State<Arc<AppState>>, Json(body): Json<Value>) ->
         return Json(json!({ "ok": true, "explanation": Value::Null, "cached": false, "reason": "AI explanation service unavailable." })).into_response();
     }
 
-    let user = issue_user_prompt(&issue);
+    let user = issue_user_prompt(&issue, &issue.snippet);
     let label = format!("issue-explain {}:{}:{}", issue.category, issue.file.as_deref().unwrap_or("?"), issue.line.unwrap_or(0));
     match ignite_llm_client::llm_complete(&ignite_llm_client::LlmCompleteRequest { client: &http, config: &state.llm_config, system_prompt: ISSUE_EXPLAIN_PROMPT, user_content: &user, temperature: 0.3, timeout_ms: 60_000, label: &label }, |_| {}).await {
         Ok(explanation) => {
@@ -184,19 +234,20 @@ async fn suggest_fix(State(state): State<Arc<AppState>>, Json(body): Json<Value>
     let Some(issue) = parse_issue_from_body(&body) else {
         return err(StatusCode::BAD_REQUEST, "category and summary are required.".to_string());
     };
-    let Some(snippet) = &issue.snippet else {
+    let Some(snippet) = issue.snippet.clone() else {
         return err(StatusCode::BAD_REQUEST, "A code snippet is required to suggest a fix.".to_string());
     };
     if snippet.lines.is_empty() {
         return Json(json!({ "ok": true, "suggestion": Value::Null })).into_response();
     }
+    let snippet = narrow_snippet_for_edit(&issue.category, snippet, issue.line);
 
     let http = reqwest::Client::new();
     if !ignite_llm_client::llm_available(&http, &state.llm_config).await {
         return Json(json!({ "ok": true, "suggestion": Value::Null, "reason": "AI fix suggestion service unavailable." })).into_response();
     }
 
-    let user = issue_user_prompt(&issue);
+    let user = issue_user_prompt(&issue, &Some(snippet.clone()));
     let label = format!("issue-suggest-fix {}:{}:{}", issue.category, issue.file.as_deref().unwrap_or("?"), issue.line.unwrap_or(0));
     match ignite_llm_client::llm_complete(&ignite_llm_client::LlmCompleteRequest { client: &http, config: &state.llm_config, system_prompt: ISSUE_SUGGEST_FIX_PROMPT, user_content: &user, temperature: 0.2, timeout_ms: 60_000, label: &label }, |_| {}).await {
         Ok(text) => match parse_suggest_fix_response(&text) {
@@ -241,6 +292,41 @@ mod tests {
         assert_eq!(snippet.lines.len(), 1);
     }
 
+    fn wide_snippet() -> Snippet {
+        Snippet {
+            start_line: 15,
+            lines: vec![
+                SnippetLine { number: 15, text: "\"jspdf-autotable\": \"^5.0.8\",".to_string() },
+                SnippetLine { number: 16, text: "\"konva\": \"^10.3.0\",".to_string() },
+                SnippetLine { number: 17, text: "\"papaparse\": \"^5.5.3\",".to_string() },
+                SnippetLine { number: 18, text: "\"pdfjs-dist\": \"^5.7.284\",".to_string() },
+                SnippetLine { number: 19, text: "\"react\": \"^19.2.5\",".to_string() },
+            ],
+        }
+    }
+
+    #[test]
+    fn narrow_snippet_for_edit_keeps_only_the_flagged_line_for_dependency_vulnerability() {
+        let narrowed = narrow_snippet_for_edit("dependency-vulnerability", wide_snippet(), Some(18));
+        assert_eq!(narrowed.start_line, 18);
+        assert_eq!(narrowed.lines.len(), 1);
+        assert_eq!(narrowed.lines[0].text, "\"pdfjs-dist\": \"^5.7.284\",");
+    }
+
+    #[test]
+    fn narrow_snippet_for_edit_leaves_other_categories_untouched() {
+        let snippet = wide_snippet();
+        let narrowed = narrow_snippet_for_edit("codeql-sast", snippet.clone(), Some(18));
+        assert_eq!(narrowed.lines.len(), snippet.lines.len());
+    }
+
+    #[test]
+    fn narrow_snippet_for_edit_falls_back_without_a_line_number() {
+        let snippet = wide_snippet();
+        let narrowed = narrow_snippet_for_edit("dependency-vulnerability", snippet.clone(), None);
+        assert_eq!(narrowed.lines.len(), snippet.lines.len());
+    }
+
     #[test]
     fn issue_explanation_hash_is_stable_for_same_identity() {
         let a = parse_issue_from_body(&json!({"category": "secret", "summary": "found", "file": "a.js", "line": 3})).unwrap();
@@ -266,6 +352,20 @@ mod tests {
     #[test]
     fn parse_suggest_fix_response_treats_none_as_no_replacement() {
         let text = "EXPLANATION: cannot safely fix\nREPLACEMENT: NONE";
+        let parsed = parse_suggest_fix_response(text).unwrap();
+        assert_eq!(parsed.replacement, None);
+    }
+
+    #[test]
+    fn parse_suggest_fix_response_treats_leftover_prompt_placeholder_as_no_replacement() {
+        let text = "EXPLANATION: fixed it\nREPLACEMENT:\n<the corrected text for that exact line range, copied verbatim with no escaping>";
+        let parsed = parse_suggest_fix_response(text).unwrap();
+        assert_eq!(parsed.replacement, None);
+    }
+
+    #[test]
+    fn parse_suggest_fix_response_treats_unbalanced_code_fence_as_no_replacement() {
+        let text = "EXPLANATION: fixed it\nREPLACEMENT:\n```\nconst x = 1;";
         let parsed = parse_suggest_fix_response(text).unwrap();
         assert_eq!(parsed.replacement, None);
     }
