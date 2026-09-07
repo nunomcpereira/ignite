@@ -210,10 +210,13 @@ The regex secret scan always runs. If gitleaks is installed and enabled in confi
   "gitleaks": {
     "enabled": false,       // env: GITLEAKS_ENABLED=true
     "binary": "gitleaks",   // env: GITLEAKS_BINARY (path or name on $PATH)
-    "configPath": ""        // env: GITLEAKS_CONFIG_PATH - optional gitleaks.toml
+    "configPath": "",       // env: GITLEAKS_CONFIG_PATH - optional gitleaks.toml
+    "scanHistory": false    // env: GITLEAKS_SCAN_HISTORY=true
   }
 }
 ```
+
+`scanHistory` runs a second gitleaks pass against full git commit history instead of just the working tree - catching a secret that was committed then removed in a later commit, still exposed to anyone who clones the repo. Findings from this pass are tagged `tool: "gitleaks-history"` (vs. plain `"gitleaks"` for the working-tree pass) and deduped against anything the working-tree scan already found at the same file/line. Off by default (a full-history scan costs meaningfully more time on a repo with a long history) and a no-op on a checkout with no `.git` directory, e.g. an uploaded ZIP.
 
 ### Dependency & license compliance (ORT / licensee / deps.dev)
 
@@ -343,6 +346,32 @@ Every check above only runs when a scan is *triggered* - a push, a CLI run, an u
 - **`auto-fix-pr`** (`rust/crates/auto-fix-pr`) - the piece Dependabot has and a bare rescan doesn't: proposing the fix, not just detecting the problem. For each repo, resolves every dependency-vulnerability finding's minimum fixed version via OSV.dev and opens one PR per safe (single, non-major-version) bump. Runnable standalone against any repo (`./target/release/auto-fix-pr <org/repo> [--apply]`, dry-run unless `--apply`), **or chained automatically off `scheduled-rescan`** via `IGNITE_SCHEDULED_RESCAN_AUTO_FIX=dry-run|apply` - so a newly-disclosed CVE found on a repo that already shipped can get a reviewable fix PR opened with no human in the loop, not just a notification. Off by default; opt in per the env var above.
 
 This is a different mechanism from the interactive **✨ Generate fix PR** above: that one is triggered by a person, covers any open finding (not just dependency CVEs), and uses an LLM to draft the diff. `auto-fix-pr` is unattended, scoped to dependency-vulnerability findings only, and resolves the fix deterministically from the advisory data - no LLM involved.
+
+## GitHub Advanced Security parity - native UI push & private advisories
+
+Two more pieces close the remaining gap between Ignite's own UI and what GHAS shows natively on GitHub:
+
+- **SARIF + dependency-graph push.** The same `POST /api/pipeline/:jobId/github-check` call that posts the `ignite/gate` commit status also pushes the job's SARIF (`POST repos/{owner}/{repo}/code-scanning/sarifs`) and its resolved dependency manifests (`PUT repos/{owner}/{repo}/dependency-graph/snapshots`, GitHub's Dependency Submission API) - so findings and dependencies show up under the repo's own **Security → Code scanning** and **Insights → Dependency graph** tabs, not only in Ignite's UI. Both are best-effort (a failure is logged, never fails the gate-status response) and independently toggleable, on by default:
+  ```jsonc
+  "security": {
+    "codeScanning": { "enabled": true },      // env: CODE_SCANNING_ENABLED
+    "dependencyGraph": { "enabled": true }    // env: DEPENDENCY_GRAPH_ENABLED
+  }
+  ```
+  The request body accepts an optional `ref` (e.g. `"refs/heads/main"`) for which branch these attach to - falls back to the repo's current default branch when omitted.
+- **Private vulnerability reporting.** `auto-fix-pr` above goes straight to a public fix PR by design - the opposite of GHAS's private-advisory workflow for coordinating a fix before disclosure. `report-vulnerability` (`rust/crates/report-vulnerability`) is a separate, always-manual CLI for that judgment call - opening a draft GitHub Security Advisory is a decision a human makes, not something a scan decides unattended:
+  ```bash
+  # Prints the exact gh api call + JSON body it would make - no changes made.
+  ./target/release/report-vulnerability my-org/my-repo \
+    --summary "SQL injection in query builder" --severity high \
+    --ecosystem npm --package acme-query-builder --vulnerable-range "< 2.1.0"
+
+  # Actually creates the draft advisory.
+  ./target/release/report-vulnerability my-org/my-repo \
+    --summary "SQL injection in query builder" --severity high \
+    --ecosystem npm --package acme-query-builder --vulnerable-range "< 2.1.0" --apply
+  ```
+  Dry-run by default, same convention as `enforce-gate-branch-protection`. `--severity` is `critical`/`high`/`medium`/`low`; `--patched`, `--description`, and repeated `--cwe` flags are optional.
 
 ## Onboarded Repos - every repo at a glance
 
@@ -624,6 +653,11 @@ report) - those stay on their own Studio document endpoints.
 ```bash
 curl -sS http://localhost:51337/api/pipeline/<jobId>/sarif | jq
 ```
+
+This same SARIF doc also gets pushed straight into GitHub's own Security →
+Code scanning tab once a scan's commit lands - see [GitHub Advanced
+Security parity](#github-advanced-security-parity---native-ui-push--private-advisories)
+below.
 
 ## CLI (`ignite scan`)
 
