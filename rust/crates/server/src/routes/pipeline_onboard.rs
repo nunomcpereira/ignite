@@ -310,6 +310,11 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                     let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "Phase 4".to_string());
                     logger.log(4, &format!("    ✗ [{}] {loc} — {}", issue.category, issue.summary));
                 }
+                state.emit_audit_event(
+                    ignite_audit_log::AuditEvent::new("gate.push_rejected", "critical", format!("push rejected for {org}/{repo}: {} unresolved blocking finding(s)", result.unresolved_errors.len()))
+                        .repo(&org, &repo)
+                        .metadata(json!({ "unresolvedCount": result.unresolved_errors.len() })),
+                );
                 let mut e = PipelineError::new(4, format!("Phase 4 has {} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.", result.unresolved_errors.len()));
                 e.issues = Some(result.unresolved_errors.into_iter().cloned().collect());
                 return Err(e);

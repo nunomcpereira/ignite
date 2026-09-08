@@ -244,6 +244,29 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
     }
 }
 
+/// GHAS-parity SLA enforcement (Milestone 3.1): an issue that's simply sat
+/// open past its `SlaConfig` window is real information this job should
+/// surface even on a run whose own scan came back clean (the finding
+/// isn't new — it's the same one aging past its deadline). Reuses `GET
+/// /api/onboarded-repos`'s existing `slaBreaches` count per repo (computed
+/// server-side by `DbStore::list_onboarded_repo_summaries`) rather than
+/// adding a second endpoint or duplicating the julianday query here.
+pub fn find_sla_breaches(onboarded_repos: &[Value]) -> Vec<(String, String, i64)> {
+    onboarded_repos
+        .iter()
+        .filter_map(|s| {
+            let org = s.get("org")?.as_str()?.to_string();
+            let repo = s.get("repo")?.as_str()?.to_string();
+            let breaches = s.get("slaBreaches")?.as_i64()?;
+            if breaches > 0 {
+                Some((org, repo, breaches))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 pub fn default_runner() -> ToolRunner {
     ToolRunner::new(std::collections::HashMap::new())
 }
@@ -332,6 +355,17 @@ mod tests {
         let summary = run_auto_fix(&runner, &http, "acme/widgets", "main", Path::new("/nonexistent/path"), "tok", AutoFixMode::Off).await;
         assert_eq!(summary.candidates_found, 0);
         assert!(summary.pr_urls.is_empty());
+    }
+
+    #[test]
+    fn find_sla_breaches_filters_to_only_repos_with_positive_counts() {
+        let summaries = vec![
+            json!({ "org": "acme", "repo": "widgets", "slaBreaches": 2 }),
+            json!({ "org": "acme", "repo": "gadgets", "slaBreaches": 0 }),
+            json!({ "org": "acme", "repo": "gizmos" }),
+        ];
+        let breaches = find_sla_breaches(&summaries);
+        assert_eq!(breaches, vec![("acme".to_string(), "widgets".to_string(), 2)]);
     }
 
     #[test]

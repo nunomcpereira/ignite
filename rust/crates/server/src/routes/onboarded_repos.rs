@@ -24,7 +24,8 @@ use serde_json::json;
 use std::sync::Arc;
 
 async fn list_onboarded_repos(State(state): State<Arc<AppState>>) -> Response {
-    Json(state.db.list_onboarded_repo_summaries()).into_response()
+    let sla = &state.config.sla;
+    Json(state.db.list_onboarded_repo_summaries(sla.critical_days, sla.high_days, sla.medium_days)).into_response()
 }
 
 async fn rescan_repo(State(state): State<Arc<AppState>>, headers: HeaderMap, Path((org, repo)): Path<(String, String)>) -> Response {

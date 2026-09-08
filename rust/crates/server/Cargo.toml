@@ -57,6 +57,7 @@ ignite-shipping = { path = "../shipping" }
 jsonwebtoken = "9"
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-db-store = { path = "../db-store" }
+ignite-audit-log = { path = "../audit-log" }
 ignite-sarif = { path = "../sarif" }
 ignite-github-annotations = { path = "../github-annotations" }
 ignite-runtime-coverage = { path = "../runtime-coverage" }

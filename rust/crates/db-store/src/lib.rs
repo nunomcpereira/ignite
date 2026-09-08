@@ -30,8 +30,10 @@ mod retained_sources;
 mod runtime_coverage;
 mod schema;
 mod scheduled;
+mod sla;
 mod store;
 mod types;
+mod campaigns;
 
 pub use store::DbStore;
 pub use types::*;
@@ -76,7 +78,7 @@ mod tests {
         let id = store.create_project("job-pr", "acme", "widgets", false, "ui", None);
         store.finish_project("success", None, Some("https://github.com/acme/widgets"), Some("https://github.com/acme/widgets/pull/1"), id);
 
-        let summaries = store.list_onboarded_repo_summaries();
+        let summaries = store.list_onboarded_repo_summaries(7, 30, 90);
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].recent_prs.len(), 1);
         assert_eq!(summaries[0].recent_prs[0].kind, "onboarding");
@@ -90,7 +92,7 @@ mod tests {
         store.finish_project("success", None, Some("https://github.com/acme/widgets"), Some("https://github.com/acme/widgets/pull/1"), id);
         store.record_pull_request(id, "fix-pr", "https://github.com/acme/widgets/pull/2", Some("ignite/fix-issues/job-fix"), Some(3));
 
-        let summaries = store.list_onboarded_repo_summaries();
+        let summaries = store.list_onboarded_repo_summaries(7, 30, 90);
         let prs = &summaries[0].recent_prs;
         assert_eq!(prs.len(), 2);
         assert!(prs.iter().any(|p| p.kind == "fix-pr" && p.url == "https://github.com/acme/widgets/pull/2" && p.files_changed == Some(3)));
@@ -127,7 +129,7 @@ mod tests {
             &HashSet::new(),
         );
 
-        let summaries = store.list_onboarded_repo_summaries();
+        let summaries = store.list_onboarded_repo_summaries(7, 30, 90);
         assert_eq!(summaries.len(), 1, "same (org, repo) across two runs must collapse to one row");
         let summary = &summaries[0];
         assert_eq!(summary.latest_project_id, new_id, "must key off the latest run, not the first");

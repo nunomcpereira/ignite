@@ -92,6 +92,42 @@ pub struct AppState {
     /// Background fix-PR preview jobs, keyed by pipeline job id. See
     /// [`FixPrPreviewJob`].
     pub fix_pr_previews: Mutex<HashMap<String, FixPrPreviewJob>>,
+    /// Shared client for `ignite-audit-log` sink deliveries — reused
+    /// (rather than built per-event) for connection pooling, same
+    /// rationale as every other shared `reqwest::Client` in this codebase.
+    pub audit_http: reqwest::Client,
+}
+
+impl AppState {
+    /// Fire-and-forget audit-event emission (Milestone 3.3): spawns the
+    /// actual delivery so a slow/unreachable SIEM endpoint can never add
+    /// latency to — or fail — the request that triggered the event. A
+    /// no-op (no task spawned at all) when `audit_log.enabled` is false or
+    /// no sinks are configured, so this is cheap to call unconditionally
+    /// from every event site.
+    pub fn emit_audit_event(&self, event: ignite_audit_log::AuditEvent) {
+        if !self.config.audit_log.enabled || self.config.audit_log.sinks.is_empty() {
+            return;
+        }
+        let sinks: Vec<ignite_audit_log::AuditSink> = self
+            .config
+            .audit_log
+            .sinks
+            .iter()
+            .map(|s| ignite_audit_log::AuditSink {
+                url: s.url.clone(),
+                kind: match s.kind.as_str() {
+                    "splunk_hec" => ignite_audit_log::AuditSinkKind::SplunkHec,
+                    "datadog" => ignite_audit_log::AuditSinkKind::Datadog,
+                    "cef" => ignite_audit_log::AuditSinkKind::Cef,
+                    _ => ignite_audit_log::AuditSinkKind::Generic,
+                },
+                token: s.token.clone(),
+            })
+            .collect();
+        let http = self.audit_http.clone();
+        tokio::spawn(async move { ignite_audit_log::dispatch(&http, &sinks, &event).await });
+    }
 }
 
 pub fn default_package_hallucination_checker() -> ignite_package_hallucination::PackageHallucinationChecker<ignite_package_hallucination::HttpRegistryChecker> {

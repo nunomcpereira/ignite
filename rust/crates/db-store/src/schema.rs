@@ -204,6 +204,25 @@ CREATE TABLE IF NOT EXISTS dependency_scan_cache (
   scan_json   TEXT NOT NULL,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS issue_first_seen (
+  org               TEXT NOT NULL,
+  repo              TEXT NOT NULL,
+  issue_id          TEXT NOT NULL,
+  first_detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (org, repo, issue_id)
+);
+CREATE TABLE IF NOT EXISTS campaigns (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  title               TEXT NOT NULL,
+  description         TEXT,
+  category            TEXT,
+  min_score           INTEGER,
+  target_date         TEXT,
+  initial_open_count  INTEGER NOT NULL DEFAULT 0,
+  created_by          TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at           TEXT
+);
 CREATE TABLE IF NOT EXISTS fix_pr_previews (
   job_id           TEXT PRIMARY KEY,
   total            INTEGER NOT NULL DEFAULT 0,

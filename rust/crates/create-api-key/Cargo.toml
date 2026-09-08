@@ -12,6 +12,10 @@ ignite-auth = { path = "../auth" }
 ignite-db-store = { path = "../db-store" }
 ignite-config = { path = "../config" }
 ignite-notifications = { path = "../notifications" }
+ignite-audit-log = { path = "../audit-log" }
+tokio = { version = "1", features = ["rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

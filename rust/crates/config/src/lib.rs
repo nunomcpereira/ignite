@@ -41,6 +41,8 @@ pub struct Config {
     pub phases: Vec<serde_json::Value>,
     pub mcp: McpConfig,
     pub ai_auto_justify: AiAutoJustifyConfig,
+    pub sla: SlaConfig,
+    pub audit_log: AuditLogConfig,
 }
 
 impl Default for Config {
@@ -63,8 +65,57 @@ impl Default for Config {
             phases: Vec::new(),
             mcp: McpConfig::default(),
             ai_auto_justify: AiAutoJustifyConfig::default(),
+            sla: SlaConfig::default(),
+            audit_log: AuditLogConfig::default(),
         }
     }
+}
+
+/// GHAS-parity SIEM/audit-log streaming (`ignite-audit-log`): where to
+/// deliver governance events (override approved, gate passed with
+/// overrides, push rejected, API key created). Off by default and empty —
+/// same "operator's explicit call" posture as `SecretVerificationConfig`,
+/// since this sends internal governance data to a third-party endpoint.
+/// `sinks[].kind`/`token` mirror `ignite_audit_log::AuditSink` field for
+/// field; kept here as a separate type (not a re-export) so this crate
+/// never depends on `ignite-audit-log`, matching every other config
+/// struct in this file staying a plain data description.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub sinks: Vec<AuditSinkConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditSinkConfig {
+    pub url: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// GHAS-parity SLA tracking: how many days an open issue may sit
+/// unresolved before it counts as an "SLA breach" (surfaced as a badge on
+/// the Onboarded Repos view and as a blocking failure from
+/// `scheduled-rescan`). Bucketed by `override-engine`'s existing 0-10
+/// issue score rather than the coarser two-value error/warning severity,
+/// since the score already carries the finer-grained triage signal.
+/// Defaults follow common vuln-management SLA norms (critical/high/medium
+/// tiers); `mediumDays` also covers everything below the high threshold.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlaConfig {
+    pub enabled: bool,
+    pub critical_days: u32,
+    pub high_days: u32,
+    pub medium_days: u32,
+}
+impl Default for SlaConfig {
+    fn default() -> Self { SlaConfig { enabled: true, critical_days: 7, high_days: 30, medium_days: 90 } }
 }
 
 /// Auto-justification of low-risk blocking findings via the configured LLM
@@ -937,6 +988,16 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("CODE_SCANNING_SYNC_DISMISSALS") { merged.security.code_scanning.sync_dismissals = v; }
     if let Some(v) = env_bool("DEPENDENCY_REVIEW_ENABLED") { merged.security.dependency_review.enabled = v; }
     if let Some(v) = env_bool("SECRET_VERIFICATION_ENABLED") { merged.security.secret_verification.enabled = v; }
+    if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
+    if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }
+    if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }
+    if let Some(v) = env_num::<u32>("SLA_MEDIUM_DAYS") { merged.sla.medium_days = v; }
+    if let Some(v) = env_bool("AUDIT_LOG_ENABLED") { merged.audit_log.enabled = v; }
+    if let Some(v) = env_str("AUDIT_LOG_SINKS") {
+        if let Ok(sinks) = serde_json::from_str::<Vec<AuditSinkConfig>>(&v) {
+            merged.audit_log.sinks = sinks;
+        } // malformed JSON — keep the config.json sinks rather than crash boot
+    }
     if let Some(v) = env_str("ZIZMOR_BINARY") { merged.security.zizmor.binary = v; }
     if let Some(v) = env_bool("SEMGREP_ENABLED") { merged.security.semgrep.enabled = v; }
     if let Some(v) = env_str("SEMGREP_BINARY") { merged.security.semgrep.binary = v; }

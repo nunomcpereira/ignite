@@ -668,6 +668,7 @@ mod tests {
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
+        audit_http: reqwest::Client::new(),
         });
         app_state.running_runs.lock().insert(
             job_id.clone(),

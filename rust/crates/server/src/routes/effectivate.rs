@@ -184,6 +184,12 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 actor_name: Some(&actor_name),
                 email_sent: false,
             });
+            state.emit_audit_event(
+                ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
+                    .actor(actor_email.clone())
+                    .repo(&org, &repo)
+                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+            );
         }
         let applied_ids: HashSet<String> = applied.iter().map(|(i, _)| i.id.clone()).collect();
         let already_overridden_ids: HashSet<String> = issue_rows.iter().filter(|r| r.status == "overridden").map(|r| r.id.clone()).collect();
@@ -208,6 +214,13 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         Ok(ship_result) => {
             state.db.finish_project("success", None, Some(&ship_result.repo_url), ship_result.pr_url.as_deref(), project_id);
             log(&format!("✓ Effectivated — repository live at {}", ship_result.repo_url));
+            if !applied.is_empty() {
+                state.emit_audit_event(
+                    ignite_audit_log::AuditEvent::new("gate.passed_with_overrides", "warning", format!("gate passed for {org}/{repo} with {} override(s)", applied.len()))
+                        .repo(&org, &repo)
+                        .metadata(json!({ "overrideCount": applied.len(), "repoUrl": ship_result.repo_url })),
+                );
+            }
             state.db.upsert_step(project_id, 6, &phase6_title, "success", &effectivate_logs.lock().join("\n"));
             state.pending_effectivations.lock().remove(&project_id);
             let _ = std::fs::remove_dir_all(&source_backup_dir);
@@ -245,6 +258,7 @@ mod tests {
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
+        audit_http: reqwest::Client::new(),
         });
         (app_state, db_dir)
     }

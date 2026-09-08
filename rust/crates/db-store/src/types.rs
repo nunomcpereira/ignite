@@ -311,8 +311,37 @@ pub struct OnboardedRepoSummary {
     pub last_scan_at: String,
     pub license_problems: i64,
     pub findings_count: i64,
+    pub sla_breaches: i64,
     pub acknowledgments: Vec<OverrideRow>,
     pub recent_prs: Vec<PullRequestRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SlaBreachRow {
+    pub issue_id: String,
+    pub category: String,
+    pub severity: String,
+    pub score: Option<i64>,
+    pub summary: String,
+    pub file: Option<String>,
+    pub line: Option<i64>,
+    pub first_detected_at: String,
+    pub days_open: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CampaignRow {
+    pub id: i64,
+    pub title: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub min_score: Option<i64>,
+    pub target_date: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub closed_at: Option<String>,
+    pub open_count: i64,
+    pub resolved_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

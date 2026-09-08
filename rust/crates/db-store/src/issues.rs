@@ -18,6 +18,29 @@ impl DbStore {
         let mut conn = self.conn.lock();
         let tx = conn.transaction().unwrap();
         tx.execute("DELETE FROM issues WHERE project_id = ?", params![project_id]).unwrap();
+        // SLA tracking (see `SlaConfig`) needs a per-(org,repo,issue_id)
+        // "first ever seen" timestamp that survives across scans, unlike
+        // the `issues` table itself which is fully replaced every run.
+        // `org`/`repo` aren't passed into this method, but every caller
+        // has already created the `projects` row this project_id points
+        // at, so look them up here rather than widening every call site's
+        // signature for two columns already available a join away.
+        let org_repo: Option<(String, String)> = tx.query_row("SELECT org, repo FROM projects WHERE id = ?", params![project_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().unwrap();
+        if let Some((org, repo)) = org_repo {
+            for issue in issues {
+                tx.execute("INSERT OR IGNORE INTO issue_first_seen (org, repo, issue_id) VALUES (?, ?, ?)", params![org, repo, issue.id]).unwrap();
+            }
+            // An issue no longer present in this run either got fixed or
+            // overridden-then-resolved — either way, if it reappears later
+            // it should count as newly detected, not inherit a stale
+            // first-seen date from months ago.
+            let current_ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+            let placeholders = current_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("DELETE FROM issue_first_seen WHERE org = ? AND repo = ? AND issue_id NOT IN ({placeholders})");
+            let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&org, &repo];
+            params_vec.extend(current_ids.iter().map(|s| s as &dyn rusqlite::ToSql));
+            tx.execute(&sql, params_vec.as_slice()).unwrap();
+        }
         for issue in issues {
             let snippet_json = issue.snippet.as_ref().map(|s| serde_json::to_string(s).unwrap());
             let chain_json = issue.chain.as_ref().map(|c| serde_json::to_string(c).unwrap());

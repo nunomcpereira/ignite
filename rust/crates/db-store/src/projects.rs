@@ -135,7 +135,7 @@ impl DbStore {
     /// several small queries per repo (mirrors `get_project_details`'s own
     /// style) rather than one giant join — repo counts here are small
     /// (dozens, not millions) and this endpoint isn't hit on every request.
-    pub fn list_onboarded_repo_summaries(&self) -> Vec<OnboardedRepoSummary> {
+    pub fn list_onboarded_repo_summaries(&self, sla_critical_days: u32, sla_high_days: u32, sla_medium_days: u32) -> Vec<OnboardedRepoSummary> {
         let conn = self.conn.lock();
 
         let mut latest_stmt = conn
@@ -163,6 +163,20 @@ impl DbStore {
             .collect();
 
         let mut count_stmt = conn.prepare_cached("SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND status = 'open' AND (?2 IS NULL OR category = ?2)").unwrap();
+        let mut sla_stmt = conn
+            .prepare_cached(
+                "SELECT COUNT(*) FROM issues i
+                 JOIN issue_first_seen f ON f.org = ?1 AND f.repo = ?2 AND f.issue_id = i.issue_id
+                 WHERE i.project_id = ?3 AND i.status = 'open'
+                   AND (julianday('now') - julianday(f.first_detected_at)) > (
+                     CASE
+                       WHEN COALESCE(i.score, 0) >= 9 THEN ?4
+                       WHEN COALESCE(i.score, 0) >= 7 THEN ?5
+                       ELSE ?6
+                     END
+                   )",
+            )
+            .unwrap();
         let mut acks_stmt = conn
             .prepare_cached(
                 "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification,
@@ -184,6 +198,7 @@ impl DbStore {
             .map(|latest| {
                 let findings_count: i64 = count_stmt.query_row(params![latest.id, Option::<&str>::None], |row| row.get(0)).unwrap();
                 let license_problems: i64 = count_stmt.query_row(params![latest.id, Some("license-compliance")], |row| row.get(0)).unwrap();
+                let sla_breaches: i64 = sla_stmt.query_row(params![latest.org, latest.repo, latest.id, sla_critical_days, sla_high_days, sla_medium_days], |row| row.get(0)).unwrap();
                 let acknowledgments = acks_stmt
                     .query_map(params![latest.org, latest.repo], |row| {
                         Ok(OverrideRow {
@@ -221,6 +236,7 @@ impl DbStore {
                     last_scan_at: latest.last_scan_at,
                     license_problems,
                     findings_count,
+                    sla_breaches,
                     acknowledgments,
                     recent_prs,
                 }

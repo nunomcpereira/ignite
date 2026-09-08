@@ -36,6 +36,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::sarif::router())
         .merge(routes::github_annotations::router())
         .merge(routes::baseline::router())
+        .merge(routes::campaigns::router())
         .merge(routes::runtime_coverage::router())
         .merge(routes::auto_fix::router())
         .merge(routes::dependencies::router())
@@ -90,6 +91,7 @@ async fn main() {
         config,
         package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
+        audit_http: reqwest::Client::new(),
     });
     let config_port = state.config.port;
     let public_dir = config_dir.join("public");
@@ -156,6 +158,7 @@ mod tests {
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
+        audit_http: reqwest::Client::new(),
         });
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state, &public_dir);
@@ -190,6 +193,7 @@ mod tests {
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
+        audit_http: reqwest::Client::new(),
         });
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state, &public_dir);

@@ -26,7 +26,7 @@
 //! client's timeout to avoid a scheduled sweep spuriously failing on
 //! exactly the large/slow repos this job most needs to cover.
 
-use ignite_scheduled_rescan::{auto_fix_mode_from_env, default_runner, dedupe_projects, open_db, rescan_one, AutoFixMode};
+use ignite_scheduled_rescan::{auto_fix_mode_from_env, default_runner, dedupe_projects, find_sla_breaches, open_db, rescan_one, AutoFixMode};
 
 #[tokio::main]
 async fn main() {
@@ -92,6 +92,28 @@ async fn main() {
                 had_error = true;
             }
         }
+    }
+
+    // SLA sweep: checked once after every rescan, not per-repo, since `GET
+    // /api/onboarded-repos` already returns every repo's breach count in
+    // one call. A repo can breach its SLA without this run finding any new
+    // issue (the finding just aged past its deadline), so this is checked
+    // independently of the per-target loop above.
+    match http.get(format!("{server_base}/api/onboarded-repos")).send().await {
+        Ok(res) if res.status().is_success() => match res.json::<Vec<serde_json::Value>>().await {
+            Ok(summaries) => {
+                let breaches = find_sla_breaches(&summaries);
+                for (org, repo, count) in &breaches {
+                    eprintln!("{org}/{repo}: SLA BREACH — {count} open issue(s) past their SLA window.");
+                }
+                if !breaches.is_empty() {
+                    had_error = true;
+                }
+            }
+            Err(e) => eprintln!("SLA check: failed to parse onboarded-repos response: {e}"),
+        },
+        Ok(res) => eprintln!("SLA check: onboarded-repos returned {}", res.status()),
+        Err(e) => eprintln!("SLA check: onboarded-repos request failed: {e}"),
     }
 
     if had_error {

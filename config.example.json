@@ -199,6 +199,18 @@
     "categories": ["license-compliance"],
     "maxFindingsPerRequest": 50
   },
+  "sla": {
+    "enabled": true,
+    "criticalDays": 7,
+    "highDays": 30,
+    "mediumDays": 90
+  },
+  "auditLog": {
+    "enabled": false,
+    "sinks": [
+      { "url": "https://http-intake.logs.datadoghq.com/v1/input", "kind": "datadog", "token": "" }
+    ]
+  },
   "phases": [
     { "id": 2, "enabled": true },
     { "id": 5, "enabled": false, "title": "Org Governance CI (disabled at this org)" }

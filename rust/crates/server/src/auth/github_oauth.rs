@@ -263,6 +263,7 @@ mod tests {
             config,
             package_hallucination_checker: crate::state::default_package_hallucination_checker(),
             fix_pr_previews: PlMutex::new(HashMap::new()),
+            audit_http: reqwest::Client::new(),
         })
     }
 

@@ -449,6 +449,7 @@
               <th class="px-5 py-3" data-i18n="onboardedRepos.colRepo">Repo</th>
               <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colLicense">License problems</th>
               <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colFindings">Findings</th>
+              <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colSla">SLA</th>
               <th class="px-5 py-3" data-i18n="onboardedRepos.colAcks">Acknowledgments</th>
               <th class="px-5 py-3" data-i18n="onboardedRepos.colPrs">Recent PRs</th>
               <th class="px-5 py-3" data-i18n="onboardedRepos.colLastScan">Last scan</th>
@@ -6127,12 +6128,20 @@
         const findingsCell = r.findingsCount > 0
           ? `<button type="button" class="onboarded-repo-view-findings font-semibold text-rose-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.viewFindingsTitle'))}">${r.findingsCount}</button>`
           : `<span class="text-slate-400">${r.findingsCount}</span>`;
+        // SLA breaches: issues past their governance.sla.*Days window (see
+        // ignite_config::SlaConfig / DbStore::list_onboarded_repo_summaries'
+        // slaBreaches count) — a badge rather than a count-only cell since
+        // this is meant to catch the eye distinctly from raw findings.
+        const slaCell = r.slaBreaches > 0
+          ? `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-rose-200 text-rose-700 bg-rose-50" title="${escapeAttr(t('onboardedRepos.slaBreachTitle'))}">⏰ ${r.slaBreaches}</span>`
+          : '<span class="text-slate-300">—</span>';
         return `
         <tr class="align-top">
           <td class="px-5 py-3.5">${orgCell}</td>
           <td class="px-5 py-3.5">${repoCell}</td>
           <td class="px-5 py-3.5 text-right ${r.licenseProblems > 0 ? 'font-semibold text-amber-600' : 'text-slate-400'}">${r.licenseProblems}</td>
           <td class="px-5 py-3.5 text-right">${findingsCell}</td>
+          <td class="px-5 py-3.5 text-right">${slaCell}</td>
           <td class="px-5 py-3.5">${acksCell}</td>
           <td class="px-5 py-3.5"><div class="flex flex-wrap gap-1 max-w-[220px]">${prsCell}</div></td>
           <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>

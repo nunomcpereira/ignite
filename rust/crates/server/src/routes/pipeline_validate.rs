@@ -558,6 +558,7 @@ mod phase_gating_tests {
             config,
             package_hallucination_checker: state::default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
+        audit_http: reqwest::Client::new(),
         });
         (app_state, db_dir)
     }

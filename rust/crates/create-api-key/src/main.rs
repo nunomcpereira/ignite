@@ -69,6 +69,45 @@ pub fn attempt_owner_notification(result: &MintResult, label: Option<&str>) -> (
     (false, "SMTP transport is not implemented in the Rust port yet".to_string())
 }
 
+/// GHAS-parity audit-log emission (Milestone 3.3): this is a synchronous,
+/// short-lived CLI (unlike the server, which fires audit events off a
+/// long-lived tokio runtime), so this spins up a throwaway runtime and
+/// blocks on the dispatch rather than the fire-and-forget `tokio::spawn`
+/// the server uses — correctness (the mint output is already printed
+/// before this runs) matters more than shaving a network round-trip off a
+/// one-shot operator command. Silently a no-op when audit logging isn't
+/// configured, same as every other call site.
+fn emit_audit_event_blocking(result: &MintResult) {
+    let config_dir = env::var("IGNITE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+    let Ok(config) = ignite_config::load_config(&config_dir) else { return };
+    if !config.audit_log.enabled || config.audit_log.sinks.is_empty() {
+        return;
+    }
+    let sinks: Vec<ignite_audit_log::AuditSink> = config
+        .audit_log
+        .sinks
+        .iter()
+        .map(|s| ignite_audit_log::AuditSink {
+            url: s.url.clone(),
+            kind: match s.kind.as_str() {
+                "splunk_hec" => ignite_audit_log::AuditSinkKind::SplunkHec,
+                "datadog" => ignite_audit_log::AuditSinkKind::Datadog,
+                "cef" => ignite_audit_log::AuditSinkKind::Cef,
+                _ => ignite_audit_log::AuditSinkKind::Generic,
+            },
+            token: s.token.clone(),
+        })
+        .collect();
+    let event = ignite_audit_log::AuditEvent::new("api_key.created", "warning", format!("headless API key created for {}", result.user_email))
+        .actor(result.operator.clone())
+        .metadata(serde_json::json!({ "apiKeyId": result.api_key_id }));
+    let Ok(rt) = tokio::runtime::Runtime::new() else { return };
+    rt.block_on(async {
+        let http = reqwest::Client::new();
+        ignite_audit_log::dispatch(&http, &sinks, &event).await;
+    });
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let email = match args.get(1) {
@@ -93,6 +132,8 @@ fn main() {
             println!();
             println!("Store this now — it will not be shown again. Use it as:");
             println!("  Authorization: Bearer {}", result.raw_key);
+
+            emit_audit_event_blocking(&result);
 
             let (sent, reason) = attempt_owner_notification(&result, label.as_deref());
             if sent {

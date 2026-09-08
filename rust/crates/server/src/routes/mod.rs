@@ -1,5 +1,6 @@
 pub mod auto_fix;
 pub mod baseline;
+pub mod campaigns;
 pub mod config;
 pub mod dependencies;
 pub mod effectivate;
