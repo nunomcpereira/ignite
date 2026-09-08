@@ -9,6 +9,9 @@
 //! falls back to when ORT isn't installed, so this crate's behavior is
 //! correct (just not ORT-augmented) until that piece is added.
 
+mod dependency_diff;
+pub use dependency_diff::{diff_dependency_scans, render_dependency_diff_comment, DependencyChange, DependencyChangeKind, DEPENDENCY_REVIEW_MARKER};
+
 use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry_license, find_manifest_dep_line, resolve_best_published_version, resolve_see_license_in_file, DepsDevClient};
 use ignite_fs_utils::{build_snippet, walk_files, SnippetOptions};
 use ignite_license_classification::{classify_license_tier, is_internal_dependency_ref, best_effort_version, LicenseTier};

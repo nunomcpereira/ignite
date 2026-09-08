@@ -16,6 +16,7 @@ ignite-staging = { path = "../staging" }
 ignite-dependency-license-scan = { path = "../dependency-license-scan" }
 ignite-deps-dev-client = { path = "../deps-dev-client" }
 ignite-secrets = { path = "../secrets" }
+ignite-secret-verifier = { path = "../secret-verifier" }
 ignite-iac-security = { path = "../iac-security" }
 ignite-gha-security = { path = "../gha-security" }
 ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }

@@ -98,6 +98,17 @@ fn gh_token_env(token: &str) -> HashMap<String, String> {
     }
 }
 
+/// The `id` of the first comment in `comments` (as returned by
+/// `GET .../issues/{n}/comments`) whose `body` contains `marker`, if any
+/// — pulled out of `gh_upsert_pr_sticky_comment` so the "which comment is
+/// ours" matching logic is unit-testable without a real GitHub API call.
+fn find_marker_comment_id(comments: &[Value], marker: &str) -> Option<u64> {
+    comments.iter().find_map(|c| {
+        let has_marker = c.get("body").and_then(|b| b.as_str()).is_some_and(|b| b.contains(marker));
+        has_marker.then(|| c.get("id").and_then(|v| v.as_u64())).flatten()
+    })
+}
+
 pub struct PrResult {
     pub url: String,
     pub number: Option<u64>,
@@ -351,6 +362,29 @@ impl<'a> GithubApi<'a> {
         Ok(())
     }
 
+    /// Posts `body` as a PR comment, editing a prior comment carrying the
+    /// same `marker` in place instead of appending a new one every call —
+    /// the "sticky comment" pattern GHAS's own `dependency-review-action`
+    /// and similar bots use so a PR doesn't accumulate one stale comment
+    /// per push. Always goes through the raw REST API (not the `gh` CLI,
+    /// which has no built-in "find and edit my own comment" subcommand)
+    /// for the list/patch steps; falls back to `gh_comment_on_pr` (which
+    /// does prefer the CLI) to create the first comment when none exists
+    /// yet. `marker` should be a value that only this bot's own comments
+    /// ever contain (e.g. a hidden HTML comment) — every comment on the
+    /// PR is scanned, so an accidental match would edit a human's comment.
+    pub async fn gh_upsert_pr_sticky_comment(&self, full_name: &str, pr_number: u64, marker: &str, body: &str, token: &str) -> Result<(), GithubApiError> {
+        let comments = self.github_api_request(token, "GET", &format!("/repos/{full_name}/issues/{pr_number}/comments?per_page=100"), None, None).await?.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        let existing_id = find_marker_comment_id(&comments, marker);
+        match existing_id {
+            Some(id) => {
+                self.github_api_request(token, "PATCH", &format!("/repos/{full_name}/issues/comments/{id}"), Some(&serde_json::json!({ "body": body })), None).await?;
+                Ok(())
+            }
+            None => self.gh_comment_on_pr(full_name, pr_number, body, token).await,
+        }
+    }
+
     /// The repo's current default branch, per `GET repos/{full_name}`.
     /// Prefers the `gh` CLI (same dual-path convention as `gh_api_write`),
     /// falling back to a token-only REST call. Read-only — safe to call
@@ -435,6 +469,28 @@ mod tests {
 
     // Serializes tests that mutate the process-global PATH env var.
     static PATH_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn find_marker_comment_id_matches_the_first_comment_carrying_the_marker() {
+        let comments = serde_json::json!([
+            {"id": 1, "body": "just a human comment"},
+            {"id": 2, "body": "<!-- ignite:dependency-review -->\nsomething"},
+            {"id": 3, "body": "<!-- ignite:dependency-review -->\nanother, older one"},
+        ]);
+        let id = find_marker_comment_id(comments.as_array().unwrap(), "<!-- ignite:dependency-review -->");
+        assert_eq!(id, Some(2));
+    }
+
+    #[test]
+    fn find_marker_comment_id_none_when_no_comment_carries_the_marker() {
+        let comments = serde_json::json!([{"id": 1, "body": "just a human comment"}]);
+        assert!(find_marker_comment_id(comments.as_array().unwrap(), "<!-- ignite:dependency-review -->").is_none());
+    }
+
+    #[test]
+    fn find_marker_comment_id_none_for_empty_comment_list() {
+        assert!(find_marker_comment_id(&[], "<!-- ignite:dependency-review -->").is_none());
+    }
 
     #[test]
     fn parse_org_repo_accepts_valid_spec() {

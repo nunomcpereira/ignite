@@ -41,7 +41,7 @@ use ignite_deps_dev_client::{parse_semver, DepsDevClient};
 use ignite_github_api::GithubApi;
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FixCandidate {
@@ -219,14 +219,24 @@ pub fn pr_title_for(candidate: &FixCandidate) -> String {
     format!("[Ignite auto-fix] bump {} to {} ({})", candidate.dep_name, candidate.fixed_version, candidate.advisory_id)
 }
 
-pub fn pr_body_for(candidate: &FixCandidate) -> String {
+/// `lockfile_status`: `Some(Ok(path))` when the lockfile at `path` was
+/// regenerated alongside the manifest edit, `Some(Err(reason))` when
+/// regeneration was attempted but failed, `None` when this ecosystem/repo
+/// has no separate lockfile to regenerate.
+pub fn pr_body_for(candidate: &FixCandidate, lockfile_status: Option<Result<&str, &str>>) -> String {
+    let lockfile_note = match lockfile_status {
+        Some(Ok(path)) => format!("- Lockfile: `{path}` regenerated to match.\n"),
+        Some(Err(reason)) => format!("- Lockfile: **not** regenerated ({reason}) — this PR's manifest edit alone may not be mergeable if CI enforces a lockfile check; finish the lockfile update locally before merging.\n"),
+        None => String::new(),
+    };
     format!(
         "Ignite's scheduled dependency-vulnerability scan flagged **{}@{}** in `{}` for a known advisory.\n\n\
          - Advisory: {}\n\
          - Fixed version (per OSV.dev): `{}`\n\
-         - Change: `{}` -> `{}`\n\n\
+         - Change: `{}` -> `{}`\n\
+         {lockfile_note}\n\
          Opened automatically by `auto-fix-pr` (dry-run reviewed before `--apply`). \
-         Verify the bump doesn't break anything before merging — this is a single-line \
+         Verify the bump doesn't break anything before merging — this is a targeted \
          version-constraint edit, not a full compatibility check.\n",
         candidate.dep_name,
         candidate.resolved_version.as_deref().unwrap_or(&candidate.current_range),
@@ -290,6 +300,62 @@ pub async fn branch_exists_on_remote(runner: &ToolRunner, clone_dir: &str, branc
     }
 }
 
+/// The package-manager invocation that regenerates `manifest_dir`'s
+/// lockfile in place, and the lockfile's own filename (relative to
+/// `manifest_dir`), for the three ecosystems that carry a lockfile
+/// distinct from the manifest itself — `requirements.txt`/pypi is
+/// already the fully-pinned file (no separate lock step) and Maven's
+/// `pom.xml` has no lockfile concept at all, so neither needs this.
+/// Returns `None` when the ecosystem's expected lockfile isn't actually
+/// present (e.g. an npm project with no committed lockfile): nothing to
+/// regenerate, and creating one from scratch would be an unrelated
+/// change this tool shouldn't make unattended.
+fn lockfile_command(manifest_dir: &Path, candidate: &FixCandidate) -> Option<(&'static str, Vec<String>, &'static str)> {
+    match candidate.ecosystem {
+        "npm" => {
+            if manifest_dir.join("package-lock.json").is_file() {
+                Some(("npm", vec!["install".to_string(), "--package-lock-only".to_string(), "--no-audit".to_string(), "--no-fund".to_string()], "package-lock.json"))
+            } else if manifest_dir.join("yarn.lock").is_file() {
+                Some(("yarn", vec!["install".to_string(), "--mode".to_string(), "update-lockfile".to_string()], "yarn.lock"))
+            } else if manifest_dir.join("pnpm-lock.yaml").is_file() {
+                Some(("pnpm", vec!["install".to_string(), "--lockfile-only".to_string()], "pnpm-lock.yaml"))
+            } else {
+                None
+            }
+        }
+        "cargo" if manifest_dir.join("Cargo.lock").is_file() => {
+            Some(("cargo", vec!["update".to_string(), "-p".to_string(), candidate.dep_name.clone(), "--precise".to_string(), candidate.fixed_version.clone()], "Cargo.lock"))
+        }
+        "go" if manifest_dir.join("go.sum").is_file() => Some(("go", vec!["mod".to_string(), "tidy".to_string()], "go.sum")),
+        _ => None,
+    }
+}
+
+/// Regenerates the ecosystem's lockfile after the manifest edit — the
+/// Dependabot-parity gap a manifest-only edit leaves open, since most
+/// CI setups fail a build whose lockfile no longer matches its manifest.
+/// Best-effort: any failure (missing package-manager binary, network,
+/// a version-resolution conflict) is folded into a warning string
+/// rather than failing the whole fix — the PR still carries a correct
+/// manifest edit, and a human can finish the lockfile by running the
+/// same command locally. Returns the lockfile's path relative to
+/// `clone_dir` (to stage alongside the manifest) when regeneration
+/// actually ran and succeeded.
+async fn regenerate_lockfile(runner: &ToolRunner, clone_dir: &str, candidate: &FixCandidate) -> (Option<String>, Option<String>) {
+    let manifest_dir = Path::new(clone_dir).join(&candidate.manifest_file).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| Path::new(clone_dir).to_path_buf());
+    let Some((tool, args, lockfile_name)) = lockfile_command(&manifest_dir, candidate) else {
+        return (None, None);
+    };
+    let dir_str = manifest_dir.to_string_lossy().into_owned();
+    match runner.run_tool(tool, &args, &dir_str, RunToolOptions { timeout_ms: Some(5 * 60_000), ..Default::default() }).await {
+        Ok(_) => {
+            let rel_lockfile = Path::new(&candidate.manifest_file).parent().map(|p| p.join(lockfile_name)).unwrap_or_else(|| PathBuf::from(lockfile_name));
+            (Some(rel_lockfile.to_string_lossy().into_owned()), None)
+        }
+        Err(e) => (None, Some(format!("{tool} {}: {e}", args.join(" ")))),
+    }
+}
+
 /// Applies one fix candidate against an already-cloned `clone_dir`
 /// (checked out at `base_branch`): creates/resets a deterministic branch
 /// off `base_branch`, edits the one manifest line, commits, and — only
@@ -334,9 +400,19 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
         return FixOutcome { candidate_summary, branch, applied: false, skipped_reason: None, pr_url: None, error: Some(format!("failed to write {}: {e}", candidate.manifest_file)) };
     }
 
+    let (lockfile_path, lockfile_warning) = regenerate_lockfile(runner, clone_dir, candidate).await;
+
+    let mut add_args = vec!["add".to_string(), candidate.manifest_file.clone()];
+    if let Some(lockfile_path) = &lockfile_path {
+        add_args.push(lockfile_path.clone());
+    }
+    let commit_message = match &lockfile_warning {
+        Some(w) => format!("fix({}): bump {} to {} ({})\n\nLockfile regeneration skipped: {w}", candidate.ecosystem, candidate.dep_name, candidate.fixed_version, candidate.advisory_id),
+        None => format!("fix({}): bump {} to {} ({})", candidate.ecosystem, candidate.dep_name, candidate.fixed_version, candidate.advisory_id),
+    };
     let commit_steps: Vec<Vec<String>> = vec![
-        vec!["add".to_string(), candidate.manifest_file.clone()],
-        vec!["-c".to_string(), "user.email=ignite-bot@localhost".to_string(), "-c".to_string(), "user.name=Ignite Auto-Fix".to_string(), "commit".to_string(), "-m".to_string(), format!("fix({}): bump {} to {} ({})", candidate.ecosystem, candidate.dep_name, candidate.fixed_version, candidate.advisory_id)],
+        add_args,
+        vec!["-c".to_string(), "user.email=ignite-bot@localhost".to_string(), "-c".to_string(), "user.name=Ignite Auto-Fix".to_string(), "commit".to_string(), "-m".to_string(), commit_message],
     ];
     for args in commit_steps {
         if let Err(e) = runner.run_tool("git", &args, clone_dir, RunToolOptions::default()).await {
@@ -360,7 +436,12 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
         return FixOutcome { candidate_summary, branch, applied: false, skipped_reason: None, pr_url: None, error: Some(format!("git push: {e}")) };
     }
 
-    match github_api.gh_create_pr(full_name, base_branch, &branch, &pr_title_for(candidate), &pr_body_for(candidate), token).await {
+    let lockfile_status = match (&lockfile_path, &lockfile_warning) {
+        (Some(path), _) => Some(Ok(path.as_str())),
+        (None, Some(reason)) => Some(Err(reason.as_str())),
+        (None, None) => None,
+    };
+    match github_api.gh_create_pr(full_name, base_branch, &branch, &pr_title_for(candidate), &pr_body_for(candidate, lockfile_status), token).await {
         Ok(pr) => FixOutcome { candidate_summary, branch, applied: true, skipped_reason: None, pr_url: Some(pr.url), error: None },
         Err(e) => FixOutcome { candidate_summary, branch, applied: true, skipped_reason: None, pr_url: None, error: Some(format!("branch pushed but PR creation failed: {e}")) },
     }
@@ -369,6 +450,7 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn is_simple_range_accepts_bare_and_prefixed_versions() {
@@ -459,5 +541,101 @@ mod tests {
         let branch = branch_name_for(&candidate);
         assert_eq!(branch, "ignite/autofix/npm--scope-pkg-name-1.2.0");
         assert_eq!(branch, branch_name_for(&candidate));
+    }
+
+    fn npm_candidate() -> FixCandidate {
+        FixCandidate {
+            manifest_file: "package.json".to_string(),
+            ecosystem: "npm",
+            dep_name: "lodash".to_string(),
+            dep_line: 3,
+            current_range: "^4.17.15".to_string(),
+            resolved_version: Some("4.17.15".to_string()),
+            fixed_version: "4.17.21".to_string(),
+            advisory_id: "GHSA-xxxx".to_string(),
+            summary: String::new(),
+            major_bump: false,
+        }
+    }
+
+    #[test]
+    fn lockfile_command_picks_npm_when_package_lock_present() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let (tool, args, name) = lockfile_command(dir.path(), &npm_candidate()).unwrap();
+        assert_eq!(tool, "npm");
+        assert!(args.contains(&"--package-lock-only".to_string()));
+        assert_eq!(name, "package-lock.json");
+    }
+
+    #[test]
+    fn lockfile_command_prefers_yarn_lock_over_pnpm_when_both_absent_package_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("yarn.lock"), "").unwrap();
+        let (tool, _, name) = lockfile_command(dir.path(), &npm_candidate()).unwrap();
+        assert_eq!(tool, "yarn");
+        assert_eq!(name, "yarn.lock");
+    }
+
+    #[test]
+    fn lockfile_command_none_when_no_npm_lockfile_present() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(lockfile_command(dir.path(), &npm_candidate()).is_none());
+    }
+
+    #[test]
+    fn lockfile_command_cargo_update_uses_precise_dep_version() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.lock"), "").unwrap();
+        let mut candidate = npm_candidate();
+        candidate.ecosystem = "cargo";
+        candidate.dep_name = "serde".to_string();
+        candidate.fixed_version = "1.0.200".to_string();
+        let (tool, args, name) = lockfile_command(dir.path(), &candidate).unwrap();
+        assert_eq!(tool, "cargo");
+        assert_eq!(args, vec!["update", "-p", "serde", "--precise", "1.0.200"]);
+        assert_eq!(name, "Cargo.lock");
+    }
+
+    #[test]
+    fn lockfile_command_go_mod_tidy_when_go_sum_present() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("go.sum"), "").unwrap();
+        let mut candidate = npm_candidate();
+        candidate.ecosystem = "go";
+        let (tool, args, name) = lockfile_command(dir.path(), &candidate).unwrap();
+        assert_eq!(tool, "go");
+        assert_eq!(args, vec!["mod", "tidy"]);
+        assert_eq!(name, "go.sum");
+    }
+
+    #[test]
+    fn lockfile_command_none_for_pypi_and_maven() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("poetry.lock"), "").unwrap();
+        let mut candidate = npm_candidate();
+        candidate.ecosystem = "pypi";
+        assert!(lockfile_command(dir.path(), &candidate).is_none());
+        candidate.ecosystem = "maven";
+        assert!(lockfile_command(dir.path(), &candidate).is_none());
+    }
+
+    #[test]
+    fn pr_body_for_reports_regenerated_lockfile() {
+        let body = pr_body_for(&npm_candidate(), Some(Ok("package-lock.json")));
+        assert!(body.contains("`package-lock.json` regenerated"));
+    }
+
+    #[test]
+    fn pr_body_for_warns_when_lockfile_regeneration_failed() {
+        let body = pr_body_for(&npm_candidate(), Some(Err("npm: command not found")));
+        assert!(body.contains("not** regenerated"));
+        assert!(body.contains("npm: command not found"));
+    }
+
+    #[test]
+    fn pr_body_for_omits_lockfile_section_when_not_applicable() {
+        let body = pr_body_for(&npm_candidate(), None);
+        assert!(!body.contains("Lockfile"));
     }
 }

@@ -85,6 +85,7 @@ async fn main() {
         repo: "bench-repo".to_string(),
         project_id: None,
         secrets: ignite_secrets::SecretsConfig::default(),
+        secret_verification: ignite_secret_verifier::SecretVerifierConfig::default(),
         llm: None,
         iac: ignite_iac_security::IacSecurityConfig::default(),
         gha_security: ignite_gha_security::GhaSecurityConfig::default(),

@@ -256,4 +256,5 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     "ALTER TABLE issues ADD COLUMN tool TEXT",
     "ALTER TABLE issues ADD COLUMN references_json TEXT",
     "ALTER TABLE issues ADD COLUMN duplicate_ref_json TEXT",
+    "ALTER TABLE dependency_scan_cache ADD COLUMN previous_scan_json TEXT",
 ];

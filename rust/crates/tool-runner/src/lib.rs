@@ -14,17 +14,22 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 /// Every command name `run_tool`/`run_tool_streaming` will accept. git/gh/
-/// act/docker/licensee/ort aren't configurable (no `binaries` entry), the
-/// rest resolve through `binaries`.
+/// act/docker/licensee/ort/npm/yarn/pnpm/cargo/go/poetry/pip-compile aren't
+/// configurable (no `binaries` entry), the rest resolve through `binaries`.
 pub fn allowed_commands() -> &'static [&'static str] {
     &[
         "git", "gh", "act", "docker", "gitleaks", "licensee", "ort", "trivy", "checkov",
         "hadolint", "syft", "cosign", "semgrep", "bearer", "jscpd", "gocloc", "spectral",
         "guarddog", "codeql", "picklescan", "oasdiff", "zizmor",
+        "npm", "yarn", "pnpm", "cargo", "go", "poetry", "pip-compile",
     ]
 }
 
-const FIXED_COMMANDS: &[&str] = &["git", "gh", "act", "docker", "licensee", "ort"];
+/// Package-manager binaries `auto-fix-pr`'s lockfile regeneration step
+/// invokes after editing a manifest constraint — resolved directly off
+/// `PATH` like `git`/`gh`, since a project's package manager is never a
+/// user-configurable "scanner tool" the way trivy/semgrep are.
+const FIXED_COMMANDS: &[&str] = &["git", "gh", "act", "docker", "licensee", "ort", "npm", "yarn", "pnpm", "cargo", "go", "poetry", "pip-compile"];
 /// Commands `run_tool_streaming` actually supports (a strict subset of
 /// `allowed_commands()` — the JS original only wires up git/gh/act/docker/
 /// codeql for streaming; everything else only ever goes through the

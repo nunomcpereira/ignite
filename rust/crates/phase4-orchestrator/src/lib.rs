@@ -91,6 +91,7 @@ pub struct Phase4Config {
     pub repo: String,
     pub project_id: Option<i64>,
     pub secrets: ignite_secrets::SecretsConfig,
+    pub secret_verification: ignite_secret_verifier::SecretVerifierConfig,
     pub llm: Option<ignite_llm_deep_scan::LlmDeepScanConfig>,
     pub iac: ignite_iac_security::IacSecurityConfig,
     pub gha_security: ignite_gha_security::GhaSecurityConfig,
@@ -224,8 +225,34 @@ pub async fn run_phase4_checks(
     let ms_secrets = __t_secrets.elapsed().as_millis() as u64;
     task_timings.push(("secrets", ms_secrets));
     log(&format!("✓ secrets done ({} finding(s), {ms_secrets}ms)", secrets_result.findings.len()));
+
+    // GHAS-parity active token verification (off by default — see
+    // `ignite_secret_verifier`'s own module doc for why). Sequential, not
+    // fanned out: secret findings are normally few per scan, and this is
+    // an already-opt-in, already-slow-by-nature network path, not one
+    // worth the extra complexity of concurrent dispatch for.
+    let secret_kinds: Vec<String> = if config.secret_verification.enabled {
+        let http = reqwest::Client::new();
+        let mut kinds = Vec::with_capacity(secrets_result.findings.len());
+        for f in &secrets_result.findings {
+            let line_text = f.code.as_ref().and_then(|s| s.lines.iter().find(|l| l.number == s.highlight_line)).map(|l| l.text.as_str());
+            let outcome = match line_text.and_then(|lt| ignite_secret_verifier::extract_secret_value(&f.kind, lt)) {
+                Some(value) => ignite_secret_verifier::verify_secret(&http, &config.secret_verification, &f.kind, &value).await,
+                None => ignite_secret_verifier::VerificationOutcome::Unsupported,
+            };
+            if outcome == ignite_secret_verifier::VerificationOutcome::Live {
+                log(&format!("✗ VERIFIED LIVE credential: {} at {}:{}", f.kind, f.file, f.line));
+                kinds.push(format!("{} — VERIFIED LIVE", f.kind));
+            } else {
+                kinds.push(f.kind.clone());
+            }
+        }
+        kinds
+    } else {
+        secrets_result.findings.iter().map(|f| f.kind.clone()).collect()
+    };
     let secrets_check = CheckResult {
-        findings: secrets_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), code: snippet_json(&f.code), ..Default::default() }).collect(),
+        findings: secrets_result.findings.iter().zip(secret_kinds.iter()).map(|(f, kind)| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(kind.clone()), tool: Some(f.tool.to_string()), code: snippet_json(&f.code), ..Default::default() }).collect(),
         engine: Some("built-in".to_string()),
     };
 
@@ -848,6 +875,7 @@ mod tests {
             repo: "test-repo".to_string(),
             project_id,
             secrets: ignite_secrets::SecretsConfig::default(),
+            secret_verification: ignite_secret_verifier::SecretVerifierConfig::default(),
             llm: None,
             iac: ignite_iac_security::IacSecurityConfig { trivy_enabled: false, checkov_enabled: false, hadolint_enabled: false },
             gha_security: ignite_gha_security::GhaSecurityConfig { enabled: false },
@@ -976,6 +1004,68 @@ mod tests {
             "fast mode must not run the slow git-history scan: {:?}",
             fast_output.issues
         );
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn secret_verification_is_off_by_default() {
+        let runner = ToolRunner::new(StdHashMap::from([("gitleaks", "gitleaks".to_string())]));
+        if !ignite_secrets::gitleaks_tooling(&runner).await {
+            eprintln!("skipping: gitleaks not installed");
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let mut config = test_config(None);
+        config.secrets.gitleaks_enabled = true;
+        assert!(!config.secret_verification.enabled, "test expects secret verification to default to off");
+
+        let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
+        let Some(issue) = output.issues.iter().find(|i| i.category == "secret" && i.file.as_deref() == Some("config.js")) else {
+            eprintln!("skipping: gitleaks didn't flag the fake github token (rule set may differ)");
+            return;
+        };
+        assert!(!issue.summary.contains("VERIFIED LIVE"), "verification must never run when disabled: {}", issue.summary);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    /// Real network call against the live GitHub API (verifying a
+    /// syntactically-plausible but never-issued token) — self-skips if
+    /// gitleaks or the network is unavailable, same convention as this
+    /// crate's other real-tool/real-network tests. Proves enabling
+    /// verification doesn't mis-flag a dead token as live; the "actually
+    /// live" path is covered at the unit level in
+    /// `ignite_secret_verifier`'s own tests (no real credential to spare
+    /// for an end-to-end "Live" assertion here).
+    #[tokio::test]
+    async fn secret_verification_when_enabled_never_flags_a_fake_token_as_verified_live() {
+        let runner = ToolRunner::new(StdHashMap::from([("gitleaks", "gitleaks".to_string())]));
+        if !ignite_secrets::gitleaks_tooling(&runner).await {
+            eprintln!("skipping: gitleaks not installed");
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let mut config = test_config(None);
+        config.secrets.gitleaks_enabled = true;
+        config.secret_verification = ignite_secret_verifier::SecretVerifierConfig { enabled: true, timeout_ms: 10_000 };
+
+        let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
+        let Some(issue) = output.issues.iter().find(|i| i.category == "secret" && i.file.as_deref() == Some("config.js")) else {
+            eprintln!("skipping: gitleaks didn't flag the fake github token (rule set may differ)");
+            return;
+        };
+        assert!(!issue.summary.contains("VERIFIED LIVE"), "a syntactically fake token must never be reported as verified live: {}", issue.summary);
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 

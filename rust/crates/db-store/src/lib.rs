@@ -370,6 +370,25 @@ mod tests {
     }
 
     #[test]
+    fn dependency_scan_cache_tracks_the_previous_scan_on_overwrite() {
+        let (_dir, store) = open_test_db();
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+
+        assert!(store.get_dependency_scan_cache(project_id).is_none());
+        assert!(store.get_previous_dependency_scan_cache(project_id).is_none());
+
+        let first = serde_json::json!({"manifests": [{"file": "package.json"}]});
+        store.save_dependency_scan_cache(project_id, &first);
+        assert_eq!(store.get_dependency_scan_cache(project_id), Some(first.clone()));
+        assert!(store.get_previous_dependency_scan_cache(project_id).is_none());
+
+        let second = serde_json::json!({"manifests": [{"file": "package.json"}, {"file": "Cargo.toml"}]});
+        store.save_dependency_scan_cache(project_id, &second);
+        assert_eq!(store.get_dependency_scan_cache(project_id), Some(second));
+        assert_eq!(store.get_previous_dependency_scan_cache(project_id), Some(first));
+    }
+
+    #[test]
     fn api_key_lifecycle_create_lookup_revoke() {
         let (_dir, store) = open_test_db();
         let user_id = store.create_local_user("dev@example.com", Some("Dev"), "hash");

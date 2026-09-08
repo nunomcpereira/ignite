@@ -521,6 +521,30 @@ impl Default for CodeScanningConfig {
     fn default() -> Self { CodeScanningConfig { enabled: true } }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyReviewConfig {
+    pub enabled: bool,
+}
+impl Default for DependencyReviewConfig {
+    fn default() -> Self { DependencyReviewConfig { enabled: true } }
+}
+
+/// GHAS-parity active token verification (`ignite-secret-verifier`) —
+/// off by default, unlike every other `enabled: true`-by-default check in
+/// this file: it sends a credential found in scanned code to a
+/// third-party provider API, which is an operator's explicit call to
+/// make, not a default a static-analysis scan should silently opt into.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretVerificationConfig {
+    pub enabled: bool,
+    pub timeout_ms: u64,
+}
+impl Default for SecretVerificationConfig {
+    fn default() -> Self { SecretVerificationConfig { enabled: false, timeout_ms: 5_000 } }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
@@ -542,6 +566,8 @@ pub struct SecurityConfig {
     pub zizmor: ZizmorConfig,
     pub dependency_graph: DependencyGraphConfig,
     pub code_scanning: CodeScanningConfig,
+    pub dependency_review: DependencyReviewConfig,
+    pub secret_verification: SecretVerificationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -893,6 +919,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("ZIZMOR_ENABLED") { merged.security.zizmor.enabled = v; }
     if let Some(v) = env_bool("DEPENDENCY_GRAPH_ENABLED") { merged.security.dependency_graph.enabled = v; }
     if let Some(v) = env_bool("CODE_SCANNING_ENABLED") { merged.security.code_scanning.enabled = v; }
+    if let Some(v) = env_bool("DEPENDENCY_REVIEW_ENABLED") { merged.security.dependency_review.enabled = v; }
+    if let Some(v) = env_bool("SECRET_VERIFICATION_ENABLED") { merged.security.secret_verification.enabled = v; }
     if let Some(v) = env_str("ZIZMOR_BINARY") { merged.security.zizmor.binary = v; }
     if let Some(v) = env_bool("SEMGREP_ENABLED") { merged.security.semgrep.enabled = v; }
     if let Some(v) = env_str("SEMGREP_BINARY") { merged.security.semgrep.binary = v; }

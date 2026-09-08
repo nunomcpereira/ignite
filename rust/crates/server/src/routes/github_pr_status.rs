@@ -145,12 +145,33 @@ async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): Re
         }
     }
 
+    let project_id = state.db.get_project_id_by_job_id(job_id);
+
     if state.config.security.dependency_graph.enabled {
-        if let Some(project_id) = state.db.get_project_id_by_job_id(job_id) {
+        if let Some(project_id) = project_id {
             if let Some(scan_json) = state.db.get_dependency_scan_cache(project_id) {
                 let snapshot = ignite_dependency_license_scan::build_dependency_graph_snapshot(&scan_json, &sha, &resolved_ref, job_id);
                 if let Err(e) = api.gh_submit_dependency_snapshot(&full_name, &snapshot, &gh_token).await {
                     tracing::warn!("Dependency graph snapshot submission failed for {full_name}@{sha}: {e}");
+                }
+            }
+        }
+    }
+
+    // GHAS-parity "PR Dependency Review" sticky comment — diffs this
+    // project's current dependency scan against its previous one (see
+    // `ignite_dependency_license_scan::diff_dependency_scans`'s doc for
+    // what "previous" means here) and posts/updates a single comment on
+    // the PR, same as `dependency-graph`/`code-scanning` above: only
+    // meaningful with a PR to comment on, and best-effort/non-fatal.
+    if state.config.security.dependency_review.enabled {
+        if let (Some(pr), Some(project_id)) = (pr_number, project_id) {
+            if let (Some(head_scan), Some(base_scan)) = (state.db.get_dependency_scan_cache(project_id), state.db.get_previous_dependency_scan_cache(project_id)) {
+                let changes = ignite_dependency_license_scan::diff_dependency_scans(&base_scan, &head_scan);
+                if let Some(body) = ignite_dependency_license_scan::render_dependency_diff_comment(&changes) {
+                    if let Err(e) = api.gh_upsert_pr_sticky_comment(&full_name, pr as u64, ignite_dependency_license_scan::DEPENDENCY_REVIEW_MARKER, &body, &gh_token).await {
+                        tracing::warn!("Dependency review comment failed for {full_name}#{pr}: {e}");
+                    }
                 }
             }
         }

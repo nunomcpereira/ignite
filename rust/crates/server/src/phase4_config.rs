@@ -50,6 +50,7 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
             gitleaks_enabled: sec.gitleaks.enabled,
             gitleaks_scan_history: sec.gitleaks.scan_history,
         },
+        secret_verification: ignite_secret_verifier::SecretVerifierConfig { enabled: sec.secret_verification.enabled, timeout_ms: sec.secret_verification.timeout_ms },
         llm: Some(ignite_llm_deep_scan::LlmDeepScanConfig {
             enabled: cfg.llm.deep_scan_enabled,
             llm: crate::state::llm_config_from_config(cfg),

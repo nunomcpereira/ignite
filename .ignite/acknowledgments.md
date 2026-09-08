@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: 06f6555adfb5cd9f6cc1db4e481d0c6998e7c9ba (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: c199192634096dd08471b4e5709ba6d9c2a16927 (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -117,9 +117,38 @@ ID: secret::rust/crates/secrets/src/lib.rs::683
 # Code: "DATABASE_URL = \"postgresql://testuser:not-a-real-pw@x@example.com:5432/testdb\"\n",
 Acknowledge: Test-fixture connection string for flags_a_password_embedded_in_a_connection_string - example.com is IANA/RFC 2606-reserved for documentation and the password is labeled a placeholder outright in the surrounding comment, not a real credential.
 
-ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::881
+ID: secret::rust/crates/secret-verifier/src/lib.rs::192
 # Issue #16
+# [ERROR] secret - Hardcoded token
+#   rust/crates/secret-verifier/src/lib.rs:192
+# Code: let line = r#"const token = "ghp_1234567890abcdef1234567890abcdef1234";"#;
+Acknowledge: Fake GitHub PAT literal used as a fixture in extract_secret_value_pulls_github_token_out_of_a_code_line, verifying the token-format regex extracts the right substring - not a real credential, never used to authenticate anywhere.
+
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::942
+# Issue #17
 # [ERROR] secret - Hardcoded gcp-api-key
-#   rust/crates/phase4-orchestrator/src/lib.rs:881
+#   rust/crates/phase4-orchestrator/src/lib.rs:942
 # Code: fs::write(root.join("config.js"), format!("export const environment = {{ firebase: {{ apiKey: '{}' }} }};\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
-Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the built-in secret scanner (SECRET_RE) doesn't false-positive on a `firebase: { apiKey: ... }` nested property shape, not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::868 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::875 - pure line-number drift, flagged code unchanged)
+Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the built-in secret scanner (SECRET_RE) doesn't false-positive on a `firebase: { apiKey: ... }` nested property shape, not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::868 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::875 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::881 - pure line-number drift, flagged code unchanged)
+
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::976
+# Issue #18
+# [ERROR] secret - Hardcoded gcp-api-key
+#   rust/crates/phase4-orchestrator/src/lib.rs:976
+# Code: fs::write(root.join("config.js"), format!("export const apiKey = '{}';\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
+Acknowledge: Fake GCP/Firebase web API key literal, same fixture value as the other AIzaSy... entry above, written to a scratch test repo to verify gitleaks-based secret detection - not a real credential.
+
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1019
+# Issue #19
+# [ERROR] secret - Hardcoded github-pat
+#   rust/crates/phase4-orchestrator/src/lib.rs:1019
+# Code: fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
+Acknowledge: Fake GitHub PAT literal (high-entropy but never issued) used to verify gitleaks flags it as github-pat and that the off-by-default secret_verification path never appends a VERIFIED LIVE marker - not a real credential, never sent anywhere but api.github.com's own 401 rejection path in the sibling test below.
+
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1054
+# Issue #20
+# [ERROR] secret - Hardcoded github-pat
+#   rust/crates/phase4-orchestrator/src/lib.rs:1054
+# Code: fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
+Acknowledge: Same fake GitHub PAT fixture as the entry above, used in secret_verification_when_enabled_never_flags_a_fake_token_as_verified_live to confirm a live GitHub API 401 for this token is correctly reported as not-live - not a real credential.
+

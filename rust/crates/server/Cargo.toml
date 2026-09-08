@@ -13,6 +13,7 @@ parking_lot = "0.12"
 ignite-scheduled-rescan = { path = "../scheduled-rescan" }
 ignite-dependency-license-scan = { path = "../dependency-license-scan" }
 ignite-secrets = { path = "../secrets" }
+ignite-secret-verifier = { path = "../secret-verifier" }
 ignite-iac-security = { path = "../iac-security" }
 ignite-gha-security = { path = "../gha-security" }
 ignite-container-image-vulnerabilities = { path = "../container-image-vulnerabilities" }

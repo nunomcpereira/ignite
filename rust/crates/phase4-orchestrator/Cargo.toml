@@ -10,6 +10,7 @@ ignite-db-store = { path = "../db-store" }
 ignite-override-engine = { path = "../override-engine" }
 ignite-ai-governance = { path = "../ai-governance" }
 ignite-secrets = { path = "../secrets" }
+ignite-secret-verifier = { path = "../secret-verifier" }
 ignite-llm-deep-scan = { path = "../llm-deep-scan" }
 ignite-llm-client = { path = "../llm-client" }
 ignite-iac-security = { path = "../iac-security" }

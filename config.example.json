@@ -122,6 +122,13 @@
     "codeScanning": {
       "enabled": true
     },
+    "dependencyReview": {
+      "enabled": true
+    },
+    "secretVerification": {
+      "enabled": false,
+      "timeoutMs": 5000
+    },
     "codeql": {
       "enabled": true,
       "binary": "codeql",

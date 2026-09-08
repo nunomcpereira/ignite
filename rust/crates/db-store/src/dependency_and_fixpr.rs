@@ -14,12 +14,21 @@ impl DbStore {
     /// `DependencyLicenseScan` serialized as JSON) for a project, so the
     /// Studio Dependencies tab can read it back instantly instead of
     /// re-running ORT + deps.dev from scratch.
+    /// Shifts whatever was in `scan_json` into `previous_scan_json` before
+    /// overwriting it — so `get_previous_dependency_scan_cache` can serve
+    /// as a cheap, no-second-clone baseline for `dependency-review`'s PR
+    /// diff comment (this project's last-scanned state, not literally a
+    /// re-clone of the PR's base branch — see
+    /// `ignite_dependency_license_scan::diff_dependency_scans`'s own doc).
     pub fn save_dependency_scan_cache(&self, project_id: i64, scan_json: &serde_json::Value) {
         let conn = self.conn.lock();
         let json_str = serde_json::to_string(scan_json).unwrap_or_default();
         conn.execute(
             "INSERT INTO dependency_scan_cache (project_id, scan_json) VALUES (?, ?)
-             ON CONFLICT(project_id) DO UPDATE SET scan_json = excluded.scan_json, created_at = datetime('now')",
+             ON CONFLICT(project_id) DO UPDATE SET
+               previous_scan_json = dependency_scan_cache.scan_json,
+               scan_json = excluded.scan_json,
+               created_at = datetime('now')",
             params![project_id, json_str],
         )
         .unwrap();
@@ -40,6 +49,23 @@ impl DbStore {
             .unwrap()
             .filter(|v| !v.is_null());
         result
+    }
+
+    /// The dependency scan result from *before* the most recent
+    /// `save_dependency_scan_cache` call for this project — `None` when
+    /// this is the project's first scan (nothing to compare against yet).
+    pub fn get_previous_dependency_scan_cache(&self, project_id: i64) -> Option<serde_json::Value> {
+        let conn = self.conn.lock();
+        let result: Option<Option<serde_json::Value>> = conn
+            .prepare_cached("SELECT previous_scan_json FROM dependency_scan_cache WHERE project_id = ?")
+            .unwrap()
+            .query_row(params![project_id], |row| {
+                let json_str: Option<String> = row.get(0)?;
+                Ok(json_str.and_then(|s| serde_json::from_str(&s).ok()))
+            })
+            .optional()
+            .unwrap();
+        result.flatten()
     }
 
     /// Persists (insert-or-replace) a finished/cancelled fix-PR preview
