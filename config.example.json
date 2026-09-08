@@ -120,7 +120,8 @@
       "enabled": true
     },
     "codeScanning": {
-      "enabled": true
+      "enabled": true,
+      "syncDismissals": true
     },
     "dependencyReview": {
       "enabled": true

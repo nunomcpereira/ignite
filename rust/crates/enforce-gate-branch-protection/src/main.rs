@@ -7,22 +7,34 @@
 //! `routes/github_pr_status.rs`/`github_pr_status.rs` posts to) on the
 //! repo's default branch and disallowing direct pushes that bypass a PR.
 //!
+//! `enforce-gate-branch-protection --org <org-name> [--org <org-name>...] [--apply]`
+//! — the org-wide counterpart: GitHub's own Organization Rulesets apply
+//! to every current *and future* repo in the org automatically, closing
+//! the gap the per-repo form above leaves (a newly-created repo has no
+//! protection until someone remembers to run this against it by name).
+//! `--org` and `<org/repo>` targets can be freely mixed in one
+//! invocation; at least one of either is required.
+//!
 //! **Dry-run by default.** Without `--apply` this only ever performs
-//! read-only lookups (the repo's default branch) and prints the exact
-//! `gh api` invocation — argv array plus JSON body — it *would* make,
-//! never calling the mutating endpoint. Pass `--apply` to actually call
-//! GitHub. This binary is not wired into any pipeline/cron path — it's a
-//! deliberate, standalone tool for an operator to run by hand.
+//! read-only lookups (the repo's default branch, or an org's existing
+//! rulesets) and prints the exact `gh api` invocation — argv array plus
+//! JSON body — it *would* make, never calling the mutating endpoint.
+//! Pass `--apply` to actually call GitHub. This binary is not wired into
+//! any pipeline/cron path — it's a deliberate, standalone tool for an
+//! operator to run by hand.
 //!
 //! Every `gh` invocation goes through `ignite_tool_runner::ToolRunner`
 //! with an argument array (no shell), matching this repo's standing
-//! hardening invariant. The protection payload is nested JSON that `gh
-//! api`'s flat `-f`/`-F` field flags can't express, so — same pattern as
-//! `ignite_github_api::gh_comment_on_pr`'s `--body-file` — it's written to
-//! a temp file and passed via `--input <file>` rather than inlined as an
-//! argument.
+//! hardening invariant. The protection/ruleset payload is nested JSON
+//! that `gh api`'s flat `-f`/`-F` field flags can't express, so — same
+//! pattern as `ignite_github_api::gh_comment_on_pr`'s `--body-file` —
+//! the per-repo path writes it to a temp file and passes it via
+//! `--input <file>`; the org-ruleset path reuses
+//! `ignite_github_api::GithubApi::gh_api_write`, which already detects a
+//! non-scalar field and routes through the raw REST fallback instead of
+//! mangling it through `-f`.
 
-use ignite_github_api::parse_org_repo;
+use ignite_github_api::{is_valid_github_owner, parse_org_repo, GithubApi};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -30,16 +42,19 @@ use std::collections::HashMap;
 #[derive(Debug)]
 pub struct ParsedArgs {
     pub repos: Vec<(String, String)>,
+    pub orgs: Vec<String>,
     pub apply: bool,
 }
 
 pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
     let mut repos = Vec::new();
+    let mut orgs = Vec::new();
     let mut apply = false;
     let mut saw_dry_run_flag = false;
+    let mut i = 0;
 
-    for arg in raw {
-        match arg.as_str() {
+    while i < raw.len() {
+        match raw[i].as_str() {
             "--apply" => apply = true,
             "--dry-run" => saw_dry_run_flag = true,
             "--dry-run=false" => {
@@ -47,16 +62,25 @@ pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
                 apply = true;
             }
             "--dry-run=true" => saw_dry_run_flag = true,
+            "--org" => {
+                i += 1;
+                let org = raw.get(i).ok_or("--org requires a value")?;
+                if !is_valid_github_owner(org) {
+                    return Err(format!("Invalid GitHub owner/org: \"{org}\""));
+                }
+                orgs.push(org.clone());
+            }
             other if other.starts_with("--") => return Err(format!("Unknown flag: {other}")),
             other => repos.push(parse_org_repo(other)?),
         }
+        i += 1;
     }
     let _ = saw_dry_run_flag; // --dry-run is the (redundant) default; only --apply flips it off.
 
-    if repos.is_empty() {
-        return Err("Usage: enforce-gate-branch-protection <org/repo> [<org/repo>...] [--apply]".to_string());
+    if repos.is_empty() && orgs.is_empty() {
+        return Err("Usage: enforce-gate-branch-protection <org/repo> [<org/repo>...] [--org <org-name>...] [--apply]".to_string());
     }
-    Ok(ParsedArgs { repos, apply })
+    Ok(ParsedArgs { repos, orgs, apply })
 }
 
 /// The branch-protection payload this tool enforces: require the
@@ -113,6 +137,102 @@ async fn apply_plan(runner: &ToolRunner, plan: &PlannedCall) -> Result<(), Strin
     Ok(())
 }
 
+/// Ruleset name this tool owns — used both as the ruleset's own `name`
+/// field and as the idempotency key (`find_existing_org_ruleset_id`
+/// looks for a ruleset already carrying this exact name before deciding
+/// whether to create or update).
+const ORG_RULESET_NAME: &str = "ignite-gate";
+
+/// The org-wide GitHub Repository Ruleset this tool enforces — same
+/// intent as `protection_payload` above (require `ignite/gate`, block
+/// force-pushes/deletion, require a reviewed PR), expressed in GitHub's
+/// newer Rulesets schema so it applies to every repo in the org — including
+/// ones created after this runs — rather than needing to be re-run
+/// per-repo. `bypass_actors: []` is the ruleset equivalent of
+/// `enforce_admins: true`: nobody, including org owners, bypasses it.
+pub fn org_ruleset_payload() -> Value {
+    json!({
+        "name": ORG_RULESET_NAME,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] },
+            "repository_name": { "include": ["~ALL"], "exclude": [] }
+        },
+        "rules": [
+            { "type": "deletion" },
+            { "type": "non_fast_forward" },
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": 1,
+                    "dismiss_stale_reviews_on_push": true,
+                    "require_code_owner_review": false,
+                    "require_last_push_approval": false,
+                    "required_review_thread_resolution": false
+                }
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{ "context": "ignite/gate", "integration_id": null }],
+                    "strict_required_status_checks_policy": true
+                }
+            }
+        ],
+        "bypass_actors": []
+    })
+}
+
+/// The `id` of `org`'s existing ruleset named `ORG_RULESET_NAME`, if any
+/// — read-only, safe in dry-run. `Some` means `plan_for_org` should
+/// `PUT` (update in place) rather than `POST` (create a duplicate).
+async fn find_existing_org_ruleset_id(api: &GithubApi<'_>, org: &str, token: &str) -> Result<Option<u64>, String> {
+    let rulesets = api.gh_api_get(&format!("orgs/{org}/rulesets"), token).await.map_err(|e| format!("Failed to list rulesets for org {org}: {e}"))?;
+    Ok(rulesets
+        .and_then(|v| v.as_array().cloned())
+        .and_then(|list| list.into_iter().find(|r| r.get("name").and_then(|n| n.as_str()) == Some(ORG_RULESET_NAME)))
+        .and_then(|r| r.get("id").and_then(|v| v.as_u64())))
+}
+
+pub struct OrgPlannedCall {
+    pub org: String,
+    pub existing_ruleset_id: Option<u64>,
+    pub method: &'static str,
+    pub api_path: String,
+    pub body: Value,
+}
+
+async fn plan_for_org(runner: &ToolRunner, org: &str) -> Result<OrgPlannedCall, String> {
+    let api = GithubApi::new(runner);
+    let token = ignite_github_api::resolve_server_github_token();
+    let existing_ruleset_id = find_existing_org_ruleset_id(&api, org, &token).await?;
+    let body = org_ruleset_payload();
+    let (method, api_path) = match existing_ruleset_id {
+        Some(id) => ("PUT", format!("orgs/{org}/rulesets/{id}")),
+        None => ("POST", format!("orgs/{org}/rulesets")),
+    };
+    Ok(OrgPlannedCall { org: org.to_string(), existing_ruleset_id, method, api_path, body })
+}
+
+fn print_org_plan(plan: &OrgPlannedCall) {
+    println!("== org:{} ({}) ==", plan.org, if plan.existing_ruleset_id.is_some() { "update existing ruleset" } else { "create new ruleset" });
+    println!("  gh api -X {} {}", plan.method, plan.api_path);
+    println!("  body:");
+    println!("{}", serde_json::to_string_pretty(&plan.body).unwrap_or_default().lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n"));
+}
+
+async fn apply_org_plan(runner: &ToolRunner, plan: &OrgPlannedCall) -> Result<(), String> {
+    let api = GithubApi::new(runner);
+    let token = ignite_github_api::resolve_server_github_token();
+    let fields: HashMap<String, Value> = match &plan.body {
+        Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        _ => HashMap::new(),
+    };
+    api.gh_api_write(plan.method, &plan.api_path, &fields, &token).await.map_err(|e| format!("Failed to apply org ruleset for {}: {e}", plan.org))?;
+    Ok(())
+}
+
 fn default_runner() -> ToolRunner {
     ToolRunner::new(HashMap::new())
 }
@@ -159,6 +279,29 @@ async fn main() {
         }
     }
 
+    for org in &parsed.orgs {
+        match plan_for_org(&runner, org).await {
+            Ok(plan) => {
+                print_org_plan(&plan);
+                if parsed.apply {
+                    match apply_org_plan(&runner, &plan).await {
+                        Ok(()) => println!("  applied.\n"),
+                        Err(e) => {
+                            eprintln!("  FAILED: {e}\n");
+                            had_error = true;
+                        }
+                    }
+                } else {
+                    println!();
+                }
+            }
+            Err(e) => {
+                eprintln!("org:{org}: {e}");
+                had_error = true;
+            }
+        }
+    }
+
     if had_error {
         std::process::exit(1);
     }
@@ -196,6 +339,44 @@ mod tests {
     fn parse_args_rejects_no_repos() {
         assert!(parse_args(&[]).is_err());
         assert!(parse_args(&["--apply".to_string()]).is_err());
+    }
+
+    #[test]
+    fn parse_args_accepts_org_flag_alone_or_mixed_with_repos() {
+        let parsed = parse_args(&["--org".to_string(), "acme".to_string()]).unwrap();
+        assert_eq!(parsed.orgs, vec!["acme".to_string()]);
+        assert!(parsed.repos.is_empty());
+
+        let mixed = parse_args(&["acme/widgets".to_string(), "--org".to_string(), "other-org".to_string()]).unwrap();
+        assert_eq!(mixed.repos, vec![("acme".to_string(), "widgets".to_string())]);
+        assert_eq!(mixed.orgs, vec!["other-org".to_string()]);
+    }
+
+    #[test]
+    fn parse_args_rejects_org_flag_without_a_value() {
+        assert!(parse_args(&["--org".to_string()]).is_err());
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_org_name_after_org_flag() {
+        let err = parse_args(&["--org".to_string(), "-bad".to_string()]).unwrap_err();
+        assert!(err.contains("Invalid GitHub owner/org"));
+    }
+
+    #[test]
+    fn org_ruleset_payload_requires_ignite_gate_targets_all_repos_and_blocks_bypass() {
+        let body = org_ruleset_payload();
+        assert_eq!(body["name"], ORG_RULESET_NAME);
+        assert_eq!(body["enforcement"], "active");
+        assert_eq!(body["conditions"]["repository_name"]["include"][0], "~ALL");
+        assert_eq!(body["conditions"]["ref_name"]["include"][0], "~DEFAULT_BRANCH");
+        assert!(body["bypass_actors"].as_array().unwrap().is_empty());
+        let rule_types: Vec<&str> = body["rules"].as_array().unwrap().iter().filter_map(|r| r["type"].as_str()).collect();
+        assert!(rule_types.contains(&"required_status_checks"));
+        assert!(rule_types.contains(&"deletion"));
+        assert!(rule_types.contains(&"non_fast_forward"));
+        let status_checks = &body["rules"][3]["parameters"]["required_status_checks"];
+        assert_eq!(status_checks[0]["context"], "ignite/gate");
     }
 
     #[test]
@@ -256,6 +437,78 @@ exit 1
         assert_eq!(plan.full_name, "acme/widgets");
         assert!(plan.argv.contains(&"PUT".to_string()));
         assert_eq!(plan.body["required_status_checks"]["contexts"][0], "ignite/gate");
+
+        std::env::set_var("PATH", old_path);
+    }
+
+    fn make_fake_gh_org_rulesets(dir: &std::path::Path, existing_rulesets_json: &str) {
+        let script_path = dir.join("gh");
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh version 2.0.0 fake"; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "orgs/acme/rulesets" ] && [ -z "$3" ]; then
+  echo '{existing_rulesets_json}'
+  exit 0
+fi
+echo "unexpected args: $@" >&2
+exit 1
+"#
+        );
+        std::fs::write(&script_path, script).unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn plan_for_org_creates_a_new_ruleset_when_none_exists_yet() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_gh_org_rulesets(dir.path(), "[]");
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
+
+        let runner = default_runner();
+        let plan = plan_for_org(&runner, "acme").await.unwrap();
+        assert_eq!(plan.existing_ruleset_id, None);
+        assert_eq!(plan.method, "POST");
+        assert_eq!(plan.api_path, "orgs/acme/rulesets");
+
+        std::env::set_var("PATH", old_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn plan_for_org_updates_the_existing_ruleset_in_place() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_gh_org_rulesets(dir.path(), r#"[{"id": 42, "name": "ignite-gate"}]"#);
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
+
+        let runner = default_runner();
+        let plan = plan_for_org(&runner, "acme").await.unwrap();
+        assert_eq!(plan.existing_ruleset_id, Some(42));
+        assert_eq!(plan.method, "PUT");
+        assert_eq!(plan.api_path, "orgs/acme/rulesets/42");
+
+        std::env::set_var("PATH", old_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn plan_for_org_ignores_a_same_named_ruleset_belonging_to_a_different_id_shape() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_gh_org_rulesets(dir.path(), r#"[{"id": 7, "name": "some-other-ruleset"}]"#);
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
+
+        let runner = default_runner();
+        let plan = plan_for_org(&runner, "acme").await.unwrap();
+        assert_eq!(plan.existing_ruleset_id, None, "must not match a ruleset with a different name");
+        assert_eq!(plan.method, "POST");
 
         std::env::set_var("PATH", old_path);
     }

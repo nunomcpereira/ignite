@@ -23,6 +23,28 @@ use std::sync::Arc;
 static SHA_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^[0-9a-f]{7,40}$").unwrap());
 const MAX_LISTED_ISSUES: usize = 15;
 
+/// The `number` of the first alert in `alerts` (a
+/// `GET .../code-scanning/alerts` response array) that represents
+/// `issue` — matched by `rule.id` (the same `rule_id_for` mapping
+/// `ignite_sarif::build_sarif` used to generate the SARIF this alert was
+/// created from) plus the alert's most recent instance's file/line,
+/// since GitHub's alerts API doesn't echo back the `partialFingerprints`
+/// a SARIF upload carried. `None` when `issue` has no file/line (a
+/// project-wide finding never has a code-scanning location to match), or
+/// no open alert matches.
+fn find_matching_open_alert_number(alerts: &[Value], issue: &IssueRow) -> Option<u64> {
+    let (file, line) = (issue.file.as_deref()?, issue.line?);
+    let rule_id = ignite_sarif::rule_id_for(issue);
+    alerts.iter().find_map(|a| {
+        let is_open = a.get("state").and_then(|v| v.as_str()) == Some("open");
+        let rule_matches = a.get("rule").and_then(|r| r.get("id")).and_then(|v| v.as_str()) == Some(rule_id.as_str());
+        let location = a.get("most_recent_instance").and_then(|i| i.get("location"));
+        let file_matches = location.and_then(|l| l.get("path")).and_then(|v| v.as_str()) == Some(file);
+        let line_matches = location.and_then(|l| l.get("start_line")).and_then(|v| v.as_i64()) == Some(line);
+        (is_open && rule_matches && file_matches && line_matches).then(|| a.get("number").and_then(|v| v.as_u64())).flatten()
+    })
+}
+
 struct Summary {
     state: &'static str,
     description: String,
@@ -143,6 +165,30 @@ async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): Re
         if let Err(e) = api.gh_upload_sarif(&full_name, &sha, &resolved_ref, &sarif_doc, &gh_token).await {
             tracing::warn!("SARIF upload to GitHub Code Scanning failed for {full_name}@{sha}: {e}");
         }
+
+        // GHAS-parity alert-dismissal sync: an issue Ignite already has a
+        // human-justified override for shouldn't keep sitting as an open
+        // alert in GitHub's own Code Scanning tab. Runs after the SARIF
+        // upload above (the alert the upload just created/refreshed is
+        // what this looks up) — best-effort/non-fatal, same as every
+        // other push in this handler.
+        if state.config.security.code_scanning.sync_dismissals {
+            let overridden: Vec<&IssueRow> = issues.iter().filter(|i| i.status == "overridden").collect();
+            if !overridden.is_empty() {
+                match api.gh_list_code_scanning_alerts(&full_name, &resolved_ref, &gh_token).await {
+                    Ok(alerts) => {
+                        for issue in overridden {
+                            let Some(alert_number) = find_matching_open_alert_number(&alerts, issue) else { continue };
+                            let comment = issue.justification.as_deref().unwrap_or("Justified and overridden in Ignite.");
+                            if let Err(e) = api.gh_dismiss_code_scanning_alert(&full_name, alert_number, "won't fix", comment, &gh_token).await {
+                                tracing::warn!("Failed to dismiss code-scanning alert #{alert_number} for {full_name} (issue {}): {e}", issue.id);
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!("Failed to list code-scanning alerts for {full_name}@{resolved_ref}: {e}"),
+                }
+            }
+        }
     }
 
     let project_id = state.db.get_project_id_by_job_id(job_id);
@@ -190,6 +236,38 @@ mod tests {
 
     fn issue(category: &str, severity: &str, status: &str, file: Option<&str>, line: Option<i64>) -> IssueRow {
         IssueRow { id: format!("{category}::x"), phase: Some(4), category: category.to_string(), severity: severity.to_string(), score: Some(5), summary: "test finding".to_string(), file: file.map(str::to_string), line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, status: status.to_string(), created_at: String::new(), justification: None, actor_email: None, actor_name: None }
+    }
+
+    fn alert(number: u64, rule_id: &str, state: &str, path: &str, start_line: i64) -> Value {
+        json!({ "number": number, "state": state, "rule": { "id": rule_id }, "most_recent_instance": { "location": { "path": path, "start_line": start_line } } })
+    }
+
+    #[test]
+    fn find_matching_open_alert_number_matches_by_rule_file_and_line() {
+        let issue = issue("secret", "error", "overridden", Some("a.js"), Some(3));
+        let alerts = vec![alert(1, "codeql-sast", "open", "a.js", 3), alert(2, "secret", "open", "a.js", 3)];
+        assert_eq!(find_matching_open_alert_number(&alerts, &issue), Some(2));
+    }
+
+    #[test]
+    fn find_matching_open_alert_number_ignores_already_dismissed_alerts() {
+        let issue = issue("secret", "error", "overridden", Some("a.js"), Some(3));
+        let alerts = vec![alert(1, "secret", "dismissed", "a.js", 3)];
+        assert!(find_matching_open_alert_number(&alerts, &issue).is_none());
+    }
+
+    #[test]
+    fn find_matching_open_alert_number_requires_exact_file_and_line() {
+        let issue = issue("secret", "error", "overridden", Some("a.js"), Some(3));
+        let alerts = vec![alert(1, "secret", "open", "b.js", 3), alert(2, "secret", "open", "a.js", 4)];
+        assert!(find_matching_open_alert_number(&alerts, &issue).is_none());
+    }
+
+    #[test]
+    fn find_matching_open_alert_number_none_for_project_wide_issue() {
+        let issue = issue("secret", "error", "overridden", None, None);
+        let alerts = vec![alert(1, "secret", "open", "a.js", 3)];
+        assert!(find_matching_open_alert_number(&alerts, &issue).is_none());
     }
 
     #[test]

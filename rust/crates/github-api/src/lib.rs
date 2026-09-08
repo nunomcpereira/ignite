@@ -339,6 +339,35 @@ impl<'a> GithubApi<'a> {
         Ok(())
     }
 
+    /// Every currently-open code-scanning alert on `full_name` for
+    /// `git_ref`, per `GET repos/{full}/code-scanning/alerts?ref=...&state=open`
+    /// — the read half of alert-dismissal sync (see
+    /// `gh_dismiss_code_scanning_alert`). Always goes through the raw
+    /// REST call (no `gh` CLI subcommand for this endpoint, same as
+    /// `gh_upload_sarif`/`gh_submit_dependency_snapshot`). Capped at the
+    /// first 100 open alerts (`per_page=100`, no pagination) — plenty for
+    /// matching against Ignite's own just-uploaded SARIF findings, which
+    /// realistically never exceeds that per scan.
+    pub async fn gh_list_code_scanning_alerts(&self, full_name: &str, git_ref: &str, token: &str) -> Result<Vec<Value>, GithubApiError> {
+        let alerts = self.github_api_request(token, "GET", &format!("/repos/{full_name}/code-scanning/alerts?ref={git_ref}&state=open&per_page=100"), None, None).await?;
+        Ok(alerts.and_then(|v| v.as_array().cloned()).unwrap_or_default())
+    }
+
+    /// Dismisses one code-scanning alert — the write half of
+    /// alert-dismissal sync: when Ignite's own override-engine already
+    /// has a human-justified override for the finding an alert
+    /// represents, GitHub's copy of that alert shouldn't keep showing as
+    /// an open, unaddressed risk. `reason` must be one of GitHub's own
+    /// enum values (`"false positive"`, `"won't fix"`, `"used in tests"`);
+    /// `comment` carries Ignite's actual justification text, since
+    /// Ignite's override model doesn't capture which of those three
+    /// buckets a justification falls into.
+    pub async fn gh_dismiss_code_scanning_alert(&self, full_name: &str, alert_number: u64, reason: &str, comment: &str, token: &str) -> Result<(), GithubApiError> {
+        let body = serde_json::json!({ "state": "dismissed", "dismissed_reason": reason, "dismissed_comment": comment });
+        self.github_api_request(token, "PATCH", &format!("/repos/{full_name}/code-scanning/alerts/{alert_number}"), Some(&body), None).await?;
+        Ok(())
+    }
+
     /// A multi-line markdown body can't go through `run_tool`'s CLI-arg
     /// sanitizer (rejects `\n` in any argument), so the `gh` path writes
     /// it to a temp file and uses `--body-file` instead of `--body`. PR

@@ -516,9 +516,24 @@ impl Default for DependencyGraphConfig {
 #[serde(rename_all = "camelCase")]
 pub struct CodeScanningConfig {
     pub enabled: bool,
+    /// GHAS-parity bidirectional alert state sync: when Ignite's own
+    /// override-engine already has a human-justified override for a
+    /// finding, dismiss the matching GitHub code-scanning alert too
+    /// (`GithubApi::gh_dismiss_code_scanning_alert`), instead of leaving
+    /// it sitting open in GitHub's UI after `gh_upload_sarif` creates it.
+    /// Only ever dismisses alerts backing an override Ignite itself
+    /// already recorded — never based on unattended scan output. Has no
+    /// effect when `enabled` is `false` (nothing gets uploaded to
+    /// dismiss in the first place).
+    #[serde(default = "default_true")]
+    pub sync_dismissals: bool,
 }
 impl Default for CodeScanningConfig {
-    fn default() -> Self { CodeScanningConfig { enabled: true } }
+    fn default() -> Self { CodeScanningConfig { enabled: true, sync_dismissals: true } }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -919,6 +934,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("ZIZMOR_ENABLED") { merged.security.zizmor.enabled = v; }
     if let Some(v) = env_bool("DEPENDENCY_GRAPH_ENABLED") { merged.security.dependency_graph.enabled = v; }
     if let Some(v) = env_bool("CODE_SCANNING_ENABLED") { merged.security.code_scanning.enabled = v; }
+    if let Some(v) = env_bool("CODE_SCANNING_SYNC_DISMISSALS") { merged.security.code_scanning.sync_dismissals = v; }
     if let Some(v) = env_bool("DEPENDENCY_REVIEW_ENABLED") { merged.security.dependency_review.enabled = v; }
     if let Some(v) = env_bool("SECRET_VERIFICATION_ENABLED") { merged.security.secret_verification.enabled = v; }
     if let Some(v) = env_str("ZIZMOR_BINARY") { merged.security.zizmor.binary = v; }
