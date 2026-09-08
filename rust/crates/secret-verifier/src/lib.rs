@@ -189,8 +189,14 @@ mod tests {
 
     #[test]
     fn extract_secret_value_pulls_github_token_out_of_a_code_line() {
-        let line = r#"const token = "ghp_1234567890abcdef1234567890abcdef1234";"#;
-        let value = extract_secret_value("github-pat", line).unwrap();
+        // Built at runtime rather than as a literal `ghp_...` string —
+        // org-governance CI's plaintext-token matcher (rust/MIGRATION_STATUS.md's
+        // secret-shaped-fixture policy) flags any literal matching a real
+        // provider token shape regardless of authenticity, same reasoning
+        // already applied to the Stripe/Slack fixtures in this crate.
+        let fake_token = format!("ghp_{}", "1234567890abcdef1234567890abcdef1234");
+        let line = format!(r#"const token = "{fake_token}";"#);
+        let value = extract_secret_value("github-pat", &line).unwrap();
         assert!(value.starts_with("ghp_"));
     }
 
