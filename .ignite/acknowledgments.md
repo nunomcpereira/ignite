@@ -15,6 +15,8 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
+# Scanned against commit: 06f6555adfb5cd9f6cc1db4e481d0c6998e7c9ba (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
 # [ERROR] secret - Hardcoded generic-api-key
@@ -27,89 +29,97 @@ ID: secret::rust/crates/pii-dataflow/src/lib.rs::353
 #   rust/crates/pii-dataflow/src/lib.rs:353
 Acknowledge: Fake GCP API key literal used as test input to verify the secret scanner's own detection, not a real credential.
 
-ID: secret::rust/crates/secrets/src/lib.rs::565
-# Issue #3
-# [ERROR] secret - Hardcoded connection-string credential
-#   rust/crates/secrets/src/lib.rs:565
-Acknowledge: Fake DATABASE_URL connection-string literal written to a scratch fixture file within a unit test for the URI_CREDENTIAL_RE detector, not a real credential - uses example.com (IANA/RFC 2606-reserved for documentation) and an explicitly-labeled placeholder password.
-
 ID: gha-security::.github/workflows/deploy-docs.yml::13
-# Issue #4
+# Issue #3
 # [ERROR] gha-security - overly broad permissions (  pages: write)
 #   .github/workflows/deploy-docs.yml:13
 Acknowledge: `pages: write` + `id-token: write` (next entry) are exactly the two permissions GitHub's own actions/deploy-pages documentation requires for OIDC-based Pages deployment - already the minimal job-level set (no broader contents:write, etc.). zizmor's excessive-permissions rule flags any explicit write scope without knowing what the job's own actions actually need; this is that documented minimum, not excessive in practice.
 
 ID: gha-security::.github/workflows/deploy-docs.yml::14
-# Issue #5
+# Issue #4
 # [ERROR] gha-security - overly broad permissions (  id-token: write)
 #   .github/workflows/deploy-docs.yml:14
 Acknowledge: Same justification as the `pages: write` entry above - the minimal, documented permission pair actions/deploy-pages needs for OIDC-based deployment.
 
 ID: secret::rust/crates/server/src/auth/github_oauth.rs::289
-# Issue #6
+# Issue #5
 # [ERROR] secret - Hardcoded secret
 #   rust/crates/server/src/auth/github_oauth.rs:289
 # Code: config.github.oauth.client_secret = "secret-123".into();
 Acknowledge: Literal test-fixture GitHub OAuth client secret used only to construct an in-process test Config for github_oauth.rs's own unit tests, not a real credential.
 
 ID: secret::config.json::14
-# Issue #7
+# Issue #6
 # [ERROR] secret - Base64 High Entropy String
 #   config.json:14
 Acknowledge: Real GitHub OAuth client secret in this developer's local config.json, per CLAUDE.md's own documented note that this file "contain[s] this developer's real org name, SMTP creds, etc." — confirmed gitignored (`git check-ignore` matches `.gitignore:3:config.json`), never committed or pushed. The pre-push gate scans the whole working tree regardless of git tracking, so a real local-only secret still needs an override to unblock a push whose diff never touches this file.
 
-ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::875
-# Issue #8
-# [ERROR] secret - Hardcoded gcp-api-key
-#   rust/crates/phase4-orchestrator/src/lib.rs:875
-# Code: fs::write(root.join("config.js"), format!("export const environment = {{ firebase: {{ apiKey: '{}' }} }};\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
-Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the built-in secret scanner (SECRET_RE) doesn't false-positive on a `firebase: { apiKey: ... }` nested property shape, not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::868 - pure line-number drift, flagged code unchanged)
-
 ID: secret::rust/crates/server/src/auth/oidc.rs::318
-# Issue #9
+# Issue #7
 # [ERROR] secret - Hardcoded secret
 #   rust/crates/server/src/auth/oidc.rs:318
 # Code: config.auth.oidc.client_secret = "test-secret".into();
 Acknowledge: Literal test-fixture OIDC client secret used only to construct an in-process test Config for oidc.rs's own unit tests, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/auth/oidc.rs::317 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::711
-# Issue #10
+# Issue #8
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:711
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Fake AWS access key literal used as a fixture file inside a review-gate integration test (uploaded as a zip so the secret scanner flags a real blocking finding to pause the run for review), not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1397 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1401 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::676 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::773
-# Issue #11
+# Issue #9
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:773
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entry above, reused in a second review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1453 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1457 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::732 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::854
-# Issue #12
+# Issue #10
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:854
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entries above, reused in a third review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1523 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1527 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::802 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::898
-# Issue #13
+# Issue #11
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:898
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entries above, reused in a fourth review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1567 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1571 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::846 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/llm-client/src/lib.rs::363
-# Issue #14
+# Issue #12
 # [ERROR] secret - Hardcoded api_key
 #   rust/crates/llm-client/src/lib.rs:363
 # Code: LlmClientConfig { provider: Provider::Anthropic, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: "sk-ant-test".to_string(), anthropic_base_url: "https://api.anthropic.com/v1/".to_string(), anthropic_model: "claude-opus-5".to_string(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: String::new(), scan_model: String::new() }
 Acknowledge: Fake Anthropic API key literal ("sk-ant-test") used as test-fixture config in an llm-client unit test, not a real credential. (auto-carried-forward from secret::rust/crates/llm-client/src/lib.rs::353 - pure line-number drift, flagged code unchanged)
 
 ID: codeql-sast::public/index.html::821::js/xss-through-dom
-# Issue #15
+# Issue #13
 # [ERROR] codeql-sast - DOM text is reinterpreted as HTML without escaping meta-characters.
 #   public/index.html:821
 # Code: document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n-html')); });
 Acknowledge: Narrowed replacement for the previously-acknowledged finding at the old [data-i18n] innerHTML call (now textContent - see the applyStaticTranslations doc comment above it). Only elements explicitly opted in via data-i18n-html still use innerHTML, for the handful of translation keys whose copy deliberately carries inline markup (bold spans in upload.dropSubtitle, a line break in footer.note, etc). t()'s only inputs remain (1) the fixed attribute-name string 'data-i18n-html' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. No untrusted data reaches this call. (auto-carried-forward from codeql-sast::public/index.html::781::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::813::js/xss-through-dom - pure line-number drift, flagged code unchanged)
+
+ID: secret::rust/crates/secrets/src/lib.rs::579
+# Issue #14
+# [ERROR] secret - Hardcoded api_key
+#   rust/crates/secrets/src/lib.rs:579
+# Code: fs::write(root.join("config.js"), "const api_key = 'sk-proj-abcdefghijklmnop';\n").unwrap();
+Acknowledge: Fake API key literal used as test input for run_gitleaks_history_scan_no_ops_without_a_git_directory (verifies the history scan is a no-op with no .git directory) - not a real credential, same fixture literal already acknowledged elsewhere in this file for the same reason.
+
+ID: secret::rust/crates/secrets/src/lib.rs::683
+# Issue #15
+# [ERROR] secret - Hardcoded connection-string credential
+#   rust/crates/secrets/src/lib.rs:683
+# Code: "DATABASE_URL = \"postgresql://testuser:not-a-real-pw@x@example.com:5432/testdb\"\n",
+Acknowledge: Test-fixture connection string for flags_a_password_embedded_in_a_connection_string - example.com is IANA/RFC 2606-reserved for documentation and the password is labeled a placeholder outright in the surrounding comment, not a real credential.
+
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::881
+# Issue #16
+# [ERROR] secret - Hardcoded gcp-api-key
+#   rust/crates/phase4-orchestrator/src/lib.rs:881
+# Code: fs::write(root.join("config.js"), format!("export const environment = {{ firebase: {{ apiKey: '{}' }} }};\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
+Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the built-in secret scanner (SECRET_RE) doesn't false-positive on a `firebase: { apiKey: ... }` nested property shape, not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::868 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::875 - pure line-number drift, flagged code unchanged)

@@ -12,6 +12,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+#[derive(Clone)]
 pub struct ContainerImageVulnerabilitiesConfig {
     pub enabled: bool,
     pub severity_threshold: String,

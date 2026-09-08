@@ -48,7 +48,7 @@ static PR_NUMBER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"/pull/(\d+)").unwra
 /// truth for every call site that validates an owner before shelling out
 /// to `gh`/`git` (routes/github_pr_status.rs, scripts that take an
 /// `org/repo` argument) — previously duplicated ad hoc per call site.
-static GITHUB_OWNER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$").unwrap());
+static GITHUB_OWNER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$").unwrap());
 /// GitHub's repository naming rule: alphanumeric plus `.`/`_`/`-`, 1-100 chars.
 static GITHUB_REPO_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
 
@@ -78,6 +78,24 @@ pub fn parse_org_repo(spec: &str) -> Result<(String, String), String> {
 
 pub fn resolve_server_github_token() -> String {
     std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).unwrap_or_default()
+}
+
+/// The env override to pass a `gh` CLI invocation so it authenticates as
+/// `token` instead of silently falling back to the CLI's own ambient
+/// `gh auth login` identity — every gh-CLI call site that carries an
+/// explicit per-request token (a connected user's session token, a
+/// resolved server token) must use this rather than `RunToolOptions::default()`
+/// or that token is dropped. Empty when `token` is empty: `ToolRunner::build_env`
+/// already inherits the process's own `GH_TOKEN`/`GITHUB_TOKEN`, and setting
+/// `GH_TOKEN=""` here would shadow that inherited value and any locally
+/// stored `gh auth login` credentials with an empty one, breaking the
+/// existing "no explicit token — fall back to gh's own auth" case.
+fn gh_token_env(token: &str) -> HashMap<String, String> {
+    if token.is_empty() {
+        HashMap::new()
+    } else {
+        HashMap::from([("GH_TOKEN".to_string(), token.to_string())])
+    }
 }
 
 pub struct PrResult {
@@ -143,7 +161,14 @@ impl<'a> GithubApi<'a> {
     }
 
     pub async fn gh_api_write(&self, method: &str, api_path: &str, fields: &HashMap<String, Value>, token: &str) -> Result<Option<Value>, GithubApiError> {
-        if self.is_gh_cli_available().await {
+        // `gh api -f`/`-F` only carry scalar values — an object/array field
+        // stringified via `other.to_string()` below would go over as opaque
+        // JSON text (e.g. a literal `{"a":1}` string) instead of a
+        // structured field, with no error raised. Route those calls
+        // through the raw REST fallback instead, which serializes the
+        // whole body correctly.
+        let has_non_scalar = fields.values().any(|v| v.is_object() || v.is_array());
+        if !has_non_scalar && self.is_gh_cli_available().await {
             let mut args = vec!["api".to_string(), "-X".to_string(), method.to_string(), api_path.to_string()];
             for (k, v) in fields {
                 let flag = if v.is_boolean() || v.is_number() { "-F" } else { "-f" };
@@ -154,7 +179,7 @@ impl<'a> GithubApi<'a> {
                 args.push(flag.to_string());
                 args.push(format!("{k}={val}"));
             }
-            let env = HashMap::from([("GH_TOKEN".to_string(), token.to_string())]);
+            let env = gh_token_env(token);
             let out = self.runner.run_tool("gh", &args, &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(if out.stdout.is_empty() { None } else { Some(serde_json::from_str(&out.stdout)?) });
         }
@@ -163,7 +188,7 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_api_get(&self, api_path: &str, token: &str) -> Result<Option<Value>, GithubApiError> {
         if self.is_gh_cli_available().await {
-            let env = HashMap::from([("GH_TOKEN".to_string(), token.to_string())]);
+            let env = gh_token_env(token);
             let out = self.runner.run_tool("gh", &["api".to_string(), api_path.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(if out.stdout.is_empty() { None } else { Some(serde_json::from_str(&out.stdout)?) });
         }
@@ -172,9 +197,10 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_fetch_file_raw(&self, repo_full_name: &str, file_path: &str, token: &str) -> Result<Option<String>, GithubApiError> {
         if self.is_gh_cli_available().await {
+            let env = gh_token_env(token);
             let out = self
                 .runner
-                .run_tool("gh", &["api".to_string(), format!("repos/{repo_full_name}/contents/{file_path}"), "-H".to_string(), "Accept: application/vnd.github.raw".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
+                .run_tool("gh", &["api".to_string(), format!("repos/{repo_full_name}/contents/{file_path}"), "-H".to_string(), "Accept: application/vnd.github.raw".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() })
                 .await?;
             return Ok(Some(out.stdout));
         }
@@ -184,7 +210,8 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_list_commits(&self, repo_full_name: &str, file_path: &str, token: &str) -> Result<Value, GithubApiError> {
         if self.is_gh_cli_available().await {
-            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{repo_full_name}/commits?path={file_path}&per_page=1")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            let env = gh_token_env(token);
+            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{repo_full_name}/commits?path={file_path}&per_page=1")], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(serde_json::from_str(&out.stdout)?);
         }
         Ok(self.github_api_request(token, "GET", &format!("/repos/{repo_full_name}/commits?path={file_path}&per_page=1"), None, None).await?.unwrap_or(Value::Null))
@@ -192,7 +219,7 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_create_pr(&self, full_name: &str, base: &str, head: &str, title: &str, body: &str, token: &str) -> Result<PrResult, GithubApiError> {
         if self.is_gh_cli_available().await {
-            let env = HashMap::from([("GH_TOKEN".to_string(), token.to_string())]);
+            let env = gh_token_env(token);
             let out = self
                 .runner
                 .run_tool("gh", &["pr".to_string(), "create".to_string(), "--repo".to_string(), full_name.to_string(), "--base".to_string(), base.to_string(), "--head".to_string(), head.to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() })
@@ -208,7 +235,7 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_arm_auto_merge(&self, full_name: &str, pr_url: &str, pr_number: u64, pr_node_id: Option<&str>, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
-            let env = HashMap::from([("GH_TOKEN".to_string(), token.to_string())]);
+            let env = gh_token_env(token);
             self.runner.run_tool("gh", &["pr".to_string(), "merge".to_string(), pr_url.to_string(), "--auto".to_string(), "--squash".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(());
         }
@@ -230,7 +257,7 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_watch_pr_checks(&self, full_name: &str, pr_url: &str, pr_number: u64, token: &str, mut log: impl FnMut(&str) + Send, timeout_ms: u64) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
-            let env = HashMap::from([("GH_TOKEN".to_string(), token.to_string())]);
+            let env = gh_token_env(token);
             self.runner
                 .run_tool_streaming("gh", &["pr".to_string(), "checks".to_string(), pr_url.to_string(), "--watch".to_string(), "--interval".to_string(), "15".to_string()], &std::env::temp_dir().to_string_lossy(), |line| log(&line.chars().take(300).collect::<String>()), &env, timeout_ms)
                 .await?;
@@ -265,7 +292,8 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_create_issue(&self, full_name: &str, title: &str, body: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
-            self.runner.run_tool("gh", &["issue".to_string(), "create".to_string(), "--repo".to_string(), full_name.to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            let env = gh_token_env(token);
+            self.runner.run_tool("gh", &["issue".to_string(), "create".to_string(), "--repo".to_string(), full_name.to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(());
         }
         self.github_api_request(token, "POST", &format!("/repos/{full_name}/issues"), Some(&serde_json::json!({ "title": title, "body": body })), None).await?;
@@ -273,13 +301,13 @@ impl<'a> GithubApi<'a> {
     }
 
     /// Pushes a dependency-graph snapshot via GitHub's Dependency
-    /// Submission API (`PUT repos/{full_name}/dependency-graph/snapshots`),
+    /// Submission API (`POST repos/{full_name}/dependency-graph/snapshots`),
     /// so results show up in the repo's native Insights > Dependency graph
     /// tab the same way Dependabot's own submission would. No `gh` CLI
     /// subcommand exists for this endpoint, so it always goes through the
     /// raw REST call regardless of whether `gh` is installed.
     pub async fn gh_submit_dependency_snapshot(&self, full_name: &str, snapshot: &Value, token: &str) -> Result<(), GithubApiError> {
-        self.github_api_request(token, "PUT", &format!("/repos/{full_name}/dependency-graph/snapshots"), Some(snapshot), None).await?;
+        self.github_api_request(token, "POST", &format!("/repos/{full_name}/dependency-graph/snapshots"), Some(snapshot), None).await?;
         Ok(())
     }
 
@@ -310,7 +338,7 @@ impl<'a> GithubApi<'a> {
             let tmp_dir = tempfile::Builder::new().prefix("ignite-pr-comment-").tempdir()?;
             let tmp_file = tmp_dir.path().join("body.md");
             std::fs::write(&tmp_file, body)?;
-            let env = HashMap::from([("GH_TOKEN".to_string(), token.to_string())]);
+            let env = gh_token_env(token);
             let result = self
                 .runner
                 .run_tool("gh", &["pr".to_string(), "comment".to_string(), pr_number.to_string(), "--repo".to_string(), full_name.to_string(), "--body-file".to_string(), tmp_file.to_string_lossy().into_owned()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() })
@@ -329,7 +357,8 @@ impl<'a> GithubApi<'a> {
     /// even from a dry-run.
     pub async fn default_branch(&self, full_name: &str, token: &str) -> Result<String, GithubApiError> {
         let value = if self.is_gh_cli_available().await {
-            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            let env = gh_token_env(token);
+            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             serde_json::from_str::<Value>(&out.stdout)?
         } else {
             self.github_api_request(token, "GET", &format!("/repos/{full_name}"), None, None).await?.unwrap_or(Value::Null)
@@ -348,7 +377,8 @@ impl<'a> GithubApi<'a> {
     /// own `.git` history (works the same for a shallow clone).
     pub async fn head_sha(&self, full_name: &str, branch: &str, token: &str) -> Result<String, GithubApiError> {
         let value = if self.is_gh_cli_available().await {
-            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}/commits/{branch}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            let env = gh_token_env(token);
+            let out = self.runner.run_tool("gh", &["api".to_string(), format!("repos/{full_name}/commits/{branch}")], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             serde_json::from_str::<Value>(&out.stdout)?
         } else {
             self.github_api_request(token, "GET", &format!("/repos/{full_name}/commits/{branch}"), None, None).await?.unwrap_or(Value::Null)
@@ -366,7 +396,8 @@ impl<'a> GithubApi<'a> {
     /// explicit branch instead of hardcoding `main`.
     pub async fn gh_clone_repo_branch(&self, full_name: &str, branch: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
-            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            let env = gh_token_env(token);
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(());
         }
         if token.is_empty() {
@@ -380,7 +411,8 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_clone_repo(&self, full_name: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
-            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default()).await?;
+            let env = gh_token_env(token);
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(());
         }
         if token.is_empty() {

@@ -75,8 +75,10 @@ fn osv_ecosystem(ecosystem: &str) -> Option<&'static str> {
 
 /// The leading constraint-operator characters a manifest version string
 /// can carry (`^1.2.3`, `~=1.2.3`, `==1.2.3`, `>=1.2.3`) — everything
-/// after this prefix is expected to be a plain version.
-const RANGE_PREFIX_CHARS: &[char] = &['^', '~', '=', '<', '>', '!', ' '];
+/// after this prefix is expected to be a plain version. Includes `v`
+/// (Go modules are always `v`-prefixed, e.g. `v1.2.3`) so `rewrite_range`
+/// preserves it instead of emitting an invalid bare version into go.mod.
+const RANGE_PREFIX_CHARS: &[char] = &['^', '~', '=', '<', '>', '!', 'v', ' '];
 
 /// True only for a single simple constraint this tool knows how to bump
 /// in place — a bare version, or one prefix-operator plus a plain
@@ -102,16 +104,29 @@ pub fn rewrite_range(old_range: &str, fixed_version: &str) -> String {
     format!("{prefix}{fixed_version}")
 }
 
-/// True when `fixed` and `resolved` both parse as semver and their major
-/// component differs. Unparseable versions (Go pseudo-versions, some
+/// True when `fixed` and `resolved` both parse as semver and represent a
+/// breaking bump: a differing major component, or — per semver's own 0.x
+/// convention, where every `0.y.z` minor is allowed to break — a differing
+/// minor while major is `0`. Unparseable versions (Go pseudo-versions, some
 /// Maven schemes) are never flagged — no false confidence either way, but
 /// erring toward "let a human look" only makes sense when we can actually
-/// tell there's a major jump.
+/// tell there's a breaking jump.
 pub fn is_major_bump(resolved: &str, fixed: &str) -> bool {
     match (parse_semver(resolved), parse_semver(fixed)) {
-        (Some((rm, _, _)), Some((fm, _, _))) => rm != fm,
+        (Some((rm, rn, _)), Some((fm, fn_, _))) => rm != fm || (rm == 0 && rn != fn_),
         _ => false,
     }
+}
+
+/// True when `fixed` is not a strict semver improvement over `resolved` —
+/// OSV.dev's `ranges`/`events` schema can list an earlier `fixed` window
+/// that a later `introduced` event re-opens, so naively taking the first
+/// `fixed` event (see `fetch_osv_fixed_version`) can propose a version
+/// that's actually a downgrade, or no improvement at all, over what's
+/// already installed. Unparseable versions are never flagged as
+/// regressions — we can't tell, so we don't block the candidate.
+fn is_non_improving_fix(resolved: &str, fixed: &str) -> bool {
+    matches!((parse_semver(resolved), parse_semver(fixed)), (Some(r), Some(f)) if f <= r)
 }
 
 /// Queries OSV.dev directly for `advisory_id`'s full record and returns
@@ -166,6 +181,9 @@ pub async fn discover_fix_candidates(root: &Path, deps_client: &DepsDevClient, h
             for vuln in &dep.vulnerabilities {
                 let Some(advisory_id) = vuln.id.clone().or_else(|| vuln.aliases.first().cloned()) else { continue };
                 let Some(fixed_version) = fetch_osv_fixed_version(http, &advisory_id, manifest.ecosystem, &dep.name).await else { continue };
+                if dep.version.as_deref().is_some_and(|resolved| is_non_improving_fix(resolved, &fixed_version)) {
+                    continue;
+                }
                 let major_bump = dep.version.as_deref().map(|resolved| is_major_bump(resolved, &fixed_version)).unwrap_or(false);
                 let mut summary = format!("{}@{} -> {fixed_version} ({advisory_id})", dep.name, dep.version.clone().unwrap_or_else(|| dep.version_range.clone()));
                 if let Some(title) = &vuln.title {

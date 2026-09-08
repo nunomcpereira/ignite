@@ -574,5 +574,6 @@ pub fn collect_dependency_vulnerability_issues(manifests: &[VulnManifest]) -> Ve
         }
     }
 
+    disambiguate_colliding_ids(&mut issues);
     issues
 }

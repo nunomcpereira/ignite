@@ -59,9 +59,13 @@ impl DbStore {
         .collect()
     }
 
-    pub fn revoke_api_key(&self, id: i64) -> bool {
+    /// Scoped to `user_id` so a caller can only ever revoke their own key —
+    /// an id-only revoke would let any authenticated caller revoke any
+    /// other user's key the moment this is wired to an endpoint, since
+    /// `api_keys.id` is a small sequential integer with no other guard.
+    pub fn revoke_api_key(&self, id: i64, user_id: i64) -> bool {
         let conn = self.conn.lock();
-        conn.execute("UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL", params![id]).unwrap() > 0
+        conn.execute("UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND user_id = ? AND revoked_at IS NULL", params![id, user_id]).unwrap() > 0
     }
 
 }

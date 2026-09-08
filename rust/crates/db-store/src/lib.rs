@@ -376,7 +376,19 @@ mod tests {
         let key_id = store.create_api_key(user_id, "sha256hash", Some("laptop"), Some("dev@example.com"), "cli");
         let identity = store.get_active_api_key_by_hash("sha256hash").unwrap();
         assert_eq!(identity.user_id, user_id);
-        assert!(store.revoke_api_key(key_id));
+        assert!(store.revoke_api_key(key_id, user_id));
+        assert!(store.get_active_api_key_by_hash("sha256hash").is_none());
+    }
+
+    #[test]
+    fn revoke_api_key_refuses_to_revoke_another_users_key() {
+        let (_dir, store) = open_test_db();
+        let owner_id = store.create_local_user("owner@example.com", Some("Owner"), "hash");
+        let other_id = store.create_local_user("other@example.com", Some("Other"), "hash");
+        let key_id = store.create_api_key(owner_id, "sha256hash", Some("laptop"), Some("owner@example.com"), "cli");
+        assert!(!store.revoke_api_key(key_id, other_id));
+        assert!(store.get_active_api_key_by_hash("sha256hash").is_some());
+        assert!(store.revoke_api_key(key_id, owner_id));
         assert!(store.get_active_api_key_by_hash("sha256hash").is_none());
     }
 

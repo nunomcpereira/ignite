@@ -114,7 +114,7 @@ pub fn stage_existing_project(source_dir: &str, dest_dir: &Path) -> Result<Stage
             return Err(StagingError::ProjectFilePathTraversal(rel.to_string_lossy().into_owned()));
         }
         let size = fs::metadata(&file)?.len();
-        total_bytes += size;
+        total_bytes = total_bytes.saturating_add(size);
         if total_bytes > MAX_EXTRACTED_BYTES {
             return Err(StagingError::ProjectTooLarge);
         }
@@ -147,7 +147,7 @@ pub fn stage_directory_upload(files: &[UploadFile], dest_dir: &Path) -> Result<S
         if normalized != root_normalized && !normalized.starts_with(&root_normalized) {
             return Err(StagingError::FolderUploadPathTraversal(rel));
         }
-        total_bytes += f.size;
+        total_bytes = total_bytes.saturating_add(f.size);
         if total_bytes > MAX_EXTRACTED_BYTES {
             return Err(StagingError::FolderUploadTooLarge);
         }
@@ -196,7 +196,7 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<StageResult, Stag
 
         // Fast-path pre-check on the archive's own declared size (forgeable
         // metadata) — the enforced cap is the streamed total below.
-        if total_bytes + entry.size() > MAX_EXTRACTED_BYTES {
+        if total_bytes.saturating_add(entry.size()) > MAX_EXTRACTED_BYTES {
             return Err(StagingError::ZipBomb);
         }
 
@@ -215,7 +215,7 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<StageResult, Stag
             if n == 0 {
                 break;
             }
-            total_bytes += n as u64;
+            total_bytes = total_bytes.saturating_add(n as u64);
             if total_bytes > MAX_EXTRACTED_BYTES {
                 drop(sink);
                 let _ = fs::remove_file(&target);

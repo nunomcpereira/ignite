@@ -76,7 +76,11 @@ pub enum ToolError {
 }
 
 fn has_control_chars(s: &str) -> bool {
-    s.contains('\0') || s.contains('\r') || s.contains('\n')
+    // Rejects every C0/C1 control char (not just \0/\r/\n), including ESC
+    // (0x1b) — otherwise an attacker-controlled value (e.g. a PR title)
+    // could carry ANSI escape sequences into a terminal that later
+    // displays these args/logs verbatim.
+    s.chars().any(|c| c.is_control())
 }
 
 pub fn sanitize_cli_arg(value: &str, label: &str) -> Result<String, ToolError> {
@@ -330,7 +334,13 @@ impl ToolRunner {
             .envs(&env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // Without this, a timed-out run below drops the `Child` inside
+            // `command.output()` without killing it — Tokio does not kill a
+            // dropped child by default, so the OS process (trivy/semgrep/
+            // codeql/act/...) keeps running detached until it exits on its
+            // own. See the identical note on `run_tool_streaming` below.
+            .kill_on_drop(true);
 
         let run = async {
             let output = command.output().await.map_err(|e| ToolError::Failed {
@@ -445,6 +455,11 @@ impl ToolRunner {
         let run = async {
             let mut out_lines = BufReader::new(stdout).lines();
             let mut err_lines = BufReader::new(stderr).lines();
+            // `err_done` disables the stderr branch once it hits EOF —
+            // otherwise a finished `Lines` reader resolves `Ready` on every
+            // subsequent poll and `select!` re-polls it every iteration,
+            // busy-spinning a CPU core for however long stdout keeps going.
+            let mut err_done = false;
             loop {
                 tokio::select! {
                     line = out_lines.next_line() => {
@@ -455,11 +470,11 @@ impl ToolRunner {
                             Err(e) => return Err(ToolError::Io(e)),
                         }
                     }
-                    line = err_lines.next_line() => {
+                    line = err_lines.next_line(), if !err_done => {
                         match line {
                             Ok(Some(l)) if !l.trim().is_empty() => { captured_lines.push(l.clone()); on_line(&l); }
                             Ok(Some(_)) => {}
-                            Ok(None) => {}
+                            Ok(None) => { err_done = true; }
                             Err(e) => return Err(ToolError::Io(e)),
                         }
                     }

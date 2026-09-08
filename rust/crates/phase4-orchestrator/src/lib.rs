@@ -52,6 +52,25 @@ where
     }
 }
 
+/// Same timeout guard as `with_timeout`, for the checks whose own result
+/// type is infallible (no `io::Result` wrapper) — without this, any one of
+/// them hanging (a stuck subprocess: semgrep/bearer/jscpd/`git log`/zizmor)
+/// would stall the whole `tokio::join!` fan-out below indefinitely, since
+/// only the genuinely-fallible futures were ever wrapped in a timeout.
+async fn with_timeout_or<F, T>(name: &'static str, log: &(dyn Fn(&str) + Sync), fut: F, on_timeout: impl FnOnce() -> T) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let timeout = check_timeout();
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(r) => r,
+        Err(_) => {
+            log(&format!("✗ {name} timed out after {}s — skipping.", timeout.as_secs()));
+            on_timeout()
+        }
+    }
+}
+
 fn to_oe_codeql_finding(f: &ignite_codeql_cross_file::CodeqlFinding) -> OeCodeqlFinding {
     OeCodeqlFinding {
         file: Some(f.file.clone()),
@@ -194,7 +213,9 @@ pub async fn run_phase4_checks(
         let added = ignite_secrets::merge_gitleaks_findings(&secrets_result.findings, &gitleaks_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
         secrets_result.findings.extend(added);
 
-        if config.secrets.gitleaks_scan_history {
+        // Full (non-fast) mode always runs the slow git-history scan, regardless of the
+        // config default — fast mode never does, regardless of the config value.
+        if config.secrets.gitleaks_scan_history || !config.fast {
             let history_raw = ignite_secrets::run_gitleaks_history_scan(root, runner, config.secrets.gitleaks_config_path.as_deref()).await;
             let history_added = ignite_secrets::merge_gitleaks_history_findings(&secrets_result.findings, &history_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
             secrets_result.findings.extend(history_added);
@@ -308,13 +329,22 @@ pub async fn run_phase4_checks(
     // empty "error" result for that one check only — everything else in the
     // fan-out still completes and still gets reported.
     let manifests = ignite_package_hallucination::default_manifests();
-    let semantic_sast_fut = async { ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await };
-    let pii_fut = async { ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow).await };
-    let duplication_fut = async { ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication).await };
-    let loc_metrics_fut = async { ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled).await };
+    let semantic_sast_fut = async {
+        with_timeout_or("semanticSast", log, ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast), || ignite_semantic_sast::SemanticSastResult { findings: vec![], engine: "error" }).await
+    };
+    let pii_fut = async { with_timeout_or("pii", log, ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow), || ignite_pii_dataflow::PiiDataFlowResult { findings: vec![], engine: "error" }).await };
+    let duplication_fut =
+        async { with_timeout_or("duplication", log, ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication), || ignite_code_duplication::CodeDuplicationResult { findings: vec![], engine: "error" }).await };
+    let loc_metrics_fut = async { with_timeout_or("locMetrics", log, ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled), || ignite_loc_metrics::LocMetricsResult { engine: "error", metrics: None }).await };
     let igniteignore_check_root = config.igniteignore_git_check_root.as_deref().unwrap_or(root);
-    let igniteignore_fut = async { ignite_igniteignore::check_igniteignore_committed(root, igniteignore_check_root, runner, config.igniteignore_enabled).await };
-    let gha_security_fut = async { ignite_gha_security::check_gha_security(root, runner, &config.gha_security).await };
+    let igniteignore_fut = async {
+        with_timeout_or("igniteignore", log, ignite_igniteignore::check_igniteignore_committed(root, igniteignore_check_root, runner, config.igniteignore_enabled), || ignite_igniteignore::IgniteIgnoreResult {
+            findings: vec![],
+            engine: "error",
+        })
+        .await
+    };
+    let gha_security_fut = async { with_timeout_or("ghaSecurity", log, ignite_gha_security::check_gha_security(root, runner, &config.gha_security), || ignite_gha_security::GhaSecurityResult { findings: vec![], engine: "error" }).await };
 
     // Every future below this point wraps a genuinely fallible check
     // (`std::io::Result<T>`) and must never let that error escape the
@@ -358,8 +388,11 @@ pub async fn run_phase4_checks(
             }
         }
     };
+    // Only reached in full (non-fast) mode — always run the slow trivy image scan here,
+    // regardless of the config default, which stays off for direct/interactive callers.
+    let image_vuln_config = ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig { enabled: true, ..config.container_image_vulnerabilities.clone() };
     let image_vuln_fut = async {
-        match with_timeout("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &config.container_image_vulnerabilities)).await {
+        match with_timeout("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &image_vuln_config)).await {
             Ok(r) => r,
             Err(e) => {
                 log(&format!("✗ imageVulnerabilities failed: {e} — skipping."));
@@ -891,6 +924,57 @@ mod tests {
             output.issues.iter().any(|i| i.category == "secret" && i.file.as_deref() == Some("config.js")),
             "expected gitleaks-only finding to appear in issues: {:?}",
             output.issues
+        );
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn full_mode_forces_gitleaks_history_scan_even_when_config_default_is_off() {
+        let runner = ToolRunner::new(StdHashMap::from([("gitleaks", "gitleaks".to_string())]));
+        if !ignite_secrets::gitleaks_tooling(&runner).await {
+            eprintln!("skipping: gitleaks not installed");
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git").args(args).current_dir(root).status().unwrap();
+            assert!(status.success());
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        fs::write(root.join("config.js"), format!("export const apiKey = '{}';\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "add secret"]);
+        fs::remove_file(root.join("config.js")).unwrap();
+        fs::write(root.join("config.js"), "export const apiKey = 'removed';\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "remove secret"]);
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let mut config = test_config(None);
+        config.secrets.gitleaks_enabled = true;
+        assert!(!config.secrets.gitleaks_scan_history, "test expects the config default to stay off — the orchestrator, not the config, must force this on in full mode");
+
+        let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
+        assert!(
+            output.issues.iter().any(|i| i.category == "secret" && i.file.as_deref() == Some("config.js") && i.tool.as_deref() == Some("gitleaks-history")),
+            "expected a gitleaks-history finding in full mode despite gitleaks_scan_history defaulting to off: {:?}",
+            output.issues
+        );
+
+        let mut fast_config = test_config(None);
+        fast_config.secrets.gitleaks_enabled = true;
+        fast_config.fast = true;
+        let fast_output = run_phase4_checks(root, &runner, &store, &fast_config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
+        assert!(
+            !fast_output.issues.iter().any(|i| i.tool.as_deref() == Some("gitleaks-history")),
+            "fast mode must not run the slow git-history scan: {:?}",
+            fast_output.issues
         );
         ignite_fs_utils::invalidate_walk_cache(root);
     }

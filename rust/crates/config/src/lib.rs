@@ -316,10 +316,12 @@ pub struct GitleaksConfig {
     /// just the current working tree), catching a secret that was
     /// committed then removed in a later commit — the one class of secret
     /// GHAS's own secret-scanning alerts catch that a working-tree-only
-    /// scan structurally cannot. Off by default: it requires a real `.git`
-    /// directory (a no-op on an uploaded ZIP with no git history) and
-    /// costs meaningfully more time than a working-tree scan on a repo
-    /// with a long history.
+    /// scan structurally cannot. Off by default here — it requires a real
+    /// `.git` directory (a no-op on an uploaded ZIP with no git history)
+    /// and costs meaningfully more time than a working-tree scan on a repo
+    /// with a long history — but `phase4-orchestrator::run_phase4_checks`
+    /// forces it on whenever it runs in full (non-`fast`) mode regardless
+    /// of this default, so it only actually stays off for `fast` runs.
     #[serde(default)]
     pub scan_history: bool,
 }
@@ -454,6 +456,10 @@ pub fn is_codeql_review_overdue(last_reviewed_at: Option<&str>, cadence_days: i6
     (now - last).num_days() > cadence_days
 }
 
+/// `enabled: false` here is the default for a direct/interactive scan (a
+/// real image build is expensive); `phase4-orchestrator::run_phase4_checks`
+/// forces this on regardless whenever it runs in full (non-`fast`) mode, so
+/// this default only actually applies to `fast` runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrivyImageConfig {
