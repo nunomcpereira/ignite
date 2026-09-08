@@ -1,9 +1,16 @@
-//! `auto-fix-pr <org/repo> [<org/repo>...] [--apply]` — closes the
-//! Dependabot-parity gap `scheduled-rescan` leaves open: Ignite detects a
-//! vulnerable dependency but never proposes the fix. For each repo, shallow-
-//! clones its default branch, runs the real dependency-vulnerability scan,
-//! resolves each finding's fixed version via OSV.dev, and opens one PR per
-//! safe (non-major, simple-constraint) fix.
+//! `auto-fix-pr <org/repo> [<org/repo>...] [--apply] [--include-routine-updates]`
+//! — closes the Dependabot-parity gap `scheduled-rescan` leaves open:
+//! Ignite detects a vulnerable dependency but never proposes the fix. For
+//! each repo, shallow-clones its default branch, runs the real
+//! dependency-vulnerability scan, resolves each finding's fixed version
+//! via OSV.dev, and opens one PR per safe (non-major, simple-constraint)
+//! fix.
+//!
+//! `--include-routine-updates` additionally proposes Dependabot's other
+//! half — non-vulnerability version-currency bumps to each dependency's
+//! latest stable release (`discover_routine_update_candidates`). Off by
+//! default: unlike a security fix, a routine bump has no urgency
+//! justifying opening PRs an operator didn't ask for.
 //!
 //! **Dry-run by default**, same convention as
 //! `enforce-gate-branch-protection`: without `--apply` this clones and
@@ -11,7 +18,7 @@
 //! which branches/PRs it would create — never pushes or opens anything.
 //! Pass `--apply` to actually push branches and open PRs.
 
-use ignite_auto_fix_pr::{apply_fix, discover_fix_candidates};
+use ignite_auto_fix_pr::{apply_fix, discover_fix_candidates, discover_routine_update_candidates};
 use ignite_deps_dev_client::DepsDevClient;
 use ignite_github_api::{parse_org_repo, resolve_server_github_token, GithubApi};
 use ignite_tool_runner::ToolRunner;
@@ -20,22 +27,25 @@ use std::collections::HashMap;
 struct ParsedArgs {
     repos: Vec<(String, String)>,
     apply: bool,
+    include_routine_updates: bool,
 }
 
 fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
     let mut repos = Vec::new();
     let mut apply = false;
+    let mut include_routine_updates = false;
     for arg in raw {
         match arg.as_str() {
             "--apply" => apply = true,
+            "--include-routine-updates" => include_routine_updates = true,
             other if other.starts_with("--") => return Err(format!("Unknown flag: {other}")),
             other => repos.push(parse_org_repo(other)?),
         }
     }
     if repos.is_empty() {
-        return Err("Usage: auto-fix-pr <org/repo> [<org/repo>...] [--apply]".to_string());
+        return Err("Usage: auto-fix-pr <org/repo> [<org/repo>...] [--apply] [--include-routine-updates]".to_string());
     }
-    Ok(ParsedArgs { repos, apply })
+    Ok(ParsedArgs { repos, apply, include_routine_updates })
 }
 
 #[tokio::main]
@@ -91,9 +101,12 @@ async fn main() {
             continue;
         }
 
-        let candidates = discover_fix_candidates(&clone_dir, &deps_client, &http).await;
+        let mut candidates = discover_fix_candidates(&clone_dir, &deps_client, &http).await;
+        if parsed.include_routine_updates {
+            candidates.extend(discover_routine_update_candidates(&clone_dir, &deps_client).await);
+        }
         if candidates.is_empty() {
-            println!("  no fixable dependency-vulnerability findings.");
+            println!("  no fixable dependency-vulnerability findings{}.", if parsed.include_routine_updates { " or routine updates" } else { "" });
             continue;
         }
         println!("  {} fix candidate(s) found.", candidates.len());

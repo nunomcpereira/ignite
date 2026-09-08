@@ -43,6 +43,20 @@ use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+/// Which discovery path produced a [`FixCandidate`] — drives wording in
+/// `pr_title_for`/`pr_body_for` (an advisory-driven fix cites the CVE/GHSA
+/// and OSV.dev; a routine update cites "latest available release")
+/// but nothing about `apply_fix`'s actual mechanics differs between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FixKind {
+    /// Driven by a known advisory (`discover_fix_candidates` / OSV.dev).
+    Vulnerability,
+    /// Dependabot's other half — no known vulnerability, just proposing
+    /// the latest available non-major release (`discover_routine_update_candidates`).
+    RoutineUpdate,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FixCandidate {
     pub manifest_file: String,
@@ -52,11 +66,13 @@ pub struct FixCandidate {
     pub current_range: String,
     pub resolved_version: Option<String>,
     pub fixed_version: String,
+    /// Empty for `FixKind::RoutineUpdate` — there's no advisory driving it.
     pub advisory_id: String,
     pub summary: String,
     /// Fixed version crosses a semver major from the resolved installed
     /// version — never auto-applied, see the module doc.
     pub major_bump: bool,
+    pub kind: FixKind,
 }
 
 /// `ignite-studio-manifests`' ecosystem tag -> OSV.dev's own ecosystem
@@ -200,8 +216,79 @@ pub async fn discover_fix_candidates(root: &Path, deps_client: &DepsDevClient, h
                     advisory_id,
                     summary,
                     major_bump,
+                    kind: FixKind::Vulnerability,
                 });
             }
+        }
+    }
+    candidates
+}
+
+/// Highest parseable, non-prerelease (no `-` suffix, e.g. `1.2.3-rc.1`)
+/// semver in `versions` — deps.dev's version list isn't guaranteed sorted,
+/// and Dependabot's own default posture for routine version updates
+/// (unlike security updates, which must take whatever fixed version an
+/// advisory names) is to never propose a pre-release.
+fn latest_stable_version(versions: &[String]) -> Option<String> {
+    versions
+        .iter()
+        .filter(|v| !v.contains('-'))
+        .filter_map(|v| parse_semver(v).map(|parsed| (parsed, v.clone())))
+        .max_by(|a, b| ignite_deps_dev_client::compare_semver(a.0, b.0))
+        .map(|(_, v)| v)
+}
+
+/// Dependabot's other half of dependency automation: propose bumping
+/// every manifest dependency to its latest available release, regardless
+/// of whether anything currently flags it vulnerable. Complements
+/// `discover_fix_candidates` rather than replacing it — a dependency can
+/// appear in both lists with different target versions (its OSV fix vs.
+/// its actual latest release); `apply_fix`'s branch-per-(dep,version)
+/// naming means the two never collide, they'd just open two PRs.
+///
+/// Same conservatism as the vulnerability path: only a simple version
+/// constraint is considered (`is_simple_range`), and a fix crossing a
+/// semver major is still returned (so a dry-run plan shows it) but flagged
+/// `major_bump` so `apply_fix` skips it unattended — a routine update is
+/// exactly the case where "the tool decided a major bump was fine" is
+/// least acceptable to ship unreviewed.
+pub async fn discover_routine_update_candidates(root: &Path, deps_client: &DepsDevClient) -> Vec<FixCandidate> {
+    let mut candidates = Vec::new();
+    let Ok(files) = ignite_fs_utils::walk_files(root) else { return candidates };
+
+    for file in files {
+        let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(spec) = ignite_studio_manifests::studio_manifests().iter().find(|m| m.file == base) else { continue };
+        let Ok(content) = std::fs::read_to_string(&file) else { continue };
+        let raw_deps: Vec<ignite_studio_manifests::ManifestDep> = (spec.parse)(&content).into_iter().take(ignite_studio_manifests::STUDIO_MAX_DEPS_PER_MANIFEST).collect();
+        let lockfile_versions = ignite_dependency_license_scan::resolve_lockfile_versions(&file, root, spec.ecosystem);
+        let rel_file = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+
+        for dep in &raw_deps {
+            if !is_simple_range(&dep.version_range) {
+                continue;
+            }
+            let Some(current) = lockfile_versions.get(&dep.name).cloned().or_else(|| ignite_license_classification::best_effort_version(&dep.version_range)) else { continue };
+            let Some(versions) = deps_client.fetch_version_list(spec.system, &dep.name).await else { continue };
+            let Some(latest) = latest_stable_version(&versions) else { continue };
+            if is_non_improving_fix(&current, &latest) {
+                continue;
+            }
+            let Some(line) = ignite_deps_dev_client::find_manifest_dep_line(&content, &dep.name, spec.ecosystem) else { continue };
+            let major_bump = is_major_bump(&current, &latest);
+            candidates.push(FixCandidate {
+                manifest_file: rel_file.clone(),
+                ecosystem: spec.ecosystem,
+                dep_name: dep.name.clone(),
+                dep_line: line,
+                current_range: dep.version_range.clone(),
+                resolved_version: Some(current.clone()),
+                fixed_version: latest.clone(),
+                advisory_id: String::new(),
+                summary: format!("{}@{current} -> {latest} (routine update)", dep.name),
+                major_bump,
+                kind: FixKind::RoutineUpdate,
+            });
         }
     }
     candidates
@@ -216,7 +303,10 @@ pub fn branch_name_for(candidate: &FixCandidate) -> String {
 }
 
 pub fn pr_title_for(candidate: &FixCandidate) -> String {
-    format!("[Ignite auto-fix] bump {} to {} ({})", candidate.dep_name, candidate.fixed_version, candidate.advisory_id)
+    match candidate.kind {
+        FixKind::Vulnerability => format!("[Ignite auto-fix] bump {} to {} ({})", candidate.dep_name, candidate.fixed_version, candidate.advisory_id),
+        FixKind::RoutineUpdate => format!("[Ignite routine update] bump {} to {}", candidate.dep_name, candidate.fixed_version),
+    }
 }
 
 /// `lockfile_status`: `Some(Ok(path))` when the lockfile at `path` was
@@ -229,20 +319,22 @@ pub fn pr_body_for(candidate: &FixCandidate, lockfile_status: Option<Result<&str
         Some(Err(reason)) => format!("- Lockfile: **not** regenerated ({reason}) — this PR's manifest edit alone may not be mergeable if CI enforces a lockfile check; finish the lockfile update locally before merging.\n"),
         None => String::new(),
     };
+    let (intro, fixed_line) = match candidate.kind {
+        FixKind::Vulnerability => (
+            format!("Ignite's scheduled dependency-vulnerability scan flagged **{}@{}** in `{}` for a known advisory.\n\n- Advisory: {}\n", candidate.dep_name, candidate.resolved_version.as_deref().unwrap_or(&candidate.current_range), candidate.manifest_file, candidate.advisory_id),
+            format!("- Fixed version (per OSV.dev): `{}`\n", candidate.fixed_version),
+        ),
+        FixKind::RoutineUpdate => (
+            format!("Ignite's routine dependency-update sweep found a newer release of **{}@{}** in `{}`. No known vulnerability is driving this — it's a routine version-currency update, Dependabot's other half.\n\n", candidate.dep_name, candidate.resolved_version.as_deref().unwrap_or(&candidate.current_range), candidate.manifest_file),
+            format!("- Latest available version: `{}`\n", candidate.fixed_version),
+        ),
+    };
     format!(
-        "Ignite's scheduled dependency-vulnerability scan flagged **{}@{}** in `{}` for a known advisory.\n\n\
-         - Advisory: {}\n\
-         - Fixed version (per OSV.dev): `{}`\n\
-         - Change: `{}` -> `{}`\n\
+        "{intro}{fixed_line}- Change: `{}` -> `{}`\n\
          {lockfile_note}\n\
          Opened automatically by `auto-fix-pr` (dry-run reviewed before `--apply`). \
          Verify the bump doesn't break anything before merging — this is a targeted \
          version-constraint edit, not a full compatibility check.\n",
-        candidate.dep_name,
-        candidate.resolved_version.as_deref().unwrap_or(&candidate.current_range),
-        candidate.manifest_file,
-        candidate.advisory_id,
-        candidate.fixed_version,
         candidate.current_range,
         rewrite_range(&candidate.current_range, &candidate.fixed_version),
     )
@@ -406,9 +498,13 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
     if let Some(lockfile_path) = &lockfile_path {
         add_args.push(lockfile_path.clone());
     }
+    let prefix = match candidate.kind {
+        FixKind::Vulnerability => format!("fix({}): bump {} to {} ({})", candidate.ecosystem, candidate.dep_name, candidate.fixed_version, candidate.advisory_id),
+        FixKind::RoutineUpdate => format!("chore({}): bump {} to {}", candidate.ecosystem, candidate.dep_name, candidate.fixed_version),
+    };
     let commit_message = match &lockfile_warning {
-        Some(w) => format!("fix({}): bump {} to {} ({})\n\nLockfile regeneration skipped: {w}", candidate.ecosystem, candidate.dep_name, candidate.fixed_version, candidate.advisory_id),
-        None => format!("fix({}): bump {} to {} ({})", candidate.ecosystem, candidate.dep_name, candidate.fixed_version, candidate.advisory_id),
+        Some(w) => format!("{prefix}\n\nLockfile regeneration skipped: {w}"),
+        None => prefix,
     };
     let commit_steps: Vec<Vec<String>> = vec![
         add_args,
@@ -537,6 +633,7 @@ mod tests {
             advisory_id: "GHSA-xxxx".to_string(),
             summary: String::new(),
             major_bump: false,
+            kind: FixKind::Vulnerability,
         };
         let branch = branch_name_for(&candidate);
         assert_eq!(branch, "ignite/autofix/npm--scope-pkg-name-1.2.0");
@@ -555,6 +652,7 @@ mod tests {
             advisory_id: "GHSA-xxxx".to_string(),
             summary: String::new(),
             major_bump: false,
+            kind: FixKind::Vulnerability,
         }
     }
 
@@ -637,5 +735,47 @@ mod tests {
     fn pr_body_for_omits_lockfile_section_when_not_applicable() {
         let body = pr_body_for(&npm_candidate(), None);
         assert!(!body.contains("Lockfile"));
+    }
+
+    #[test]
+    fn latest_stable_version_picks_highest_semver_and_skips_prereleases() {
+        let versions = vec!["1.0.0".to_string(), "2.1.0-rc.1".to_string(), "1.9.0".to_string(), "2.0.0".to_string(), "not-semver".to_string()];
+        assert_eq!(latest_stable_version(&versions), Some("2.0.0".to_string()));
+    }
+
+    #[test]
+    fn latest_stable_version_empty_when_only_prereleases_or_unparseable() {
+        let versions = vec!["1.0.0-beta".to_string(), "nope".to_string()];
+        assert_eq!(latest_stable_version(&versions), None);
+    }
+
+    #[test]
+    fn routine_update_pr_title_and_body_never_mention_an_advisory() {
+        let mut candidate = npm_candidate();
+        candidate.advisory_id = String::new();
+        candidate.kind = FixKind::RoutineUpdate;
+        let title = pr_title_for(&candidate);
+        assert!(!title.contains("()"), "empty advisory parens leaked into title: {title}");
+        assert!(title.contains("routine update") || title.to_lowercase().contains("routine"));
+        let body = pr_body_for(&candidate, None);
+        assert!(body.contains("routine version-currency update"));
+        assert!(!body.contains("Advisory:"));
+    }
+
+    #[tokio::test]
+    async fn discover_routine_update_candidates_finds_a_bumpable_npm_dep() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), r#"{"dependencies": {"left-pad": "1.0.0"}}"#).unwrap();
+        let deps_client = DepsDevClient::new();
+        let candidates = discover_routine_update_candidates(dir.path(), &deps_client).await;
+        if candidates.is_empty() {
+            eprintln!("skipping: could not reach deps.dev (network unavailable in this environment) or left-pad has no newer stable release");
+            return;
+        }
+        let c = &candidates[0];
+        assert_eq!(c.dep_name, "left-pad");
+        assert_eq!(c.kind, FixKind::RoutineUpdate);
+        assert!(c.advisory_id.is_empty());
+        assert_ne!(c.fixed_version, "1.0.0");
     }
 }

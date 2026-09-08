@@ -33,7 +33,7 @@ use std::path::Path;
 /// per-package lockfiles), then at the project root (single root
 /// lockfile) — only the first lockfile that both exists and parses to a
 /// non-empty map is used.
-fn resolve_lockfile_versions(manifest_file: &Path, root: &Path, ecosystem: &str) -> HashMap<String, String> {
+pub fn resolve_lockfile_versions(manifest_file: &Path, root: &Path, ecosystem: &str) -> HashMap<String, String> {
     let dir = manifest_file.parent().unwrap_or(root);
     for spec in lockfile_specs().iter().filter(|s| s.ecosystem == ecosystem) {
         for candidate_dir in [dir, root] {
