@@ -15,7 +15,7 @@
 # - recomputed on every push, not a stable id. Use the `ID:` line to
 # refer to a specific finding.
 
-# Scanned against commit: 257d9edb71721cc845692e94851fc24271d58ddc (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
+# Scanned against commit: 52d523d0d2c5c63a273bf67bf28f22420d505aff (working tree at push time - findings/justifications below reflect this commit's code, not necessarily what ends up pushed if the tree changes after)
 
 ID: secret::rust/crates/malicious-dependencies/src/lib.rs::193
 # Issue #1
@@ -173,9 +173,9 @@ ID: secret::rust/crates/secrets/src/lib.rs::930
 # Code: assert_eq!(matches[1].matched_text, "sk_live_zzzzzz9999999999");
 Acknowledge: Same fabricated Stripe-format fixture literal as the two entries above, asserted as the second expected match text in the same test - not a real credential.
 
-ID: codeql-sast::public/index.html::842::js/xss-through-dom
+ID: codeql-sast::public/index.html::841::js/xss-through-dom
 # Issue #24
 # [ERROR] codeql-sast - DOM text is reinterpreted as HTML without escaping meta-characters.
-#   public/index.html:842
+#   public/index.html:841
 # Code: document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n-html')); });
-Acknowledge: Narrowed replacement for the previously-acknowledged finding at the old [data-i18n] innerHTML call (now textContent - see the applyStaticTranslations doc comment above it). Only elements explicitly opted in via data-i18n-html still use innerHTML, for the handful of translation keys whose copy deliberately carries inline markup (bold spans in upload.dropSubtitle, a line break in footer.note, etc). t()'s only inputs remain (1) the fixed attribute-name string 'data-i18n-html' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. No untrusted data reaches this call. (auto-carried-forward from codeql-sast::public/index.html::781::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::813::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::821::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::822::js/xss-through-dom - pure line-number drift, flagged code unchanged)
+Acknowledge: Narrowed replacement for the previously-acknowledged finding at the old [data-i18n] innerHTML call (now textContent - see the applyStaticTranslations doc comment above it). Only elements explicitly opted in via data-i18n-html still use innerHTML, for the handful of translation keys whose copy deliberately carries inline markup (bold spans in upload.dropSubtitle, a line break in footer.note, etc). t()'s only inputs remain (1) the fixed attribute-name string 'data-i18n-html' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. No untrusted data reaches this call. (auto-carried-forward from codeql-sast::public/index.html::781::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::813::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::821::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::822::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::842::js/xss-through-dom - pure line-number drift, flagged code unchanged)
