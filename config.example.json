@@ -133,6 +133,10 @@
       "enabled": false,
       "timeoutMs": 5000
     },
+    "pushProtection": {
+      "inboundWebhookSecret": null,
+      "autoFileIssue": false
+    },
     "codeql": {
       "enabled": true,
       "binary": "codeql",

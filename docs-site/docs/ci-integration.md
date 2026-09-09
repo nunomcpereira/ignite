@@ -308,6 +308,34 @@ config.json toggle for this — presence of
 `CODE_SCANNING_INBOUND_WEBHOOK_SECRET` is the on/off switch, since the
 secret itself has to be set for the endpoint to do anything either way.
 
+## Push-protection bypass webhook/remediation
+
+GitHub's secret push-protection can block a commit at pre-receive time,
+but a developer can still push it anyway after giving a justification
+("used in tests", "false positive", ...). That's a knowingly-pushed live
+secret — worth someone actually seeing, not just a line in GitHub's own
+Security tab nobody's watching. GitHub can notify the org of a bypass via
+a `secret_scanning_alert` webhook delivery carrying
+`push_protection_bypassed: true`.
+
+`POST /api/webhooks/github/push-protection` receives it: register a
+webhook on the repo (or org) for `secret_scanning_alert` events pointing
+at that URL, set a shared secret, and set the same value as
+`PUSH_PROTECTION_INBOUND_WEBHOOK_SECRET` on the Ignite server — same
+`X-Hub-Signature-256`/404-until-configured posture as the inbound
+code-scanning webhook above. Every delivery that isn't actually a bypass
+is acknowledged and ignored; a plain (non-bypassed) alert is already the
+outbound SARIF path's concern.
+
+A real bypass always emits a `critical`-severity audit-log event
+(`push_protection.bypassed`) — actor, secret type, stated
+reason/comment, alert URL — so a SIEM sink sees it regardless of any
+other setting. Set `security.pushProtection.autoFileIssue: true`
+(`PUSH_PROTECTION_AUTO_FILE_ISSUE=true`) to additionally have Ignite
+file a real GitHub issue summarizing the bypass — off by default, since
+reaching out and creating something in GitHub unattended is an
+operator's explicit call to make. Both are best-effort/non-fatal.
+
 ## Keep GitHub's secret push-protection even without full GHAS
 
 If you're dropping GitHub Advanced Security in favor of Ignite's gate

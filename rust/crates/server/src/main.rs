@@ -45,6 +45,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::reports::router())
         .merge(routes::github_pr_status::router())
         .merge(routes::code_scanning_webhook::router())
+        .merge(routes::push_protection_webhook::router())
         .merge(routes::issues::router())
         .merge(routes::history::router())
         .merge(routes::onboarded_repos::router())

@@ -640,6 +640,31 @@ impl Default for SecretVerificationConfig {
     fn default() -> Self { SecretVerificationConfig { enabled: false, timeout_ms: 5_000 } }
 }
 
+/// GHAS-parity inbound sync for GitHub's own secret **push-protection**
+/// bypass — when a developer pushes a commit GitHub's pre-receive check
+/// flagged as containing a secret, GitHub lets them push anyway with a
+/// justification ("used in tests", "false positive", ...) and can notify
+/// the org via a `secret_scanning_alert` webhook carrying
+/// `push_protection_bypassed: true`. A bypass is a live, knowingly-pushed
+/// secret — the class of finding this endpoint exists to make sure a
+/// human actually sees, not silently vanish into a webhook nobody's
+/// watching. `inbound_webhook_secret` (`None` by default, same posture as
+/// `CodeScanningConfig`'s) gates the endpoint the same way — unset means
+/// `POST /api/webhooks/github/push-protection` always 404s.
+/// `auto_file_issue` (off by default, same posture as
+/// `SecretVerificationConfig`) additionally opens a real GitHub issue via
+/// `gh_create_issue` summarizing the bypass — an operator's explicit
+/// call to make, not a default this should silently do on an
+/// unattended webhook delivery.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PushProtectionConfig {
+    #[serde(default)]
+    pub inbound_webhook_secret: Option<String>,
+    #[serde(default)]
+    pub auto_file_issue: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
@@ -664,6 +689,7 @@ pub struct SecurityConfig {
     pub dependency_review: DependencyReviewConfig,
     pub pr_suggestions: PrSuggestionsConfig,
     pub secret_verification: SecretVerificationConfig,
+    pub push_protection: PushProtectionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1020,6 +1046,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("DEPENDENCY_REVIEW_ENABLED") { merged.security.dependency_review.enabled = v; }
     if let Some(v) = env_bool("PR_SUGGESTIONS_ENABLED") { merged.security.pr_suggestions.enabled = v; }
     if let Some(v) = env_bool("SECRET_VERIFICATION_ENABLED") { merged.security.secret_verification.enabled = v; }
+    if let Some(v) = env_str("PUSH_PROTECTION_INBOUND_WEBHOOK_SECRET") { merged.security.push_protection.inbound_webhook_secret = Some(v); }
+    if let Some(v) = env_bool("PUSH_PROTECTION_AUTO_FILE_ISSUE") { merged.security.push_protection.auto_file_issue = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }

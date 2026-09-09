@@ -3,6 +3,7 @@ pub mod baseline;
 pub mod campaigns;
 pub mod compliance;
 pub mod custom_secret_patterns;
+pub mod push_protection_webhook;
 pub mod code_scanning_webhook;
 pub mod config;
 pub mod dependencies;
