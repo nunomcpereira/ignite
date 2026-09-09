@@ -236,10 +236,25 @@ pub async fn run_phase4_checks(
         let mut kinds = Vec::with_capacity(secrets_result.findings.len());
         for f in &secrets_result.findings {
             let line_text = f.code.as_ref().and_then(|s| s.lines.iter().find(|l| l.number == s.highlight_line)).map(|l| l.text.as_str());
-            let outcome = match line_text.and_then(|lt| ignite_secret_verifier::extract_secret_value(&f.kind, lt)) {
+            let mut outcome = match line_text.and_then(|lt| ignite_secret_verifier::extract_secret_value(&f.kind, lt)) {
                 Some(value) => ignite_secret_verifier::verify_secret(&http, &config.secret_verification, &f.kind, &value).await,
                 None => ignite_secret_verifier::VerificationOutcome::Unsupported,
             };
+            // AWS needs both credential halves together (see
+            // `ignite_secret_verifier`'s own module doc), which may not
+            // both sit on the one highlighted line — fall back to the
+            // finding's full multi-line snippet. `verify_secret_pair`
+            // itself already no-ops (`Unsupported`) for any non-AWS kind
+            // or an unpaired snippet, so this is safe to always attempt
+            // whenever the single-value path came back empty.
+            if outcome == ignite_secret_verifier::VerificationOutcome::Unsupported {
+                if let Some(snippet) = &f.code {
+                    let full_text = snippet.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+                    if let Some(pair) = ignite_secret_verifier::extract_aws_credential_pair(&full_text) {
+                        outcome = ignite_secret_verifier::verify_secret_pair(&http, &config.secret_verification, &f.kind, &pair).await;
+                    }
+                }
+            }
             if outcome == ignite_secret_verifier::VerificationOutcome::Live {
                 log(&format!("✗ VERIFIED LIVE credential: {} at {}:{}", f.kind, f.file, f.line));
                 kinds.push(format!("{} — VERIFIED LIVE", f.kind));
