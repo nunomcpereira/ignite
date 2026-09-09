@@ -13,7 +13,13 @@ mod dependency_diff;
 pub use dependency_diff::{diff_dependency_scans, render_dependency_diff_comment, DependencyChange, DependencyChangeKind, DEPENDENCY_REVIEW_MARKER};
 
 mod reachability;
-pub use reachability::{check_go_reachability, extract_go_affected_imports, AffectedImport, GoReachability};
+pub use reachability::{check_go_reachability, extract_go_affected_imports, scan_go_project, AffectedImport, GoReachability};
+
+mod python_imports;
+pub use python_imports::{collect_python_imported_modules, expected_python_import_name};
+
+mod cargo_imports;
+pub use cargo_imports::{collect_used_rust_crates, expected_rust_module_name};
 
 use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry_license, find_manifest_dep_line, resolve_best_published_version, resolve_see_license_in_file, DepsDevClient};
 use ignite_fs_utils::{build_snippet, walk_files, SnippetOptions};
@@ -999,6 +1005,20 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
     // can all make a genuinely-used package look unimported).
     let imported_npm_packages: Option<HashSet<String>> =
         manifests.iter().any(|m| m.ecosystem == "npm").then(|| ignite_module_graph::build_module_graph(root).map(|g| ignite_module_graph::collect_imported_packages(&g)).unwrap_or_default());
+    // Same import-level signal, Python-specific (see `python_imports`'s
+    // own doc for why this needs its own alias-aware matching rather
+    // than reusing the npm path's exact-name comparison).
+    let imported_python_modules: Option<HashSet<String>> = manifests.iter().any(|m| m.ecosystem == "pypi").then(|| collect_python_imported_modules(root));
+    // Computed once per scan (not once per Go finding — see
+    // `scan_go_project`'s own doc for why that distinction matters):
+    // walks and parses every `.go` file's imports a single time,
+    // regardless of how many distinct Go advisories with symbol data
+    // this batch turns out to have.
+    let go_project = manifests.iter().any(|m| m.ecosystem == "go").then(|| scan_go_project(root));
+    // Same import-level signal, Rust-specific (see `cargo_imports`'s own
+    // doc for why this scans for `crate_name::` path prefixes anywhere
+    // in the source, not just `use` declarations).
+    let used_rust_crates: Option<HashSet<String>> = manifests.iter().any(|m| m.ecosystem == "cargo").then(|| collect_used_rust_crates(root));
 
     for manifest in manifests {
         for dep in &manifest.dependencies {
@@ -1045,6 +1065,20 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
                         }
                     }
                 }
+                if manifest.ecosystem == "pypi" {
+                    if let Some(imported) = &imported_python_modules {
+                        if !imported.contains(&expected_python_import_name(&dep.name)) {
+                            summary.push_str(" [not directly imported in project source]");
+                        }
+                    }
+                }
+                if manifest.ecosystem == "cargo" {
+                    if let Some(used) = &used_rust_crates {
+                        if !used.contains(&expected_rust_module_name(&dep.name)) {
+                            summary.push_str(" [not directly imported in project source]");
+                        }
+                    }
+                }
                 // Real function-level reachability for Go (see
                 // `reachability`'s own doc for why this only exists for
                 // Go): when the advisory names the exact vulnerable
@@ -1054,9 +1088,11 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
                 // can tell "imports the package but never calls the
                 // vulnerable function" apart from "doesn't import it at
                 // all". Still annotation-only, same conservative posture.
-                if check_go_reachability(root, &vuln.affected_go_imports) == GoReachability::NotCalled {
-                    let symbols: Vec<&str> = vuln.affected_go_imports.iter().flat_map(|imp| imp.symbols.iter().map(String::as_str)).collect();
-                    summary.push_str(&format!(" [vulnerable function(s) not called: {}]", symbols.join(", ")));
+                if let Some(project) = &go_project {
+                    if check_go_reachability(project, &vuln.affected_go_imports) == GoReachability::NotCalled {
+                        let symbols: Vec<&str> = vuln.affected_go_imports.iter().flat_map(|imp| imp.symbols.iter().map(String::as_str)).collect();
+                        summary.push_str(&format!(" [vulnerable function(s) not called: {}]", symbols.join(", ")));
+                    }
                 }
 
                 // Every id this one advisory carries, sorted into its
@@ -1261,16 +1297,113 @@ mod tests {
     }
 
     #[test]
-    fn collect_dependency_vulnerability_issues_never_flags_a_non_npm_ecosystem() {
-        // No JS/TS reachability data exists for pypi/cargo/go/maven —
-        // must never even attempt (let alone falsely append) the
-        // reachability annotation for a non-npm finding.
+    fn collect_dependency_vulnerability_issues_never_flags_an_uncovered_ecosystem() {
+        // No reachability data exists for maven — must never even attempt
+        // (let alone falsely append) the reachability annotation for it.
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("requirements.txt"), "starlette==0.35.1\n").unwrap();
-        let mut manifest = npm_manifest_for("starlette");
-        manifest.ecosystem = "pypi";
-        manifest.file = "requirements.txt".to_string();
+        std::fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
+        let mut manifest = npm_manifest_for("commons-io");
+        manifest.ecosystem = "maven";
+        manifest.file = "pom.xml".to_string();
         let issues = collect_dependency_vulnerability_issues(dir.path(), &[manifest]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("not directly imported"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    fn cargo_manifest_for(dep_name: &str) -> VulnScanManifest {
+        VulnScanManifest {
+            file: "Cargo.toml".to_string(),
+            ecosystem: "cargo",
+            dependencies: vec![VulnScanDependency {
+                name: dep_name.to_string(),
+                version_range: "1".to_string(),
+                version: Some("1.0.0".to_string()),
+                line: Some(1),
+                vulnerabilities: vec![VulnFinding { id: Some("GHSA-xxxx-yyyy-zzzz".to_string()), title: Some("some vulnerability".to_string()), aliases: vec![], cvss3_score: None, severity: "error", url: None, affected_go_imports: vec![] }],
+                note: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_flags_a_cargo_crate_not_used_anywhere() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[dependencies]\nleft-pad = \"1\"\n").unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() { serde_json::to_string(&()).unwrap(); }\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[cargo_manifest_for("left-pad")]);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].summary.contains("[not directly imported in project source]"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_does_not_flag_a_cargo_crate_used_via_fully_qualified_call() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[dependencies]\nserde_json = \"1\"\n").unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() { serde_json::to_string(&()).unwrap(); }\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[cargo_manifest_for("serde_json")]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("not directly imported"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_resolves_cargo_hyphenated_crate_names() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[dependencies]\ntokio-util = \"0.7\"\n").unwrap();
+        std::fs::write(dir.path().join("main.rs"), "use tokio_util::sync::CancellationToken;\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[cargo_manifest_for("tokio-util")]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("not directly imported"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    fn pypi_manifest_for(dep_name: &str) -> VulnScanManifest {
+        VulnScanManifest {
+            file: "requirements.txt".to_string(),
+            ecosystem: "pypi",
+            dependencies: vec![VulnScanDependency {
+                name: dep_name.to_string(),
+                version_range: "1.0.0".to_string(),
+                version: Some("1.0.0".to_string()),
+                line: Some(1),
+                vulnerabilities: vec![VulnFinding { id: Some("GHSA-xxxx-yyyy-zzzz".to_string()), title: Some("some vulnerability".to_string()), aliases: vec![], cvss3_score: None, severity: "error", url: None, affected_go_imports: vec![] }],
+                note: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_flags_a_pypi_dependency_not_imported_anywhere() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("requirements.txt"), "left-pad-py==1.0.0\n").unwrap();
+        std::fs::write(dir.path().join("app.py"), "import requests\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[pypi_manifest_for("left-pad-py")]);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].summary.contains("[not directly imported in project source]"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_does_not_flag_a_pypi_dependency_that_is_imported() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("requirements.txt"), "requests==2.31.0\n").unwrap();
+        std::fs::write(dir.path().join("app.py"), "import requests\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[pypi_manifest_for("requests")]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("not directly imported"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_resolves_pypi_name_aliases() {
+        // PyYAML's package name differs from its import name (`yaml`) —
+        // must match via the alias table, not a literal name comparison.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("requirements.txt"), "PyYAML==6.0\n").unwrap();
+        std::fs::write(dir.path().join("app.py"), "import yaml\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[pypi_manifest_for("PyYAML")]);
         assert_eq!(issues.len(), 1);
         assert!(!issues[0].summary.contains("not directly imported"), "{}", issues[0].summary);
         ignite_fs_utils::invalidate_walk_cache(dir.path());

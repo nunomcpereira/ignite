@@ -110,31 +110,61 @@ pub enum GoReachability {
     Called,
 }
 
-/// Checks every `.go` file under `root` for a call to any symbol in
-/// `affected` — matched against the exact import path each symbol
-/// belongs to (alias/blank/dot imports all handled), not a bare name
-/// match anywhere in the file, so a same-named local function or an
-/// unrelated package's identically-named export never counts as a false
-/// "called" match.
-pub fn check_go_reachability(root: &Path, affected: &[AffectedImport]) -> GoReachability {
+/// One `.go` file's content plus its already-parsed imports — computed
+/// once per project by [`scan_go_project`] and reused across every
+/// finding [`check_go_reachability`] is asked about, rather than
+/// re-walking and re-reading every `.go` file per finding. A project
+/// with several distinct Go advisories carrying symbol data would
+/// otherwise pay for the same file walk once per advisory instead of
+/// once per scan.
+struct GoFile {
+    content: String,
+    imports: Vec<(GoImportAlias, String)>,
+}
+
+/// Walks and parses every `.go` file under `root` exactly once — the
+/// result feeds every [`check_go_reachability`] call for the rest of
+/// this scan. Cheap to call even when the project turns out to have no
+/// Go advisory with symbol data at all (the common case): a caller only
+/// pays for this when at least one `go`-ecosystem manifest is present in
+/// the batch, same gating `collect_dependency_vulnerability_issues`
+/// already applies to the npm/Python import scans.
+pub struct GoProjectSource(Vec<GoFile>);
+
+pub fn scan_go_project(root: &Path) -> GoProjectSource {
+    let Ok(files) = ignite_fs_utils::walk_files(root) else { return GoProjectSource(Vec::new()) };
+    let parsed = files
+        .into_iter()
+        .filter(|f| f.extension().is_some_and(|e| e == "go"))
+        .filter_map(|f| std::fs::read_to_string(&f).ok())
+        .map(|content| {
+            let imports = parse_go_imports(&content);
+            GoFile { content, imports }
+        })
+        .collect();
+    GoProjectSource(parsed)
+}
+
+/// Checks `project` (from [`scan_go_project`], computed once per scan)
+/// for a call to any symbol in `affected` — matched against the exact
+/// import path each symbol belongs to (alias/blank/dot imports all
+/// handled), not a bare name match anywhere in the file, so a same-named
+/// local function or an unrelated package's identically-named export
+/// never counts as a false "called" match.
+pub fn check_go_reachability(project: &GoProjectSource, affected: &[AffectedImport]) -> GoReachability {
     if affected.is_empty() {
         return GoReachability::Unknown;
     }
-    let Ok(files) = ignite_fs_utils::walk_files(root) else { return GoReachability::Unknown };
-    let go_files = files.into_iter().filter(|f| f.extension().is_some_and(|e| e == "go"));
-
-    for file in go_files {
-        let Ok(content) = std::fs::read_to_string(&file) else { continue };
-        let imports = parse_go_imports(&content);
+    for file in &project.0 {
         for target in affected {
-            let Some((alias, _)) = imports.iter().find(|(_, path)| path == &target.path) else { continue };
+            let Some((alias, _)) = file.imports.iter().find(|(_, path)| path == &target.path) else { continue };
             for symbol in &target.symbols {
                 let pattern = match alias {
                     GoImportAlias::Blank => continue,
                     GoImportAlias::Dot => format!(r"\b{}\s*\(", regex::escape(symbol)),
                     GoImportAlias::Named(local) => format!(r"\b{}\.{}\s*\(", regex::escape(local), regex::escape(symbol)),
                 };
-                if Regex::new(&pattern).map(|re| re.is_match(&content)).unwrap_or(false) {
+                if Regex::new(&pattern).map(|re| re.is_match(&file.content)).unwrap_or(false) {
                     return GoReachability::Called;
                 }
             }
@@ -206,7 +236,8 @@ mod tests {
     #[test]
     fn check_go_reachability_unknown_without_affected_symbols() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(check_go_reachability(dir.path(), &[]), GoReachability::Unknown);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &[]), GoReachability::Unknown);
     }
 
     #[test]
@@ -214,7 +245,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\n\nfunc main() {}\n").unwrap();
         let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
-        assert_eq!(check_go_reachability(dir.path(), &affected), GoReachability::NotCalled);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &affected), GoReachability::NotCalled);
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
@@ -223,7 +255,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\n\nimport \"golang.org/x/text/language\"\n\nvar _ language.Tag\n").unwrap();
         let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
-        assert_eq!(check_go_reachability(dir.path(), &affected), GoReachability::NotCalled);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &affected), GoReachability::NotCalled);
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
@@ -232,7 +265,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\n\nimport \"golang.org/x/text/language\"\n\nfunc main() { language.Parse(\"en\") }\n").unwrap();
         let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
-        assert_eq!(check_go_reachability(dir.path(), &affected), GoReachability::Called);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &affected), GoReachability::Called);
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
@@ -241,7 +275,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\n\nimport lang \"golang.org/x/text/language\"\n\nfunc main() { lang.Parse(\"en\") }\n").unwrap();
         let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
-        assert_eq!(check_go_reachability(dir.path(), &affected), GoReachability::Called);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &affected), GoReachability::Called);
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
@@ -250,7 +285,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\n\nimport . \"golang.org/x/text/language\"\n\nfunc main() { Parse(\"en\") }\n").unwrap();
         let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
-        assert_eq!(check_go_reachability(dir.path(), &affected), GoReachability::Called);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &affected), GoReachability::Called);
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
@@ -259,7 +295,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\n\nimport _ \"golang.org/x/text/language\"\n").unwrap();
         let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
-        assert_eq!(check_go_reachability(dir.path(), &affected), GoReachability::NotCalled);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &affected), GoReachability::NotCalled);
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
@@ -270,7 +307,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\n\nimport \"golang.org/x/text/language\"\nimport parser \"some/other/parser\"\n\nfunc main() {\n\tparser.Parse(\"x\")\n\tvar _ = language.Tag{}\n}\n").unwrap();
         let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
-        assert_eq!(check_go_reachability(dir.path(), &affected), GoReachability::NotCalled);
+        let project = scan_go_project(dir.path());
+        assert_eq!(check_go_reachability(&project, &affected), GoReachability::NotCalled);
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 }
