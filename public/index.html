@@ -74,32 +74,46 @@
        (a well-established technique — the same one browser "force dark"
        extensions use) and counter-invert (double-invert = original) the
        handful of surfaces that are already deliberately dark and must stay
-       exactly as authored regardless of theme: the terminal log panels,
-       whose ✓/✗/⚠ line colors are semantic and must not flip. There are no
-       <img> elements anywhere in this app, so nothing photographic is at
-       risk of inverting oddly. */
+       exactly as authored regardless of theme: the terminal-style log
+       panels (`.terminal`, `#studioOutputPanel`), whose ✓/✗/⚠ line colors
+       are semantic and must not flip. There are no <img> elements anywhere
+       in this app, so nothing photographic is at risk of inverting oddly.
+
+       `color-scheme: light` on every inverted surface matters just as much
+       as the filter itself: `html`'s own `color-scheme: dark` (set so the
+       browser's native chrome — scrollbars, etc. — matches) otherwise
+       inherits into every native form control (<select>, <input>) under
+       body too, so a plain unstyled <select> renders with the *browser's*
+       dark-native theme (dark bg, light text) — then this filter inverts
+       THAT to light-on-light, which is exactly the invisible-dropdown-text
+       bug this comment used to not mention. Forcing `color-scheme: light`
+       everywhere the filter is applied makes every native control render
+       light first, so the filter is the only thing turning it dark, same
+       as every other element here. */
     html[data-theme="dark"] { background: #0f172a; color-scheme: dark; }
-    html[data-theme="dark"] body { background: #fff; filter: invert(1) hue-rotate(180deg); }
+    html[data-theme="dark"] body { background: #fff; filter: invert(1) hue-rotate(180deg); color-scheme: light; }
     html[data-theme="dark"] .terminal { filter: invert(1) hue-rotate(180deg); }
     #themeToggleBtn svg { transition: transform .2s ease; }
 
-    /* Ignite Studio has its own deliberate light/dark contrast already (a
-       dark navy header with colorful action buttons, over white content
-       panels) — the blanket body invert above flips the *already-dark*
-       header into a washed-out pastel mess, since inverting something
-       that's already dark makes it light. Studio's outer box gets a
-       second invert (cancels the body's = back to its original, authored
-       colors — header stays dark navy, buttons stay saturated), then the
-       specific light panels (banners, summary bar, and the tree/code/
-       issue-detail row) get a *third* invert each, which nets out to a
-       single inversion for exactly those — real dark tones, same contrast
-       shape as light mode, without touching the header. */
+    /* Ignite Studio's outer box gets a second invert (cancels the body's =
+       back to its original, authored colors) so its own deliberately-dark
+       surfaces — right now just the output/terminal panel — stay exactly
+       as authored. Everything else genuinely light-authored (the header
+       bar, banners, summary bar, and the tree/code/issue-detail row) gets
+       a *third* invert each, netting to a single inversion — real dark
+       tones, same contrast shape as light mode. `studioHeaderBar` is
+       explicitly light-authored (`bg-white`), not the "already dark"
+       exception a stale version of this comment used to claim — it needs
+       the third invert like everything else, not to be left at the
+       second layer's cancelled-out light state. */
     html[data-theme="dark"] #studioView > div { filter: invert(1) hue-rotate(180deg); }
+    html[data-theme="dark"] #studioHeaderBar,
     html[data-theme="dark"] #studioError,
     html[data-theme="dark"] #studioHistoricalBanner,
     html[data-theme="dark"] #studioSummaryBar,
     html[data-theme="dark"] #studioBody {
       filter: invert(1) hue-rotate(180deg);
+      color-scheme: light;
     }
   </style>
   <script>
@@ -130,7 +144,13 @@
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 17.25h.007v.008H12v-.008z"/>
         </svg>
       </a>
-      <button id="localeMenuBtn" type="button" data-i18n-title="header.language"
+      <button id="inlineHelpToggleBtn" type="button" data-i18n-title="header.inlineHelp"
+              class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 18h6m-5 3h4m-6.938-5.5a6 6 0 119.876 0c-.618.94-1.938 1.712-1.938 2.75V19h-6v-.75c0-1.038-1.32-1.81-1.938-2.75z"/>
+        </svg>
+      </button>
+      <button id="localeMenuBtn" type="button" data-i18n-title="header.language" data-hint="hint.action.localeMenu"
               class="h-9 px-2.5 flex items-center justify-center rounded-full text-[11px] font-bold text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
         <span id="localeMenuLabel">EN</span>
       </button>
@@ -140,7 +160,7 @@
         <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="pt">Português</button>
         <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="de">Deutsch</button>
       </div>
-      <button id="themeToggleBtn" type="button" data-i18n-title="header.themeToggle"
+      <button id="themeToggleBtn" type="button" data-i18n-title="header.themeToggle" data-hint="hint.action.themeToggle"
               class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
         <svg id="themeToggleIconSun" class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
@@ -149,7 +169,7 @@
           <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
         </svg>
       </button>
-      <button id="accountMenuBtn" type="button" data-i18n-title="header.account"
+      <button id="accountMenuBtn" type="button" data-i18n-title="header.account" data-hint="hint.action.accountMenu"
               class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
         <svg class="w-[20px] h-[20px]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -251,7 +271,7 @@
 
     <!-- Phase 1: Input card -->
     <section class="mb-8">
-      <div id="dropzone"
+      <div id="dropzone" data-hint="hint.action.dropzone"
         class="relative overflow-hidden bg-white border-2 border-dashed border-slate-300 hover:border-brand-400 rounded-lg p-12 text-center cursor-pointer transition-colors shadow-sm">
         <input type="file" id="fileInput" accept=".zip,application/zip" class="hidden" />
         <input type="file" id="dirInput" webkitdirectory class="hidden" />
@@ -286,7 +306,7 @@
     <section class="mb-8">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label for="orgInput" class="block text-xs font-semibold text-slate-600 mb-1.5" data-i18n="upload.orgLabel">GitHub Organization Name</label>
+          <label for="orgInput" class="block text-xs font-semibold text-slate-600 mb-1.5" data-i18n="upload.orgLabel" data-hint="hint.action.orgRepo">GitHub Organization Name</label>
           <input id="orgInput" type="text" placeholder="acme-corp" autocomplete="off" spellcheck="false"
             class="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-shadow" />
         </div>
@@ -300,7 +320,7 @@
       <!-- GxP declaration + mandatory validation documents — hidden unless
            Phase 2 is enabled server-side (config.json's phases[id=2].enabled;
            off by default), see applyServerConfig(). -->
-      <div id="gxpFeatureBlock" class="hidden mt-5 border border-slate-200 rounded-xl p-4 bg-slate-50/60">
+      <div id="gxpFeatureBlock" class="hidden mt-5 border border-slate-200 rounded-xl p-4 bg-slate-50/60" data-hint="hint.action.gxp">
         <p class="text-xs font-semibold text-slate-600 mb-2" data-i18n="upload.gxpQuestion">Is this a GxP-regulated process?</p>
         <div class="flex items-center gap-4">
           <label class="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
@@ -347,13 +367,13 @@
       </p>
 
       <div class="mt-4 flex gap-2">
-        <button id="startBtn" disabled
+        <button id="startBtn" disabled data-hint="hint.action.startBtn"
           class="flex-1 py-3 rounded-xl text-sm font-semibold transition-all
                  disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none
                  bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white shadow-lg shadow-brand-600/25" data-i18n="upload.initiateBtn">
           Initiate Onboarding Pipeline
         </button>
-        <button id="newScanBtn" type="button" data-i18n-title="upload.newScanTitle"
+        <button id="newScanBtn" type="button" data-i18n-title="upload.newScanTitle" data-hint="hint.action.newScan"
           class="py-3 px-4 rounded-xl text-sm font-semibold transition-all border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:bg-slate-100" data-i18n="upload.newScanBtn">
           New scan
         </button>
@@ -396,10 +416,10 @@
       <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.checksReportTitle">
         <span data-i18n="pipeline.checksReport">📋 Checks report</span>
       </button>
-      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.viewIssuesTitle">
+      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.viewIssuesTitle" data-hint="hint.action.viewIssues">
         <span data-i18n="pipeline.viewIssues">View flagged issues</span>
       </button>
-      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" data-i18n-title="pipeline.generateFixPrTitle">
+      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" data-i18n-title="pipeline.generateFixPrTitle" data-hint="hint.action.fixPr">
         <span data-i18n="pipeline.generateFixPr">✨ Generate fix PR</span>
       </button>
       <button id="openStudioBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50" data-i18n-title="pipeline.openStudioTitle">
@@ -530,7 +550,7 @@
        on disk). Not a real route — a full-viewport overlay over the app. -->
   <div id="studioView" class="hidden fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-3 sm:p-6">
     <div class="bg-slate-100 rounded-2xl shadow-2xl w-full h-full max-w-[1600px] flex flex-col overflow-hidden">
-      <div class="flex flex-wrap items-center gap-x-1 gap-y-2 px-3 sm:px-5 py-2.5 bg-white text-slate-700 border-b border-slate-200 shrink-0 rounded-t-2xl">
+      <div id="studioHeaderBar" class="flex flex-wrap items-center gap-x-1 gap-y-2 px-3 sm:px-5 py-2.5 bg-white text-slate-700 border-b border-slate-200 shrink-0 rounded-t-2xl">
         <div class="flex items-center gap-2 pr-3 mr-2 border-r border-slate-200">
           <span class="text-sm font-bold text-brand-700">Ignite Studio</span>
           <span id="studioSubtitle" class="text-xs text-slate-400"></span>
@@ -542,12 +562,12 @@
         <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.sbomTitle" data-i18n="studio.sbom">SBOM</button>
         <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.locTitle" data-i18n="studio.loc">LOC Metrics</button>
         <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.postureTitle" data-i18n="studio.posture">Posture</button>
+        <button id="studioCallGraphBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.callGraphTitle" data-i18n="studio.callGraph">Call Graph</button>
         <span class="flex-1"></span>
         <div class="flex items-center gap-1.5">
           <button id="studioProvenanceBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="studio.provenanceTitle" data-i18n="studio.provenance">📜 Provenance</button>
           <button id="studioRescanBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="studio.rescanTitle" data-i18n="studio.rescan">Rescan ↻</button>
           <button id="studioCodeqlQueryBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="studio.customQueryTitle" data-i18n="studio.customQuery">Custom Query</button>
-          <button id="studioCodeqlBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-sm" data-i18n-title="studio.runCodeqlTitle" data-i18n="studio.runCodeql">🔎 Run CodeQL</button>
           <button id="studioCloseBtn" type="button" data-i18n-title="common.close" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
@@ -558,7 +578,7 @@
         ⚠ Historical view — you're not seeing the full project. Staging files are wiped after every run, so only the
         code captured around each flagged finding is available here, not the whole file. Gaps between findings are
         marked <span class="font-mono">⋯ N lines not shown ⋯</span>. Re-run the pipeline to browse the full project again.
-        Dependencies, Rescan, Run CodeQL and Custom Query all need a live staged project, so they're hidden here too.
+        Dependencies, Rescan, Custom Query and Call Graph all need a live staged project, so they're hidden here too.
       </p>
       <div id="studioSummaryBar" class="hidden text-[11px] text-slate-600 bg-white border-b border-slate-100 px-5 py-2"></div>
       <!-- Below sm, the three panes stack vertically (each independently
@@ -604,7 +624,7 @@
             <span id="studioFilePath" class="flex-1 min-w-0 text-xs font-mono text-slate-600 truncate" data-i18n="studio.selectFileHint">Select a file from the tree ←</span>
             <button id="studioManifestBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100" data-i18n-title="studio.viewManifestTitle" data-i18n="studio.viewManifest">📦 View license compliance for this manifest</button>
             <span id="studioDirtyBadge" class="hidden text-[10px] font-bold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200" data-i18n="studio.unsaved">UNSAVED</span>
-            <button id="studioEditBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50" data-i18n-title="studio.editTitle" data-i18n="common.edit">Edit</button>
+            <button id="studioEditBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50" data-i18n-title="studio.editTitle" data-i18n="common.edit" data-hint="hint.action.studioEdit">Edit</button>
             <button id="studioSaveBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" data-i18n-title="studio.saveRescanTitle" data-i18n="studio.saveRescan">Save + rescan</button>
             <button id="studioDownloadBtn" type="button" class="hidden text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50" data-i18n-title="studio.downloadFileTitle" data-i18n="common.downloadSimple">⬇ Download</button>
           </div>
@@ -624,7 +644,7 @@
       </div>
       <!-- Task/output panel — VS Code's integrated-terminal pattern: a
            collapsible strip pinned to the bottom of Studio, not a modal,
-           so you can watch a long-running task (today: "Run CodeQL")
+           so you can watch a long-running task (today: Custom Query, Call Graph)
            stream live while still browsing the file tree/code pane above
            it. Hidden until the first run; stays mounted (not torn down)
            after that so its scrollback survives switching files. -->
@@ -1209,6 +1229,89 @@
     let orgInput = $('orgInput');
     const repoInput = $('repoInput');
     const startBtn = $('startBtn'), newScanBtn = $('newScanBtn'), pipelineEl = $('pipeline'), resultBanner = $('resultBanner');
+
+    /* ------------------------------------------------------------ */
+    /* Inline help — separate from the "Help & documentation" link    */
+    /* (full external docs). This is short, contextual "Did you       */
+    /* know…" tips shown as a toast the first time the user sees a    */
+    /* given screen or uses a given feature, gated behind a           */
+    /* localStorage-persisted opt-in toggle next to the help button.  */
+    /*                                                                */
+    /* To add a hint to a button/element: give it `data-hint="key"`   */
+    /* where `key` is a `hint.*` entry in i18n.js — no JS changes      */
+    /* needed. To add one to a screen/view transition, call            */
+    /* showHint('hint.screen.xyz') at the point that view becomes      */
+    /* visible.                                                        */
+    /* ------------------------------------------------------------ */
+    const INLINE_HELP_ENABLED_KEY = 'ignite-inline-help';
+    const INLINE_HELP_SEEN_KEY = 'ignite-inline-help-seen';
+    let inlineHelpEnabled = localStorage.getItem(INLINE_HELP_ENABLED_KEY) === '1';
+    let inlineHelpSeen = new Set();
+    try {
+      inlineHelpSeen = new Set(JSON.parse(localStorage.getItem(INLINE_HELP_SEEN_KEY) || '[]'));
+    } catch { /* corrupt localStorage value — treat as no hints seen yet */ }
+
+    let hintQueue = [];
+    let hintShowing = false;
+    function renderNextHint() {
+      if (hintShowing || hintQueue.length === 0) return;
+      hintShowing = true;
+      const text = hintQueue.shift();
+      const toast = document.createElement('div');
+      toast.className = 'fixed bottom-5 right-5 z-[70] w-72 max-w-[90vw] bg-white border border-brand-200 shadow-cardHover rounded-xl p-4 flex items-start gap-3';
+      toast.innerHTML = `
+        <svg class="w-5 h-5 text-brand-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 18h6m-5 3h4m-6.938-5.5a6 6 0 119.876 0c-.618.94-1.938 1.712-1.938 2.75V19h-6v-.75c0-1.038-1.32-1.81-1.938-2.75z"/></svg>
+        <div class="min-w-0 flex-1">
+          <p class="text-[11px] font-bold text-brand-700 uppercase tracking-wide">${escapeHtml(t('hint.meta.title'))}</p>
+          <p class="text-xs text-slate-600 mt-0.5">${escapeHtml(text)}</p>
+        </div>
+        <button type="button" class="shrink-0 text-slate-300 hover:text-slate-600" aria-label="${escapeHtml(t('common.close'))}">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>`;
+      const dismiss = () => {
+        clearTimeout(timer);
+        toast.remove();
+        hintShowing = false;
+        renderNextHint();
+      };
+      toast.querySelector('button').addEventListener('click', dismiss);
+      const timer = setTimeout(dismiss, 8000);
+      document.body.appendChild(toast);
+    }
+    function enqueueHint(text) {
+      if (!text) return;
+      hintQueue.push(text);
+      renderNextHint();
+    }
+    // Shows a `hint.*` key's toast at most once per browser, and only while
+    // inline help is enabled. Toggle-state feedback bypasses this (see
+    // inlineHelpToggleBtn below) since that's a direct response to the click,
+    // not a "did you know" tip.
+    function showHint(key) {
+      if (!inlineHelpEnabled || inlineHelpSeen.has(key)) return;
+      const text = t(key);
+      if (!text || text === key) return;
+      inlineHelpSeen.add(key);
+      localStorage.setItem(INLINE_HELP_SEEN_KEY, JSON.stringify([...inlineHelpSeen]));
+      enqueueHint(text);
+    }
+    document.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-hint]');
+      if (el) showHint(el.dataset.hint);
+    });
+    function applyInlineHelpButtonState() {
+      const btn = $('inlineHelpToggleBtn');
+      btn.classList.toggle('text-brand-600', inlineHelpEnabled);
+      btn.classList.toggle('bg-brand-50', inlineHelpEnabled);
+      btn.classList.toggle('text-slate-500', !inlineHelpEnabled);
+    }
+    $('inlineHelpToggleBtn').addEventListener('click', () => {
+      inlineHelpEnabled = !inlineHelpEnabled;
+      localStorage.setItem(INLINE_HELP_ENABLED_KEY, inlineHelpEnabled ? '1' : '0');
+      applyInlineHelpButtonState();
+      enqueueHint(t(inlineHelpEnabled ? 'hint.meta.enabled' : 'hint.meta.disabled'));
+    });
+    applyInlineHelpButtonState();
 
     /* ------------------------------------------------------------ */
     /* Rendering                                                     */
@@ -2903,7 +3006,7 @@
       studioState.historical = isHistorical;
       studioState.historicalDocs = {};
       $('studioHistoricalBanner').classList.toggle('hidden', !isHistorical);
-      ['studioDepsBtn', 'studioRescanBtn', 'studioCodeqlBtn', 'studioCodeqlQueryBtn'].forEach((id) => {
+      ['studioDepsBtn', 'studioRescanBtn', 'studioCodeqlQueryBtn', 'studioCallGraphBtn'].forEach((id) => {
         $(id).classList.toggle('hidden', isHistorical);
       });
       // Historical mode hides all four up front; openHistoricalStudio then
@@ -2997,7 +3100,14 @@
       setStudioHistoricalUi(false);
       setStudioActiveTab('studioCodeBtn');
       renderStudioRecentSwitcher(jobId);
+      if (studioState.jobId !== jobId) {
+        // A cached call graph belongs to whichever job built it — carrying
+        // it over into a different job's Studio session would silently
+        // show the wrong project's graph.
+        studioCallGraphCache = { language: null, graph: null };
+      }
       studioState.jobId = jobId;
+      studioState.codeqlDbLanguages = [];
       studioState.fromReview = fromReview;
       studioState.currentPath = null;
       studioState.suggestion = null;
@@ -3019,6 +3129,7 @@
         $('reviewModal').classList.add('hidden');
       }
       $('studioView').classList.remove('hidden');
+      showHint('hint.screen.studio');
       studioShowError(null);
       $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Loading file tree…</p>';
       $('studioTree').innerHTML = '';
@@ -3050,6 +3161,15 @@
         $('studioCodeWrap').innerHTML = '';
         return;
       }
+
+      // Best-effort — a project scanned through the normal pipeline already
+      // has a persisted CodeQL database per language it covered (see
+      // phase4_config's keep_codeql_db_dir), so Custom Query/Call Graph can
+      // offer those languages immediately with no separate build step.
+      fetch(`/api/pipeline/${jobId}/studio/codeql/languages`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { if (Array.isArray(data?.languages)) studioState.codeqlDbLanguages = data.languages; })
+        .catch(() => {});
 
       if (issue && issue.file) {
         await openStudioFile(issue.file);
@@ -3087,6 +3207,7 @@
       studioState.navHistory = [];
       $('studioSubtitle').textContent = `${org}/${repo} — historical, read-only`;
       $('studioView').classList.remove('hidden');
+      showHint('hint.screen.studio');
       studioShowError(null);
       $('studioCodeWrap').innerHTML = `<p class="p-4 text-slate-400">${t('common.loading')}</p>`;
       $('studioTree').innerHTML = '';
@@ -3269,7 +3390,7 @@
     };
 
     function setStudioActiveTab(activeId) {
-      const tabIds = ['studioCodeBtn', 'studioDepsBtn', 'studioSbomBtn', 'studioLocBtn', 'studioPostureBtn'];
+      const tabIds = ['studioCodeBtn', 'studioDepsBtn', 'studioSbomBtn', 'studioLocBtn', 'studioPostureBtn', 'studioCallGraphBtn'];
       tabIds.forEach((id) => {
         const btn = $(id);
         if (!btn) return;
@@ -4133,77 +4254,13 @@
     $('studioOutputCloseBtn').addEventListener('click', () => $('studioOutputPanel').classList.add('hidden'));
     $('studioOutputClearBtn').addEventListener('click', () => { $('studioOutputLog').textContent = ''; });
 
-    // "Run CodeQL" — unlike Rescan (a synchronous JSON call against the
-    // per-file-cached checks), a CodeQL database build is slow enough that
-    // it needs its own streaming endpoint and its own progress surface: the
-    // Output panel at the bottom of Studio, filled live as NDJSON log lines
-    // arrive, the same read-the-response-as-a-stream pattern the main
-    // upload pipeline uses against POST /api/pipeline.
-    async function studioRunCodeql() {
-      studioShowError(null);
-      const btn = $('studioCodeqlBtn');
-      btn.disabled = true;
-      btn.textContent = '🔎 Running…';
-      $('studioOutputPanel').classList.remove('hidden');
-      $('studioOutputTaskLabel').textContent = 'codeql database create/analyze';
-      $('studioOutputLog').textContent = '';
-      studioOutputSetStatus('running');
-      studioOutputAppendLine('$ Run CodeQL — building a fresh database and running the security-extended query suite…');
-      try {
-        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/codeql`, { method: 'POST' });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || `Server error (HTTP ${res.status}).`);
-        }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneEvent = null;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            const evt = JSON.parse(line);
-            if (evt.type === 'log') studioOutputAppendLine(evt.message);
-            else if (evt.type === 'done') doneEvent = evt;
-          }
-        }
-        if (!doneEvent) throw new Error('Connection to the server was interrupted mid-run.');
-        if (!doneEvent.ok) throw new Error(doneEvent.error || 'CodeQL run failed.');
-
-        studioState.issues = (doneEvent.issues || []).filter((i) => Boolean(i.file));
-        if (Array.isArray(doneEvent.languages)) studioState.codeqlDbLanguages = doneEvent.languages;
-        renderStudioTree(await studioCurrentFiles());
-        renderStudioSummaryBar();
-        if (studioState.currentPath) studioMarkActiveFile(studioState.currentPath);
-        const summary = doneEvent.newIds?.length
-          ? `${doneEvent.newIds.length} new finding(s).`
-          : doneEvent.resolvedIds?.length
-            ? `${doneEvent.resolvedIds.length} finding(s) resolved, no new ones.`
-            : 'No change in CodeQL findings.';
-        studioOutputAppendLine(`$ Done — ${summary}`);
-        studioOutputSetStatus('success');
-      } catch (e) {
-        studioOutputAppendLine(`$ ✗ ${e.message}`);
-        studioOutputSetStatus('failed');
-        studioShowError(e.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = '🔎 Run CodeQL';
-      }
-    }
-    $('studioCodeqlBtn').addEventListener('click', () => studioRunCodeql());
-
     // "Custom Query" — renders a query-builder form into the code pane
     // (same slot openStudioReport's panels use), not a modal, so switching
     // to a file and back doesn't lose the last query/results. Needs a
-    // database "Run CodeQL" already built this session (studioState.
-    // codeqlDbLanguages) — querying from a cold state would just rebuild
-    // the whole database first, defeating the point of a fast ad-hoc query.
+    // persisted database for the language (studioState.codeqlDbLanguages,
+    // fetched in openStudio from /studio/codeql/languages) — the pipeline
+    // scan already builds and keeps one per language it covers, so this is
+    // populated without any separate build step for a normally-scanned job.
     function renderStudioCodeqlQueryPanel() {
       studioState.currentPath = null;
       studioMarkActiveFile(null);
@@ -4218,7 +4275,7 @@
       const languages = studioState.codeqlDbLanguages || [];
       if (languages.length === 0) {
         $('studioCodeWrap').innerHTML = `<div class="p-4">
-          <p class="text-slate-500 text-sm">No CodeQL database available yet — click <span class="font-semibold">🔎 Run CodeQL</span> first, then come back here to query it.</p>
+          <p class="text-slate-500 text-sm">No CodeQL database available for this project yet — one is built automatically the next time the full pipeline scan runs (skipped for a job that hasn't completed a full scan, or whose languages CodeQL doesn't cover).</p>
         </div>`;
         return;
       }
@@ -4241,7 +4298,7 @@
           <button type="button" id="studioQueryRunBtn" class="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:bg-orange-700">▶ Run query</button>
         </div>
         <textarea id="studioQueryText" class="w-full flex-1 min-h-[180px] font-mono text-[12px] leading-relaxed border border-slate-200 rounded-lg p-2" spellcheck="false" placeholder="import ${escapeHtml(defaultLanguage)}\n\nfrom ...\nselect ...">${escapeHtml(initialText)}</textarea>
-        <p class="text-[10px] text-slate-400 mt-1">Runs against the database "Run CodeQL" already built for this language — no rebuild. <kbd class="px-1 py-0.5 border border-slate-300 rounded bg-slate-50 font-mono">${isMac ? '⌘' : 'Ctrl'}+Enter</kbd> runs it. Results below, and the file tree narrows to files your query's rows point at. An entity column's abbreviated text (e.g. "functio ... dex) {}") is CodeQL's own label for that node, not a display truncation — hover a Location cell for the real code, or click it to jump to the source.</p>
+        <p class="text-[10px] text-slate-400 mt-1">Runs against the database already built for this language during the pipeline scan — no rebuild. <kbd class="px-1 py-0.5 border border-slate-300 rounded bg-slate-50 font-mono">${isMac ? '⌘' : 'Ctrl'}+Enter</kbd> runs it. Results below, and the file tree narrows to files your query's rows point at. An entity column's abbreviated text (e.g. "functio ... dex) {}") is CodeQL's own label for that node, not a display truncation — hover a Location cell for the real code, or click it to jump to the source.</p>
         <div id="studioQueryResultsWrap" class="mt-3"></div>
       </div>`;
       if (studioQueryDraft.touched) $('studioQueryText').dataset.touched = '1';
@@ -4274,6 +4331,242 @@
     let studioQueryDraft = { language: null, text: '', touched: false };
     const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent || '');
     $('studioCodeqlQueryBtn').addEventListener('click', () => renderStudioCodeqlQueryPanel());
+
+    /* ------------------------------------------------------------ */
+    /* Call Graph — caller/callee edges across the project, rendered as   */
+    /* an interactive Cytoscape.js graph. CodeQL languages read whichever */
+    /* database the pipeline scan already persisted (same posture as the */
+    /* Custom Query panel above); Rust has no CodeQL support at all and   */
+    /* always runs the server's regex-based fallback directly against    */
+    /* the staged source, no database needed.                            */
+    /* ------------------------------------------------------------ */
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`Could not load ${src}`));
+        document.head.appendChild(script);
+      });
+    }
+    let cytoscapeLoadPromise = null;
+    // Cytoscape's own built-in `cose` layout has poor/undefined behavior
+    // with compound (parent) nodes — the directory clustering this graph
+    // relies on — so this loads the `fcose` layout extension instead,
+    // which properly supports them. fcose's browser build isn't a single
+    // self-contained file: it expects two of its own dependencies
+    // (`layout-base`, `cose-base`) as globals already on `window`, in this
+    // exact order, before it runs — verified by inspecting each package's
+    // UMD wrapper directly, not assumed from its docs.
+    function loadCytoscape() {
+      if (window.cytoscape && window.cytoscape._fcoseLoaded) return Promise.resolve();
+      if (!cytoscapeLoadPromise) {
+        cytoscapeLoadPromise = (async () => {
+          await loadScript('https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js');
+          await loadScript('https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.min.js');
+          await loadScript('https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.min.js');
+          await loadScript('https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.min.js');
+          window.cytoscape.use(window.cytoscapeFcose);
+          window.cytoscape._fcoseLoaded = true;
+        })().catch((e) => {
+          cytoscapeLoadPromise = null;
+          throw new Error('Could not load the graph rendering library.');
+        });
+      }
+      return cytoscapeLoadPromise;
+    }
+
+    // Directory a call-graph node's file lives in, used to cluster nodes
+    // into compound (parent) nodes so the graph reads as "which components
+    // call which" at a glance instead of a flat function-level hairball.
+    // Root-level files (no directory) share one synthetic "." cluster.
+    function callGraphDirOf(file) {
+      const idx = file.lastIndexOf('/');
+      return idx === -1 ? '.' : file.slice(0, idx);
+    }
+
+    // Survives the panel being torn down and rebuilt on every navigation
+    // away (e.g. clicking a node to open its file) and back — same pattern
+    // as studioQueryDraft/studioQueryResultState for Custom Query. Without
+    // this, returning from Code to Call Graph looked like the graph had
+    // been discarded, forcing a full rebuild for something already computed.
+    let studioCallGraphCache = { language: null, graph: null };
+
+    let studioCallGraphInstance = null;
+    let studioCallGraphTooltip = null;
+    function renderCallGraph(container, graph) {
+      if (studioCallGraphInstance) {
+        studioCallGraphInstance.destroy();
+        studioCallGraphInstance = null;
+      }
+      if (graph.nodes.length === 0) {
+        container.innerHTML = '<p class="p-4 text-slate-400">No calls found for this language.</p>';
+        return;
+      }
+      const dirs = new Set(graph.nodes.map((n) => callGraphDirOf(n.file)));
+      const elements = [
+        ...[...dirs].map((d) => ({ data: { id: `dir:${d}`, label: d } })),
+        // `kind: 'fn'` distinguishes a real function node from its directory
+        // cluster parent — both would otherwise match the same `[label]`
+        // selector below, since a compound parent also carries a `label`.
+        ...graph.nodes.map((n) => ({ data: { id: n.id, label: n.name || '(anonymous)', parent: `dir:${callGraphDirOf(n.file)}`, file: n.file, line: n.line, kind: 'fn' } })),
+        ...graph.edges.map((e, i) => ({ data: { id: `e${i}`, source: e.caller, target: e.callee } })),
+      ];
+      container.innerHTML = '';
+      container.style.position = 'relative';
+      studioCallGraphInstance = cytoscape({
+        container,
+        elements,
+        style: [
+          { selector: 'node[kind = "fn"]', style: { 'background-color': '#4f46e5', label: 'data(label)', 'font-size': 9, color: '#1e293b', 'text-valign': 'bottom', 'text-margin-y': 3, width: 14, height: 14 } },
+          { selector: ':parent', style: { 'background-color': '#f1f5f9', 'border-color': '#cbd5e1', 'border-width': 1, label: 'data(label)', 'font-size': 10, 'font-weight': 'bold', color: '#475569', 'text-valign': 'top', 'text-halign': 'center' } },
+          { selector: 'edge', style: { width: 1, 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', opacity: 0.6 } },
+          { selector: 'node:selected', style: { 'background-color': '#dc2626' } },
+        ],
+        layout: { name: 'fcose', quality: 'default', animate: false, nodeDimensionsIncludeLabels: true, packComponents: true },
+      });
+      studioCallGraphInstance.on('tap', 'node[file]', (evt) => {
+        const path = evt.target.data('file');
+        if (path) {
+          setStudioActiveTab('studioCodeBtn');
+          openStudioFile(path);
+        }
+      });
+      // Hover preview — the click already navigates to the file, so this
+      // just surfaces the same file:line without needing that click first.
+      studioCallGraphInstance.on('mouseover', 'node[file]', (evt) => {
+        const d = evt.target.data();
+        if (!studioCallGraphTooltip) {
+          studioCallGraphTooltip = document.createElement('div');
+          studioCallGraphTooltip.className = 'absolute z-10 pointer-events-none text-[11px] bg-slate-900 text-white rounded px-2 py-1 shadow-lg';
+          container.appendChild(studioCallGraphTooltip);
+        }
+        studioCallGraphTooltip.textContent = `${d.label} — ${d.file}:${d.line}`;
+        studioCallGraphTooltip.classList.remove('hidden');
+        const pos = evt.target.renderedPosition();
+        studioCallGraphTooltip.style.left = `${pos.x + 10}px`;
+        studioCallGraphTooltip.style.top = `${pos.y - 24}px`;
+      });
+      studioCallGraphInstance.on('mouseout', 'node[file]', () => {
+        studioCallGraphTooltip?.classList.add('hidden');
+      });
+    }
+
+    async function studioRunCallGraph() {
+      const language = $('studioCallGraphLanguage').value;
+      const runBtn = $('studioCallGraphRunBtn');
+      const canvas = $('studioCallGraphCanvas');
+      studioShowError(null);
+      runBtn.disabled = true;
+      runBtn.textContent = '▶ Running…';
+      $('studioOutputPanel').classList.remove('hidden');
+      $('studioOutputTaskLabel').textContent = `call graph (${language})`;
+      $('studioOutputLog').textContent = '';
+      studioOutputSetStatus('running');
+      studioOutputAppendLine(`$ Building the ${language} call graph…`);
+      canvas.innerHTML = '<p class="p-4 text-slate-400">Loading…</p>';
+      try {
+        await loadCytoscape();
+        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/callgraph`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ language }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Server error (HTTP ${res.status}).`);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneEvent = null;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const evt = JSON.parse(line);
+            if (evt.type === 'log') studioOutputAppendLine(evt.message);
+            else if (evt.type === 'done') doneEvent = evt;
+          }
+        }
+        if (!doneEvent) throw new Error('Connection to the server was interrupted mid-run.');
+        if (!doneEvent.ok) throw new Error(doneEvent.error || 'Could not build the call graph.');
+        studioOutputSetStatus('success');
+        if (doneEvent.graph.truncated) {
+          studioOutputAppendLine('$ ⚠ Graph truncated — this project has more calls than fit in one legible view.');
+        }
+        studioCallGraphCache = { language, graph: doneEvent.graph };
+        renderCallGraph(canvas, doneEvent.graph);
+      } catch (e) {
+        studioOutputAppendLine(`$ ✗ ${e.message}`);
+        studioOutputSetStatus('failed');
+        studioShowError(e.message);
+        canvas.innerHTML = '';
+      } finally {
+        runBtn.disabled = false;
+        runBtn.textContent = studioCallGraphCache.graph && studioCallGraphCache.language === language ? '↻ Rebuild graph' : '▶ Build graph';
+      }
+    }
+
+    function renderStudioCallGraphPanel() {
+      studioState.currentPath = null;
+      studioMarkActiveFile(null);
+      $('studioFilePath').textContent = 'Call Graph';
+      $('studioDirtyBadge').classList.add('hidden');
+      $('studioEditBtn').classList.add('hidden');
+      $('studioSaveBtn').classList.add('hidden');
+      $('studioManifestBtn').classList.add('hidden');
+      $('studioDownloadFileIssuesBtn')?.classList.add('hidden');
+      $('studioIssuePanel').innerHTML = '<p>Select an issue or a file to see details here.</p>';
+      studioShowError(null);
+
+      // CodeQL languages come from whichever database the pipeline scan
+      // already persisted for this project (studioState.codeqlDbLanguages,
+      // fetched in openStudio) — Rust never needs one, so it's always
+      // offered too. A job that hasn't completed a full scan yet (or whose
+      // languages CodeQL doesn't cover) only ever shows rust here.
+      const dbLanguages = studioState.codeqlDbLanguages || [];
+      const languages = [...dbLanguages, 'rust'];
+      const defaultLanguage = studioCallGraphCache.language && languages.includes(studioCallGraphCache.language) ? studioCallGraphCache.language : languages[0];
+      const optionsHtml = languages.map((l) => `<option value="${escapeAttr(l)}" ${l === defaultLanguage ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('');
+      const hintHtml = dbLanguages.length === 0
+        ? `<p class="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">No CodeQL database available for this project's other language(s) yet — one is built automatically the next time the full pipeline scan runs. <span class="font-mono">rust</span> never needs one and is always available.</p>`
+        : '';
+      const hasCachedGraph = studioCallGraphCache.language === defaultLanguage && studioCallGraphCache.graph;
+      $('studioCodeWrap').innerHTML = `<div class="p-4 flex flex-col h-full">
+        <div class="flex items-center gap-2 mb-2">
+          <label class="text-[11px] font-semibold text-slate-500">Language</label>
+          <select id="studioCallGraphLanguage" class="text-[11px] border border-slate-200 rounded px-2 py-1">${optionsHtml}</select>
+          <button type="button" id="studioCallGraphRunBtn" class="ml-auto text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:bg-orange-700">${hasCachedGraph ? '↻ Rebuild graph' : '▶ Build graph'}</button>
+        </div>
+        ${hintHtml}
+        <p class="text-[10px] text-slate-400 mb-2">Nodes are functions, grouped by directory. Hover a node for its file:line, click to open it. Drag to pan, scroll to zoom.</p>
+        <div id="studioCallGraphCanvas" class="flex-1 min-h-[50vh] border border-slate-200 rounded-lg bg-white"></div>
+      </div>`;
+      $('studioCallGraphRunBtn').addEventListener('click', () => studioRunCallGraph());
+      $('studioCallGraphLanguage').addEventListener('change', () => {
+        const runBtn = $('studioCallGraphRunBtn');
+        const selected = $('studioCallGraphLanguage').value;
+        const cached = studioCallGraphCache.language === selected && studioCallGraphCache.graph;
+        runBtn.textContent = cached ? '↻ Rebuild graph' : '▶ Build graph';
+        $('studioCallGraphCanvas').innerHTML = '';
+        if (cached) loadCytoscape().then(() => renderCallGraph($('studioCallGraphCanvas'), studioCallGraphCache.graph));
+      });
+      // Restore the last-built graph for this language instead of leaving
+      // the panel looking freshly reset — see studioCallGraphCache's own
+      // comment above for why.
+      if (hasCachedGraph) {
+        loadCytoscape().then(() => renderCallGraph($('studioCallGraphCanvas'), studioCallGraphCache.graph));
+      }
+    }
+    $('studioCallGraphBtn').addEventListener('click', () => {
+      setStudioActiveTab('studioCallGraphBtn');
+      renderStudioCallGraphPanel();
+    });
 
     // Placeholder query text per language — just enough to compile so a
     // first-time user has something to run/adapt rather than a blank box.
@@ -6355,6 +6648,7 @@
     function openHistoryDrawer() {
       $('historyDrawerBackdrop').classList.remove('hidden');
       $('historyDrawer').classList.remove('hidden');
+      showHint('hint.screen.history');
     }
     function closeHistoryDrawer() {
       $('historyDrawerBackdrop').classList.add('hidden');
@@ -6392,6 +6686,7 @@
         onboardedReposLoaded = true;
         loadOnboardedRepos();
       }
+      showHint('hint.screen.onboardedRepos');
     }
     $('dashboardNavBtn').addEventListener('click', showDashboardView);
     $('onboardedReposNavBtn').addEventListener('click', showOnboardedReposView);
@@ -6414,6 +6709,7 @@
       }
     });
     applyStaticTranslations();
+    showHint('hint.screen.dashboard');
 
     /* Initial render */
     resetPhases();

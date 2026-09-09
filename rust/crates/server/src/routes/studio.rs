@@ -109,8 +109,32 @@ fn replace_issue_batch(state: &AppState, job_id: &str, ctx: &StudioContext, fres
 /// same database later without rebuilding it. Faithful port of
 /// `codeqlDbDirFor` — outside the repo working tree (`IGNITE_DATA_DIR`,
 /// `~/.ignite` by default), same reasoning as retained sources.
-fn codeql_db_dir_for(project_id: Option<i64>) -> Option<PathBuf> {
+pub(crate) fn codeql_db_dir_for(project_id: Option<i64>) -> Option<PathBuf> {
     project_id.map(|id| ignite_data_dir().join("codeql-dbs").join(id.to_string()))
+}
+
+/// Lists which languages already have a persisted, queryable CodeQL
+/// database for this project — since `phase4_config::from_config` now
+/// wires `keep_codeql_db_dir` into every full pipeline run (not just an
+/// explicit Studio "Run CodeQL" click), a project scanned normally already
+/// has one the moment Studio opens. The Custom Query and Call Graph panels
+/// call this instead of requiring that manual step first.
+async fn codeql_languages(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+    let ctx = match resolve_studio_context(&state, &job_id) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let Some(db_root) = codeql_db_dir_for(ctx.project_id) else {
+        return Json(json!({ "ok": true, "languages": Vec::<String>::new() })).into_response();
+    };
+    let languages: Vec<String> = std::fs::read_dir(&db_root)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().join("db").is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    Json(json!({ "ok": true, "languages": languages })).into_response()
 }
 
 #[allow(clippy::result_large_err)]
@@ -352,6 +376,101 @@ async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<Strin
         let (resolved_ids, new_ids) = replace_issue_batch(&state, &job_id, &ctx, fresh_issues, &["codeql-sast", "codeql-analysis-failed"]);
         let issues = get_issues(&state, &job_id, &ctx);
         send(json!({ "type": "done", "ok": true, "issues": issues, "resolvedIds": resolved_ids, "newIds": new_ids, "languages": codeql_result.languages }));
+    });
+
+    let stream = UnboundedReceiverStream::new(rx).map(Ok::<String, std::io::Error>);
+    let body = Body::from_stream(stream);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("X-Accel-Buffering", "no")
+        .body(body)
+        .unwrap()
+}
+
+#[derive(serde::Deserialize)]
+struct CallGraphBody {
+    #[serde(default)]
+    language: String,
+}
+
+/// Studio's "Call Graph" viewer — caller/callee edges for one language,
+/// streamed the same NDJSON shape as `codeql_run`/`codeql_query` above so
+/// the UI gets a live log while a slow CodeQL query pack compiles. Rust has
+/// no CodeQL support at all (see `ignite_callgraph`'s module doc), so it's
+/// routed to the regex-based fallback instead of a database lookup —
+/// everything else goes through whichever database `/studio/codeql`
+/// already built for this project.
+async fn studio_call_graph(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, Json(body): Json<CallGraphBody>) -> Response {
+    let ctx = match resolve_studio_context(&state, &job_id) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let send = {
+        let tx = tx.clone();
+        move |event: Value| {
+            let _ = tx.send(format!("{}\n", event));
+        }
+    };
+    let log = {
+        let tx = tx.clone();
+        move |message: &str| {
+            let _ = tx.send(format!("{}\n", json!({ "type": "log", "message": message })));
+        }
+    };
+
+    let language = body.language.trim().to_lowercase();
+
+    tokio::spawn(async move {
+        if language == "rust" {
+            log("→ scanning Rust sources (regex-based — CodeQL has no official Rust support)...");
+            let root = ctx.root.clone();
+            match tokio::task::spawn_blocking(move || ignite_callgraph::build_rust_call_graph(&root)).await {
+                Ok(Ok(graph)) => {
+                    log(&format!("✓ {} node(s), {} edge(s){}.", graph.nodes.len(), graph.edges.len(), if graph.truncated { " (truncated)" } else { "" }));
+                    send(json!({ "type": "done", "ok": true, "graph": graph }));
+                }
+                Ok(Err(e)) => {
+                    log(&format!("✗ {e}"));
+                    send(json!({ "type": "done", "ok": false, "error": e.to_string() }));
+                }
+                Err(e) => {
+                    log(&format!("✗ {e}"));
+                    send(json!({ "type": "done", "ok": false, "error": "Internal error while scanning Rust sources." }));
+                }
+            }
+            return;
+        }
+
+        if ignite_callgraph::codeql_call_graph_query(&language).is_none() {
+            let error = format!("No call-graph support for \"{language}\" (supported: {}, rust).", ignite_callgraph::codeql_call_graph_languages().join(", "));
+            log(&format!("✗ {error}"));
+            send(json!({ "type": "done", "ok": false, "error": error }));
+            return;
+        }
+        let Some(db_root) = codeql_db_dir_for(ctx.project_id) else {
+            let error = "No CodeQL database available for this project.".to_string();
+            log(&format!("✗ {error}"));
+            send(json!({ "type": "done", "ok": false, "error": error }));
+            return;
+        };
+        let db_dir = db_root.join(&language).join("db");
+        let timeout_ms = crate::phase4_config::from_config(&state.config, &ctx.org, &ctx.repo, ctx.project_id, false, None).codeql.timeout_ms;
+
+        log(&format!("→ running the call-graph query against the {language} database..."));
+        match ignite_callgraph::build_codeql_call_graph(&ctx.root, &db_dir, &language, &state.runner, timeout_ms, |line| log(line)).await {
+            Ok(graph) => {
+                log(&format!("✓ {} node(s), {} edge(s){}.", graph.nodes.len(), graph.edges.len(), if graph.truncated { " (truncated)" } else { "" }));
+                send(json!({ "type": "done", "ok": true, "graph": graph }));
+            }
+            Err(e) => {
+                log(&format!("✗ {e}"));
+                send(json!({ "type": "done", "ok": false, "error": e }));
+            }
+        }
     });
 
     let stream = UnboundedReceiverStream::new(rx).map(Ok::<String, std::io::Error>);
@@ -635,6 +754,11 @@ pub fn router() -> Router<Arc<AppState>> {
         // `require_auth_middleware` around it in `main.rs`, the same way
         // `mutating_router` below is wired.
         .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
+        .route("/api/pipeline/:job_id/studio/codeql/languages", get(codeql_languages))
+        // Call graph viewer — read-only, same posture as the ad-hoc CodeQL
+        // query above (reads an already-built database for non-Rust
+        // languages; scans source directly, nothing persisted, for Rust).
+        .route("/api/pipeline/:job_id/studio/callgraph", axum::routing::post(studio_call_graph))
 }
 
 /// Everything else that can change what actually gets scanned or pushed:

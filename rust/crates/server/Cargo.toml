@@ -58,6 +58,7 @@ ignite-css-dead-code = { path = "../css-dead-code" }
 ignite-shipping = { path = "../shipping" }
 jsonwebtoken = "9"
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
+ignite-callgraph = { path = "../callgraph" }
 ignite-db-store = { path = "../db-store" }
 ignite-audit-log = { path = "../audit-log" }
 ignite-sarif = { path = "../sarif" }

@@ -100,7 +100,7 @@ turn it green.
 
 ![Studio - Compliance & Feature Posture](/img/screenshots/07-studio-posture.png)
 
-### 5. Edit in place, then run CodeQL against the staged project
+### 5. Edit in place, then dig into the cross-file CodeQL data already sitting there
 
 A finding doesn't have to leave Studio to get fixed: click **Edit** on any
 open file, make the change, and **Save + rescan** persists it to the staged
@@ -111,18 +111,24 @@ issue counts update immediately, no re-upload.
 ![Studio - editing a file, unsaved changes pending](/img/screenshots/12-studio-edit-code.png)
 
 For the deeper cross-file gap Semgrep's single-file engine can't cover,
-**🔎 Run CodeQL** builds a real CodeQL database for every language detected
-in the project and runs the `security-extended` query suite against it,
-streaming progress into the Output panel below the editor.
-
-![Studio - Run CodeQL streaming database build progress](/img/screenshots/13-studio-run-codeql.png)
-
-Once a database exists, **Custom Query** lets you write and run your own
-`.ql` query against it directly — no rebuild — with results in a table
-you can jump straight from into the flagged line, and a shortcut to narrow
-the file tree to just the files your query's rows point at.
+every full pipeline scan already builds and keeps a real CodeQL database
+per detected language — no separate build step. **Custom Query** lets you
+write and run your own `.ql` query against it directly, with results in a
+table you can jump straight from into the flagged line, and a shortcut to
+narrow the file tree to just the files your query's rows point at.
 
 ![Studio - Custom CodeQL query with results](/img/screenshots/14-studio-codeql-custom-query.png)
+
+**Call Graph** renders caller → callee edges for the whole project as an
+interactive graph, clustered by directory so it reads as "which components
+call which" rather than a flat function-level hairball. Pick a language —
+CodeQL-backed for JavaScript/Python/Java/Go (the same persisted database
+Custom Query reads), or an approximate regex-based scan for Rust, which
+CodeQL has no official support for — and click **Build graph**. Hover a
+node for its file:line, click to jump straight to it; the last graph you
+built stays cached when you switch away and back.
+
+![Studio - Call Graph, functions clustered by directory](/img/screenshots/15-studio-call-graph.png)
 
 ### 6. Or scan straight from VS Code — no upload, no browser
 

@@ -24,7 +24,7 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
     headers.insert(
         "Content-Security-Policy",
         HeaderValue::from_static(
-            "default-src 'self';script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com;style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self'",
+            "default-src 'self';script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self'",
         ),
     );
     headers.insert("Cross-Origin-Opener-Policy", HeaderValue::from_static("same-origin"));

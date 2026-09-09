@@ -133,6 +133,15 @@ pub struct Phase4Config {
     /// `security.codeql.{reviewCadenceDays,lastReviewedAt}` — see
     /// `override_engine::CodeqlResult::query_suite_review_overdue`.
     pub codeql_query_suite_review_overdue: bool,
+    /// When set, the CodeQL database(s) built for this run's compliance
+    /// scan are persisted here instead of discarded — the same directory
+    /// Studio's `/studio/codeql/query` and `/studio/callgraph` routes read
+    /// from, so a project scanned through the normal pipeline already has
+    /// a queryable database the moment Studio opens, with no separate
+    /// "Run CodeQL" click needed. `None` (headless/CI validate-all calls
+    /// with no project row, and any caller that never persisted a database
+    /// before) keeps the old build-and-discard behavior.
+    pub keep_codeql_db_dir: Option<std::path::PathBuf>,
 }
 
 pub struct Phase4Documents {
@@ -430,9 +439,16 @@ pub async fn run_phase4_checks(
             }
         }
     };
-    // Only reached in full (non-fast) mode — always run the slow trivy image scan here,
-    // regardless of the config default, which stays off for direct/interactive callers.
-    let image_vuln_config = ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig { enabled: true, ..config.container_image_vulnerabilities.clone() };
+    // Only reached in full (non-fast) mode. Unlike the gitleaks git-history
+    // scan above (forced on unconditionally here — it's cheap relative to a
+    // full run), the trivy image scan does a real `docker build` per
+    // Dockerfile plus a full `trivy image` scan of the result, which can
+    // run into several minutes per image. That cost is real enough that
+    // `security.trivyImage.enabled` (`TRIVY_IMAGE_ENABLED`) is honored as
+    // written here instead of being forced on — an operator who wants the
+    // full GHAS-parity coverage this check provides opts in explicitly;
+    // one who doesn't isn't stuck waiting on it every full run.
+    let image_vuln_config = config.container_image_vulnerabilities.clone();
     let image_vuln_fut = async {
         match with_timeout("imageVulnerabilities", log, ignite_container_image_vulnerabilities::check_container_image_vulnerabilities(root, runner, &image_vuln_config)).await {
             Ok(r) => r,
@@ -515,7 +531,7 @@ pub async fn run_phase4_checks(
         }
     };
     let codeql_fut = async {
-        match with_timeout("codeql", log, ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: None })).await {
+        match with_timeout("codeql", log, ignite_codeql_cross_file::check_codeql_cross_file(root, runner, &config.codeql, ignite_codeql_cross_file::CodeqlContext { org: Some(&config.org), repo: Some(&config.repo), store: Some(store), keep_db_dir: config.keep_codeql_db_dir.as_deref() })).await {
             Ok(r) => r,
             Err(e) => {
                 log(&format!("✗ codeql failed: {e} — skipping."));
@@ -918,6 +934,7 @@ mod tests {
             igniteignore_git_check_root: None,
             codeql: ignite_codeql_cross_file::CodeqlConfig { enabled: false, ..Default::default() },
             codeql_query_suite_review_overdue: false,
+            keep_codeql_db_dir: None,
         }
     }
 

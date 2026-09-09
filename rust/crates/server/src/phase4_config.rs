@@ -124,6 +124,14 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
             sec.codeql.review_cadence_days,
             chrono::Utc::now().date_naive(),
         ),
+        // Persist whichever CodeQL database(s) this run builds to the same
+        // location Studio's ad-hoc query/call-graph routes read from
+        // (`crate::routes::studio::codeql_db_dir_for`), so a project that
+        // went through the normal scan already has a queryable database by
+        // the time Studio opens — no separate "Run CodeQL" click needed.
+        // `None` for a headless/CI call with no project row (there's no
+        // Studio session to serve).
+        keep_codeql_db_dir: crate::routes::studio::codeql_db_dir_for(project_id),
     }
 }
 
