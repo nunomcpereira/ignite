@@ -362,6 +362,41 @@ blocks direct/admin-bypass pushes) on a given repo's default branch.
 Dry-run by default; this is a deliberate, operator-run tool, not something
 wired into any pipeline or schedule.
 
+An org-wide form covers every repo in an org — including ones created
+*after* the tool runs — via GitHub's newer Repository Rulesets, rather
+than needing to be re-run per repo:
+
+```bash
+./target/release/enforce-gate-branch-protection --org my-org --apply
+```
+
+### Org ruleset drift detection
+
+Applying the org ruleset once only guarantees policy at that moment — an
+org admin can still loosen it afterwards directly in GitHub's own UI
+(drop the required `ignite/gate` check, add a bypass actor, delete a
+rule), and the one-shot form above has no way to notice until someone
+happens to re-run it. `--check-drift` turns it into a continuous check:
+it fetches each `--org` target's *current* ruleset, diffs it against
+policy, and reports every divergence — read-only by default, or paired
+with `--apply` to also reconcile whatever's drifted:
+
+```bash
+# Report only — never mutates.
+./target/release/enforce-gate-branch-protection --org my-org --check-drift
+
+# Report and reconcile any drift found.
+./target/release/enforce-gate-branch-protection --org my-org --check-drift --apply
+```
+
+The exit code is what a cron/CI caller actually watches: `0` means every
+target org's ruleset already matches policy, `2` means at least one has
+drifted (even if `--apply` just fixed it — a caller alerting on drift
+wants to know it *happened* this run), `1` means a lookup or apply error.
+Run it on a schedule (cron, or a scheduled GitHub Actions workflow the
+same way [scheduled re-scans](#scheduled-re-scans--dependabot-equivalent-continuous-coverage)
+are) to get continuous enforcement rather than a point-in-time check.
+
 ## Private vulnerability reporting
 
 GHAS lets a maintainer privately draft a Security Advisory to coordinate a

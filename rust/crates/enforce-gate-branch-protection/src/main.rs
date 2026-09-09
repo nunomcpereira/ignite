@@ -23,6 +23,25 @@
 //! any pipeline/cron path — it's a deliberate, standalone tool for an
 //! operator to run by hand.
 //!
+//! `enforce-gate-branch-protection --org <org-name>... --check-drift [--apply]`
+//! — org-ruleset drift detection, the natural follow-on to the org-wide
+//! form above: applying a ruleset once only guarantees it's correct
+//! *at that moment*. Someone with org-admin rights can still loosen it
+//! by hand afterwards (drop the required `ignite/gate` check, add a
+//! bypass actor, delete the ruleset outright) directly in GitHub's own
+//! UI, and nothing about the one-shot flow would ever notice. This mode
+//! fetches each `--org` target's *current* ruleset and diffs it against
+//! the policy (`detect_ruleset_drift`), reporting every divergence; it
+//! never mutates anything on its own — pair it with `--apply` to also
+//! reconcile (re-`PUT` the correct ruleset) whatever's drifted, or leave
+//! `--apply` off to only report. Exits `2` if any org has drift (even
+//! when `--apply` just fixed it — a cron/CI caller watching this exit
+//! code wants to know drift *happened*), `1` on a lookup/apply error, `0`
+//! when every target already matches policy. Not wired into any
+//! scheduled path itself — run it from cron/a scheduled GitHub Actions
+//! workflow the same way `docs-site/docs/ci-integration.md` documents
+//! for `scheduled-rescan`.
+//!
 //! Every `gh` invocation goes through `ignite_tool_runner::ToolRunner`
 //! with an argument array (no shell), matching this repo's standing
 //! hardening invariant. The protection/ruleset payload is nested JSON
@@ -44,18 +63,33 @@ pub struct ParsedArgs {
     pub repos: Vec<(String, String)>,
     pub orgs: Vec<String>,
     pub apply: bool,
+    /// Org-ruleset drift-detection mode (`--check-drift`) — the
+    /// continuous-enforcement counterpart to the normal one-shot
+    /// create-or-update flow: instead of unconditionally overwriting each
+    /// `--org` target's ruleset, fetches its *current* state, diffs it
+    /// against the policy (`detect_ruleset_drift`), and reports every
+    /// divergence without mutating anything unless `--apply` is also
+    /// given. Suited to a cron/CI job that alerts (via this process's
+    /// exit code — see `main`) when someone loosens a ruleset by hand in
+    /// GitHub's own UI, closing the gap a purely one-shot CLI leaves
+    /// between runs. Requires at least one `--org` target — an org
+    /// ruleset is the only thing this mode checks (per-repo classic
+    /// branch protection has no equivalent drift check).
+    pub check_drift: bool,
 }
 
 pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
     let mut repos = Vec::new();
     let mut orgs = Vec::new();
     let mut apply = false;
+    let mut check_drift = false;
     let mut saw_dry_run_flag = false;
     let mut i = 0;
 
     while i < raw.len() {
         match raw[i].as_str() {
             "--apply" => apply = true,
+            "--check-drift" => check_drift = true,
             "--dry-run" => saw_dry_run_flag = true,
             "--dry-run=false" => {
                 saw_dry_run_flag = true;
@@ -78,9 +112,12 @@ pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
     let _ = saw_dry_run_flag; // --dry-run is the (redundant) default; only --apply flips it off.
 
     if repos.is_empty() && orgs.is_empty() {
-        return Err("Usage: enforce-gate-branch-protection <org/repo> [<org/repo>...] [--org <org-name>...] [--apply]".to_string());
+        return Err("Usage: enforce-gate-branch-protection <org/repo> [<org/repo>...] [--org <org-name>...] [--apply] [--check-drift]".to_string());
     }
-    Ok(ParsedArgs { repos, orgs, apply })
+    if check_drift && orgs.is_empty() {
+        return Err("--check-drift requires at least one --org target.".to_string());
+    }
+    Ok(ParsedArgs { repos, orgs, apply, check_drift })
 }
 
 /// The branch-protection payload this tool enforces: require the
@@ -195,12 +232,80 @@ async fn find_existing_org_ruleset_id(api: &GithubApi<'_>, org: &str, token: &st
         .and_then(|r| r.get("id").and_then(|v| v.as_u64())))
 }
 
+/// Compares an org's *actual* GitHub ruleset (as returned by `GET
+/// orgs/{org}/rulesets/{id}`) against the policy this tool enforces
+/// (`org_ruleset_payload`), reporting every meaningful divergence in
+/// plain English. Read-only/pure — the "detection" half of drift
+/// detection/reconciliation: `--check-drift` calls this without ever
+/// mutating anything, so an operator (or a cron job watching this
+/// process's exit code) can tell *that* someone loosened the ruleset
+/// directly in GitHub's own UI, without needing to already suspect it.
+/// Deliberately checks the specific fields the policy actually cares
+/// about (enforcement, bypass actors, and each of the four required rule
+/// types/parameters) rather than a byte-for-byte diff against
+/// `org_ruleset_payload()` — GitHub's API echoes back extra
+/// server-assigned fields (`id`, `created_at`, per-rule ids, etc.) on
+/// every rule that would make an exact-equality check report drift on
+/// every single call, even a freshly-created, fully-compliant ruleset.
+pub fn detect_ruleset_drift(existing: &Value, desired: &Value) -> Vec<String> {
+    let mut drift = Vec::new();
+
+    let existing_enforcement = existing.get("enforcement").and_then(|v| v.as_str()).unwrap_or("");
+    let desired_enforcement = desired.get("enforcement").and_then(|v| v.as_str()).unwrap_or("");
+    if existing_enforcement != desired_enforcement {
+        drift.push(format!("enforcement is {existing_enforcement:?}, expected {desired_enforcement:?}"));
+    }
+
+    let existing_bypass_count = existing.get("bypass_actors").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    if existing_bypass_count > 0 {
+        drift.push(format!("bypass_actors is non-empty ({existing_bypass_count} actor(s)) — the policy requires nobody bypass this ruleset"));
+    }
+
+    let existing_rules = existing.get("rules").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let has_rule_type = |t: &str| existing_rules.iter().any(|r| r.get("type").and_then(|v| v.as_str()) == Some(t));
+
+    if !has_rule_type("deletion") {
+        drift.push("missing rule \"deletion\" — branch deletion is no longer blocked".to_string());
+    }
+    if !has_rule_type("non_fast_forward") {
+        drift.push("missing rule \"non_fast_forward\" — force-pushes are no longer blocked".to_string());
+    }
+    if !has_rule_type("pull_request") {
+        drift.push("missing rule \"pull_request\" — a reviewed PR is no longer required before merging".to_string());
+    }
+
+    let status_check_rule = existing_rules.iter().find(|r| r.get("type").and_then(|v| v.as_str()) == Some("required_status_checks"));
+    match status_check_rule {
+        None => drift.push("missing rule \"required_status_checks\" — \"ignite/gate\" is no longer required".to_string()),
+        Some(rule) => {
+            let contexts: Vec<&str> = rule
+                .get("parameters")
+                .and_then(|p| p.get("required_status_checks"))
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|c| c.get("context").and_then(|v| v.as_str())).collect())
+                .unwrap_or_default();
+            if !contexts.contains(&"ignite/gate") {
+                drift.push("\"required_status_checks\" rule no longer includes \"ignite/gate\" as a required context".to_string());
+            }
+        }
+    }
+
+    drift
+}
+
 pub struct OrgPlannedCall {
     pub org: String,
     pub existing_ruleset_id: Option<u64>,
     pub method: &'static str,
     pub api_path: String,
     pub body: Value,
+    /// Divergences found between the org's current ruleset and the
+    /// policy — empty when a compliant ruleset already exists, or a
+    /// single "no ruleset exists yet" entry when there's nothing to diff
+    /// against. Always populated (even outside `--check-drift` mode), so
+    /// the normal create-or-update flow's own output also surfaces
+    /// exactly what it's about to fix.
+    pub drift: Vec<String>,
 }
 
 async fn plan_for_org(runner: &ToolRunner, org: &str) -> Result<OrgPlannedCall, String> {
@@ -212,11 +317,26 @@ async fn plan_for_org(runner: &ToolRunner, org: &str) -> Result<OrgPlannedCall, 
         Some(id) => ("PUT", format!("orgs/{org}/rulesets/{id}")),
         None => ("POST", format!("orgs/{org}/rulesets")),
     };
-    Ok(OrgPlannedCall { org: org.to_string(), existing_ruleset_id, method, api_path, body })
+    let drift = match existing_ruleset_id {
+        Some(id) => {
+            let existing = api.gh_api_get(&format!("orgs/{org}/rulesets/{id}"), &token).await.map_err(|e| format!("Failed to fetch existing ruleset for org {org}: {e}"))?.unwrap_or(Value::Null);
+            detect_ruleset_drift(&existing, &body)
+        }
+        None => vec!["no \"ignite-gate\" ruleset exists yet for this org".to_string()],
+    };
+    Ok(OrgPlannedCall { org: org.to_string(), existing_ruleset_id, method, api_path, body, drift })
 }
 
 fn print_org_plan(plan: &OrgPlannedCall) {
     println!("== org:{} ({}) ==", plan.org, if plan.existing_ruleset_id.is_some() { "update existing ruleset" } else { "create new ruleset" });
+    if plan.drift.is_empty() {
+        println!("  ruleset already matches policy — no drift detected.");
+    } else {
+        println!("  drift detected:");
+        for d in &plan.drift {
+            println!("    - {d}");
+        }
+    }
     println!("  gh api -X {} {}", plan.method, plan.api_path);
     println!("  body:");
     println!("{}", serde_json::to_string_pretty(&plan.body).unwrap_or_default().lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n"));
@@ -249,11 +369,60 @@ async fn main() {
         }
     };
 
+    let runner = default_runner();
+
+    // `--check-drift`: a dedicated report-first mode, separate from the
+    // normal unconditional create-or-update flow below. Exit code is the
+    // signal a cron/CI caller actually watches — 0 means every `--org`
+    // target's ruleset already matches policy, 2 means at least one has
+    // drifted (whether or not `--apply` was also given to reconcile it —
+    // a caller alerting on drift wants to know it *happened* this run,
+    // not just that it's fixed now), 1 means a lookup/apply error.
+    if parsed.check_drift {
+        let mut any_drift = false;
+        let mut had_error = false;
+        for org in &parsed.orgs {
+            match plan_for_org(&runner, org).await {
+                Ok(plan) => {
+                    print_org_plan(&plan);
+                    if !plan.drift.is_empty() {
+                        any_drift = true;
+                        if parsed.apply {
+                            match apply_org_plan(&runner, &plan).await {
+                                Ok(()) => println!("  reconciled.\n"),
+                                Err(e) => {
+                                    eprintln!("  FAILED: {e}\n");
+                                    had_error = true;
+                                }
+                            }
+                        } else {
+                            println!();
+                        }
+                    } else {
+                        println!();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("org:{org}: {e}");
+                    had_error = true;
+                }
+            }
+        }
+        if had_error {
+            std::process::exit(1);
+        }
+        if any_drift {
+            eprintln!("Drift detected in at least one org's ruleset — see above.");
+            std::process::exit(2);
+        }
+        println!("No drift detected — every org's ruleset matches policy.");
+        return;
+    }
+
     if !parsed.apply {
         println!("DRY RUN (pass --apply to actually call GitHub) — no changes will be made.\n");
     }
 
-    let runner = default_runner();
     let mut had_error = false;
 
     for (org, repo) in &parsed.repos {
@@ -441,7 +610,10 @@ exit 1
         std::env::set_var("PATH", old_path);
     }
 
-    fn make_fake_gh_org_rulesets(dir: &std::path::Path, existing_rulesets_json: &str) {
+    /// `ruleset_detail_json` backs `GET orgs/acme/rulesets/<id>` — only
+    /// reached when `existing_rulesets_json` carries a matching id, so
+    /// tests where no ruleset exists yet can pass an unused placeholder.
+    fn make_fake_gh_org_rulesets(dir: &std::path::Path, existing_rulesets_json: &str, ruleset_detail_json: &str) {
         let script_path = dir.join("gh");
         let script = format!(
             r#"#!/bin/sh
@@ -450,6 +622,12 @@ if [ "$1" = "api" ] && [ "$2" = "orgs/acme/rulesets" ] && [ -z "$3" ]; then
   echo '{existing_rulesets_json}'
   exit 0
 fi
+case "$2" in
+  orgs/acme/rulesets/*)
+    echo '{ruleset_detail_json}'
+    exit 0
+    ;;
+esac
 echo "unexpected args: $@" >&2
 exit 1
 "#
@@ -465,7 +643,7 @@ exit 1
     async fn plan_for_org_creates_a_new_ruleset_when_none_exists_yet() {
         let _guard = PATH_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        make_fake_gh_org_rulesets(dir.path(), "[]");
+        make_fake_gh_org_rulesets(dir.path(), "[]", "{}");
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
 
@@ -474,6 +652,7 @@ exit 1
         assert_eq!(plan.existing_ruleset_id, None);
         assert_eq!(plan.method, "POST");
         assert_eq!(plan.api_path, "orgs/acme/rulesets");
+        assert_eq!(plan.drift, vec!["no \"ignite-gate\" ruleset exists yet for this org".to_string()]);
 
         std::env::set_var("PATH", old_path);
     }
@@ -483,7 +662,8 @@ exit 1
     async fn plan_for_org_updates_the_existing_ruleset_in_place() {
         let _guard = PATH_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        make_fake_gh_org_rulesets(dir.path(), r#"[{"id": 42, "name": "ignite-gate"}]"#);
+        let compliant_detail = serde_json::to_string(&org_ruleset_payload()).unwrap();
+        make_fake_gh_org_rulesets(dir.path(), r#"[{"id": 42, "name": "ignite-gate"}]"#, &compliant_detail);
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
 
@@ -492,6 +672,7 @@ exit 1
         assert_eq!(plan.existing_ruleset_id, Some(42));
         assert_eq!(plan.method, "PUT");
         assert_eq!(plan.api_path, "orgs/acme/rulesets/42");
+        assert!(plan.drift.is_empty(), "a ruleset identical to the desired policy should report no drift: {:?}", plan.drift);
 
         std::env::set_var("PATH", old_path);
     }
@@ -501,7 +682,7 @@ exit 1
     async fn plan_for_org_ignores_a_same_named_ruleset_belonging_to_a_different_id_shape() {
         let _guard = PATH_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        make_fake_gh_org_rulesets(dir.path(), r#"[{"id": 7, "name": "some-other-ruleset"}]"#);
+        make_fake_gh_org_rulesets(dir.path(), r#"[{"id": 7, "name": "some-other-ruleset"}]"#, "{}");
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
 
@@ -511,5 +692,108 @@ exit 1
         assert_eq!(plan.method, "POST");
 
         std::env::set_var("PATH", old_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn plan_for_org_detects_drift_when_a_human_loosened_the_ruleset_in_github() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // A human removed the pull_request rule and added a bypass actor
+        // directly in GitHub's UI after this tool last applied policy.
+        let loosened_detail = r#"{
+            "id": 42, "name": "ignite-gate", "enforcement": "active",
+            "bypass_actors": [{"actor_id": 1, "actor_type": "Team"}],
+            "rules": [
+                { "type": "deletion" },
+                { "type": "non_fast_forward" },
+                { "type": "required_status_checks", "parameters": { "required_status_checks": [{ "context": "ignite/gate" }] } }
+            ]
+        }"#;
+        make_fake_gh_org_rulesets(dir.path(), r#"[{"id": 42, "name": "ignite-gate"}]"#, loosened_detail);
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
+
+        let runner = default_runner();
+        let plan = plan_for_org(&runner, "acme").await.unwrap();
+
+        std::env::set_var("PATH", old_path);
+
+        assert!(plan.drift.iter().any(|d| d.contains("bypass_actors")), "{:?}", plan.drift);
+        assert!(plan.drift.iter().any(|d| d.contains("pull_request")), "{:?}", plan.drift);
+    }
+
+    #[test]
+    fn detect_ruleset_drift_reports_nothing_for_a_fully_compliant_ruleset() {
+        let desired = org_ruleset_payload();
+        // Simulates what GitHub's API actually echoes back: the same
+        // logical policy plus extra server-assigned fields no diff should
+        // care about.
+        let mut existing = desired.clone();
+        existing["id"] = json!(42);
+        existing["created_at"] = json!("2026-01-01T00:00:00Z");
+        assert!(detect_ruleset_drift(&existing, &desired).is_empty());
+    }
+
+    #[test]
+    fn detect_ruleset_drift_flags_disabled_enforcement() {
+        let desired = org_ruleset_payload();
+        let mut existing = desired.clone();
+        existing["enforcement"] = json!("disabled");
+        let drift = detect_ruleset_drift(&existing, &desired);
+        assert!(drift.iter().any(|d| d.contains("enforcement")), "{drift:?}");
+    }
+
+    #[test]
+    fn detect_ruleset_drift_flags_nonempty_bypass_actors() {
+        let desired = org_ruleset_payload();
+        let mut existing = desired.clone();
+        existing["bypass_actors"] = json!([{ "actor_id": 1, "actor_type": "Team" }]);
+        let drift = detect_ruleset_drift(&existing, &desired);
+        assert!(drift.iter().any(|d| d.contains("bypass_actors")), "{drift:?}");
+    }
+
+    #[test]
+    fn detect_ruleset_drift_flags_missing_rule_types() {
+        let desired = org_ruleset_payload();
+        let mut existing = desired.clone();
+        existing["rules"] = json!([{ "type": "deletion" }]);
+        let drift = detect_ruleset_drift(&existing, &desired);
+        assert!(drift.iter().any(|d| d.contains("non_fast_forward")), "{drift:?}");
+        assert!(drift.iter().any(|d| d.contains("pull_request")), "{drift:?}");
+        assert!(drift.iter().any(|d| d.contains("required_status_checks")), "{drift:?}");
+    }
+
+    #[test]
+    fn detect_ruleset_drift_flags_status_check_missing_ignite_gate_context() {
+        let desired = org_ruleset_payload();
+        let mut existing = desired.clone();
+        existing["rules"] = json!([
+            { "type": "deletion" },
+            { "type": "non_fast_forward" },
+            { "type": "pull_request", "parameters": { "required_approving_review_count": 1 } },
+            { "type": "required_status_checks", "parameters": { "required_status_checks": [{ "context": "some-other-check" }] } }
+        ]);
+        let drift = detect_ruleset_drift(&existing, &desired);
+        assert!(drift.iter().any(|d| d.contains("ignite/gate")), "{drift:?}");
+    }
+
+    #[test]
+    fn parse_args_check_drift_requires_an_org_target() {
+        let err = parse_args(&["--check-drift".to_string(), "acme/widgets".to_string()]).unwrap_err();
+        assert!(err.contains("--check-drift requires"));
+    }
+
+    #[test]
+    fn parse_args_check_drift_accepted_with_an_org_target() {
+        let parsed = parse_args(&["--org".to_string(), "acme".to_string(), "--check-drift".to_string()]).unwrap();
+        assert!(parsed.check_drift);
+        assert_eq!(parsed.orgs, vec!["acme".to_string()]);
+    }
+
+    #[test]
+    fn parse_args_check_drift_defaults_to_false() {
+        let parsed = parse_args(&["acme/widgets".to_string()]).unwrap();
+        assert!(!parsed.check_drift);
     }
 }
