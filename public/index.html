@@ -72,49 +72,48 @@
        retrofitting a real per-class dark palette would mean touching
        thousands of class lists. Instead, invert the whole page's colors
        (a well-established technique — the same one browser "force dark"
-       extensions use) and counter-invert (double-invert = original) the
-       handful of surfaces that are already deliberately dark and must stay
-       exactly as authored regardless of theme: the terminal-style log
-       panels (`.terminal`, `#studioOutputPanel`), whose ✓/✗/⚠ line colors
-       are semantic and must not flip. There are no <img> elements anywhere
-       in this app, so nothing photographic is at risk of inverting oddly.
+       extensions use) once, on `body`. That single filter already darkens
+       *everything* inside body, Studio included — nothing else needs its
+       own `filter: invert(...)` declaration just to "be dark". The only
+       thing a second filter is ever for is the opposite: counter-inverting
+       (double-invert = original) a surface that's already deliberately
+       dark and must stay exactly as authored regardless of theme — right
+       now just the terminal-style log panels (`.terminal`,
+       `#studioOutputPanel`), whose ✓/✗/⚠ line colors are semantic and must
+       not flip. There are no <img> elements anywhere in this app, so
+       nothing photographic is at risk of inverting oddly.
 
-       `color-scheme: light` on every inverted surface matters just as much
-       as the filter itself: `html`'s own `color-scheme: dark` (set so the
-       browser's native chrome — scrollbars, etc. — matches) otherwise
-       inherits into every native form control (<select>, <input>) under
-       body too, so a plain unstyled <select> renders with the *browser's*
-       dark-native theme (dark bg, light text) — then this filter inverts
-       THAT to light-on-light, which is exactly the invisible-dropdown-text
-       bug this comment used to not mention. Forcing `color-scheme: light`
-       everywhere the filter is applied makes every native control render
-       light first, so the filter is the only thing turning it dark, same
-       as every other element here. */
+       Do NOT stack a third filter on top of that (e.g. re-inverting some
+       inner element back to "dark" again) even though the arithmetic nets
+       out correctly on paper — three or more `filter` declarations chained
+       down the same ancestor chain hit a real Chromium compositing bug
+       that renders the affected region solid black (reproduced directly:
+       Studio's header/tree/code panes went fully black once
+       `#studioView > div` + `#studioHeaderBar`/`#studioBody` each added
+       their own invert on top of body's). Two is the hard ceiling: body's
+       invert, plus at most one counter-invert per deliberately-dark
+       surface. Nothing in Studio needs a third layer — a light-authored
+       element (the header bar, banners, tree/code/issue panes) is already
+       correctly dark from body's filter alone with zero extra CSS.
+
+       `color-scheme: light` matters just as much as the filter itself:
+       `html`'s own `color-scheme: dark` (set so the browser's native
+       chrome — scrollbars, etc. — matches) otherwise inherits into every
+       native form control (<select>, <input>) under body too, so a plain
+       unstyled <select> renders with the *browser's* dark-native theme
+       (dark bg, light text) — then body's filter inverts THAT to
+       light-on-light, which is the invisible-dropdown-text bug this
+       comment used to not mention. Forcing `color-scheme: light` on body
+       makes every native control under it render light first, so the
+       filter is the only thing turning it dark, same as everything else
+       on the page. */
     html[data-theme="dark"] { background: #0f172a; color-scheme: dark; }
     html[data-theme="dark"] body { background: #fff; filter: invert(1) hue-rotate(180deg); color-scheme: light; }
-    html[data-theme="dark"] .terminal { filter: invert(1) hue-rotate(180deg); }
-    #themeToggleBtn svg { transition: transform .2s ease; }
-
-    /* Ignite Studio's outer box gets a second invert (cancels the body's =
-       back to its original, authored colors) so its own deliberately-dark
-       surfaces — right now just the output/terminal panel — stay exactly
-       as authored. Everything else genuinely light-authored (the header
-       bar, banners, summary bar, and the tree/code/issue-detail row) gets
-       a *third* invert each, netting to a single inversion — real dark
-       tones, same contrast shape as light mode. `studioHeaderBar` is
-       explicitly light-authored (`bg-white`), not the "already dark"
-       exception a stale version of this comment used to claim — it needs
-       the third invert like everything else, not to be left at the
-       second layer's cancelled-out light state. */
-    html[data-theme="dark"] #studioView > div { filter: invert(1) hue-rotate(180deg); }
-    html[data-theme="dark"] #studioHeaderBar,
-    html[data-theme="dark"] #studioError,
-    html[data-theme="dark"] #studioHistoricalBanner,
-    html[data-theme="dark"] #studioSummaryBar,
-    html[data-theme="dark"] #studioBody {
+    html[data-theme="dark"] .terminal,
+    html[data-theme="dark"] #studioOutputPanel {
       filter: invert(1) hue-rotate(180deg);
-      color-scheme: light;
     }
+    #themeToggleBtn svg { transition: transform .2s ease; }
   </style>
   <script>
     // Applied before first paint (synchronous, in <head>) so the page never
