@@ -4498,13 +4498,24 @@
         if (doneEvent.graph.truncated) {
           studioOutputAppendLine('$ ⚠ Graph truncated — this project has more calls than fit in one legible view.');
         }
+        // Cache regardless of whether the user is still on this tab — the
+        // panel already restores from studioCallGraphCache on reopen, so a
+        // graph that finished building while they'd switched away is
+        // still there when they come back. Only the live rendering and
+        // error banner below need the isConnected guard: `canvas` (and
+        // `runBtn`) come from studioCodeWrap, which a tab switch replaces
+        // wholesale, detaching them — painting a stale error/graph over
+        // whatever tab is now open is the actual bug this guards against,
+        // same as the Custom Query panel's own version of this guard.
         studioCallGraphCache = { language, graph: doneEvent.graph };
-        renderCallGraph(canvas, doneEvent.graph);
+        if (canvas.isConnected) renderCallGraph(canvas, doneEvent.graph);
       } catch (e) {
         studioOutputAppendLine(`$ ✗ ${e.message}`);
         studioOutputSetStatus('failed');
-        studioShowError(e.message);
-        canvas.innerHTML = '';
+        if (canvas.isConnected) {
+          studioShowError(e.message);
+          canvas.innerHTML = '';
+        }
       } finally {
         runBtn.disabled = false;
         runBtn.textContent = studioCallGraphCache.graph && studioCallGraphCache.language === language ? '↻ Rebuild graph' : '▶ Build graph';
@@ -4578,7 +4589,7 @@
     // the project, not a bug in location parsing.
     const STUDIO_QUERY_EXAMPLES = {
       javascript: 'import javascript\n\nfrom Function f\nwhere exists(f.getFile().getRelativePath())\nselect f, "A function."',
-      python: 'import python\n\nfrom Function f\nwhere exists(f.getFile().getRelativePath())\nselect f, "A function."',
+      python: 'import python\n\nfrom Function f\nwhere exists(f.getLocation().getFile().getRelativePath())\nselect f, "A function."',
       java: 'import java\n\nfrom Method m\nwhere exists(m.getFile().getRelativePath())\nselect m, "A method."',
       go: 'import go\n\nfrom FuncDecl f\nwhere exists(f.getFile().getRelativePath())\nselect f, "A function declaration."',
     };
@@ -4650,12 +4661,22 @@
         if (!doneEvent) throw new Error('Connection to the server was interrupted mid-run.');
         if (!doneEvent.ok) throw new Error(doneEvent.error || 'Query failed.');
         studioOutputSetStatus('success');
-        renderStudioQueryResults(doneEvent.columns, doneEvent.rows);
+        // Only touch this panel's own results table if the user is still
+        // looking at Custom Query — this run's fetch/stream started
+        // before they may have since switched to a different Studio tab
+        // (replacing studioCodeWrap's innerHTML, detaching wrap/runBtn
+        // from the document), and painting a *different* tab's error
+        // banner or stealing focus back to a torn-down panel is exactly
+        // the "stale result bleeds into whatever tab is now open" bug
+        // this guard exists for. The Output panel below stays updated
+        // either way — it's persistent, cross-tab scrollback by design,
+        // and already labels which run each entry belongs to.
+        if (runBtn.isConnected) renderStudioQueryResults(doneEvent.columns, doneEvent.rows);
       } catch (e) {
         const cancelled = e.name === 'AbortError';
         studioOutputAppendLine(cancelled ? '$ ✗ Cancelled.' : `$ ✗ ${e.message}`);
         studioOutputSetStatus(cancelled ? 'idle' : 'failed');
-        if (!cancelled) studioShowError(e.message);
+        if (!cancelled && runBtn.isConnected) studioShowError(e.message);
       } finally {
         studioActiveQueryAbort = null;
         runBtn.disabled = false;
