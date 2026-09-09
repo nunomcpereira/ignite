@@ -73,7 +73,7 @@ ID: secret::docs-site/docs/ci-integration.md::384
 # [ERROR] secret - Hardcoded token
 #   docs-site/docs/ci-integration.md:384
 # Code: -d '{"regex": "acme_live_[a-zA-Z0-9]{24}", "sample": "token: acme_live_abcdef0123456789ghijklmn"}'
-Acknowledge: 
+Acknowledge: Fictional pattern/sample pair in a docs-site example curl command demonstrating the custom-secret-pattern playground endpoint - "acme_live_..." isn't a real vendor token format, and the sample string is fabricated for the example, not a real credential.
 
 ID: secret::rust/crates/secrets/src/lib.rs::694
 # Issue #10
@@ -122,7 +122,7 @@ ID: secret::rust/crates/server/src/routes/custom_secret_patterns.rs::193
 # [ERROR] secret - Hardcoded generic-api-key
 #   rust/crates/server/src/routes/custom_secret_patterns.rs:193
 # Code: let req = Request::post("/api/secret-patterns/test").header("content-type", "application/json").body(Body::from(r#"{"regex":"sk_live_[a-z0-9]+","sample":"key: sk_live_abc123"}"#)).unwrap();
-Acknowledge: 
+Acknowledge: Fabricated Stripe-format sample string used as request-body input to the custom-secret-pattern playground's own unit test (test_pattern_route_reports_matches_without_persisting_anything) - the whole point of this endpoint is to test a regex against sample text, so a plausible-looking fake match is expected input, not a real credential.
 
 ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::974
 # Issue #17
@@ -157,21 +157,21 @@ ID: secret::rust/crates/secrets/src/lib.rs::927
 # [ERROR] secret - Hardcoded stripe-access-token
 #   rust/crates/secrets/src/lib.rs:927
 # Code: let matches = test_pattern_against_sample(r"sk_live_[a-zA-Z0-9]{16,}", "key one: sk_live_abcdef0123456789, key two: sk_live_zzzzzz9999999999").unwrap();
-Acknowledge: 
+Acknowledge: Fabricated Stripe-format sample text (test_pattern_against_sample_finds_all_matches) verifying the custom-secret-pattern regex tester finds every match in a sample, not a real credential - same fixture literal flagged again at the two assert_eq! lines immediately below for the same reason.
 
 ID: secret::rust/crates/secrets/src/lib.rs::929
 # Issue #22
 # [ERROR] secret - Hardcoded stripe-access-token
 #   rust/crates/secrets/src/lib.rs:929
 # Code: assert_eq!(matches[0].matched_text, "sk_live_abcdef0123456789");
-Acknowledge: 
+Acknowledge: Same fabricated Stripe-format fixture literal as the entry above, asserted as the expected match text in the same test - not a real credential.
 
 ID: secret::rust/crates/secrets/src/lib.rs::930
 # Issue #23
 # [ERROR] secret - Hardcoded stripe-access-token
 #   rust/crates/secrets/src/lib.rs:930
 # Code: assert_eq!(matches[1].matched_text, "sk_live_zzzzzz9999999999");
-Acknowledge: 
+Acknowledge: Same fabricated Stripe-format fixture literal as the two entries above, asserted as the second expected match text in the same test - not a real credential.
 
 ID: codeql-sast::public/index.html::842::js/xss-through-dom
 # Issue #24
