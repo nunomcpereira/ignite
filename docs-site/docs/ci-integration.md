@@ -504,3 +504,26 @@ convention as `enforce-gate-branch-protection`:
 prints the created advisory's GHSA id and URL. Never wired into any
 scan/pipeline path — an operator runs it deliberately once they've decided
 a finding warrants private coordination.
+
+### Completing the workflow: private forks, CVE requests, publishing
+
+Three more subcommands round out GHAS's private-coordination workflow
+around the draft advisory above — each takes the same `<org/repo>` plus
+the `--ghsa-id` the create command printed, same dry-run-by-default
+convention:
+
+```bash
+# Temporary private fork — collaborators push a fix here, invisible
+# anywhere public until the advisory itself is.
+./target/release/report-vulnerability fork my-org/my-repo \
+  --ghsa-id GHSA-xxxx-yyyy-zzzz --apply
+
+# Request a CVE identifier for the draft.
+./target/release/report-vulnerability request-cve my-org/my-repo \
+  --ghsa-id GHSA-xxxx-yyyy-zzzz --apply
+
+# Publish — makes the advisory PUBLIC. Irreversible by re-running this
+# tool; everything else above only ever touches something still private.
+./target/release/report-vulnerability publish my-org/my-repo \
+  --ghsa-id GHSA-xxxx-yyyy-zzzz --apply
+```
