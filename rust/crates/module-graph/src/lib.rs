@@ -212,6 +212,43 @@ pub fn build_module_graph(root: &Path) -> std::io::Result<ModuleGraph> {
     Ok(ModuleGraph { files, graph })
 }
 
+/// Normalizes a bare import specifier to the npm root package name a
+/// `package.json`/lockfile would actually list — a scoped package's own
+/// subpath import (`@org/pkg/dist/thing`) still names the `@org/pkg`
+/// package, and an unscoped subpath import (`lodash/get`) still names
+/// `lodash`. `None` only for a specifier with a shape too degenerate to
+/// name any package at all (empty string, or a bare `@` with no name
+/// after it) — not expected from a real import statement, but this
+/// stays a clean `None` rather than panicking on it.
+pub fn root_package_name(specifier: &str) -> Option<&str> {
+    if specifier.starts_with('@') {
+        let mut parts = specifier.splitn(3, '/');
+        let scope = parts.next()?;
+        let name = parts.next()?;
+        if name.is_empty() {
+            return None;
+        }
+        Some(&specifier[..scope.len() + 1 + name.len()])
+    } else {
+        let name = specifier.split('/').next()?;
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+}
+
+/// Every distinct npm package actually imported/required anywhere in the
+/// project's JS/TS source — the reachability signal
+/// `dependency-license-scan`'s vulnerability findings use to note when a
+/// flagged dependency isn't imported by any project file at all (present
+/// only via another dependency's own transitive requirement, or listed
+/// in the manifest but genuinely unused).
+pub fn collect_imported_packages(graph: &ModuleGraph) -> HashSet<String> {
+    graph.graph.values().flat_map(|node| node.bare_imports.iter()).filter_map(|spec| root_package_name(spec)).map(str::to_string).collect()
+}
+
 /// Finds import cycles (standard three-color DFS). Returns one array of
 /// absolute file paths per distinct cycle, each starting at its
 /// lexicographically-smallest member (rotation-invariant canonical form)
@@ -411,6 +448,45 @@ mod tests {
         fs::write(root.join("b.js"), "export const b = 1;\n").unwrap();
         let mg = build_module_graph(root).unwrap();
         assert!(find_cycles(&mg.graph).is_empty());
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[test]
+    fn root_package_name_handles_unscoped_and_scoped_subpaths() {
+        assert_eq!(root_package_name("lodash"), Some("lodash"));
+        assert_eq!(root_package_name("lodash/get"), Some("lodash"));
+        assert_eq!(root_package_name("@org/pkg"), Some("@org/pkg"));
+        assert_eq!(root_package_name("@org/pkg/dist/thing"), Some("@org/pkg"));
+    }
+
+    #[test]
+    fn root_package_name_none_for_degenerate_specifiers() {
+        assert_eq!(root_package_name(""), None);
+        assert_eq!(root_package_name("@org/"), None);
+        assert_eq!(root_package_name("@org"), None);
+    }
+
+    #[test]
+    fn collect_imported_packages_gathers_bare_imports_across_every_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.js"), "import _ from 'lodash';\nimport './local';\n").unwrap();
+        fs::write(root.join("local.js"), "const axios = require('axios/dist/node');\nexport const x = 1;\n").unwrap();
+        let mg = build_module_graph(root).unwrap();
+        let imported = collect_imported_packages(&mg);
+        assert!(imported.contains("lodash"));
+        assert!(imported.contains("axios"));
+        assert_eq!(imported.len(), 2, "a relative import ('./local') must not count as a package: {imported:?}");
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[test]
+    fn collect_imported_packages_empty_when_nothing_imports_a_bare_package() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.js"), "export const x = 1;\n").unwrap();
+        let mg = build_module_graph(root).unwrap();
+        assert!(collect_imported_packages(&mg).is_empty());
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 }

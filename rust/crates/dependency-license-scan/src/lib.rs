@@ -958,6 +958,21 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
     let mut issues = Vec::new();
     let category = "dependency-vulnerability";
 
+    // GHAS-parity transitive-reachability signal, scoped to npm (the one
+    // ecosystem `ignite-module-graph` already parses import/require
+    // statements for): every distinct package actually imported anywhere
+    // in the project's JS/TS source, computed once per call rather than
+    // once per finding. `None` — never even attempted — when there's no
+    // npm manifest in this batch at all, so a pure-Python/Go/Rust repo
+    // never pays for a JS/TS file walk that could only ever come back
+    // empty. Deliberately annotation-only (see the doc comment where it's
+    // used below): it never suppresses or downgrades a finding on its
+    // own, since a regex-based import scan is inherently best-effort
+    // (dynamic `require(someVar)`, re-exports through a build step, etc.
+    // can all make a genuinely-used package look unimported).
+    let imported_npm_packages: Option<HashSet<String>> =
+        manifests.iter().any(|m| m.ecosystem == "npm").then(|| ignite_module_graph::build_module_graph(root).map(|g| ignite_module_graph::collect_imported_packages(&g)).unwrap_or_default());
+
     for manifest in manifests {
         for dep in &manifest.dependencies {
             for vuln in &dep.vulnerabilities {
@@ -985,6 +1000,23 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
                 }
                 if let Some(score) = vuln.cvss3_score {
                     summary.push_str(&format!(" (CVSS {score})"));
+                }
+                // Transitive-reachability annotation (see where
+                // `imported_npm_packages` is computed above): flags a
+                // vulnerable npm dependency that's present in the
+                // manifest/lockfile but not imported by any project file —
+                // still worth knowing about (it's in the dependency tree
+                // another package could pull in), but genuinely lower
+                // urgency than one the project's own code actually calls
+                // into. Annotation only — severity/score are untouched;
+                // this is a human-facing signal for override/triage
+                // decisions, not something this scan decides unattended.
+                if manifest.ecosystem == "npm" {
+                    if let Some(imported) = &imported_npm_packages {
+                        if !imported.contains(&dep.name) {
+                            summary.push_str(" [not directly imported in project source]");
+                        }
+                    }
                 }
 
                 // Every id this one advisory carries, sorted into its
@@ -1149,6 +1181,59 @@ mod tests {
         // Studio's "Generate suggested fix" 400s with "A code snippet is
         // required" for every dependency-vulnerability finding.
         assert!(issues[0].snippet.is_some(), "expected a snippet built from the manifest file+line");
+    }
+
+    fn npm_manifest_for(dep_name: &str) -> VulnScanManifest {
+        VulnScanManifest {
+            file: "package.json".to_string(),
+            ecosystem: "npm",
+            dependencies: vec![VulnScanDependency {
+                name: dep_name.to_string(),
+                version_range: "^1.0.0".to_string(),
+                version: Some("1.0.0".to_string()),
+                line: Some(1),
+                vulnerabilities: vec![VulnFinding { id: Some("GHSA-xxxx-yyyy-zzzz".to_string()), title: Some("some vulnerability".to_string()), aliases: vec![], cvss3_score: None, severity: "error", url: None }],
+                note: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_flags_an_npm_dependency_not_imported_anywhere() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("index.js"), "import lodash from 'lodash';\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[npm_manifest_for("left-pad")]);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].summary.contains("[not directly imported in project source]"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_does_not_flag_an_npm_dependency_that_is_imported() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("index.js"), "import lodash from 'lodash';\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[npm_manifest_for("lodash")]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("not directly imported"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_never_flags_a_non_npm_ecosystem() {
+        // No JS/TS reachability data exists for pypi/cargo/go/maven —
+        // must never even attempt (let alone falsely append) the
+        // reachability annotation for a non-npm finding.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("requirements.txt"), "starlette==0.35.1\n").unwrap();
+        let mut manifest = npm_manifest_for("starlette");
+        manifest.ecosystem = "pypi";
+        manifest.file = "requirements.txt".to_string();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[manifest]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("not directly imported"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
     /// Real case hit against deps.dev live data: one advisory carries
