@@ -619,29 +619,33 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/pipeline/:job_id/studio/provenance", get(provenance))
         // Ad-hoc CodeQL query: reads whichever database `/studio/codeql`
         // already built and returns rows, same as every other read-only
-        // report route above — unlike `/studio/codeql` itself (which
-        // persists real `codeql-sast`/`codeql-analysis-failed` issues via
-        // replace_issue_batch), an ad-hoc query's own doc comment already
-        // says "Purely exploratory — results aren't persisted as issues or
-        // cached", so it can't change what a run will push and belongs
-        // here, not behind auth in mutating_router below.
+        // report route above — its own doc comment already says "Purely
+        // exploratory — results aren't persisted as issues or cached", so
+        // it can't change what a run will push.
         .route(
             "/api/pipeline/:job_id/studio/codeql/query",
             axum::routing::post(codeql_query).delete(codeql_query_cancel),
         )
+        // Builds/persists a real CodeQL scan (`codeql-sast`/
+        // `codeql-analysis-failed` issues via `replace_issue_batch`) — no
+        // auth required, by deliberate choice: this router's own doc
+        // comment already covers local/simulation use with no login, and
+        // an operator who wants this endpoint gated again on a
+        // shared/multi-tenant deployment should reintroduce
+        // `require_auth_middleware` around it in `main.rs`, the same way
+        // `mutating_router` below is wired.
+        .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
 }
 
-/// Everything that can change what actually gets scanned or pushed:
-/// editing a file mid-run, forcing a rescan, or building/persisting a real
-/// CodeQL scan's findings. Requires auth — see the finding this closes in
-/// `main.rs`'s `require_auth_middleware` wiring: an unauthenticated
-/// caller reaching any of these could tamper with a run before Phase 6
-/// pushes it.
+/// Everything else that can change what actually gets scanned or pushed:
+/// editing a file mid-run, or forcing a rescan. Requires auth — see the
+/// finding this closes in `main.rs`'s `require_auth_middleware` wiring:
+/// an unauthenticated caller reaching any of these could tamper with a
+/// run before Phase 6 pushes it. (`/studio/codeql` — building/persisting
+/// a real CodeQL scan — moved to the no-auth `router()` above by
+/// deliberate choice; see that route's own comment.)
 pub fn mutating_router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/api/pipeline/:job_id/studio/file", axum::routing::put(put_file))
-        .route("/api/pipeline/:job_id/studio/rescan", axum::routing::post(rescan))
-        .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
+    Router::new().route("/api/pipeline/:job_id/studio/file", axum::routing::put(put_file)).route("/api/pipeline/:job_id/studio/rescan", axum::routing::post(rescan))
 }
 
 #[cfg(test)]
