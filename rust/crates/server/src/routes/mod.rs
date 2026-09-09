@@ -1,6 +1,7 @@
 pub mod auto_fix;
 pub mod baseline;
 pub mod campaigns;
+pub mod compliance;
 pub mod custom_secret_patterns;
 pub mod code_scanning_webhook;
 pub mod config;

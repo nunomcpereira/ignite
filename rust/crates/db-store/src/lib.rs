@@ -34,6 +34,7 @@ mod sla;
 mod store;
 mod types;
 mod campaigns;
+mod compliance;
 mod custom_secret_patterns;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
@@ -688,5 +689,82 @@ mod tests {
         assert!(store.delete_custom_secret_pattern(id));
         assert!(store.get_custom_secret_pattern(id).is_none());
         assert!(!store.delete_custom_secret_pattern(id), "deleting again must report nothing existed");
+    }
+
+    /// Seeds one override + a matching `issue_first_seen` row with
+    /// explicit (not `datetime('now')`-default) timestamps, so tests can
+    /// assert an exact `days_to_override` — `add_override`/
+    /// `replace_project_issues` always stamp "now", which isn't
+    /// deterministic enough for that.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_override_with_timestamps(store: &DbStore, project_id: i64, org: &str, repo: &str, issue_id: &str, severity: &str, first_detected_at: &str, override_created_at: &str) {
+        let conn = store.conn.lock();
+        conn.execute("INSERT INTO issue_first_seen (org, repo, issue_id, first_detected_at) VALUES (?, ?, ?, ?)", rusqlite::params![org, repo, issue_id, first_detected_at]).unwrap();
+        conn.execute(
+            "INSERT INTO overrides (project_id, job_id, phase, issue_id, category, severity, summary, justification, actor_email, actor_name, created_at) VALUES (?, 'job-1', 4, ?, 'secret', ?, 'summary', 'justified', 'dev@acme.com', 'Dev', ?)",
+            rusqlite::params![project_id, issue_id, severity, override_created_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn compliance_list_overrides_in_range_computes_days_to_override() {
+        let (_dir, store) = open_test_db();
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::a.js::1", "error", "2026-01-01 00:00:00", "2026-01-05 00:00:00");
+
+        let rows = store.list_overrides_in_range("2026-01-01 00:00:00", "2026-01-31 23:59:59");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].org, "acme");
+        assert_eq!(rows[0].repo, "widgets");
+        assert_eq!(rows[0].days_to_override, Some(4.0));
+    }
+
+    #[test]
+    fn compliance_list_overrides_in_range_excludes_outside_window() {
+        let (_dir, store) = open_test_db();
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::a.js::1", "error", "2025-12-01 00:00:00", "2025-12-05 00:00:00");
+
+        let rows = store.list_overrides_in_range("2026-01-01 00:00:00", "2026-01-31 23:59:59");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn compliance_days_to_override_is_null_without_a_first_seen_row() {
+        let (_dir, store) = open_test_db();
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        // No issue_first_seen row inserted — override exists on its own.
+        let conn = store.conn.lock();
+        conn.execute(
+            "INSERT INTO overrides (project_id, job_id, phase, issue_id, category, severity, summary, justification, actor_email, created_at) VALUES (?, 'job-1', 4, 'secret::b.js::1', 'secret', 'error', 's', 'j', 'dev@acme.com', '2026-01-05 00:00:00')",
+            rusqlite::params![project_id],
+        )
+        .unwrap();
+        drop(conn);
+
+        let rows = store.list_overrides_in_range("2026-01-01 00:00:00", "2026-01-31 23:59:59");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].days_to_override, None);
+    }
+
+    #[test]
+    fn compliance_mttr_by_severity_in_range_aggregates_per_severity() {
+        let (_dir, store) = open_test_db();
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::a.js::1", "error", "2026-01-01 00:00:00", "2026-01-03 00:00:00"); // 2 days
+        seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::b.js::1", "error", "2026-01-01 00:00:00", "2026-01-07 00:00:00"); // 6 days
+        seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::c.js::1", "warning", "2026-01-01 00:00:00", "2026-01-02 00:00:00"); // 1 day
+
+        let buckets = store.mttr_by_severity_in_range("2026-01-01 00:00:00", "2026-01-31 23:59:59");
+        assert_eq!(buckets.len(), 2);
+        let error_bucket = buckets.iter().find(|b| b.severity == "error").unwrap();
+        assert_eq!(error_bucket.override_count, 2);
+        assert_eq!(error_bucket.avg_days_to_override, Some(4.0));
+        assert_eq!(error_bucket.min_days_to_override, Some(2.0));
+        assert_eq!(error_bucket.max_days_to_override, Some(6.0));
+        let warning_bucket = buckets.iter().find(|b| b.severity == "warning").unwrap();
+        assert_eq!(warning_bucket.override_count, 1);
+        assert_eq!(warning_bucket.avg_days_to_override, Some(1.0));
     }
 }
