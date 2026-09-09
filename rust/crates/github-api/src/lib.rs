@@ -511,6 +511,27 @@ impl<'a> GithubApi<'a> {
         Ok(())
     }
 
+    /// Full (non-shallow) clone of `branch` — unlike `gh_clone_repo_branch`
+    /// (`--depth 1`, sufficient for every other clone-then-scan-working-
+    /// tree caller in this codebase), a full commit history is exactly
+    /// what a git-history secret sweep (`run_gitleaks_history_scan`)
+    /// needs to walk; a shallow clone would only ever see the one commit
+    /// it fetched, defeating the whole point of a *retroactive* sweep.
+    pub async fn gh_clone_repo_branch_full_history(&self, full_name: &str, branch: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
+        if self.is_gh_cli_available().await {
+            let env = gh_token_env(token);
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
+            return Ok(());
+        }
+        if token.is_empty() {
+            return Err(GithubApiError::NoToken);
+        }
+        self.runner
+            .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "clone".to_string(), "--branch".to_string(), branch.to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
+            .await?;
+        Ok(())
+    }
+
     pub async fn gh_clone_repo(&self, full_name: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
             let env = gh_token_env(token);

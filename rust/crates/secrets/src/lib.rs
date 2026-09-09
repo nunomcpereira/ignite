@@ -557,6 +557,121 @@ fn merge_gitleaks_findings_as(
     added
 }
 
+// --- custom secret patterns: playground + retroactive-sweep config builder ---
+
+/// One operator-authored custom secret pattern (GHAS "custom pattern"
+/// parity) — just a name and a regex; storage/CRUD lives in `db-store`
+/// (`ignite-secrets` stays decoupled from the SQLite layer, same as every
+/// other check crate).
+#[derive(Debug, Clone)]
+pub struct CustomSecretPattern {
+    pub name: String,
+    pub regex: String,
+}
+
+/// One match `test_pattern_against_sample` found — the "playground"
+/// response: enough to highlight the match in a UI (byte offsets into
+/// `sample`) without re-running the regex client-side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternMatch {
+    pub start: usize,
+    pub end: usize,
+    pub matched_text: String,
+}
+
+/// A pattern this long has no legitimate secret-detection use and only
+/// makes an already-linear-time regex engine do needlessly large amounts
+/// of work per call — reject outright rather than spend cycles compiling
+/// it.
+const MAX_CUSTOM_PATTERN_LEN: usize = 2_000;
+/// Caps how much sample text the playground actually searches — this is
+/// an interactive "try it out" tool, not a scanner; a multi-megabyte
+/// paste is almost certainly a mistake, not a real use case.
+const MAX_PLAYGROUND_SAMPLE_LEN: usize = 100_000;
+/// Caps how many matches a single playground call returns — a pattern
+/// that's too loose (matches every character, say) shouldn't make the
+/// response unbounded.
+const MAX_PLAYGROUND_MATCHES: usize = 200;
+
+/// Compiles `regex_str` and runs it against `sample`, returning every
+/// match's position and text — the "playground" GHAS's custom-pattern
+/// editor offers before an operator saves a pattern for real use. Unlike
+/// backtracking regex engines (PCRE, the one behind GHAS's own custom
+/// patterns), Rust's `regex` crate — the same one every other pattern in
+/// this codebase already uses — guarantees linear-time matching with no
+/// catastrophic-backtracking failure mode, so this is safe to run
+/// synchronously against arbitrary operator-supplied input; the length
+/// caps below exist for sane response sizes, not because of a ReDoS risk.
+pub fn test_pattern_against_sample(regex_str: &str, sample: &str) -> Result<Vec<PatternMatch>, String> {
+    if regex_str.is_empty() {
+        return Err("Pattern must not be empty.".to_string());
+    }
+    if regex_str.len() > MAX_CUSTOM_PATTERN_LEN {
+        return Err(format!("Pattern is too long (max {MAX_CUSTOM_PATTERN_LEN} characters)."));
+    }
+    let re = Regex::new(regex_str).map_err(|e| format!("Invalid regex: {e}"))?;
+    let truncated = if sample.len() > MAX_PLAYGROUND_SAMPLE_LEN { &sample[..MAX_PLAYGROUND_SAMPLE_LEN] } else { sample };
+    Ok(re.find_iter(truncated).take(MAX_PLAYGROUND_MATCHES).map(|m| PatternMatch { start: m.start(), end: m.end(), matched_text: m.as_str().to_string() }).collect())
+}
+
+/// A rule id gitleaks accepts: lowercased, non-alphanumerics collapsed to
+/// a single `-`, trimmed of leading/trailing `-` — falls back to
+/// `"custom-pattern"` if that leaves nothing (an all-symbols name).
+fn gitleaks_rule_id(name: &str) -> String {
+    let mut id = String::new();
+    let mut last_was_dash = false;
+    for ch in name.to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            id.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !id.is_empty() {
+            id.push('-');
+            last_was_dash = true;
+        }
+    }
+    while id.ends_with('-') {
+        id.pop();
+    }
+    if id.is_empty() {
+        "custom-pattern".to_string()
+    } else {
+        id
+    }
+}
+
+/// Builds a minimal gitleaks config (TOML) carrying one `[[rules]]` per
+/// pattern — what lets a custom pattern reuse gitleaks' own scan engine
+/// (`run_gitleaks_scan`/`run_gitleaks_history_scan`) instead of this
+/// crate needing a second, parallel git-history-walking implementation.
+/// The regex goes in a TOML literal string (`'''...'''`) specifically so
+/// it needs no backslash/quote escaping — a raw regex pasted by an
+/// operator (backslashes, quotes, anything) round-trips byte-for-byte.
+/// `[extend] useDefault = true` keeps gitleaks' own built-in rules active
+/// alongside the custom ones, matching how `gitleaks_config_path` already
+/// behaves for an operator-supplied config elsewhere in this codebase —
+/// a custom pattern *adds* detection, it doesn't replace the baseline.
+pub fn build_gitleaks_config_for_patterns(patterns: &[CustomSecretPattern]) -> String {
+    let mut toml = String::from("title = \"ignite-custom-secret-patterns\"\n\n[extend]\nuseDefault = true\n\n");
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    for p in patterns {
+        let mut id = gitleaks_rule_id(&p.name);
+        // Two patterns named "AWS Key" and "aws key" would otherwise
+        // collide on the same slug — gitleaks requires unique rule ids
+        // within one config, so disambiguate deterministically instead of
+        // silently dropping the second rule.
+        if !seen_ids.insert(id.clone()) {
+            let mut n = 2;
+            while !seen_ids.insert(format!("{id}-{n}")) {
+                n += 1;
+            }
+            id = format!("{id}-{n}");
+        }
+        let description = p.name.replace('\\', "\\\\").replace('"', "\\\"");
+        toml.push_str(&format!("[[rules]]\nid = \"{id}\"\ndescription = \"{description}\"\nregex = '''{}'''\n\n", p.regex));
+    }
+    toml
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,5 +920,74 @@ id = "generic-api-key"
         let merged = merge_gitleaks_findings(&existing, &gitleaks, &[], &[]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].file, "b.js");
+    }
+
+    #[test]
+    fn test_pattern_against_sample_finds_all_matches() {
+        let matches = test_pattern_against_sample(r"sk_live_[a-zA-Z0-9]{16,}", "key one: sk_live_abcdef0123456789, key two: sk_live_zzzzzz9999999999").unwrap();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].matched_text, "sk_live_abcdef0123456789");
+        assert_eq!(matches[1].matched_text, "sk_live_zzzzzz9999999999");
+    }
+
+    #[test]
+    fn test_pattern_against_sample_reports_match_offsets() {
+        let matches = test_pattern_against_sample("abc", "xxabcxx").unwrap();
+        assert_eq!(matches, vec![PatternMatch { start: 2, end: 5, matched_text: "abc".to_string() }]);
+    }
+
+    #[test]
+    fn test_pattern_against_sample_returns_empty_for_no_match() {
+        assert!(test_pattern_against_sample("nomatch", "hello world").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_pattern_against_sample_rejects_invalid_regex() {
+        let err = test_pattern_against_sample("(unclosed", "sample").unwrap_err();
+        assert!(err.contains("Invalid regex"), "{err}");
+    }
+
+    #[test]
+    fn test_pattern_against_sample_rejects_empty_pattern() {
+        assert!(test_pattern_against_sample("", "sample").is_err());
+    }
+
+    #[test]
+    fn test_pattern_against_sample_rejects_oversized_pattern() {
+        let huge = "a".repeat(MAX_CUSTOM_PATTERN_LEN + 1);
+        let err = test_pattern_against_sample(&huge, "sample").unwrap_err();
+        assert!(err.contains("too long"), "{err}");
+    }
+
+    #[test]
+    fn test_pattern_against_sample_caps_match_count() {
+        let sample = "a".repeat(MAX_PLAYGROUND_MATCHES * 2);
+        let matches = test_pattern_against_sample("a", &sample).unwrap();
+        assert_eq!(matches.len(), MAX_PLAYGROUND_MATCHES);
+    }
+
+    #[test]
+    fn gitleaks_rule_id_slugifies_and_falls_back_on_all_symbols() {
+        assert_eq!(gitleaks_rule_id("AWS Key v2"), "aws-key-v2");
+        assert_eq!(gitleaks_rule_id("  leading/trailing!! "), "leading-trailing");
+        assert_eq!(gitleaks_rule_id("***"), "custom-pattern");
+    }
+
+    #[test]
+    fn build_gitleaks_config_for_patterns_needs_no_regex_escaping() {
+        let patterns = vec![CustomSecretPattern { name: "Internal Token".to_string(), regex: r#"tok_\d{4}"[a-z]+"#.to_string() }];
+        let toml = build_gitleaks_config_for_patterns(&patterns);
+        assert!(toml.contains(r#"regex = '''tok_\d{4}"[a-z]+'''"#), "{toml}");
+        assert!(toml.contains("[[rules]]"));
+        assert!(toml.contains("id = \"internal-token\""));
+        assert!(toml.contains("useDefault = true"));
+    }
+
+    #[test]
+    fn build_gitleaks_config_for_patterns_disambiguates_colliding_slugs() {
+        let patterns = vec![CustomSecretPattern { name: "AWS Key".to_string(), regex: "a".to_string() }, CustomSecretPattern { name: "aws key".to_string(), regex: "b".to_string() }];
+        let toml = build_gitleaks_config_for_patterns(&patterns);
+        assert!(toml.contains("id = \"aws-key\""));
+        assert!(toml.contains("id = \"aws-key-2\""));
     }
 }

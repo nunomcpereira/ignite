@@ -234,6 +234,14 @@ CREATE TABLE IF NOT EXISTS fix_pr_previews (
   candidates_json  TEXT NOT NULL DEFAULT '[]',
   updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS custom_secret_patterns (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL,
+  regex       TEXT NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_by  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 /// One-time-per-row backfill, safe to re-run every startup: every historical

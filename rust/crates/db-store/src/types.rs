@@ -345,6 +345,16 @@ pub struct CampaignRow {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct CustomSecretPatternRow {
+    pub id: i64,
+    pub name: String,
+    pub regex: String,
+    pub enabled: bool,
+    pub created_by: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RuntimeCoverageRow {
     pub hit_count: i64,
     pub covered_pct: Option<f64>,

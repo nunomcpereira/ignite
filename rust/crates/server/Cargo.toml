@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 ignite-tool-runner = { path = "../tool-runner" }
 parking_lot = "0.12"
+tempfile = "3"
 ignite-scheduled-rescan = { path = "../scheduled-rescan" }
 ignite-dependency-license-scan = { path = "../dependency-license-scan" }
 ignite-secrets = { path = "../secrets" }
@@ -79,7 +80,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 async-trait = "0.1"
 
 [dev-dependencies]
-tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tower = { version = "0.4", features = ["util"] }
 rsa = "0.9"

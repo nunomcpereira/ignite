@@ -342,6 +342,45 @@ finds an already-exposed secret after the fact rather than blocking the
 push that introduced it, which is exactly why push-protection itself stays
 worth keeping regardless.
 
+## Custom secret patterns: playground + retroactive sweep
+
+GHAS lets an org author its own secret-detection regex ("custom
+patterns"), try it out against sample text before publishing it, and
+optionally sweep existing history for matches. `/api/secret-patterns`
+covers the first and third of those:
+
+```bash
+# Try a pattern against sample text — no auth, nothing saved.
+curl -X POST http://ignite.internal:51337/api/secret-patterns/test \
+  -H 'Content-Type: application/json' \
+  -d '{"regex": "acme_live_[a-zA-Z0-9]{24}", "sample": "token: acme_live_abcdef0123456789ghijklmn"}'
+
+# Save it once you're happy with it.
+curl -X POST http://ignite.internal:51337/api/secret-patterns \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Acme internal token", "regex": "acme_live_[a-zA-Z0-9]{24}"}'
+# → { "id": 1, "name": "Acme internal token", ... }
+
+# Retroactively sweep a repo's full git history for it.
+curl -X POST http://ignite.internal:51337/api/secret-patterns/1/sweep \
+  -H 'Content-Type: application/json' -H 'Authorization: Bearer ignite_...' \
+  -d '{"owner": "my-org", "repo": "my-repo"}'
+```
+
+The sweep clones the repo with **full history** (not the shallow clones
+Ignite uses everywhere else) and runs it through the same
+`run_gitleaks_history_scan` engine [git-history secret scanning](#keep-githubs-secret-push-protection-even-without-full-ghas)
+already uses, with a throwaway gitleaks config carrying just this one
+pattern (plus gitleaks' own built-in rules) — answering "would this
+pattern, if it had existed from day one, have caught something already
+committed and possibly since removed?"
+
+**Not yet wired into live scans**: saving a pattern here doesn't
+currently make it apply automatically to every future scan the way a
+published GHAS custom pattern does — today this is the test-and-sweep
+half, not forward detection. Pair it with a periodic re-sweep (cron) of
+your onboarded repos as a stopgap.
+
 ## Branch-protection enforcement
 
 Ignite's gate only fires if someone actually routes code through it — a

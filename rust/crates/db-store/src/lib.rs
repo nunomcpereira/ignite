@@ -34,6 +34,7 @@ mod sla;
 mod store;
 mod types;
 mod campaigns;
+mod custom_secret_patterns;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
 pub use store::DbStore;
@@ -645,5 +646,47 @@ mod tests {
         // already-existing tables/columns — must not error.
         let store2 = DbStore::open(&path).unwrap();
         assert_eq!(store2.list_projects().len(), 1);
+    }
+
+    #[test]
+    fn custom_secret_pattern_create_and_get_round_trips_fields() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_custom_secret_pattern("Internal Token", r"tok_[a-z0-9]{16}", Some("dev@acme.com"));
+        let row = store.get_custom_secret_pattern(id).unwrap();
+        assert_eq!(row.name, "Internal Token");
+        assert_eq!(row.regex, r"tok_[a-z0-9]{16}");
+        assert!(row.enabled, "a newly-created pattern must default to enabled");
+        assert_eq!(row.created_by.as_deref(), Some("dev@acme.com"));
+    }
+
+    #[test]
+    fn custom_secret_pattern_get_returns_none_for_unknown_id() {
+        let (_dir, store) = open_test_db();
+        assert!(store.get_custom_secret_pattern(999).is_none());
+    }
+
+    #[test]
+    fn custom_secret_pattern_disabling_removes_from_enabled_list_but_not_full_list() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_custom_secret_pattern("Pattern", "a", None);
+        assert!(store.set_custom_secret_pattern_enabled(id, false));
+        assert!(store.list_enabled_custom_secret_patterns().is_empty());
+        assert_eq!(store.list_custom_secret_patterns().len(), 1);
+        assert!(!store.get_custom_secret_pattern(id).unwrap().enabled);
+    }
+
+    #[test]
+    fn custom_secret_pattern_set_enabled_returns_false_for_unknown_id() {
+        let (_dir, store) = open_test_db();
+        assert!(!store.set_custom_secret_pattern_enabled(999, true));
+    }
+
+    #[test]
+    fn custom_secret_pattern_delete_removes_row_and_reports_whether_one_existed() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_custom_secret_pattern("Pattern", "a", None);
+        assert!(store.delete_custom_secret_pattern(id));
+        assert!(store.get_custom_secret_pattern(id).is_none());
+        assert!(!store.delete_custom_secret_pattern(id), "deleting again must report nothing existed");
     }
 }
