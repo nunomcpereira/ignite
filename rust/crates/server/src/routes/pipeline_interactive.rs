@@ -354,6 +354,18 @@ mod tests {
     use crate::state;
     use reqwest::multipart::{Form, Part};
 
+    /// Serializes the handful of tests in this file that each drive a real
+    /// end-to-end pipeline run (spin up a server, upload a fixture, run
+    /// real Phase 3/4 checks). Left to `cargo test`'s default per-binary
+    /// parallelism, five of these racing for CPU at once — on top of every
+    /// *other* crate's test binary doing the same under `cargo test
+    /// --workspace` — was observed to push a single run's wall time from
+    /// ~48s in isolation past even a 600s client timeout. Acquiring this
+    /// lock before starting a run at least removes the contention this
+    /// binary itself creates against its own heavy tests, without
+    /// resorting to `--test-threads=1` for the whole workspace.
+    static HEAVY_PIPELINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[test]
     fn prune_retained_source_to_findings_keeps_only_flagged_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -427,6 +439,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_invalid_org_name() {
+        let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         // Faithful to server.js: an invalid org name doesn't abort the
         // stream immediately — it's recorded as a phase-1 issue and the
         // run still proceeds through phases 3-6, reaching the review gate
@@ -434,7 +447,7 @@ mod tests {
         // phase 6). Here the user declines to proceed at the gate, which
         // is what actually surfaces the phase-1 problem to them.
         let (base, state) = spawn_test_server().await;
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"console.log(1);"), ("package.json", b"{\"name\":\"fixture\"}")]);
         let form = Form::new().text("org", "-bad-").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 
@@ -518,6 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_commit_sha_is_captured_from_a_real_git_repo_in_the_upload() {
+        let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         let mut check = std::process::Command::new("git");
         check.arg("--version");
         if check.output().map(|o| !o.status.success()).unwrap_or(true) {
@@ -544,12 +558,16 @@ mod tests {
         ignite_fs_utils::invalidate_walk_cache(src.path());
 
         let (base, state) = spawn_test_server().await;
-        // A real Phase 4 run against this fixture normally finishes in well
-        // under a minute, but under heavy concurrent load (e.g. other
-        // `cargo test` processes competing for CPU) it's been observed to
-        // exceed a 120s client timeout — 240s gives real headroom without
-        // masking an actual hang (that would still fail, just later).
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(240)).build().unwrap();
+        // A real Phase 4 run against this fixture finishes in well under a
+        // minute in isolation (~48s observed), but under `cargo test
+        // --workspace`'s full concurrent load — every crate's test binary
+        // and every other heavy integration test in this file racing for
+        // the same CPU — it's been observed to run 5-8x slower and blow
+        // past even a 360s client timeout (this test also shells out to
+        // `git init`/`commit` before the run even starts). 600s gives real
+        // headroom for that worst case without masking an actual hang
+        // (that would still fail, just later).
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600)).build().unwrap();
         let zip = zip_dir(src.path());
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 
@@ -639,6 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn accepts_upload_larger_than_axum_default_body_limit() {
+        let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         // Axum's `Multipart` extractor enforces its own default 2 MB
         // whole-body limit unless disabled per-route; server.js's multer
         // config bounds each *file* to 1 GB (MAX_ZIP_BYTES) with no
@@ -647,7 +666,7 @@ mod tests {
         // body over 2 MB — incompressible filler bytes, so zip deflate
         // can't shrink the wire size back under the old limit.
         let (base, state) = spawn_test_server().await;
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let mut filler = vec![0u8; 3 * 1024 * 1024];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut filler);
         let zip = zip_bytes(&[("app.js", b"console.log(1);"), ("package.json", b"{\"name\":\"fixture\"}"), ("filler.bin", &filler)]);
@@ -702,7 +721,7 @@ mod tests {
     #[ignore]
     async fn dry_run_streams_job_and_review_events_then_pauses_at_gate() {
         let (base, state) = spawn_test_server().await;
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         // A hardcoded secret in the fixture guarantees at least one Phase 4
         // finding, so this run is guaranteed to reach the review gate. No
         // package.json/other language marker on purpose — Phase 3's real
@@ -770,7 +789,7 @@ mod tests {
     #[ignore]
     async fn repeat_scan_of_same_repo_carries_forward_a_previously_justified_finding() {
         let (base, state) = spawn_test_server().await;
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 
         // --- First scan: a human justifies the secret finding by hand. ---
@@ -850,8 +869,9 @@ mod tests {
     /// directly, which would bypass the auth-requirement bug entirely).
     #[tokio::test]
     async fn review_decision_stop_with_no_overrides_needs_no_auth() {
+        let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         let (base, state) = spawn_test_server().await;
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
         let base_for_decision = base.clone();
@@ -894,8 +914,9 @@ mod tests {
     /// decline/no-op skips the identity requirement.
     #[tokio::test]
     async fn review_decision_with_overrides_still_requires_an_actor() {
+        let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         let (base, state) = spawn_test_server().await;
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().unwrap();
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
         let base_for_decision = base.clone();

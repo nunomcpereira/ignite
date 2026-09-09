@@ -82,7 +82,7 @@ fn issue_user_prompt(issue: &FixIssueInput, snippet: &Snippet) -> String {
 /// candidates from a 3-line-radius snippet shrank the replacement,
 /// dropping unrelated sibling packages (`react`, `spacy`, `gliner`, ...)
 /// that just happened to sit within 3 lines of the flagged one.
-const SINGLE_LINE_FIX_CATEGORIES: &[&str] = &["dependency-vulnerability"];
+pub const SINGLE_LINE_FIX_CATEGORIES: &[&str] = &["dependency-vulnerability"];
 
 /// For categories in [`SINGLE_LINE_FIX_CATEGORIES`], narrows `snippet`
 /// down to just the one line at `line` — so there's no neighboring line
@@ -636,6 +636,49 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, full_n
     }
 }
 
+/// Marker embedded in the body of every inline PR suggestion comment
+/// (GHAS Copilot-Autofix parity, see [`build_pr_suggestions`]), identifying
+/// which issue it came from. `routes/github_pr_status.rs` lists the PR's
+/// existing review comments before posting and skips any issue whose
+/// marker already appears in one of them — so a re-run of `github-check`
+/// against the same PR (every push posts the gate status again) never
+/// reposts a suggestion that's already sitting there, the same "no
+/// PATCH-based upsert on this API, so check-then-skip instead" approach
+/// documented on `GithubApi::gh_create_pr_review_comment`.
+pub fn suggestion_marker(issue_id: &str) -> String {
+    format!("<!-- ignite:suggestion:{issue_id} -->")
+}
+
+/// One GitHub PR review comment carrying a ```suggestion fenced block —
+/// what GitHub's PR diff viewer renders with a one-click "Commit
+/// suggestion" button (Copilot Autofix parity).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrSuggestion {
+    pub issue_id: String,
+    pub file: String,
+    pub line: i64,
+    pub body: String,
+}
+
+/// Builds one [`PrSuggestion`] per candidate safe for GitHub's single-line
+/// suggestion UI (`start_line == end_line`) — a multi-line suggestion is
+/// technically possible via the Review Comments API's `start_line`/`line`
+/// pair, but restricting to single-line mirrors `auto-fix-pr`'s own
+/// conservatism: nothing here proposes an inline suggestion wider than
+/// what the rest of Ignite already trusts itself to mechanically apply
+/// unattended. In practice this only ever keeps candidates from
+/// [`SINGLE_LINE_FIX_CATEGORIES`], since [`narrow_snippet_for_edit`]
+/// already narrows those down to one line before the LLM ever sees them —
+/// other categories' multi-line snippets are filtered out here rather
+/// than relied on to happen to come back as one line.
+pub fn build_pr_suggestions(candidates: &[FixCandidate]) -> Vec<PrSuggestion> {
+    candidates
+        .iter()
+        .filter(|c| c.start_line == c.end_line)
+        .map(|c| PrSuggestion { issue_id: c.issue_id.clone(), file: c.file.clone(), line: c.start_line, body: format!("{}\n\n```suggestion\n{}\n```\n{}", c.explanation, c.replacement, suggestion_marker(&c.issue_id)) })
+        .collect()
+}
+
 fn pr_body_for(candidates: &[FixCandidate], job_id: &str) -> String {
     let mut body = format!("Applies {} AI-suggested fix(es) from Ignite scan `{job_id}`.\n\n", candidates.len());
     for c in candidates {
@@ -923,6 +966,31 @@ mod tests {
         // applied inside the scratch repo.
         let original = std::fs::read_to_string(root.path().join("f.txt")).unwrap();
         assert_eq!(original, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn build_pr_suggestions_formats_a_suggestion_block_with_marker() {
+        let c = candidate("package.json", 10, 10, "\"axios\": \"^1.16.0\",", "\"axios\": \"^1.6.8\",");
+        let suggestions = build_pr_suggestions(std::slice::from_ref(&c));
+        assert_eq!(suggestions.len(), 1);
+        let s = &suggestions[0];
+        assert_eq!(s.issue_id, "i1");
+        assert_eq!(s.file, "package.json");
+        assert_eq!(s.line, 10);
+        assert!(s.body.contains("```suggestion\n\"axios\": \"^1.6.8\",\n```"));
+        assert!(s.body.contains("<!-- ignite:suggestion:i1 -->"));
+    }
+
+    #[test]
+    fn build_pr_suggestions_skips_multi_line_candidates() {
+        let c = candidate("f.py", 2, 3, "a\nb", "A\nB");
+        assert!(build_pr_suggestions(&[c]).is_empty());
+    }
+
+    #[test]
+    fn suggestion_marker_is_stable_and_issue_specific() {
+        assert_eq!(suggestion_marker("dependency-vulnerability::pkg.json::10"), "<!-- ignite:suggestion:dependency-vulnerability::pkg.json::10 -->");
+        assert_ne!(suggestion_marker("a"), suggestion_marker("b"));
     }
 
     #[tokio::test]

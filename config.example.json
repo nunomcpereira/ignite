@@ -126,6 +126,9 @@
     "dependencyReview": {
       "enabled": true
     },
+    "prSuggestions": {
+      "enabled": true
+    },
     "secretVerification": {
       "enabled": false,
       "timeoutMs": 5000

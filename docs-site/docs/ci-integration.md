@@ -243,6 +243,40 @@ The `github-check` request body accepts an optional `ref` field (e.g.
 when omitted, Ignite looks up the repo's current default branch and uses
 that.
 
+## Inline PR review suggestions (Copilot Autofix parity)
+
+GitHub's Copilot Autofix posts inline PR review comments carrying a
+` ```suggestion ` fenced block, which GitHub's PR diff viewer renders with a
+one-click "Commit suggestion" button — a developer never has to leave the
+PR to apply the fix. `github-check` now does the same for a narrow,
+mechanically-safe class of findings: still-open issues in the same
+single-line-editable category set `ignite-fix-pr`'s bulk fix-PR feature
+already trusts to auto-edit (currently dependency version bumps).
+
+For each such issue on the PR, Ignite reuses `fix-pr`'s own LLM
+fix-computation (no separate suggestion-generation logic), and — for any
+result that's a single-line edit — posts one PR review comment via
+GitHub's Review Comments API (`POST
+repos/{owner}/{repo}/pulls/{pr}/comments`). Each suggestion carries a
+hidden marker comment identifying the issue it came from; before posting,
+Ignite lists the PR's existing review comments and skips any issue whose
+marker is already present, so re-running `github-check` on the same PR
+(every push re-posts the gate status) never reposts a suggestion that's
+already there.
+
+Best-effort and non-fatal, same as the SARIF/dependency-graph pushes
+above — a failure is logged and never fails the gate-status response.
+Toggleable in `config.json` (on by default, since the scope is narrow
+enough to be safe unattended):
+
+```json
+"security": {
+  "prSuggestions": { "enabled": true }
+}
+```
+
+Or via env var: `PR_SUGGESTIONS_ENABLED=false`.
+
 ## Inbound alert-dismissal sync (GitHub → Ignite)
 
 The SARIF upload above creates GitHub Code Scanning alerts, and Ignite

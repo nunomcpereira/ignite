@@ -608,6 +608,23 @@ impl Default for DependencyReviewConfig {
     fn default() -> Self { DependencyReviewConfig { enabled: true } }
 }
 
+/// GHAS "Copilot Autofix"-parity inline PR review suggestions — one
+/// ```suggestion-fenced review comment per still-open, single-line-fixable
+/// finding, posted alongside the SARIF/dependency-graph/dependency-review
+/// pushes in `routes/github_pr_status.rs`'s `github_check` handler.
+/// Deliberately narrow (see `ignite_fix_pr::SINGLE_LINE_FIX_CATEGORIES`/
+/// `build_pr_suggestions`) and best-effort/non-fatal like every other push
+/// there — `enabled: true` by default is safe precisely because the scope
+/// is that narrow, the same posture as `dependency_review`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrSuggestionsConfig {
+    pub enabled: bool,
+}
+impl Default for PrSuggestionsConfig {
+    fn default() -> Self { PrSuggestionsConfig { enabled: true } }
+}
+
 /// GHAS-parity active token verification (`ignite-secret-verifier`) —
 /// off by default, unlike every other `enabled: true`-by-default check in
 /// this file: it sends a credential found in scanned code to a
@@ -645,6 +662,7 @@ pub struct SecurityConfig {
     pub dependency_graph: DependencyGraphConfig,
     pub code_scanning: CodeScanningConfig,
     pub dependency_review: DependencyReviewConfig,
+    pub pr_suggestions: PrSuggestionsConfig,
     pub secret_verification: SecretVerificationConfig,
 }
 
@@ -1000,6 +1018,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("CODE_SCANNING_SYNC_DISMISSALS") { merged.security.code_scanning.sync_dismissals = v; }
     if let Some(v) = env_str("CODE_SCANNING_INBOUND_WEBHOOK_SECRET") { merged.security.code_scanning.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("DEPENDENCY_REVIEW_ENABLED") { merged.security.dependency_review.enabled = v; }
+    if let Some(v) = env_bool("PR_SUGGESTIONS_ENABLED") { merged.security.pr_suggestions.enabled = v; }
     if let Some(v) = env_bool("SECRET_VERIFICATION_ENABLED") { merged.security.secret_verification.enabled = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }

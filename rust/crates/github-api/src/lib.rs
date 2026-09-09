@@ -109,6 +109,17 @@ fn find_marker_comment_id(comments: &[Value], marker: &str) -> Option<u64> {
     })
 }
 
+/// `true` if any comment in `comments` (as returned by
+/// `gh_list_pr_review_comments`) carries `marker` in its body — the same
+/// "find my own prior post" check `find_marker_comment_id` does for issue
+/// comments, but boolean rather than an id: the Review Comments API has no
+/// PATCH-based upsert Ignite already uses elsewhere (`gh_upsert_pr_sticky_comment`),
+/// so a caller that finds a match skips posting again rather than editing
+/// an existing suggestion in place.
+pub fn find_review_comment_marker(comments: &[Value], marker: &str) -> bool {
+    comments.iter().any(|c| c.get("body").and_then(|b| b.as_str()).is_some_and(|b| b.contains(marker)))
+}
+
 pub struct PrResult {
     pub url: String,
     pub number: Option<u64>,
@@ -414,6 +425,34 @@ impl<'a> GithubApi<'a> {
         }
     }
 
+    /// Every review comment currently on `pr_number` (`GET
+    /// repos/{full}/pulls/{pr}/comments`) — the read half of inline PR
+    /// suggestion dedup (see [`find_review_comment_marker`]). No `gh` CLI
+    /// subcommand covers this endpoint (same as `gh_upload_sarif`/
+    /// `gh_submit_dependency_snapshot`), so it always goes through the raw
+    /// REST call. Capped at the first 100 comments (`per_page=100`, no
+    /// pagination) — plenty for matching against the handful of
+    /// suggestions Ignite itself ever posts on one PR.
+    pub async fn gh_list_pr_review_comments(&self, full_name: &str, pr_number: u64, token: &str) -> Result<Vec<Value>, GithubApiError> {
+        let comments = self.github_api_request(token, "GET", &format!("/repos/{full_name}/pulls/{pr_number}/comments?per_page=100"), None, None).await?;
+        Ok(comments.and_then(|v| v.as_array().cloned()).unwrap_or_default())
+    }
+
+    /// Posts one inline PR review comment carrying a ```suggestion fenced
+    /// block (GHAS Copilot-Autofix parity) — GitHub's PR Review Comments
+    /// API (`POST repos/{full}/pulls/{pr}/comments`), which requires the
+    /// commit the comment anchors to (`commit_id`) plus the file/line it's
+    /// attached to. `side: "RIGHT"` anchors to the new (head) version of
+    /// the line, the only side a suggestion can ever apply against. No
+    /// `gh` CLI subcommand exists for line-anchored PR review comments, so
+    /// this always goes through the raw REST call.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn gh_create_pr_review_comment(&self, full_name: &str, pr_number: u64, commit_id: &str, path: &str, line: i64, body: &str, token: &str) -> Result<(), GithubApiError> {
+        let payload = serde_json::json!({ "body": body, "commit_id": commit_id, "path": path, "line": line, "side": "RIGHT" });
+        self.github_api_request(token, "POST", &format!("/repos/{full_name}/pulls/{pr_number}/comments"), Some(&payload), None).await?;
+        Ok(())
+    }
+
     /// The repo's current default branch, per `GET repos/{full_name}`.
     /// Prefers the `gh` CLI (same dual-path convention as `gh_api_write`),
     /// falling back to a token-only REST call. Read-only — safe to call
@@ -519,6 +558,26 @@ mod tests {
     #[test]
     fn find_marker_comment_id_none_for_empty_comment_list() {
         assert!(find_marker_comment_id(&[], "<!-- ignite:dependency-review -->").is_none());
+    }
+
+    #[test]
+    fn find_review_comment_marker_true_when_a_comment_carries_it() {
+        let comments = serde_json::json!([
+            {"id": 1, "body": "a human review comment"},
+            {"id": 2, "body": "explanation\n\n```suggestion\nfix\n```\n<!-- ignite:suggestion:dep-vuln::pkg.json::10 -->"},
+        ]);
+        assert!(find_review_comment_marker(comments.as_array().unwrap(), "<!-- ignite:suggestion:dep-vuln::pkg.json::10 -->"));
+    }
+
+    #[test]
+    fn find_review_comment_marker_false_when_no_match() {
+        let comments = serde_json::json!([{"id": 1, "body": "unrelated comment"}]);
+        assert!(!find_review_comment_marker(comments.as_array().unwrap(), "<!-- ignite:suggestion:x -->"));
+    }
+
+    #[test]
+    fn find_review_comment_marker_false_for_empty_list() {
+        assert!(!find_review_comment_marker(&[], "<!-- ignite:suggestion:x -->"));
     }
 
     #[test]
