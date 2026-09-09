@@ -62,6 +62,7 @@ pub struct DepsDevClient {
     package_info_cache: Mutex<HashMap<String, Option<DepsDevPackageInfo>>>,
     version_list_cache: Mutex<HashMap<String, Option<Vec<String>>>>,
     advisory_cache: Mutex<HashMap<String, Option<serde_json::Value>>>,
+    osv_record_cache: Mutex<HashMap<String, Option<serde_json::Value>>>,
 }
 
 impl Default for DepsDevClient {
@@ -72,7 +73,7 @@ impl Default for DepsDevClient {
 
 impl DepsDevClient {
     pub fn new() -> Self {
-        DepsDevClient { http: reqwest::Client::new(), package_info_cache: Mutex::new(HashMap::new()), version_list_cache: Mutex::new(HashMap::new()), advisory_cache: Mutex::new(HashMap::new()) }
+        DepsDevClient { http: reqwest::Client::new(), package_info_cache: Mutex::new(HashMap::new()), version_list_cache: Mutex::new(HashMap::new()), advisory_cache: Mutex::new(HashMap::new()), osv_record_cache: Mutex::new(HashMap::new()) }
     }
 
     /// One deps.dev call returns both licenses and known-vulnerability
@@ -167,6 +168,37 @@ impl DepsDevClient {
         .ok()
         .flatten();
         self.advisory_cache.lock().unwrap().insert(id.to_string(), result.clone());
+        result
+    }
+
+    /// The *raw* OSV.dev record for `id` — deliberately not deps.dev's own
+    /// `/v3/advisories/{id}` mirror (`fetch_advisory` above), which strips
+    /// every field down to `advisoryKey`/`title`/`aliases`/`cvss3Score`/
+    /// `cvss3Vector`/`url`. Confirmed empirically against both live APIs
+    /// while building Go function-level reachability: only OSV.dev's own
+    /// `/v1/vulns/{id}` carries `affected[].ecosystem_specific.imports[]`
+    /// (`{path, symbols}, the exact affected-function data Go's vulndb
+    /// populates — deps.dev silently drops it). Own cache, separate from
+    /// `advisory_cache`, since the two endpoints return different shapes
+    /// for the same id and a caller may want both.
+    pub async fn fetch_osv_record(&self, id: &str) -> Option<serde_json::Value> {
+        let key = id.to_string();
+        if let Some(cached) = self.osv_record_cache.lock().unwrap().get(&key) {
+            return cached.clone();
+        }
+        let url = format!("https://api.osv.dev/v1/vulns/{}", urlencoding::encode(id));
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let res = self.http.get(&url).send().await.ok()?;
+            if res.status().is_success() {
+                res.json::<serde_json::Value>().await.ok()
+            } else {
+                None
+            }
+        })
+        .await
+        .ok()
+        .flatten();
+        self.osv_record_cache.lock().unwrap().insert(key, result.clone());
         result
     }
 }
@@ -501,5 +533,23 @@ mod tests {
         let info = info.unwrap();
         assert!(!info.licenses.is_empty());
         assert!(info.licenses.iter().any(|l| l.contains("MIT")));
+    }
+
+    #[tokio::test]
+    async fn fetch_osv_record_returns_symbol_level_data_for_a_real_go_advisory() {
+        // Real network call to a real, stable Go vulndb entry
+        // (golang.org/x/text/language's GO-2021-0113) — confirmed by hand
+        // against the live osv.dev API that this exact advisory carries
+        // `affected[].ecosystem_specific.imports[].symbols`, unlike
+        // deps.dev's own stripped-down advisory mirror.
+        let client = DepsDevClient::new();
+        let record = client.fetch_osv_record("GO-2021-0113").await;
+        let Some(record) = record else {
+            eprintln!("skipping: could not reach osv.dev (network unavailable in this environment)");
+            return;
+        };
+        let symbols = record["affected"][0]["ecosystem_specific"]["imports"][0]["symbols"].as_array().cloned().unwrap_or_default();
+        let symbol_strs: Vec<String> = symbols.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        assert!(symbol_strs.contains(&"Parse".to_string()), "{symbol_strs:?}");
     }
 }

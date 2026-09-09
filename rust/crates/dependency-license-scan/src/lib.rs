@@ -12,6 +12,9 @@
 mod dependency_diff;
 pub use dependency_diff::{diff_dependency_scans, render_dependency_diff_comment, DependencyChange, DependencyChangeKind, DEPENDENCY_REVIEW_MARKER};
 
+mod reachability;
+pub use reachability::{check_go_reachability, extract_go_affected_imports, AffectedImport, GoReachability};
+
 use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry_license, find_manifest_dep_line, resolve_best_published_version, resolve_see_license_in_file, DepsDevClient};
 use ignite_fs_utils::{build_snippet, walk_files, SnippetOptions};
 use ignite_license_classification::{classify_license_tier, is_internal_dependency_ref, best_effort_version, LicenseTier};
@@ -252,6 +255,13 @@ pub struct VulnFinding {
     pub cvss3_score: Option<f64>,
     pub severity: &'static str,
     pub url: Option<String>,
+    /// Go vulndb-sourced OSV `affected[].ecosystem_specific.imports[]`
+    /// data (`reachability::extract_go_affected_imports`) — empty for
+    /// every non-Go finding, or a Go finding whose advisory doesn't carry
+    /// this (see that function's own doc). `collect_dependency_vulnerability_issues`
+    /// uses it to check real function-level call reachability, not just
+    /// whether the package is imported.
+    pub affected_go_imports: Vec<AffectedImport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -345,21 +355,38 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
             };
 
             let advisories = futures::future::join_all(info.advisory_ids.iter().map(|id| client.fetch_advisory(id))).await;
-            let vulnerabilities: Vec<VulnFinding> = advisories
-                .into_iter()
-                .flatten()
-                .map(|a| {
-                    let cvss3_score = a.get("cvss3Score").and_then(|v| v.as_f64());
-                    VulnFinding {
-                        id: a.get("advisoryKey").and_then(|k| k.get("id")).and_then(|v| v.as_str()).map(String::from),
-                        title: a.get("title").and_then(|v| v.as_str()).map(String::from),
-                        aliases: a.get("aliases").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
-                        cvss3_score,
-                        severity: classify_vulnerability_severity(cvss3_score),
-                        url: a.get("url").and_then(|v| v.as_str()).map(String::from),
+            // Sequential (not `join_all`'d like `advisories` above) — a Go
+            // dependency with a symbol-carrying advisory is the uncommon
+            // case (most advisories have none, most ecosystems are never
+            // Go at all), so this rarely runs more than zero times per
+            // dependency; not worth the extra complexity of fanning out a
+            // second concurrent batch for it.
+            let mut vulnerabilities: Vec<VulnFinding> = Vec::new();
+            for a in advisories.into_iter().flatten() {
+                let cvss3_score = a.get("cvss3Score").and_then(|v| v.as_f64());
+                let id = a.get("advisoryKey").and_then(|k| k.get("id")).and_then(|v| v.as_str()).map(String::from);
+                // Go function-level reachability data (see
+                // `reachability`'s own doc) — only fetched for `go`
+                // manifests, since that's the one ecosystem OSV.dev
+                // actually populates this for.
+                let affected_go_imports = if spec.ecosystem == "go" {
+                    match &id {
+                        Some(advisory_id) => client.fetch_osv_record(advisory_id).await.map(|record| extract_go_affected_imports(&record)).unwrap_or_default(),
+                        None => vec![],
                     }
-                })
-                .collect();
+                } else {
+                    vec![]
+                };
+                vulnerabilities.push(VulnFinding {
+                    id,
+                    title: a.get("title").and_then(|v| v.as_str()).map(String::from),
+                    aliases: a.get("aliases").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+                    cvss3_score,
+                    severity: classify_vulnerability_severity(cvss3_score),
+                    url: a.get("url").and_then(|v| v.as_str()).map(String::from),
+                    affected_go_imports,
+                });
+            }
 
             VulnScanDependency { name: dep.name.clone(), version_range: dep.version_range.clone(), version: Some(resolved_version), line, vulnerabilities, note: None }
         }))
@@ -1018,6 +1045,19 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
                         }
                     }
                 }
+                // Real function-level reachability for Go (see
+                // `reachability`'s own doc for why this only exists for
+                // Go): when the advisory names the exact vulnerable
+                // symbols, report whether the project's own source
+                // actually calls one of them — a strictly more precise
+                // signal than the npm import-level one above, since it
+                // can tell "imports the package but never calls the
+                // vulnerable function" apart from "doesn't import it at
+                // all". Still annotation-only, same conservative posture.
+                if check_go_reachability(root, &vuln.affected_go_imports) == GoReachability::NotCalled {
+                    let symbols: Vec<&str> = vuln.affected_go_imports.iter().flat_map(|imp| imp.symbols.iter().map(String::as_str)).collect();
+                    summary.push_str(&format!(" [vulnerable function(s) not called: {}]", symbols.join(", ")));
+                }
 
                 // Every id this one advisory carries, sorted into its
                 // CVE/CWE/PySec/RustSec/Go/GHSA bucket — an OSV record
@@ -1160,7 +1200,7 @@ mod tests {
                 version_range: "^1.20.0".to_string(),
                 version: Some("1.20.2".to_string()),
                 line: Some(12),
-                vulnerabilities: vec![VulnFinding { id: Some("GHSA-qwcr-r2fm-qrc7".to_string()), title: Some("body-parser vulnerable to denial of service".to_string()), aliases: vec!["CVE-2024-1234".to_string()], cvss3_score: Some(7.5), severity: "error", url: None }],
+                vulnerabilities: vec![VulnFinding { id: Some("GHSA-qwcr-r2fm-qrc7".to_string()), title: Some("body-parser vulnerable to denial of service".to_string()), aliases: vec!["CVE-2024-1234".to_string()], cvss3_score: Some(7.5), severity: "error", url: None, affected_go_imports: vec![] }],
                 note: None,
             }],
         };
@@ -1192,7 +1232,7 @@ mod tests {
                 version_range: "^1.0.0".to_string(),
                 version: Some("1.0.0".to_string()),
                 line: Some(1),
-                vulnerabilities: vec![VulnFinding { id: Some("GHSA-xxxx-yyyy-zzzz".to_string()), title: Some("some vulnerability".to_string()), aliases: vec![], cvss3_score: None, severity: "error", url: None }],
+                vulnerabilities: vec![VulnFinding { id: Some("GHSA-xxxx-yyyy-zzzz".to_string()), title: Some("some vulnerability".to_string()), aliases: vec![], cvss3_score: None, severity: "error", url: None, affected_go_imports: vec![] }],
                 note: None,
             }],
         }
@@ -1236,6 +1276,58 @@ mod tests {
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 
+    fn go_manifest_with_affected_imports(affected: Vec<AffectedImport>) -> VulnScanManifest {
+        VulnScanManifest {
+            file: "go.mod".to_string(),
+            ecosystem: "go",
+            dependencies: vec![VulnScanDependency {
+                name: "golang.org/x/text".to_string(),
+                version_range: "v0.3.6".to_string(),
+                version: Some("v0.3.6".to_string()),
+                line: Some(1),
+                vulnerabilities: vec![VulnFinding { id: Some("GO-2021-0113".to_string()), title: Some("Out-of-bounds read".to_string()), aliases: vec![], cvss3_score: None, severity: "error", url: None, affected_go_imports: affected }],
+                note: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_flags_a_go_vulnerability_whose_symbol_is_never_called() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("main.go"), "package main\n\nimport \"golang.org/x/text/language\"\n\nvar _ language.Tag\n").unwrap();
+        let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[go_manifest_with_affected_imports(affected)]);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].summary.contains("[vulnerable function(s) not called: Parse]"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_does_not_flag_a_go_vulnerability_whose_symbol_is_called() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("main.go"), "package main\n\nimport \"golang.org/x/text/language\"\n\nfunc main() { language.Parse(\"en\") }\n").unwrap();
+        let affected = vec![AffectedImport { path: "golang.org/x/text/language".to_string(), symbols: vec!["Parse".to_string()] }];
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[go_manifest_with_affected_imports(affected)]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("vulnerable function(s) not called"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn collect_dependency_vulnerability_issues_no_go_annotation_without_symbol_data() {
+        // No `affected_go_imports` on the finding (the common case — most
+        // advisories, even for Go, don't carry this) — must never
+        // annotate at all, not even a generic "unreachable" guess.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        let issues = collect_dependency_vulnerability_issues(dir.path(), &[go_manifest_with_affected_imports(vec![])]);
+        assert_eq!(issues.len(), 1);
+        assert!(!issues[0].summary.contains("vulnerable function"), "{}", issues[0].summary);
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
     /// Real case hit against deps.dev live data: one advisory carries
     /// several CVE aliases and several PYSEC cross-references at once —
     /// every one of them must survive into `references`, not just the
@@ -1263,6 +1355,7 @@ mod tests {
                     cvss3_score: Some(7.5),
                     severity: "error",
                     url: None,
+                    affected_go_imports: vec![],
                 }],
                 note: None,
             }],
