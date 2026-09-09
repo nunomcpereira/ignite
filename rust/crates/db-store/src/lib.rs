@@ -35,6 +35,7 @@ mod store;
 mod types;
 mod campaigns;
 
+pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
 pub use store::DbStore;
 pub use types::*;
 
@@ -479,6 +480,82 @@ mod tests {
         });
         let carried_excluding_self = store.get_carry_forward_overrides("acme", "widgets", self_id);
         assert!(!carried_excluding_self.contains_key("secret::app.js::5"));
+    }
+
+    #[test]
+    fn get_latest_project_for_org_repo_returns_the_most_recently_created_project() {
+        let (_dir, store) = open_test_db();
+        assert!(store.get_latest_project_for_org_repo("acme", "widgets").is_none());
+        store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let (id2, job_id2) = (store.create_project("job-2", "acme", "widgets", false, "ui", None), "job-2".to_string());
+        let (found_id, found_job_id) = store.get_latest_project_for_org_repo("acme", "widgets").unwrap();
+        assert_eq!(found_id, id2);
+        assert_eq!(found_job_id, job_id2);
+    }
+
+    #[test]
+    fn github_dismissal_webhook_round_trip_marks_overridden_then_reopens_to_open() {
+        let (_dir, store) = open_test_db();
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        store.replace_project_issues(
+            project_id,
+            &[IssueInput { id: "secret::app.js::5".to_string(), phase: Some(4), category: "secret".to_string(), severity: "error".to_string(), score: Some(9), summary: "hardcoded key".to_string(), file: Some("app.js".to_string()), line: Some(5), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &HashSet::new(),
+        );
+        assert_eq!(store.get_project_issues(project_id)[0].status, "open");
+
+        // Simulate the inbound webhook's "dismissed" handling.
+        store.add_override(AddOverrideArgs {
+            project_id,
+            job_id: "job-1",
+            phase: 4,
+            issue_id: "secret::app.js::5",
+            category: "secret",
+            severity: "error",
+            summary: "hardcoded key",
+            file: Some("app.js"),
+            line: Some(5),
+            justification: "Dismissed on GitHub: false positive",
+            actor_email: overrides::GITHUB_DISMISSAL_ACTOR_EMAIL,
+            actor_name: Some("octocat"),
+            email_sent: false,
+        });
+        store.set_issue_status(project_id, "secret::app.js::5", "overridden");
+        let issues = store.get_project_issues(project_id);
+        assert_eq!(issues[0].status, "overridden");
+        assert_eq!(issues[0].actor_email.as_deref(), Some(overrides::GITHUB_DISMISSAL_ACTOR_EMAIL));
+
+        // Simulate the inbound webhook's "reopened" handling.
+        let removed = store.delete_github_dismissal_overrides("acme", "widgets", "secret::app.js::5");
+        assert_eq!(removed, 1);
+        assert!(!store.issue_has_override(project_id, "secret::app.js::5"));
+        store.set_issue_status(project_id, "secret::app.js::5", "open");
+        assert_eq!(store.get_project_issues(project_id)[0].status, "open");
+    }
+
+    #[test]
+    fn reopened_webhook_leaves_a_real_ignite_override_untouched() {
+        let (_dir, store) = open_test_db();
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        store.add_override(AddOverrideArgs {
+            project_id,
+            job_id: "job-1",
+            phase: 4,
+            issue_id: "secret::app.js::5",
+            category: "secret",
+            severity: "error",
+            summary: "hardcoded key",
+            file: Some("app.js"),
+            line: Some(5),
+            justification: "justified by a human in Ignite",
+            actor_email: "dev@acme.example",
+            actor_name: None,
+            email_sent: false,
+        });
+        // A GitHub reopen only ever deletes rows it created itself.
+        let removed = store.delete_github_dismissal_overrides("acme", "widgets", "secret::app.js::5");
+        assert_eq!(removed, 0);
+        assert!(store.issue_has_override(project_id, "secret::app.js::5"));
     }
 
     #[test]

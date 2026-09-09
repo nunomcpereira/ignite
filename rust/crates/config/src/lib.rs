@@ -578,9 +578,21 @@ pub struct CodeScanningConfig {
     /// dismiss in the first place).
     #[serde(default = "default_true")]
     pub sync_dismissals: bool,
+    /// GHAS-parity inbound sync (the other direction from
+    /// `sync_dismissals`): the shared secret GitHub signs its
+    /// `code_scanning_alert` webhook deliveries with
+    /// (`X-Hub-Signature-256`), so `POST /api/webhooks/github/code-scanning`
+    /// can verify a delivery actually came from GitHub before trusting it
+    /// to flip an issue's status. `None` (the default — secrets don't
+    /// belong in a committed `config.json`) makes the endpoint reject
+    /// every request; set via `CODE_SCANNING_INBOUND_WEBHOOK_SECRET` to
+    /// enable, matching the webhook's own "Secret" field when it's
+    /// registered on the repo/org in GitHub's settings.
+    #[serde(default)]
+    pub inbound_webhook_secret: Option<String>,
 }
 impl Default for CodeScanningConfig {
-    fn default() -> Self { CodeScanningConfig { enabled: true, sync_dismissals: true } }
+    fn default() -> Self { CodeScanningConfig { enabled: true, sync_dismissals: true, inbound_webhook_secret: None } }
 }
 
 fn default_true() -> bool {
@@ -986,6 +998,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("DEPENDENCY_GRAPH_ENABLED") { merged.security.dependency_graph.enabled = v; }
     if let Some(v) = env_bool("CODE_SCANNING_ENABLED") { merged.security.code_scanning.enabled = v; }
     if let Some(v) = env_bool("CODE_SCANNING_SYNC_DISMISSALS") { merged.security.code_scanning.sync_dismissals = v; }
+    if let Some(v) = env_str("CODE_SCANNING_INBOUND_WEBHOOK_SECRET") { merged.security.code_scanning.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("DEPENDENCY_REVIEW_ENABLED") { merged.security.dependency_review.enabled = v; }
     if let Some(v) = env_bool("SECRET_VERIFICATION_ENABLED") { merged.security.secret_verification.enabled = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }

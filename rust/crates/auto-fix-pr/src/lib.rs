@@ -26,10 +26,14 @@
 //!   overwhelming common case (one vulnerable range, one fix); a
 //!   multi-range advisory could in principle want a different minimum —
 //!   still strictly better than the silence Ignite ships today.
-//! - One branch + PR per (manifest file, dependency, fixed version),
-//!   matching Dependabot's own per-dependency granularity rather than
-//!   bundling a repo's fixes into one PR a reviewer has to accept/reject
-//!   as a unit.
+//! - One branch + PR per (manifest file, dependency, fixed version) by
+//!   default, matching Dependabot's own per-dependency granularity rather
+//!   than bundling a repo's fixes into one PR a reviewer has to
+//!   accept/reject as a unit. `--group-by ecosystem` (CLI-only, opt-in —
+//!   see `GroupBy`/`group_candidates`/`apply_fix_group`) is Dependabot's
+//!   `groups:` config parity for the opposite case: bundle every
+//!   candidate for one package manager (never mixing a vulnerability fix
+//!   with a routine update) into a single PR instead.
 //! - Idempotent via branch name alone (`git ls-remote --heads` before
 //!   creating): no attempt to auto-merge, close stale fix PRs when a
 //!   dependency is later fixed some other way, or track an in-flight
@@ -47,7 +51,7 @@ use std::path::{Path, PathBuf};
 /// `pr_title_for`/`pr_body_for` (an advisory-driven fix cites the CVE/GHSA
 /// and OSV.dev; a routine update cites "latest available release")
 /// but nothing about `apply_fix`'s actual mechanics differs between them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FixKind {
     /// Driven by a known advisory (`discover_fix_candidates` / OSV.dev).
@@ -302,6 +306,129 @@ pub fn branch_name_for(candidate: &FixCandidate) -> String {
     format!("ignite/autofix/{}-{}-{}", candidate.ecosystem, slug, candidate.fixed_version)
 }
 
+/// Dependabot's `groups:` config parity: without it, `auto-fix-pr` opens
+/// one PR per dependency, which floods a legacy/stale repo with dozens of
+/// PRs when many candidates surface at once. `Ecosystem` is the one
+/// strategy implemented — Dependabot's own most common grouping pattern
+/// (bundle every compatible update for one package manager into a single
+/// PR) — deliberately never mixing `FixKind::Vulnerability` with
+/// `FixKind::RoutineUpdate` in the same group even under `Ecosystem`,
+/// since their commit-prefix/PR wording and urgency genuinely differ.
+/// `None` (the default — an existing deployment's PR-per-fix behavior
+/// never changes unless `--group-by` is passed) keeps every candidate in
+/// its own singleton group, which `apply_fix_group`'s single-member
+/// fast-path then hands straight to the original `apply_fix` — so
+/// branch names/idempotency for the ungrouped case are byte-identical to
+/// before this existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupBy {
+    None,
+    Ecosystem,
+}
+
+impl std::str::FromStr for GroupBy {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ecosystem" => Ok(GroupBy::Ecosystem),
+            other => Err(format!("unknown --group-by value \"{other}\" (expected: ecosystem)")),
+        }
+    }
+}
+
+/// Partitions `candidates` per `group_by` — see [`GroupBy`]. Group order
+/// and each group's member order are otherwise stable (first-seen order
+/// from `candidates`), so a re-run with the same discovery results
+/// produces the same groups in the same order.
+pub fn group_candidates(candidates: Vec<FixCandidate>, group_by: GroupBy) -> Vec<Vec<FixCandidate>> {
+    match group_by {
+        GroupBy::None => candidates.into_iter().map(|c| vec![c]).collect(),
+        GroupBy::Ecosystem => {
+            let mut order: Vec<(&'static str, FixKind)> = Vec::new();
+            let mut groups: std::collections::HashMap<(&'static str, FixKind), Vec<FixCandidate>> = std::collections::HashMap::new();
+            for candidate in candidates {
+                let key = (candidate.ecosystem, candidate.kind);
+                if !groups.contains_key(&key) {
+                    order.push(key);
+                }
+                groups.entry(key).or_default().push(candidate);
+            }
+            order.into_iter().map(|key| groups.remove(&key).unwrap_or_default()).collect()
+        }
+    }
+}
+
+/// FNV-1a 64-bit — not cryptographic, just a short deterministic digest so
+/// [`group_branch_name`] doesn't need to embed every member's name/version
+/// verbatim (a group can have dozens of members) while still changing
+/// whenever the group's actual membership changes, so a re-run with an
+/// unchanged set of candidates always names the same branch (the group
+/// equivalent of `branch_name_for`'s per-candidate idempotency key).
+fn fnv1a64(data: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in data.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Deterministic branch name for a *group* of candidates — the multi-
+/// member counterpart to `branch_name_for`. Hashes the sorted
+/// `dep@version` pairs of every member so the branch name changes exactly
+/// when group membership changes (a dependency added, removed, or
+/// re-resolved to a different fixed version), same idempotency guarantee
+/// `branch_exists_on_remote` relies on for the single-candidate path.
+pub fn group_branch_name(ecosystem: &str, kind: FixKind, group: &[FixCandidate]) -> String {
+    let mut keys: Vec<String> = group.iter().map(|c| format!("{}@{}", c.dep_name, c.fixed_version)).collect();
+    keys.sort();
+    let hash = fnv1a64(&keys.join(","));
+    let kind_tag = match kind {
+        FixKind::Vulnerability => "vuln",
+        FixKind::RoutineUpdate => "routine",
+    };
+    format!("ignite/autofix-group/{ecosystem}-{kind_tag}-{hash:016x}")
+}
+
+pub fn pr_title_for_group(ecosystem: &str, kind: FixKind, member_count: usize) -> String {
+    match kind {
+        FixKind::Vulnerability => format!("[Ignite auto-fix] bump {member_count} {ecosystem} dependencies (grouped)"),
+        FixKind::RoutineUpdate => format!("[Ignite routine update] bump {member_count} {ecosystem} dependencies (grouped)"),
+    }
+}
+
+/// `lockfile_notes`: one line per distinct lockfile path this group
+/// touched, already formatted (regenerated vs. failed) — built by the
+/// caller since it has the actual regeneration results, not by this
+/// function.
+pub fn pr_body_for_group(kind: FixKind, group: &[FixCandidate], lockfile_notes: &[String]) -> String {
+    let intro = match kind {
+        FixKind::Vulnerability => "Ignite's scheduled dependency-vulnerability scan flagged the following dependencies for known advisories, grouped into one PR per Dependabot's own `groups:` convention:\n\n",
+        FixKind::RoutineUpdate => "Ignite's routine dependency-update sweep found newer releases for the following dependencies. No known vulnerability is driving this — it's a routine version-currency update, grouped into one PR per Dependabot's own `groups:` convention:\n\n",
+    };
+    let mut body = String::from(intro);
+    for candidate in group {
+        let target = candidate.resolved_version.as_deref().unwrap_or(&candidate.current_range);
+        match candidate.kind {
+            FixKind::Vulnerability => body.push_str(&format!("- `{}`: `{target}` -> `{}` in `{}` ({})\n", candidate.dep_name, candidate.fixed_version, candidate.manifest_file, candidate.advisory_id)),
+            FixKind::RoutineUpdate => body.push_str(&format!("- `{}`: `{target}` -> `{}` in `{}`\n", candidate.dep_name, candidate.fixed_version, candidate.manifest_file)),
+        }
+    }
+    if !lockfile_notes.is_empty() {
+        body.push('\n');
+        for note in lockfile_notes {
+            body.push_str(note);
+            body.push('\n');
+        }
+    }
+    body.push_str(
+        "\nOpened automatically by `auto-fix-pr --group-by ecosystem` (dry-run reviewed before `--apply`). \
+         Verify the bumps don't break anything before merging — these are targeted \
+         version-constraint edits, not a full compatibility check.\n",
+    );
+    body
+}
+
 pub fn pr_title_for(candidate: &FixCandidate) -> String {
     match candidate.kind {
         FixKind::Vulnerability => format!("[Ignite auto-fix] bump {} to {} ({})", candidate.dep_name, candidate.fixed_version, candidate.advisory_id),
@@ -543,6 +670,194 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
     }
 }
 
+#[derive(Debug)]
+pub struct GroupFixOutcome {
+    pub group_summary: String,
+    pub branch: String,
+    pub applied: bool,
+    pub skipped_reason: Option<String>,
+    pub pr_url: Option<String>,
+    pub error: Option<String>,
+    /// Per-member status line, always populated (even on a whole-group
+    /// skip/error) so a caller can print exactly which candidates ended up
+    /// in the PR and which were individually skipped (major bump, stale
+    /// manifest line).
+    pub member_summaries: Vec<String>,
+}
+
+impl GroupFixOutcome {
+    fn from_single(outcome: FixOutcome, major_bump_skips: &[&FixCandidate]) -> Self {
+        let mut member_summaries = vec![outcome.candidate_summary.clone()];
+        member_summaries.extend(major_bump_skips.iter().map(|c| format!("{} (skipped: crosses a semver major version)", c.summary)));
+        GroupFixOutcome { group_summary: outcome.candidate_summary, branch: outcome.branch, applied: outcome.applied, skipped_reason: outcome.skipped_reason, pr_url: outcome.pr_url, error: outcome.error, member_summaries }
+    }
+}
+
+/// Applies a *group* of fix candidates (same ecosystem + [`FixKind`], see
+/// [`group_candidates`]) as a single branch/commit/PR instead of one per
+/// candidate — Dependabot's `groups:` parity. `group` must already be
+/// filtered to one `(ecosystem, kind)` bucket; mixing ecosystems or kinds
+/// here would produce a branch name / commit prefix that doesn't actually
+/// describe its contents.
+///
+/// A single-member group is handed straight to [`apply_fix`] unchanged —
+/// same branch name, same commit/PR shape as before grouping existed —
+/// so `--group-by` never changes behavior for a repo that only ever has
+/// one candidate per ecosystem at a time.
+///
+/// Candidates whose manifest line no longer matches what was scanned
+/// (edited since the scan ran) are individually skipped and reported in
+/// `member_summaries`, same as `apply_fix`'s single-candidate skip —
+/// grouping never turns one member's stale-line skip into a whole-group
+/// failure as long as at least one other member still applies.
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_fix_group(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, clone_dir: &str, group: &[FixCandidate], token: &str, apply: bool) -> GroupFixOutcome {
+    let (usable, major_bump_skips): (Vec<&FixCandidate>, Vec<&FixCandidate>) = group.iter().partition(|c| !c.major_bump);
+
+    if usable.is_empty() {
+        return GroupFixOutcome {
+            group_summary: format!("{} candidate(s)", group.len()),
+            branch: String::new(),
+            applied: false,
+            skipped_reason: Some("every candidate in this group crosses a semver major version — needs manual review".to_string()),
+            pr_url: None,
+            error: None,
+            member_summaries: group.iter().map(|c| c.summary.clone()).collect(),
+        };
+    }
+
+    if usable.len() == 1 {
+        let outcome = apply_fix(runner, github_api, full_name, base_branch, clone_dir, usable[0], token, apply).await;
+        return GroupFixOutcome::from_single(outcome, &major_bump_skips);
+    }
+
+    let ecosystem = usable[0].ecosystem;
+    let kind = usable[0].kind;
+    let owned: Vec<FixCandidate> = usable.iter().map(|c| (*c).clone()).collect();
+    let branch = group_branch_name(ecosystem, kind, &owned);
+    let group_summary = format!("{} {ecosystem} {} candidate(s)", owned.len(), match kind { FixKind::Vulnerability => "vulnerability", FixKind::RoutineUpdate => "routine-update" });
+
+    let mut member_summaries: Vec<String> = major_bump_skips.iter().map(|c| format!("{} (skipped: crosses a semver major version)", c.summary)).collect();
+
+    if branch_exists_on_remote(runner, clone_dir, &branch).await {
+        member_summaries.extend(owned.iter().map(|c| c.summary.clone()));
+        return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: Some("branch already exists on origin — this group's fixes are already proposed".to_string()), pr_url: None, error: None, member_summaries };
+    }
+
+    // Validate every member's manifest line still matches what was
+    // scanned, and pre-compute its edit — before touching git, same as
+    // `apply_fix`'s single-candidate ordering (major_bump -> branch-exists
+    // -> read+validate -> dry-run early return -> git).
+    let mut manifest_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut applicable: Vec<&FixCandidate> = Vec::new();
+    for candidate in &owned {
+        let content = match manifest_cache.entry(candidate.manifest_file.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let path = Path::new(clone_dir).join(&candidate.manifest_file);
+                match std::fs::read_to_string(&path) {
+                    Ok(c) => e.insert(c),
+                    Err(err) => {
+                        member_summaries.push(format!("{} (skipped: failed to read {}: {err})", candidate.summary, candidate.manifest_file));
+                        continue;
+                    }
+                }
+            }
+        };
+        match apply_fix_to_content(content, candidate.dep_line, &candidate.current_range, &candidate.fixed_version) {
+            Some(new_content) => {
+                manifest_cache.insert(candidate.manifest_file.clone(), new_content);
+                applicable.push(candidate);
+            }
+            None => member_summaries.push(format!("{} (skipped: manifest line no longer matches the scanned range)", candidate.summary)),
+        }
+    }
+
+    if applicable.is_empty() {
+        member_summaries.extend(owned.iter().map(|c| c.summary.clone()));
+        return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: Some("no member's manifest line still matched what was scanned".to_string()), pr_url: None, error: None, member_summaries };
+    }
+
+    member_summaries.extend(applicable.iter().map(|c| c.summary.clone()));
+
+    if !apply {
+        return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: Some("dry-run — pass --apply to open this PR".to_string()), pr_url: None, error: None, member_summaries };
+    }
+
+    if let Err(e) = runner.run_tool("git", &["checkout".to_string(), "-B".to_string(), branch.clone(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await {
+        return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: None, pr_url: None, error: Some(format!("git checkout -B: {e}")), member_summaries };
+    }
+
+    // Write every touched manifest's final (all-edits-applied) content —
+    // `manifest_cache` holds the fully-edited content per file since
+    // multiple candidates can share one manifest (edits never move lines,
+    // so applying them in any order onto the same in-memory content is safe).
+    let mut add_paths: Vec<String> = Vec::new();
+    for manifest_file in applicable.iter().map(|c| c.manifest_file.clone()).collect::<std::collections::BTreeSet<_>>() {
+        let content = manifest_cache.get(&manifest_file).expect("edited manifest must be in cache");
+        let path = Path::new(clone_dir).join(&manifest_file);
+        if let Err(e) = std::fs::write(&path, content) {
+            let _ = runner.run_tool("git", &["checkout".to_string(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await;
+            return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: None, pr_url: None, error: Some(format!("failed to write {manifest_file}: {e}")), member_summaries };
+        }
+        add_paths.push(manifest_file);
+    }
+
+    let mut lockfile_notes: Vec<String> = Vec::new();
+    let mut lockfile_paths_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for candidate in &applicable {
+        let (lockfile_path, lockfile_warning) = regenerate_lockfile(runner, clone_dir, candidate).await;
+        if let Some(path) = lockfile_path {
+            if lockfile_paths_seen.insert(path.clone()) {
+                lockfile_notes.push(format!("- Lockfile: `{path}` regenerated to match."));
+                add_paths.push(path);
+            }
+        } else if let Some(reason) = lockfile_warning {
+            let note = format!("- Lockfile: **not** regenerated for `{}` ({reason}).", candidate.dep_name);
+            if !lockfile_notes.contains(&note) {
+                lockfile_notes.push(note);
+            }
+        }
+    }
+
+    let prefix = match kind {
+        FixKind::Vulnerability => format!("fix({ecosystem}): bump {} dependencies (grouped)", applicable.len()),
+        FixKind::RoutineUpdate => format!("chore({ecosystem}): bump {} dependencies (grouped)", applicable.len()),
+    };
+    let bullet_list: String = applicable.iter().map(|c| format!("- {}: {} -> {}\n", c.dep_name, c.current_range, c.fixed_version)).collect();
+    let commit_message = format!("{prefix}\n\n{bullet_list}");
+
+    let mut add_args = vec!["add".to_string()];
+    add_args.extend(add_paths);
+    let commit_steps: Vec<Vec<String>> = vec![
+        add_args,
+        vec!["-c".to_string(), "user.email=ignite-bot@localhost".to_string(), "-c".to_string(), "user.name=Ignite Auto-Fix".to_string(), "commit".to_string(), "-m".to_string(), commit_message],
+    ];
+    for args in commit_steps {
+        if let Err(e) = runner.run_tool("git", &args, clone_dir, RunToolOptions::default()).await {
+            let _ = runner.run_tool("git", &["checkout".to_string(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await;
+            return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: None, pr_url: None, error: Some(format!("git {}: {e}", args.join(" "))), member_summaries };
+        }
+    }
+
+    let push_result = runner
+        .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "push".to_string(), "origin".to_string(), format!("HEAD:refs/heads/{branch}")], clone_dir, RunToolOptions::default())
+        .await;
+    let _ = runner.run_tool("git", &["checkout".to_string(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await;
+
+    if let Err(e) = push_result {
+        return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: None, pr_url: None, error: Some(format!("git push: {e}")), member_summaries };
+    }
+
+    let owned_applicable: Vec<FixCandidate> = applicable.into_iter().cloned().collect();
+    let title = pr_title_for_group(ecosystem, kind, owned_applicable.len());
+    let body = pr_body_for_group(kind, &owned_applicable, &lockfile_notes);
+    match github_api.gh_create_pr(full_name, base_branch, &branch, &title, &body, token).await {
+        Ok(pr) => GroupFixOutcome { group_summary, branch, applied: true, skipped_reason: None, pr_url: Some(pr.url), error: None, member_summaries },
+        Err(e) => GroupFixOutcome { group_summary, branch, applied: true, skipped_reason: None, pr_url: None, error: Some(format!("branch pushed but PR creation failed: {e}")), member_summaries },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +1075,128 @@ mod tests {
         let body = pr_body_for(&candidate, None);
         assert!(body.contains("routine version-currency update"));
         assert!(!body.contains("Advisory:"));
+    }
+
+    fn candidate(ecosystem: &'static str, kind: FixKind, dep_name: &str, fixed_version: &str) -> FixCandidate {
+        FixCandidate {
+            manifest_file: "package.json".to_string(),
+            ecosystem,
+            dep_name: dep_name.to_string(),
+            dep_line: 1,
+            current_range: "1.0.0".to_string(),
+            resolved_version: Some("1.0.0".to_string()),
+            fixed_version: fixed_version.to_string(),
+            advisory_id: if kind == FixKind::Vulnerability { "GHSA-xxxx".to_string() } else { String::new() },
+            summary: format!("{dep_name}@1.0.0 -> {fixed_version}"),
+            major_bump: false,
+            kind,
+        }
+    }
+
+    #[test]
+    fn group_by_none_keeps_every_candidate_in_its_own_singleton_group() {
+        let candidates = vec![candidate("npm", FixKind::Vulnerability, "a", "2.0.0"), candidate("npm", FixKind::Vulnerability, "b", "2.0.0")];
+        let groups = group_candidates(candidates, GroupBy::None);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 1);
+        assert_eq!(groups[1].len(), 1);
+    }
+
+    #[test]
+    fn group_by_ecosystem_bundles_same_ecosystem_and_kind() {
+        let candidates = vec![candidate("npm", FixKind::Vulnerability, "a", "2.0.0"), candidate("npm", FixKind::Vulnerability, "b", "2.0.0"), candidate("cargo", FixKind::Vulnerability, "c", "2.0.0")];
+        let groups = group_candidates(candidates, GroupBy::Ecosystem);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.iter().map(|g| g.len()).sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn group_by_ecosystem_never_mixes_vulnerability_and_routine_update() {
+        let candidates = vec![candidate("npm", FixKind::Vulnerability, "a", "2.0.0"), candidate("npm", FixKind::RoutineUpdate, "b", "2.0.0")];
+        let groups = group_candidates(candidates, GroupBy::Ecosystem);
+        assert_eq!(groups.len(), 2);
+        assert_ne!(groups[0][0].kind, groups[1][0].kind);
+    }
+
+    #[test]
+    fn group_by_from_str_accepts_ecosystem_and_rejects_others() {
+        assert_eq!("ecosystem".parse::<GroupBy>(), Ok(GroupBy::Ecosystem));
+        assert!("bogus".parse::<GroupBy>().is_err());
+    }
+
+    #[test]
+    fn group_branch_name_is_deterministic_and_order_independent() {
+        let a = candidate("npm", FixKind::Vulnerability, "a", "2.0.0");
+        let b = candidate("npm", FixKind::Vulnerability, "b", "3.0.0");
+        let forward = group_branch_name("npm", FixKind::Vulnerability, &[a.clone(), b.clone()]);
+        let reversed = group_branch_name("npm", FixKind::Vulnerability, &[b, a]);
+        assert_eq!(forward, reversed);
+        assert!(forward.starts_with("ignite/autofix-group/npm-vuln-"));
+    }
+
+    #[test]
+    fn group_branch_name_changes_when_membership_changes() {
+        let a = candidate("npm", FixKind::Vulnerability, "a", "2.0.0");
+        let b = candidate("npm", FixKind::Vulnerability, "b", "3.0.0");
+        let c = candidate("npm", FixKind::Vulnerability, "c", "4.0.0");
+        let group1 = group_branch_name("npm", FixKind::Vulnerability, &[a.clone(), b.clone()]);
+        let group2 = group_branch_name("npm", FixKind::Vulnerability, &[a, b, c]);
+        assert_ne!(group1, group2);
+    }
+
+    #[test]
+    fn pr_title_for_group_reflects_kind_and_count() {
+        assert_eq!(pr_title_for_group("npm", FixKind::Vulnerability, 3), "[Ignite auto-fix] bump 3 npm dependencies (grouped)");
+        assert_eq!(pr_title_for_group("cargo", FixKind::RoutineUpdate, 2), "[Ignite routine update] bump 2 cargo dependencies (grouped)");
+    }
+
+    #[test]
+    fn pr_body_for_group_lists_every_member_and_lockfile_note() {
+        let group = vec![candidate("npm", FixKind::Vulnerability, "a", "2.0.0"), candidate("npm", FixKind::Vulnerability, "b", "3.0.0")];
+        let body = pr_body_for_group(FixKind::Vulnerability, &group, &["- Lockfile: `package-lock.json` regenerated to match.".to_string()]);
+        assert!(body.contains("`a`"));
+        assert!(body.contains("`b`"));
+        assert!(body.contains("GHSA-xxxx"));
+        assert!(body.contains("package-lock.json` regenerated"));
+    }
+
+    #[test]
+    fn pr_body_for_group_routine_update_omits_advisory_text() {
+        let group = vec![candidate("npm", FixKind::RoutineUpdate, "a", "2.0.0")];
+        let body = pr_body_for_group(FixKind::RoutineUpdate, &group, &[]);
+        assert!(!body.contains("Advisory"));
+        assert!(body.contains("routine version-currency update"));
+    }
+
+    #[tokio::test]
+    async fn apply_fix_group_single_member_delegates_to_apply_fix_and_reports_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), "{\n  \"dependencies\": {\n    \"lodash\": \"^4.17.15\"\n  }\n}").unwrap();
+        let mut c = npm_candidate();
+        c.dep_line = 3;
+        c.current_range = "^4.17.15".to_string();
+        let runner = ToolRunner::new(std::collections::HashMap::new());
+        let github_api = GithubApi::new(&runner);
+        let outcome = apply_fix_group(&runner, &github_api, "acme/widgets", "main", &dir.path().to_string_lossy(), &[c], "token", false).await;
+        assert!(!outcome.applied);
+        assert_eq!(outcome.skipped_reason.as_deref(), Some("dry-run — pass --apply to open this PR"));
+        assert_eq!(outcome.member_summaries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_fix_group_all_major_bumps_skips_whole_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = npm_candidate();
+        a.major_bump = true;
+        let mut b = npm_candidate();
+        b.dep_name = "other".to_string();
+        b.major_bump = true;
+        let runner = ToolRunner::new(std::collections::HashMap::new());
+        let github_api = GithubApi::new(&runner);
+        let outcome = apply_fix_group(&runner, &github_api, "acme/widgets", "main", &dir.path().to_string_lossy(), &[a, b], "token", false).await;
+        assert!(!outcome.applied);
+        assert!(outcome.skipped_reason.unwrap().contains("semver major"));
+        assert_eq!(outcome.member_summaries.len(), 2);
     }
 
     #[tokio::test]

@@ -192,6 +192,16 @@ skipped for a human to review, never silently applied — this is the same
 any repo with `./target/release/auto-fix-pr <org/repo> [--apply]`), just
 triggered automatically here instead of by hand.
 
+Run standalone (not through the auto-chain above), `auto-fix-pr` also
+supports `--group-by ecosystem` — Dependabot's `groups:` config parity:
+instead of opening one PR per dependency, every fix candidate for the same
+package manager (and same vulnerability-vs-routine-update kind) is bundled
+into a single branch/PR. Useful on a legacy repo with many outdated
+dependencies, where the ungrouped default would otherwise open dozens of
+PRs in one run. Not wired into the `scheduled-rescan` auto-chain — grouping
+changes what a reviewer has to accept/reject as a unit, which stays an
+operator's explicit choice rather than a scheduled default.
+
 ## Native GitHub UI parity for SARIF and dependency graph
 
 Ignite's own findings and dependency data used to live only in Ignite's UI
@@ -232,6 +242,37 @@ The `github-check` request body accepts an optional `ref` field (e.g.
 `"refs/heads/main"`) for the branch/ref these pushes should attach to —
 when omitted, Ignite looks up the repo's current default branch and uses
 that.
+
+## Inbound alert-dismissal sync (GitHub → Ignite)
+
+The SARIF upload above creates GitHub Code Scanning alerts, and Ignite
+already pushes the other way too: `github-check`'s `syncDismissals` dismisses
+a GitHub alert automatically once someone justifies the same finding as an
+override in Ignite. Left on its own, that's one-directional — a human who
+instead dismisses (or reopens) the alert directly in GitHub's **Security →
+Code scanning** UI has no way to tell Ignite, so the next gate check keeps
+treating the finding as an unapproved open issue.
+
+`POST /api/webhooks/github/code-scanning` closes that gap: register a
+webhook on the repo (or org) for `code_scanning_alert` events pointing at
+that URL, set a shared secret, and set the same value as
+`CODE_SCANNING_INBOUND_WEBHOOK_SECRET` on the Ignite server. A `dismissed`
+delivery records a matching Ignite override (justification drawn from
+GitHub's own dismissal reason/comment) and immediately flips the issue to
+`overridden`; a `reopened` delivery removes that override and flips it back
+to `open` — unless a separate, human-entered Ignite override already covers
+the same finding, which is left untouched.
+
+Matching a webhook's `alert` back to an Ignite issue uses the same rule-id +
+file + line match `syncDismissals` uses in the outbound direction — GitHub's
+alert payload doesn't carry Ignite's own issue id.
+
+The endpoint verifies GitHub's `X-Hub-Signature-256` header against the
+configured secret and 404s when no secret is set, so an unconfigured
+deployment never exposes an unauthenticated write path. There is no
+config.json toggle for this — presence of
+`CODE_SCANNING_INBOUND_WEBHOOK_SECRET` is the on/off switch, since the
+secret itself has to be set for the endpoint to do anything either way.
 
 ## Keep GitHub's secret push-protection even without full GHAS
 

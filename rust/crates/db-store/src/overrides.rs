@@ -8,6 +8,14 @@ use crate::types::*;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
+/// `overrides.actor_email` sentinel marking a row created by the inbound
+/// GitHub code-scanning webhook (`routes/code_scanning_webhook.rs`)
+/// rather than Ignite's own human-justified override flow — lets a
+/// later "reopened" webhook find and remove exactly the rows it created,
+/// without touching a real Ignite override that happens to cover the
+/// same issue id.
+pub const GITHUB_DISMISSAL_ACTOR_EMAIL: &str = "github-webhook:dismissal-sync";
+
 impl DbStore {
     // ---------------- audit log: overrides ----------------
 
@@ -107,6 +115,41 @@ impl DbStore {
             by_issue_id.entry(row.issue_id.clone()).or_insert(row);
         }
         by_issue_id
+    }
+
+    /// True when `issue_id` already has ANY override row (Ignite's own or
+    /// a GitHub-dismissal one) on this project — used after
+    /// [`Self::delete_github_dismissal_overrides`] to decide whether a
+    /// "reopened" webhook should flip the issue back to `open` or leave it
+    /// `overridden` because a separate, real Ignite override still covers it.
+    pub fn issue_has_override(&self, project_id: i64, issue_id: &str) -> bool {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM overrides WHERE project_id = ? AND issue_id = ?)",
+            params![project_id, issue_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            != 0
+    }
+
+    /// Removes every GitHub-dismissal override row (see
+    /// [`GITHUB_DISMISSAL_ACTOR_EMAIL`]) for `issue_id` across every
+    /// project ever scanned for `(org, repo)` — plural, not just the
+    /// latest project, because [`Self::get_carry_forward_overrides`] reads
+    /// across every past project of the repo, so a stale row on an older
+    /// project would otherwise get carried forward into the next scan
+    /// again right after a human reopened the alert on GitHub. Returns the
+    /// number of rows removed.
+    pub fn delete_github_dismissal_overrides(&self, org: &str, repo: &str, issue_id: &str) -> usize {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM overrides
+              WHERE issue_id = ? AND actor_email = ?
+                AND project_id IN (SELECT id FROM projects WHERE org = ? AND repo = ?)",
+            params![issue_id, GITHUB_DISMISSAL_ACTOR_EMAIL, org, repo],
+        )
+        .unwrap()
     }
 
 }

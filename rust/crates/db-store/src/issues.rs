@@ -128,6 +128,19 @@ impl DbStore {
         }
     }
 
+    /// Flips one already-persisted issue's `status` in place, without
+    /// waiting for the next `replace_project_issues` scan — used by the
+    /// inbound GitHub code-scanning webhook so a dismissal/reopen made
+    /// directly in GitHub's UI is reflected immediately (the next gate
+    /// check on the same commit shouldn't still see a just-dismissed
+    /// alert as blocking). A no-op if the project no longer has an
+    /// `issues` row for `issue_id` (e.g. the finding was since fixed and
+    /// dropped from the latest scan).
+    pub fn set_issue_status(&self, project_id: i64, issue_id: &str, status: &str) {
+        let conn = self.conn.lock();
+        conn.execute("UPDATE issues SET status = ? WHERE project_id = ? AND issue_id = ?", params![status, project_id, issue_id]).unwrap();
+    }
+
     pub fn get_project_id_by_job_id(&self, job_id: &str) -> Option<i64> {
         let conn = self.conn.lock();
         conn.query_row("SELECT id FROM projects WHERE job_id = ?", params![job_id], |row| row.get(0)).optional().unwrap()

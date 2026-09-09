@@ -40,6 +40,22 @@ impl DbStore {
         }
     }
 
+    /// The most recently created project row for `(org, repo)` — used by
+    /// the inbound GitHub code-scanning webhook (`routes/code_scanning_webhook.rs`)
+    /// to find which project's issues a dismissed/reopened alert belongs
+    /// to, since the webhook payload only carries `(org, repo)`, not a
+    /// job/project id.
+    pub fn get_latest_project_for_org_repo(&self, org: &str, repo: &str) -> Option<(i64, String)> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT id, job_id FROM projects WHERE org = ? AND repo = ? ORDER BY id DESC LIMIT 1",
+            params![org, repo],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .unwrap()
+    }
+
     /// Records a PR Ignite opened outside the main onboarding flow — today
     /// only the interactive fix-PR feature (`routes/fix_pr.rs`'s `apply`),
     /// kind `'fix-pr'`. The onboarding PR itself is recorded automatically
