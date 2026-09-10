@@ -219,6 +219,9 @@
     <button id="onboardedReposNavBtn" type="button" data-i18n-title="header.onboardedRepos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h17.25"/></svg>
     </button>
+    <button id="governanceNavBtn" type="button" data-i18n-title="header.governance" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+    </button>
     <button id="historyDrawerBtn" type="button" data-i18n-title="header.history" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
     </button>
@@ -499,6 +502,111 @@
       <div id="onboardedReposLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
       <div id="onboardedReposEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="onboardedRepos.empty">No repos onboarded yet.</div>
       <div id="onboardedReposError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="onboardedRepos.loadError">Could not load onboarded repos.</div>
+    </div>
+  </div>
+
+  <!-- Governance — Security Campaigns + Compliance Audit Packs, previously
+       API-only (db-store/src/campaigns.rs, routes/compliance.rs). Sibling
+       to #dashboardView/#onboardedReposView, same mutually-exclusive
+       show/hide via the lateral nav rail's third icon. Two sub-tabs
+       (Studio's own view-tab pattern) instead of two more nav icons, since
+       both panels are read the same way (governance/compliance evidence)
+       and splitting them into separate top-level screens would crowd the
+       rail for a feature this narrow. -->
+  <div id="governanceView" class="hidden max-w-6xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+    <div class="flex items-center justify-between mb-6 gap-4 flex-wrap">
+      <div>
+        <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="governance.title">Governance</h2>
+        <p class="text-base text-slate-500 mt-1" data-i18n="governance.subtitle">Security campaign burndown and compliance evidence export.</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-1 border-b border-slate-200 mb-6">
+      <button id="governanceCampaignsTabBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px transition-colors" data-i18n="governance.campaignsTab">Campaigns</button>
+      <button id="governanceComplianceTabBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n="governance.complianceTab">Compliance</button>
+    </div>
+
+    <!-- Campaigns tab -->
+    <div id="governanceCampaignsPane">
+      <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+        <p class="text-xs text-slate-500 max-w-lg" data-i18n="governance.campaignsHint">A campaign snapshots how many open issues match a category/severity filter, so progress burning that count down to zero can be tracked over time.</p>
+        <button id="campaignNewBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600 whitespace-nowrap" data-i18n="governance.newCampaign">+ New campaign</button>
+      </div>
+      <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                <th class="px-5 py-3" data-i18n="governance.colTitle">Title</th>
+                <th class="px-5 py-3" data-i18n="governance.colFilter">Filter</th>
+                <th class="px-5 py-3 text-right" data-i18n="governance.colProgress">Progress</th>
+                <th class="px-5 py-3" data-i18n="governance.colTargetDate">Target date</th>
+                <th class="px-5 py-3" data-i18n="governance.colStatus">Status</th>
+                <th class="px-5 py-3" data-i18n="onboardedRepos.colAction">Action</th>
+              </tr>
+            </thead>
+            <tbody id="campaignsTableBody" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
+        <div id="campaignsLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
+        <div id="campaignsEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="governance.campaignsEmpty">No campaigns yet.</div>
+        <div id="campaignsError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="governance.campaignsLoadError">Could not load campaigns.</div>
+      </div>
+    </div>
+
+    <!-- Compliance tab -->
+    <div id="governanceCompliancePane" class="hidden">
+      <div class="flex items-end gap-3 flex-wrap mb-5">
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.fromDate">From</label>
+          <input id="complianceFromInput" type="date" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.toDate">To</label>
+          <input id="complianceToInput" type="date" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+        </div>
+        <button id="complianceGenerateBtn" type="button" class="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600" data-i18n="governance.generate">Generate</button>
+        <button id="complianceDownloadBtn" type="button" class="hidden text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="governance.download">⬇ Download</button>
+      </div>
+      <div id="complianceLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
+      <div id="complianceError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="governance.complianceLoadError">Could not load the audit pack.</div>
+      <div id="complianceResults" class="hidden space-y-5"></div>
+    </div>
+  </div>
+
+  <!-- New campaign modal -->
+  <div id="campaignModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+        <h3 class="text-sm font-bold text-slate-900" data-i18n="governance.newCampaign">+ New campaign</h3>
+        <button id="campaignModalCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-5 space-y-3">
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.colTitle">Title</label>
+          <input id="campaignTitleInput" type="text" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="governance.titlePlaceholder" placeholder="e.g. Burn down critical secrets">
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.category">Category (optional)</label>
+          <input id="campaignCategoryInput" type="text" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="governance.categoryPlaceholder" placeholder="e.g. secret">
+        </div>
+        <div class="flex gap-3">
+          <div class="flex-1">
+            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.minScore">Min score</label>
+            <input id="campaignMinScoreInput" type="number" min="0" max="10" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+          </div>
+          <div class="flex-1">
+            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.targetDate">Target date</label>
+            <input id="campaignTargetDateInput" type="date" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+          </div>
+        </div>
+        <p id="campaignModalError" class="hidden text-xs text-rose-500"></p>
+      </div>
+      <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-100">
+        <button id="campaignCancelBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-50" data-i18n="common.cancel">Cancel</button>
+        <button id="campaignCreateBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700" data-i18n="governance.create">Create</button>
+      </div>
     </div>
   </div>
 
@@ -6539,6 +6647,234 @@
     }
     $('onboardedReposRefreshBtn').addEventListener('click', loadOnboardedRepos);
 
+    // Governance — Campaigns tab. Loaded lazily the first time the nav icon
+    // is opened, same posture as Onboarded Repos above.
+    let campaignsLoaded = false;
+    let campaignsCache = [];
+
+    $('governanceCampaignsTabBtn').addEventListener('click', () => {
+      $('governanceCampaignsPane').classList.remove('hidden');
+      $('governanceCompliancePane').classList.add('hidden');
+      $('governanceCampaignsTabBtn').classList.add('text-brand-700', 'border-brand-600');
+      $('governanceCampaignsTabBtn').classList.remove('text-slate-500', 'border-transparent');
+      $('governanceComplianceTabBtn').classList.add('text-slate-500', 'border-transparent');
+      $('governanceComplianceTabBtn').classList.remove('text-brand-700', 'border-brand-600');
+    });
+    $('governanceComplianceTabBtn').addEventListener('click', () => {
+      $('governanceCompliancePane').classList.remove('hidden');
+      $('governanceCampaignsPane').classList.add('hidden');
+      $('governanceComplianceTabBtn').classList.add('text-brand-700', 'border-brand-600');
+      $('governanceComplianceTabBtn').classList.remove('text-slate-500', 'border-transparent');
+      $('governanceCampaignsTabBtn').classList.add('text-slate-500', 'border-transparent');
+      $('governanceCampaignsTabBtn').classList.remove('text-brand-700', 'border-brand-600');
+    });
+
+    // Campaign API responses are snake_case (`CampaignRow` has no
+    // `#[serde(rename_all)]`) — unlike every other endpoint this file
+    // consumes, which is camelCase. Read `min_score`/`target_date`/
+    // `open_count`/`resolved_count`/`closed_at`, not the camelCase forms.
+    function renderCampaigns(campaigns) {
+      campaignsCache = campaigns;
+      $('campaignsEmpty').classList.toggle('hidden', campaigns.length > 0);
+      $('campaignsTableBody').innerHTML = campaigns.map((c, i) => {
+        const filterParts = [];
+        if (c.category) filterParts.push(escapeHtml(c.category));
+        if (c.min_score !== null && c.min_score !== undefined) filterParts.push(`score ≥ ${c.min_score}`);
+        const filterCell = filterParts.length ? filterParts.join(', ') : t('governance.noFilter');
+        const total = c.open_count + c.resolved_count;
+        const pct = total > 0 ? Math.round((c.resolved_count / total) * 100) : 0;
+        const progressCell = `
+          <div class="flex items-center gap-2 justify-end">
+            <div class="w-24 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div class="h-full bg-brand-500" style="width:${pct}%"></div></div>
+            <span class="text-[11px] text-slate-500 whitespace-nowrap">${c.resolved_count}/${total}</span>
+          </div>`;
+        const statusCell = c.closed_at
+          ? `<span class="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('governance.statusClosed')}</span>`
+          : `<span class="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full border border-brand-200 text-brand-700 bg-brand-50">${t('governance.statusOpen')}</span>`;
+        const actionCell = c.closed_at
+          ? '<span class="text-slate-300">—</span>'
+          : `<button type="button" class="campaign-close-btn text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-rose-600 whitespace-nowrap" data-i="${i}">${t('governance.closeCampaign')}</button>`;
+        return `
+        <tr class="align-top">
+          <td class="px-5 py-3.5">
+            <div class="font-semibold text-slate-800">${escapeHtml(c.title)}</div>
+            ${c.description ? `<div class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(c.description)}</div>` : ''}
+          </td>
+          <td class="px-5 py-3.5 text-slate-500">${filterCell}</td>
+          <td class="px-5 py-3.5 text-right">${progressCell}</td>
+          <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${c.target_date ? escapeHtml(c.target_date) : '<span class="text-slate-300">—</span>'}</td>
+          <td class="px-5 py-3.5">${statusCell}</td>
+          <td class="px-5 py-3.5">${actionCell}</td>
+        </tr>`;
+      }).join('');
+
+      $('campaignsTableBody').querySelectorAll('.campaign-close-btn').forEach((btn) => {
+        const c = campaignsCache[Number(btn.dataset.i)];
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          try {
+            const res = await fetch(`/api/campaigns/${c.id}/close`, { method: 'POST' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            await loadCampaigns();
+          } catch {
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    async function loadCampaigns() {
+      $('campaignsError').classList.add('hidden');
+      $('campaignsEmpty').classList.add('hidden');
+      $('campaignsLoading').classList.remove('hidden');
+      $('campaignsTableBody').innerHTML = '';
+      try {
+        const res = await fetch('/api/campaigns');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        renderCampaigns(await res.json());
+      } catch {
+        $('campaignsError').classList.remove('hidden');
+      } finally {
+        $('campaignsLoading').classList.add('hidden');
+      }
+    }
+
+    function openCampaignModal() {
+      $('campaignTitleInput').value = '';
+      $('campaignCategoryInput').value = '';
+      $('campaignMinScoreInput').value = '';
+      $('campaignTargetDateInput').value = '';
+      $('campaignModalError').classList.add('hidden');
+      $('campaignModal').classList.remove('hidden');
+    }
+    function closeCampaignModal() {
+      $('campaignModal').classList.add('hidden');
+    }
+    $('campaignNewBtn').addEventListener('click', openCampaignModal);
+    $('campaignModalCloseBtn').addEventListener('click', closeCampaignModal);
+    $('campaignCancelBtn').addEventListener('click', closeCampaignModal);
+    $('campaignCreateBtn').addEventListener('click', async () => {
+      const title = $('campaignTitleInput').value.trim();
+      const errEl = $('campaignModalError');
+      errEl.classList.add('hidden');
+      if (!title) {
+        errEl.textContent = t('governance.titlePlaceholder');
+        errEl.classList.remove('hidden');
+        return;
+      }
+      const body = { title };
+      const category = $('campaignCategoryInput').value.trim();
+      if (category) body.category = category;
+      const minScoreRaw = $('campaignMinScoreInput').value;
+      if (minScoreRaw !== '') body.minScore = Number(minScoreRaw);
+      const targetDate = $('campaignTargetDateInput').value;
+      if (targetDate) body.targetDate = targetDate;
+      try {
+        const res = await fetch('/api/campaigns', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        closeCampaignModal();
+        await loadCampaigns();
+      } catch (e) {
+        errEl.textContent = e.message;
+        errEl.classList.remove('hidden');
+      }
+    });
+
+    // Governance — Compliance tab. Generated on demand (no default date
+    // range fetched eagerly) since the server call joins across every
+    // override/issue-first-seen row in the window — cheap, but there's no
+    // reason to run it before the tab is actually opened and a range chosen.
+    let complianceCache = null;
+    (function initComplianceDateInputs() {
+      const to = new Date();
+      const from = new Date(to.getTime() - 90 * 24 * 60 * 60 * 1000);
+      $('complianceToInput').value = to.toISOString().slice(0, 10);
+      $('complianceFromInput').value = from.toISOString().slice(0, 10);
+    })();
+
+    function renderCompliance(pack) {
+      const bySevEntries = Object.entries(pack.overrides.bySeverity || {});
+      const bySevHtml = bySevEntries.length
+        ? bySevEntries.map(([sev, count]) => `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-200 text-slate-600 bg-slate-50 mr-1.5">${escapeHtml(sev)}: ${count}</span>`).join('')
+        : `<span class="text-slate-300">${t('governance.noData')}</span>`;
+      const mttrRows = (pack.mttr.bySeverity || []).map((m) => `
+        <div class="flex items-center justify-between text-sm py-1.5 border-b border-slate-100 last:border-0">
+          <span class="text-slate-600">${escapeHtml(m.severity)} <span class="text-slate-400">(${m.overrideCount})</span></span>
+          <span class="font-semibold text-slate-700">${m.avgDaysToOverride != null ? t('governance.mttrAvgDays', { days: m.avgDaysToOverride.toFixed(1) }) : '—'}</span>
+        </div>`).join('') || `<p class="text-sm text-slate-400">${t('governance.noData')}</p>`;
+      const byRepoRows = (pack.slaCompliance.byRepo || []).filter((r) => r.slaBreaches > 0).map((r) => `
+        <div class="flex items-center justify-between text-sm py-1.5 border-b border-slate-100 last:border-0">
+          <span class="text-slate-600">${escapeHtml(r.org)}/${escapeHtml(r.repo)}</span>
+          <span class="font-semibold text-rose-600">${r.slaBreaches}</span>
+        </div>`).join('') || `<p class="text-sm text-slate-400">${t('governance.noData')}</p>`;
+
+      $('complianceResults').innerHTML = `
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2" data-i18n="governance.overridesInRange">${t('governance.overridesInRange')}</div>
+            <div class="text-2xl font-bold text-slate-900 mb-2">${pack.overrides.total}</div>
+            <div>${bySevHtml}</div>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">${t('governance.slaBreaches')}</div>
+            <div class="text-2xl font-bold ${pack.slaCompliance.totalBreaches > 0 ? 'text-rose-600' : 'text-slate-900'}">${pack.slaCompliance.totalBreaches}</div>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">${t('governance.campaignsTab')}</div>
+            <div class="text-2xl font-bold text-slate-900">${pack.campaigns.length}</div>
+          </div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+          <div class="text-sm font-bold text-slate-800 mb-1">${t('governance.mttrTitle')}</div>
+          <div class="text-[11px] text-slate-400 mb-3">${t('governance.mttrNote')}</div>
+          ${mttrRows}
+        </div>
+        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+          <div class="text-sm font-bold text-slate-800 mb-3">${t('governance.slaBreaches')}</div>
+          ${byRepoRows}
+        </div>`;
+      $('complianceResults').classList.remove('hidden');
+    }
+
+    $('complianceGenerateBtn').addEventListener('click', async () => {
+      const from = $('complianceFromInput').value;
+      const to = $('complianceToInput').value;
+      $('complianceError').classList.add('hidden');
+      $('complianceResults').classList.add('hidden');
+      $('complianceDownloadBtn').classList.add('hidden');
+      if (!from || !to || from > to) {
+        $('complianceError').textContent = t('governance.invalidDateRange');
+        $('complianceError').classList.remove('hidden');
+        return;
+      }
+      $('complianceLoading').classList.remove('hidden');
+      try {
+        const res = await fetch(`/api/compliance/audit-pack?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        complianceCache = data;
+        renderCompliance(data);
+        $('complianceDownloadBtn').classList.remove('hidden');
+      } catch {
+        $('complianceError').classList.remove('hidden');
+      } finally {
+        $('complianceLoading').classList.add('hidden');
+      }
+    });
+    $('complianceDownloadBtn').addEventListener('click', () => {
+      if (!complianceCache) return;
+      const blob = new Blob([JSON.stringify(complianceCache, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ignite-compliance-audit-pack-${complianceCache.period.from}-to-${complianceCache.period.to}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+
     async function deleteProject(id) {
       const confirmed = window.confirm('Delete this onboarded project entry and its stored documents?');
       if (!confirmed) return;
@@ -6699,35 +7035,48 @@
       if (e.key === 'Escape' && !$('historyDrawer').classList.contains('hidden')) closeHistoryDrawer();
     });
 
-    // Nav rail view switch — Dashboard and Onboarded Repos are this app's
-    // only two "screens" (mutually exclusive, active-icon styling swaps
-    // with the visible one), unlike the history drawer above which is an
-    // overlay on top of whichever screen is showing.
+    // Nav rail view switch — Dashboard, Onboarded Repos and Governance are
+    // this app's three "screens" (mutually exclusive, active-icon styling
+    // swaps with the visible one), unlike the history drawer above which is
+    // an overlay on top of whichever screen is showing.
     const NAV_ACTIVE = ['bg-brand-50', 'text-brand-600'];
     const NAV_INACTIVE = ['text-slate-400', 'hover:text-brand-600', 'hover:bg-slate-100'];
-    function setActiveNavBtn(activeBtn, inactiveBtn) {
-      inactiveBtn.classList.remove(...NAV_ACTIVE);
-      inactiveBtn.classList.add(...NAV_INACTIVE);
+    const NAV_VIEWS = ['dashboardView', 'onboardedReposView', 'governanceView'];
+    const NAV_BTNS = ['dashboardNavBtn', 'onboardedReposNavBtn', 'governanceNavBtn'];
+    function setActiveNavBtn(activeBtn, ...inactiveBtns) {
+      inactiveBtns.forEach((btn) => {
+        btn.classList.remove(...NAV_ACTIVE);
+        btn.classList.add(...NAV_INACTIVE);
+      });
       activeBtn.classList.remove(...NAV_INACTIVE);
       activeBtn.classList.add(...NAV_ACTIVE);
     }
+    function showView(viewId, navBtnId) {
+      NAV_VIEWS.forEach((id) => $(id).classList.toggle('hidden', id !== viewId));
+      const otherBtns = NAV_BTNS.filter((id) => id !== navBtnId).map((id) => $(id));
+      setActiveNavBtn($(navBtnId), ...otherBtns);
+    }
     function showDashboardView() {
-      $('onboardedReposView').classList.add('hidden');
-      $('dashboardView').classList.remove('hidden');
-      setActiveNavBtn($('dashboardNavBtn'), $('onboardedReposNavBtn'));
+      showView('dashboardView', 'dashboardNavBtn');
     }
     function showOnboardedReposView() {
-      $('dashboardView').classList.add('hidden');
-      $('onboardedReposView').classList.remove('hidden');
-      setActiveNavBtn($('onboardedReposNavBtn'), $('dashboardNavBtn'));
+      showView('onboardedReposView', 'onboardedReposNavBtn');
       if (!onboardedReposLoaded) {
         onboardedReposLoaded = true;
         loadOnboardedRepos();
       }
       showHint('hint.screen.onboardedRepos');
     }
+    function showGovernanceView() {
+      showView('governanceView', 'governanceNavBtn');
+      if (!campaignsLoaded) {
+        campaignsLoaded = true;
+        loadCampaigns();
+      }
+    }
     $('dashboardNavBtn').addEventListener('click', showDashboardView);
     $('onboardedReposNavBtn').addEventListener('click', showOnboardedReposView);
+    $('governanceNavBtn').addEventListener('click', showGovernanceView);
 
     // Language picker — same show/hide popover pattern as accountMenuBtn/accountMenu above.
     $('localeMenuBtn').addEventListener('click', (e) => {
