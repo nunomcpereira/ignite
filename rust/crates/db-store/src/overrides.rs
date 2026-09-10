@@ -23,8 +23,8 @@ impl DbStore {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO overrides
-              (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')",
             params![
                 args.project_id, args.job_id, args.phase, args.issue_id, args.category, args.severity,
                 args.summary, args.file, args.line, args.justification, args.actor_email, args.actor_name,
@@ -32,6 +32,145 @@ impl DbStore {
             ],
         )
         .unwrap();
+    }
+
+    /// Same shape as [`Self::add_override`], but the row starts life
+    /// `status = 'pending'` — dual-custody for critical-severity findings
+    /// (`security.overrideApproval`, see `routes/effectivate.rs`/
+    /// `routes/pipeline_interactive/run.rs`): the issue this override
+    /// targets must stay `open` (still blocking the gate) until a
+    /// *different* user calls [`Self::approve_override`]. Returns the new
+    /// row's id, so the caller can surface it for a future approve/reject
+    /// call.
+    pub fn add_pending_override(&self, args: AddOverrideArgs) -> i64 {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO overrides
+              (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+            params![
+                args.project_id, args.job_id, args.phase, args.issue_id, args.category, args.severity,
+                args.summary, args.file, args.line, args.justification, args.actor_email, args.actor_name,
+                args.email_sent as i64,
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// True when `issue_id` already has an `'approved'` override on this
+    /// project — the predicate the dual-custody gate actually cares about
+    /// (unlike [`Self::issue_has_override`], which also returns `true` for
+    /// a still-pending row that must keep blocking the gate).
+    pub fn has_approved_override(&self, project_id: i64, issue_id: &str) -> bool {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM overrides WHERE project_id = ? AND issue_id = ? AND status = 'approved')",
+            params![project_id, issue_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            != 0
+    }
+
+    /// True when `issue_id` already has a `'pending'` override on this
+    /// project — checked before inserting a new pending row so
+    /// resubmitting the same justification (e.g. a page refresh) doesn't
+    /// pile up duplicate pending rows for one issue.
+    pub fn has_pending_override(&self, project_id: i64, issue_id: &str) -> bool {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM overrides WHERE project_id = ? AND issue_id = ? AND status = 'pending')",
+            params![project_id, issue_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            != 0
+    }
+
+    /// Every still-`'pending'` override across `project_id` — the queue a
+    /// second approver reviews.
+    pub fn list_pending_overrides(&self, project_id: i64) -> Vec<PendingOverrideRow> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, project_id, job_id, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, created_at
+                 FROM overrides WHERE project_id = ? AND status = 'pending' ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map(params![project_id], |row| {
+            Ok(PendingOverrideRow {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                job_id: row.get(2)?,
+                issue_id: row.get(3)?,
+                category: row.get(4)?,
+                severity: row.get(5)?,
+                summary: row.get(6)?,
+                file: row.get(7)?,
+                line: row.get(8)?,
+                justification: row.get(9)?,
+                actor_email: row.get(10)?,
+                actor_name: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    }
+
+    /// Marks a pending override `'approved'` — the second half of
+    /// dual-custody. Fails if `override_id` doesn't exist or doesn't
+    /// belong to `project_id` (so an approver route scoped to one project
+    /// path can't be used to approve an unrelated project's override by
+    /// guessing its id), isn't `'pending'` (already decided, or never
+    /// required approval to begin with), or `approver_email` is the same
+    /// person who submitted it (the whole point of dual custody is a
+    /// *different* reviewer). On
+    /// success, returns `(project_id, issue_id)` so the caller can flip
+    /// the issue's own status to `"overridden"` via
+    /// [`crate::DbStore::set_issue_status`] — this function only ever
+    /// touches the `overrides` row itself, never `issues`, so it composes
+    /// cleanly with that existing method rather than duplicating it.
+    pub fn approve_override(&self, project_id: i64, override_id: i64, approver_email: &str) -> Result<(i64, String), String> {
+        let conn = self.conn.lock();
+        let (row_project_id, issue_id, actor_email, status): (i64, String, String, String) = conn
+            .query_row("SELECT project_id, issue_id, actor_email, status FROM overrides WHERE id = ?", params![override_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .map_err(|_| "Override not found.".to_string())?;
+        if row_project_id != project_id {
+            return Err("Override not found for this project.".to_string());
+        }
+        if status != "pending" {
+            return Err(format!("Override is already {status}, not pending."));
+        }
+        if actor_email.eq_ignore_ascii_case(approver_email) {
+            return Err("A different reviewer must approve this override — you can't approve your own submission.".to_string());
+        }
+        conn.execute("UPDATE overrides SET status = 'approved', approved_by_email = ?, approved_at = datetime('now') WHERE id = ?", params![approver_email, override_id]).unwrap();
+        Ok((project_id, issue_id))
+    }
+
+    /// Marks a pending override `'rejected'` — the issue it targeted stays
+    /// (or returns to) `open`; the caller is expected to leave the
+    /// issue's own status untouched (it was never flipped to
+    /// `"overridden"` for a pending row in the first place). Same
+    /// not-found/not-pending validation as [`Self::approve_override`], but
+    /// no same-reviewer restriction — declining your own submission (or
+    /// someone else's, on reflection) is always safe since it never
+    /// unblocks anything.
+    pub fn reject_override(&self, project_id: i64, override_id: i64, approver_email: &str) -> Result<(i64, String), String> {
+        let conn = self.conn.lock();
+        let (row_project_id, issue_id, status): (i64, String, String) =
+            conn.query_row("SELECT project_id, issue_id, status FROM overrides WHERE id = ?", params![override_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|_| "Override not found.".to_string())?;
+        if row_project_id != project_id {
+            return Err("Override not found for this project.".to_string());
+        }
+        if status != "pending" {
+            return Err(format!("Override is already {status}, not pending."));
+        }
+        conn.execute("UPDATE overrides SET status = 'rejected', approved_by_email = ?, approved_at = datetime('now') WHERE id = ?", params![approver_email, override_id]).unwrap();
+        Ok((project_id, issue_id))
     }
 
     pub(crate) fn get_project_overrides_inner(conn: &Connection, project_id: i64) -> Vec<OverrideRow> {

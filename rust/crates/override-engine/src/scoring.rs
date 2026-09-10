@@ -51,6 +51,19 @@ fn category_scores() -> &'static HashMap<&'static str, i32> {
     &SCORES
 }
 
+/// The same `>= 9` "critical" threshold `db-store`'s SLA bucketing
+/// (`count_sla_breaches`/`list_sla_breaches`/`list_onboarded_repo_summaries`)
+/// already uses for its shortest breach window — reused here as the
+/// dual-custody trigger (`security.overrideApproval`,
+/// `routes/effectivate.rs`/`routes/pipeline_interactive/run.rs`) so
+/// "critical" means the same thing in both places rather than each
+/// picking its own number.
+pub const CRITICAL_SCORE_THRESHOLD: i32 = 9;
+
+pub fn is_critical_score(score: i32) -> bool {
+    score >= CRITICAL_SCORE_THRESHOLD
+}
+
 /// Warning-level findings in an otherwise error-scored category (e.g. an
 /// LLM 'security' finding demoted to warning) score at half the category's
 /// base, floored at 1 so nothing flagged reads as a 0.

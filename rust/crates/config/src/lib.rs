@@ -703,6 +703,31 @@ pub struct RepositoryEventsConfig {
     pub trigger_baseline_scan: bool,
 }
 
+/// Dual-custody / role-based approval for critical-severity overrides —
+/// previously any authenticated (or even just self-declared-in-the-request-body)
+/// user could submit an override justification and it took effect
+/// immediately, with no second reviewer required regardless of severity.
+/// Off by default (`enabled: false`) — an existing deployment's override
+/// flow behaves identically until an operator opts in, since requiring a
+/// second reviewer is a real workflow change, not a pure bugfix. When
+/// enabled, an override on an issue scoring `>= criticalScoreThreshold`
+/// (`ignite_override_engine::CRITICAL_SCORE_THRESHOLD`, same `9` SLA
+/// bucketing already uses) is created `pending` instead of taking effect
+/// immediately, and stays pending — the issue keeps blocking the gate —
+/// until a *different* user whose email is in `approverEmails` calls the
+/// approve endpoint. There's no database-backed role/permission system in
+/// Ignite today (see CLAUDE.md's own gap analysis); this config-driven
+/// allowlist is the "role" this feature needs without a broader
+/// users/roles schema change.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OverrideApprovalConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub approver_emails: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
@@ -730,6 +755,7 @@ pub struct SecurityConfig {
     pub push_protection: PushProtectionConfig,
     pub secret_scanning: SecretScanningConfig,
     pub repository_events: RepositoryEventsConfig,
+    pub override_approval: OverrideApprovalConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1092,6 +1118,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("REPOSITORY_EVENTS_INBOUND_WEBHOOK_SECRET") { merged.security.repository_events.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("REPOSITORY_EVENTS_APPLY_ORG_RULESET") { merged.security.repository_events.apply_org_ruleset = v; }
     if let Some(v) = env_bool("REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN") { merged.security.repository_events.trigger_baseline_scan = v; }
+    if let Some(v) = env_bool("OVERRIDE_APPROVAL_ENABLED") { merged.security.override_approval.enabled = v; }
+    if let Some(v) = env_csv("OVERRIDE_APPROVAL_APPROVER_EMAILS") { merged.security.override_approval.approver_emails = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }

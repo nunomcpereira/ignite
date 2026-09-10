@@ -493,11 +493,27 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             // carried-forward/AI actor — don't re-attribute them to
             // whoever just resolved the gate.
             let human_applied: Vec<(&Issue, String)> = result.applied.iter().filter(|(issue, _)| !pre_ids.contains(&issue.id)).map(|(issue, j)| (*issue, j.clone())).collect();
-            let applied_count = human_applied.len();
+
+            // Dual-custody: a critical-severity override submitted just
+            // now by whoever resolved this review gate must not resolve
+            // its issue until a *different* reviewer approves it — same
+            // `security.overrideApproval` gate `routes/effectivate.rs`
+            // applies, kept in sync here since this is the other place a
+            // human submits a brand-new override.
+            let (auto_applied, needs_approval): (Vec<ignite_override_engine::AppliedOverride>, Vec<ignite_override_engine::AppliedOverride>) = if state.config.security.override_approval.enabled {
+                let already_approved: std::collections::HashSet<String> = match project_id {
+                    Some(pid) => human_applied.iter().filter(|(i, _)| state.db.has_approved_override(pid, &i.id)).map(|(i, _)| i.id.clone()).collect(),
+                    None => std::collections::HashSet::new(),
+                };
+                partition_for_dual_custody(human_applied, |i| is_critical_score(i.score), &already_approved)
+            } else {
+                (human_applied, Vec::new())
+            };
+            let applied_count = auto_applied.len();
 
             if applied_count > 0 {
                 log.log(6, &format!("⚠ {applied_count} flagged issue(s) overridden by {}:", decision.actor.email));
-                for (issue, justification) in &human_applied {
+                for (issue, justification) in &auto_applied {
                     let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "unknown location".to_string());
                     log.log(6, &format!("    ⚠ [override] [{:?}] {loc} — {} — \"{justification}\"", issue.severity, issue.summary));
                     if let Some(pid) = project_id {
@@ -528,10 +544,49 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 }
             }
 
+            if !needs_approval.is_empty() {
+                log.log(6, &format!("⚠ {} critical finding(s) overridden by {} require a second reviewer's approval before shipping can continue:", needs_approval.len(), decision.actor.email));
+                for (issue, justification) in &needs_approval {
+                    let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "unknown location".to_string());
+                    log.log(6, &format!("    ⏳ [pending approval] [{:?}] {loc} — {} — \"{justification}\"", issue.severity, issue.summary));
+                    if let Some(pid) = project_id {
+                        if !state.db.has_pending_override(pid, &issue.id) {
+                            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+                                project_id: pid,
+                                job_id: &job_id,
+                                phase: 4,
+                                issue_id: &issue.id,
+                                category: &issue.category,
+                                severity: match issue.severity {
+                                    Severity::Error => "error",
+                                    Severity::Warning => "warning",
+                                },
+                                summary: &issue.summary,
+                                file: issue.file.as_deref(),
+                                line: issue.line,
+                                justification,
+                                actor_email: &decision.actor.email,
+                                actor_name: Some(&decision.actor.name),
+                                email_sent: false,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // `applied_ids` must exclude the still-pending critical
+            // overrides — `persist_issues_snapshot` flips exactly these
+            // ids to `"overridden"`, and a pending override must leave its
+            // issue `"open"` (still blocking) until approved.
+            let needs_approval_ids: std::collections::HashSet<String> = needs_approval.iter().map(|(i, _)| i.id.clone()).collect();
+            let applied_ids: std::collections::HashSet<String> = applied_ids.difference(&needs_approval_ids).cloned().collect();
             persist_issues_snapshot(&state, &job_id, project_id, &all_issues, &applied_ids);
 
             if !decision.proceed {
                 break 'run Err((6, "Pipeline interrupted by user after reviewing all flagged issues.".to_string()));
+            }
+            if !needs_approval.is_empty() {
+                break 'run Err((6, format!("{} critical finding(s) require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.", needs_approval.len())));
             }
             if !ok {
                 log.log(6, &format!("✗ {unresolved_count} blocking finding(s) were not overridden:"));

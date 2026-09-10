@@ -28,7 +28,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use ignite_db_store::{IssueInput, IssueRow};
-use ignite_override_engine::{validate_overrides, Issue, Severity, SubmittedOverride};
+use ignite_override_engine::{is_critical_score, partition_for_dual_custody, validate_overrides, Issue, Severity, SubmittedOverride};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use parking_lot::Mutex;
@@ -140,6 +140,64 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         }
     }
 
+    // Dual-custody: a critical-severity (score >= CRITICAL_SCORE_THRESHOLD)
+    // override must be approved by a *different* reviewer before it can
+    // actually resolve its issue — off by default
+    // (`security.overrideApproval.enabled`), see that config's own doc
+    // comment. `already_approved` covers the case where this same
+    // critical override was already approved on a prior effectivate
+    // attempt (so re-submitting the exact same override list after
+    // approval doesn't re-block).
+    let (auto_apply, needs_approval): (Vec<ignite_override_engine::AppliedOverride>, Vec<ignite_override_engine::AppliedOverride>) = if state.config.security.override_approval.enabled {
+        let already_approved: HashSet<String> = applied.iter().filter(|(i, _)| state.db.has_approved_override(project_id, &i.id)).map(|(i, _)| i.id.clone()).collect();
+        partition_for_dual_custody(applied.clone(), |i| is_critical_score(i.score), &already_approved)
+    } else {
+        (applied.clone(), Vec::new())
+    };
+
+    if !needs_approval.is_empty() {
+        let (actor_email, actor_name) = actor.clone().expect("needs_approval implies applied is non-empty, which already required a resolved actor above");
+        for (issue, justification) in &needs_approval {
+            if state.db.has_pending_override(project_id, &issue.id) {
+                continue;
+            }
+            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+                project_id,
+                job_id: &format!("effectivate-{project_id}"),
+                phase: 4,
+                issue_id: &issue.id,
+                category: &issue.category,
+                severity: match issue.severity {
+                    Severity::Error => "error",
+                    Severity::Warning => "warning",
+                },
+                summary: &issue.summary,
+                file: issue.file.as_deref(),
+                line: issue.line,
+                justification,
+                actor_email: &actor_email,
+                actor_name: Some(&actor_name),
+                email_sent: false,
+            });
+            state.emit_audit_event(
+                ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
+                    .actor(actor_email.clone())
+                    .repo(&org, &repo)
+                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+            );
+        }
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!("{} critical finding(s) require a second reviewer's approval before this can be effectivated.", needs_approval.len()),
+                "pendingApproval": true,
+                "pendingIssueIds": needs_approval.iter().map(|(i, _)| i.id.clone()).collect::<Vec<_>>(),
+                "issues": issues_json(&issue_rows),
+            })),
+        )
+            .into_response();
+    }
+
     let publish_dir = {
         let mut p = source_backup_dir.clone().into_os_string();
         p.push("-effectivate-publish");
@@ -163,9 +221,9 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         return (StatusCode::GONE, Json(json!({ "error": "Simulation snapshot is no longer available (expired or already effectivated). Re-run the simulation to try again." }))).into_response();
     }
 
-    if !applied.is_empty() {
+    if !auto_apply.is_empty() {
         let (actor_email, actor_name) = actor.clone().unwrap();
-        for (issue, justification) in &applied {
+        for (issue, justification) in &auto_apply {
             state.db.add_override(ignite_db_store::AddOverrideArgs {
                 project_id,
                 job_id: &format!("effectivate-{project_id}"),
@@ -191,7 +249,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                     .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
             );
         }
-        let applied_ids: HashSet<String> = applied.iter().map(|(i, _)| i.id.clone()).collect();
+        let applied_ids: HashSet<String> = auto_apply.iter().map(|(i, _)| i.id.clone()).collect();
         let already_overridden_ids: HashSet<String> = issue_rows.iter().filter(|r| r.status == "overridden").map(|r| r.id.clone()).collect();
         let overridden_ids: HashSet<String> = applied_ids.union(&already_overridden_ids).cloned().collect();
         let inputs: Vec<IssueInput> = issue_rows.iter().map(issue_row_to_input).collect();
@@ -263,6 +321,26 @@ mod tests {
         (app_state, db_dir)
     }
 
+    fn build_state_with_override_approval_enabled() -> (Arc<AppState>, tempfile::TempDir) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let mut config = ignite_config::Config::default();
+        config.security.override_approval.enabled = true;
+        let app_state = Arc::new(AppState {
+            runner: state::default_runner(),
+            db,
+            running_runs: Mutex::new(HashMap::new()),
+            pending_effectivations: Mutex::new(HashMap::new()),
+            review_gate: crate::review_gate::ReviewGate::default(),
+            llm_config: state::default_llm_config(),
+            config,
+            package_hallucination_checker: state::default_package_hallucination_checker(),
+            fix_pr_previews: Mutex::new(HashMap::new()),
+            audit_http: reqwest::Client::new(),
+        });
+        (app_state, db_dir)
+    }
+
     async fn spawn_test_server(state: Arc<AppState>) -> String {
         let router = axum::Router::new().merge(router()).with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -328,6 +406,44 @@ mod tests {
         assert_eq!(res.status(), 409);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["needsReview"], true);
+        std::env::remove_var("GH_TOKEN");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn returns_409_pending_approval_for_a_critical_override_when_dual_custody_enabled() {
+        let _guard = ENV_GUARD.lock();
+        std::env::set_var("GH_TOKEN", "test-token");
+        let (state, _dir) = build_state_with_override_approval_enabled();
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None);
+        state.db.replace_project_issues(
+            project_id,
+            &[IssueInput { id: "secret::app.js::1".into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(10), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None }],
+            &HashSet::new(),
+        );
+        let backup_dir = tempfile::tempdir().unwrap();
+        state.pending_effectivations.lock().insert(
+            project_id,
+            crate::state::PendingEffectivation { org: "acme".into(), repo: "widgets".into(), source_backup_dir: backup_dir.path().to_path_buf(), created_at: Instant::now() },
+        );
+
+        let base = spawn_test_server(state.clone()).await;
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("{base}/api/projects/{project_id}/effectivate"))
+            .json(&json!({ "overrides": [{ "issueId": "secret::app.js::1", "justification": "reviewed, rotating the key separately" }], "actor": { "email": "submitter@acme.example", "name": "Submitter" } }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 409);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["pendingApproval"], true);
+
+        assert!(state.db.has_pending_override(project_id, "secret::app.js::1"));
+        assert!(!state.db.has_approved_override(project_id, "secret::app.js::1"));
+        let issues = state.db.get_project_issues(project_id);
+        assert_eq!(issues[0].status, "open", "a pending critical override must leave the issue open, still blocking the gate");
+
         std::env::remove_var("GH_TOKEN");
     }
 

@@ -767,4 +767,81 @@ mod tests {
         assert_eq!(warning_bucket.override_count, 1);
         assert_eq!(warning_bucket.avg_days_to_override, Some(1.0));
     }
+
+    fn pending_args<'a>(project_id: i64, issue_id: &'a str, actor_email: &'a str) -> AddOverrideArgs<'a> {
+        AddOverrideArgs { project_id, job_id: "job-1", phase: 4, issue_id, category: "secret", severity: "error", summary: "hardcoded key", file: Some("a.js"), line: Some(1), justification: "under review", actor_email, actor_name: None, email_sent: false }
+    }
+
+    #[test]
+    fn add_override_defaults_to_approved_status_unlike_add_pending_override() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        store.add_override(pending_args(id, "secret::a.js::1", "dev@acme.example"));
+        assert!(store.has_approved_override(id, "secret::a.js::1"));
+        assert!(!store.has_pending_override(id, "secret::a.js::1"));
+    }
+
+    #[test]
+    fn add_pending_override_is_not_approved_until_approved() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
+        assert!(store.has_pending_override(id, "secret::a.js::1"));
+        assert!(!store.has_approved_override(id, "secret::a.js::1"));
+        assert!(store.issue_has_override(id, "secret::a.js::1"), "a pending row still counts for issue_has_override's own purpose (github-dismissal reopen logic)");
+
+        let pending = store.list_pending_overrides(id);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, override_id);
+        assert_eq!(pending[0].actor_email, "submitter@acme.example");
+    }
+
+    #[test]
+    fn approve_override_requires_a_different_reviewer() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
+
+        let err = store.approve_override(id, override_id, "submitter@acme.example").unwrap_err();
+        assert!(err.contains("different reviewer"), "{err}");
+        assert!(store.has_pending_override(id, "secret::a.js::1"), "a rejected self-approval must leave the row pending");
+
+        let (project_id, issue_id) = store.approve_override(id, override_id, "approver@acme.example").unwrap();
+        assert_eq!(project_id, id);
+        assert_eq!(issue_id, "secret::a.js::1");
+        assert!(store.has_approved_override(id, "secret::a.js::1"));
+        assert!(!store.has_pending_override(id, "secret::a.js::1"));
+    }
+
+    #[test]
+    fn approve_override_rejects_an_already_decided_row() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
+        store.approve_override(id, override_id, "approver@acme.example").unwrap();
+
+        let err = store.approve_override(id, override_id, "someone-else@acme.example").unwrap_err();
+        assert!(err.contains("already approved"), "{err}");
+    }
+
+    #[test]
+    fn reject_override_leaves_the_issue_unapproved() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
+
+        let (project_id, issue_id) = store.reject_override(id, override_id, "approver@acme.example").unwrap();
+        assert_eq!(project_id, id);
+        assert_eq!(issue_id, "secret::a.js::1");
+        assert!(!store.has_approved_override(id, "secret::a.js::1"));
+        assert!(!store.has_pending_override(id, "secret::a.js::1"));
+        assert!(store.list_pending_overrides(id).is_empty());
+    }
+
+    #[test]
+    fn approve_override_errors_for_an_unknown_id() {
+        let (_dir, store) = open_test_db();
+        let err = store.approve_override(1, 999, "approver@acme.example").unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+    }
 }

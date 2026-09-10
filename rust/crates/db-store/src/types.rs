@@ -100,6 +100,29 @@ pub struct ProjectDetails {
     pub overrides: Vec<OverrideRow>,
 }
 
+/// A not-yet-approved override — dual-custody for critical-severity
+/// findings (see `overrides.rs`'s `add_pending_override`). Distinct from
+/// [`OverrideRow`] (which every existing reader already assumes resolves
+/// its issue) so a pending row can never accidentally be treated as
+/// "this issue is handled" by code that hasn't been updated to check
+/// `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PendingOverrideRow {
+    pub id: i64,
+    pub project_id: i64,
+    pub job_id: String,
+    pub issue_id: String,
+    pub category: String,
+    pub severity: String,
+    pub summary: String,
+    pub file: Option<String>,
+    pub line: Option<i64>,
+    pub justification: String,
+    pub actor_email: String,
+    pub actor_name: Option<String>,
+    pub created_at: String,
+}
+
 pub struct AddOverrideArgs<'a> {
     pub project_id: i64,
     pub job_id: &'a str,

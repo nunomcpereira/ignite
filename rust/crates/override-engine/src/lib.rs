@@ -338,6 +338,34 @@ mod tests {
         assert!(!blank_justification.ok, "a whitespace-only justification must not count as an override");
     }
 
+    fn issue_with_score(id: &str, score: i32) -> Issue {
+        Issue { id: id.to_string(), category: "secret".into(), severity: Severity::Error, score, summary: "s".into(), file: None, line: None, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None, tool: None, references: IssueReferences::default() }
+    }
+
+    #[test]
+    fn partition_for_dual_custody_holds_back_critical_findings_without_prior_approval() {
+        let critical = issue_with_score("secret::a.js::1", 10);
+        let routine = issue_with_score("quality::b.js::1", 2);
+        let applied = vec![(&critical, "j1".to_string()), (&routine, "j2".to_string())];
+
+        let (auto_apply, pending) = partition_for_dual_custody(applied, |i| is_critical_score(i.score), &std::collections::HashSet::new());
+        assert_eq!(auto_apply.len(), 1);
+        assert_eq!(auto_apply[0].0.id, "quality::b.js::1");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0.id, "secret::a.js::1");
+    }
+
+    #[test]
+    fn partition_for_dual_custody_auto_applies_a_critical_finding_already_approved() {
+        let critical = issue_with_score("secret::a.js::1", 10);
+        let applied = vec![(&critical, "j1".to_string())];
+        let already_approved: std::collections::HashSet<String> = ["secret::a.js::1".to_string()].into_iter().collect();
+
+        let (auto_apply, pending) = partition_for_dual_custody(applied, |i| is_critical_score(i.score), &already_approved);
+        assert_eq!(auto_apply.len(), 1);
+        assert!(pending.is_empty());
+    }
+
     #[test]
     fn collect_license_issues_skips_green_and_internal_tiers() {
         let manifests = vec![LicenseManifest {

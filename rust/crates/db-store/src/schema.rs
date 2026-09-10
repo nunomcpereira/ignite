@@ -284,4 +284,13 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     "ALTER TABLE issues ADD COLUMN references_json TEXT",
     "ALTER TABLE issues ADD COLUMN duplicate_ref_json TEXT",
     "ALTER TABLE dependency_scan_cache ADD COLUMN previous_scan_json TEXT",
+    // Dual-custody approval for critical-severity overrides (see
+    // `overrides.rs`'s `add_pending_override`/`approve_override`/
+    // `reject_override`) — every pre-existing row (and every row inserted
+    // via the ordinary `add_override`) defaults to `'approved'`, so this
+    // migration changes nothing about how any existing override already
+    // resolves an issue.
+    "ALTER TABLE overrides ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'",
+    "ALTER TABLE overrides ADD COLUMN approved_by_email TEXT",
+    "ALTER TABLE overrides ADD COLUMN approved_at TEXT",
 ];

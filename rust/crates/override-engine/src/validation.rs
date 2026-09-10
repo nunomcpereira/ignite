@@ -58,3 +58,24 @@ pub fn validate_overrides<'a>(issues: &'a [Issue], overrides: &[SubmittedOverrid
 
     ValidateOverridesResult { ok: unresolved_errors.is_empty(), unresolved_errors, applied }
 }
+
+/// Splits `validate_overrides`'s own `applied` list into overrides that
+/// can resolve their issue immediately, and ones that need a second
+/// reviewer's sign-off first — dual-custody for critical-severity
+/// findings (`security.overrideApproval`). `already_approved` is the set
+/// of issue ids that already cleared a prior approval cycle (via
+/// `DbStore::has_approved_override`), so re-submitting the same override
+/// after it's been approved doesn't re-block the gate on a second round.
+///
+/// Pure/side-effect-free by design — the caller (`routes/effectivate.rs`/
+/// `routes/pipeline_interactive/run.rs`) decides what "needs approval"
+/// means for `db-store` (inserting a pending row) and for the gate
+/// (treating the issue as still unresolved), since this crate has no
+/// database of its own to consult.
+/// One `(issue, justification)` override pair, matching what
+/// `validate_overrides`'s own `applied` list already carries.
+pub type AppliedOverride<'a> = (&'a Issue, String);
+
+pub fn partition_for_dual_custody<'a>(applied: Vec<AppliedOverride<'a>>, is_critical: impl Fn(&Issue) -> bool, already_approved: &std::collections::HashSet<String>) -> (Vec<AppliedOverride<'a>>, Vec<AppliedOverride<'a>>) {
+    applied.into_iter().partition(|(issue, _)| already_approved.contains(&issue.id) || !is_critical(issue))
+}
