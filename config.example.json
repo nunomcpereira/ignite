@@ -137,6 +137,9 @@
       "inboundWebhookSecret": null,
       "autoFileIssue": false
     },
+    "secretScanning": {
+      "inboundWebhookSecret": null
+    },
     "codeql": {
       "enabled": true,
       "binary": "codeql",

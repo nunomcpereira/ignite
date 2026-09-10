@@ -665,6 +665,22 @@ pub struct PushProtectionConfig {
     pub auto_file_issue: bool,
 }
 
+/// Inbound `secret_scanning_alert` webhook parity — `code_scanning.enabled`'s
+/// dismissal sync only ever covers `code_scanning_alert` deliveries;
+/// `push_protection`'s webhook only covers the `push_protection_bypassed:
+/// true` case of a `secret_scanning_alert` delivery. Nothing previously
+/// handled a plain `created`/`resolved`/`reopened`/`validated`/
+/// `publicly_leaked` `secret_scanning_alert` — see
+/// `routes/secret_scanning_webhook.rs`. Same posture as the other two
+/// inbound webhooks: unset secret means the endpoint 404s, so an
+/// unconfigured deployment exposes nothing new.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretScanningConfig {
+    #[serde(default)]
+    pub inbound_webhook_secret: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
@@ -690,6 +706,7 @@ pub struct SecurityConfig {
     pub pr_suggestions: PrSuggestionsConfig,
     pub secret_verification: SecretVerificationConfig,
     pub push_protection: PushProtectionConfig,
+    pub secret_scanning: SecretScanningConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1048,6 +1065,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("SECRET_VERIFICATION_ENABLED") { merged.security.secret_verification.enabled = v; }
     if let Some(v) = env_str("PUSH_PROTECTION_INBOUND_WEBHOOK_SECRET") { merged.security.push_protection.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("PUSH_PROTECTION_AUTO_FILE_ISSUE") { merged.security.push_protection.auto_file_issue = v; }
+    if let Some(v) = env_str("SECRET_SCANNING_INBOUND_WEBHOOK_SECRET") { merged.security.secret_scanning.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }

@@ -324,8 +324,8 @@ at that URL, set a shared secret, and set the same value as
 `PUSH_PROTECTION_INBOUND_WEBHOOK_SECRET` on the Ignite server — same
 `X-Hub-Signature-256`/404-until-configured posture as the inbound
 code-scanning webhook above. Every delivery that isn't actually a bypass
-is acknowledged and ignored; a plain (non-bypassed) alert is already the
-outbound SARIF path's concern.
+is acknowledged and ignored; every other `secret_scanning_alert` action is
+the inbound secret-scanning webhook's concern (below).
 
 A real bypass always emits a `critical`-severity audit-log event
 (`push_protection.bypassed`) — actor, secret type, stated
@@ -335,6 +335,35 @@ other setting. Set `security.pushProtection.autoFileIssue: true`
 file a real GitHub issue summarizing the bypass — off by default, since
 reaching out and creating something in GitHub unattended is an
 operator's explicit call to make. Both are best-effort/non-fatal.
+
+## Inbound secret-scanning alert lifecycle sync
+
+The push-protection webhook above only ever looks at the
+`push_protection_bypassed: true` case of a `secret_scanning_alert`
+delivery. Every other action on that same event type — `created`,
+`resolved`, `reopened`, `validated`, `publicly_leaked` — previously
+reached nothing in Ignite, so a human resolving or reopening a secret
+alert directly in GitHub's Security tab never flowed back into
+`ignite.db`.
+
+`POST /api/webhooks/github/secret-scanning` closes that gap: register a
+webhook on the repo (or org) for `secret_scanning_alert` events pointing
+at that URL, set a shared secret, and set the same value as
+`SECRET_SCANNING_INBOUND_WEBHOOK_SECRET` on the Ignite server — same
+`X-Hub-Signature-256`/404-until-configured posture as the other two
+webhooks. `resolved`/`reopened` mirror the inbound code-scanning
+webhook's own dismissal sync (an override recorded on GitHub's side
+flips Ignite's issue status; reopening undoes exactly that override).
+Matching a webhook delivery back to an Ignite issue needs one extra
+GitHub API call the code-scanning path doesn't: `secret_scanning_alert`'s
+payload carries no file/line, so Ignite fetches
+`GET .../secret-scanning/alerts/{number}/locations` (using whatever
+server-side GitHub token is already configured) before matching on
+category + file/line — a missing token or failed lookup degrades to "no
+matching issue" rather than failing the webhook. `created`, `validated`,
+and `publicly_leaked` have no Ignite issue-state equivalent (Ignite's own
+finding already exists from its own scan) — they're audit-log-only
+events, with `publicly_leaked` always logged at `critical` severity.
 
 ## Keep GitHub's secret push-protection even without full GHAS
 
