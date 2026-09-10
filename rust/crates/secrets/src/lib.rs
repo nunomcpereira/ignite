@@ -646,12 +646,28 @@ fn gitleaks_rule_id(name: &str) -> String {
 /// The regex goes in a TOML literal string (`'''...'''`) specifically so
 /// it needs no backslash/quote escaping — a raw regex pasted by an
 /// operator (backslashes, quotes, anything) round-trips byte-for-byte.
-/// `[extend] useDefault = true` keeps gitleaks' own built-in rules active
-/// alongside the custom ones, matching how `gitleaks_config_path` already
-/// behaves for an operator-supplied config elsewhere in this codebase —
-/// a custom pattern *adds* detection, it doesn't replace the baseline.
-pub fn build_gitleaks_config_for_patterns(patterns: &[CustomSecretPattern]) -> String {
-    let mut toml = String::from("title = \"ignite-custom-secret-patterns\"\n\n[extend]\nuseDefault = true\n\n");
+///
+/// `base_config_path` controls what `[extend]` layers under the custom
+/// rules: `None` extends gitleaks' own built-in ruleset (`useDefault =
+/// true`) — the playground/sweep-pattern callers' case, where there's no
+/// separate operator config to preserve. `Some(path)` instead extends
+/// that path (`security.gitleaks.configPath`, when a deployment already
+/// has its own gitleaks config) via `[extend].path` — used when wiring
+/// custom patterns into the live working-tree/history scan, so an
+/// operator's own tuned config (allowlists, extra rules) stays in effect
+/// underneath the custom patterns rather than being silently replaced by
+/// gitleaks' stock defaults. Either way this only ever adds one `extend`
+/// hop — a custom pattern *adds* detection, it doesn't replace whichever
+/// baseline was already in effect.
+pub fn build_gitleaks_config_for_patterns(patterns: &[CustomSecretPattern], base_config_path: Option<&Path>) -> String {
+    let mut toml = String::from("title = \"ignite-custom-secret-patterns\"\n\n[extend]\n");
+    match base_config_path {
+        Some(p) => {
+            let escaped = p.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
+            toml.push_str(&format!("path = \"{escaped}\"\n\n"));
+        }
+        None => toml.push_str("useDefault = true\n\n"),
+    }
     let mut seen_ids: HashSet<String> = HashSet::new();
     for p in patterns {
         let mut id = gitleaks_rule_id(&p.name);
@@ -976,7 +992,7 @@ id = "generic-api-key"
     #[test]
     fn build_gitleaks_config_for_patterns_needs_no_regex_escaping() {
         let patterns = vec![CustomSecretPattern { name: "Internal Token".to_string(), regex: r#"tok_\d{4}"[a-z]+"#.to_string() }];
-        let toml = build_gitleaks_config_for_patterns(&patterns);
+        let toml = build_gitleaks_config_for_patterns(&patterns, None);
         assert!(toml.contains(r#"regex = '''tok_\d{4}"[a-z]+'''"#), "{toml}");
         assert!(toml.contains("[[rules]]"));
         assert!(toml.contains("id = \"internal-token\""));
@@ -986,8 +1002,16 @@ id = "generic-api-key"
     #[test]
     fn build_gitleaks_config_for_patterns_disambiguates_colliding_slugs() {
         let patterns = vec![CustomSecretPattern { name: "AWS Key".to_string(), regex: "a".to_string() }, CustomSecretPattern { name: "aws key".to_string(), regex: "b".to_string() }];
-        let toml = build_gitleaks_config_for_patterns(&patterns);
+        let toml = build_gitleaks_config_for_patterns(&patterns, None);
         assert!(toml.contains("id = \"aws-key\""));
         assert!(toml.contains("id = \"aws-key-2\""));
+    }
+
+    #[test]
+    fn build_gitleaks_config_for_patterns_extends_a_base_config_path_instead_of_defaults() {
+        let patterns = vec![CustomSecretPattern { name: "Internal Token".to_string(), regex: "tok_.*".to_string() }];
+        let toml = build_gitleaks_config_for_patterns(&patterns, Some(Path::new("/etc/ignite/gitleaks.toml")));
+        assert!(toml.contains("path = \"/etc/ignite/gitleaks.toml\""), "{toml}");
+        assert!(!toml.contains("useDefault"), "{toml}");
     }
 }

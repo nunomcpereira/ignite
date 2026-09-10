@@ -218,7 +218,39 @@ pub async fn run_phase4_checks(
         &secrets_new_cache.iter().map(|(k, v)| ignite_db_store::FileScanCacheInput { rel_path: k.clone(), hash: v.hash.clone(), findings: serde_json::to_value(v).unwrap() }).collect::<Vec<_>>(),
     );
     if config.secrets.gitleaks_enabled {
-        let gitleaks_raw = ignite_secrets::run_gitleaks_scan(root, runner, config.secrets.gitleaks_config_path.as_deref()).await;
+        // Operator-saved custom secret patterns (`/api/secret-patterns`)
+        // previously only ever ran via the playground (one-off, no
+        // persistence) or the retroactive `/sweep` endpoint (one pattern,
+        // one repo, on demand) — never on the scans that actually gate a
+        // push. Merging every *enabled* pattern into the gitleaks config
+        // used here closes that gap: a saved pattern now applies to every
+        // future working-tree/history scan the same way gitleaks' own
+        // built-in rules do, with no extra opt-in beyond "enabled".
+        let custom_patterns: Vec<ignite_secrets::CustomSecretPattern> =
+            store.list_enabled_custom_secret_patterns().into_iter().map(|p| ignite_secrets::CustomSecretPattern { name: p.name, regex: p.regex }).collect();
+        // `root` is the job's own staging directory (UUID-named, always
+        // removed after the run regardless of outcome) — writing the merged
+        // config as a *sibling* of it, named off that same UUID, gets the
+        // same collision-free-across-concurrent-jobs guarantee for free
+        // without scanning the config file itself as part of the working
+        // tree (it lives next to `root`, not inside it).
+        let custom_config_path: Option<std::path::PathBuf> = if custom_patterns.is_empty() {
+            None
+        } else {
+            let toml = ignite_secrets::build_gitleaks_config_for_patterns(&custom_patterns, config.secrets.gitleaks_config_path.as_deref());
+            let file_name = format!("ignite-gitleaks-custom-{}.toml", root.file_name().and_then(|n| n.to_str()).unwrap_or("job"));
+            let path = root.parent().unwrap_or(root).join(file_name);
+            match std::fs::write(&path, &toml) {
+                Ok(()) => Some(path),
+                Err(e) => {
+                    log(&format!("⚠ failed to write custom secret pattern config ({e}) — scanning with the base gitleaks config only"));
+                    None
+                }
+            }
+        };
+        let effective_config_path: Option<&Path> = custom_config_path.as_deref().or(config.secrets.gitleaks_config_path.as_deref());
+
+        let gitleaks_raw = ignite_secrets::run_gitleaks_scan(root, runner, effective_config_path).await;
         let gitignore_patterns = ignite_fs_utils::load_gitignore_patterns(root);
         let added = ignite_secrets::merge_gitleaks_findings(&secrets_result.findings, &gitleaks_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
         secrets_result.findings.extend(added);
@@ -226,9 +258,13 @@ pub async fn run_phase4_checks(
         // Full (non-fast) mode always runs the slow git-history scan, regardless of the
         // config default — fast mode never does, regardless of the config value.
         if config.secrets.gitleaks_scan_history || !config.fast {
-            let history_raw = ignite_secrets::run_gitleaks_history_scan(root, runner, config.secrets.gitleaks_config_path.as_deref()).await;
+            let history_raw = ignite_secrets::run_gitleaks_history_scan(root, runner, effective_config_path).await;
             let history_added = ignite_secrets::merge_gitleaks_history_findings(&secrets_result.findings, &history_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
             secrets_result.findings.extend(history_added);
+        }
+
+        if let Some(path) = custom_config_path {
+            let _ = std::fs::remove_file(&path);
         }
     }
     let ms_secrets = __t_secrets.elapsed().as_millis() as u64;
@@ -983,6 +1019,40 @@ mod tests {
         assert!(
             output.issues.iter().any(|i| i.category == "secret" && i.file.as_deref() == Some("config.js")),
             "expected gitleaks-only finding to appear in issues: {:?}",
+            output.issues
+        );
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn enabled_custom_secret_pattern_is_applied_to_the_live_scan() {
+        let runner = ToolRunner::new(StdHashMap::from([("gitleaks", "gitleaks".to_string())]));
+        if !ignite_secrets::gitleaks_tooling(&runner).await {
+            eprintln!("skipping: gitleaks not installed");
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // A made-up token shape no built-in gitleaks rule recognizes —
+        // only findable via the operator-authored custom pattern below.
+        fs::write(root.join("config.js"), "export const internalToken = 'acme_live_9f8e7d6c5b4a3210';\n").unwrap();
+
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        store.create_custom_secret_pattern("Acme Internal Token", r"acme_live_[0-9a-f]{16}", None);
+        // A disabled pattern must never reach the live scan.
+        let disabled_id = store.create_custom_secret_pattern("Should Not Fire", r"never_matches_anything_zzz", None);
+        store.set_custom_secret_pattern_enabled(disabled_id, false);
+
+        let mut config = test_config(None);
+        config.secrets.gitleaks_enabled = true;
+
+        let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+        let output = run_phase4_checks(root, &runner, &store, &config, &hallucination_checker, &|_m: &str| {}).await.unwrap();
+        assert!(
+            output.issues.iter().any(|i| i.category == "secret" && i.file.as_deref() == Some("config.js")),
+            "expected the enabled custom pattern to produce a finding via the live scan: {:?}",
             output.issues
         );
         ignite_fs_utils::invalidate_walk_cache(root);

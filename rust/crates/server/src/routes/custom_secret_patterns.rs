@@ -134,7 +134,7 @@ async fn sweep_pattern(State(state): State<Arc<AppState>>, crate::auth::RequireA
         return err(StatusCode::BAD_GATEWAY, format!("Failed to clone {full_name}@{default_branch}: {e}"));
     }
 
-    let config_toml = ignite_secrets::build_gitleaks_config_for_patterns(std::slice::from_ref(&CustomSecretPattern { name: pattern.name.clone(), regex: pattern.regex.clone() }));
+    let config_toml = ignite_secrets::build_gitleaks_config_for_patterns(std::slice::from_ref(&CustomSecretPattern { name: pattern.name.clone(), regex: pattern.regex.clone() }), None);
     let config_path = staging.path().join("gitleaks-custom-pattern.toml");
     if let Err(e) = std::fs::write(&config_path, &config_toml) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write sweep config: {e}"));
