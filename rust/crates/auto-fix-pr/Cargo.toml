@@ -16,6 +16,7 @@ ignite-fs-utils = { path = "../fs-utils" }
 ignite-studio-manifests = { path = "../studio-manifests" }
 ignite-license-classification = { path = "../license-classification" }
 serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9.34"
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["full"] }

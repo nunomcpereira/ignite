@@ -40,12 +40,16 @@
 //!   PR's review state. An operator/cron still supervises this the same
 //!   way `scheduled-rescan` is supervised.
 
+mod dependabot_config;
+
 use ignite_dependency_license_scan::{scan_dependency_vulnerabilities, VulnScanManifest};
 use ignite_deps_dev_client::{parse_semver, DepsDevClient};
 use ignite_github_api::GithubApi;
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+
+pub use dependabot_config::{is_ignored as dependabot_ignores, load_dependabot_ignore_rules, IgnoreRule as DependabotIgnoreRule};
 
 /// Which discovery path produced a [`FixCandidate`] — drives wording in
 /// `pr_title_for`/`pr_body_for` (an advisory-driven fix cites the CVE/GHSA
@@ -205,12 +209,16 @@ pub async fn fetch_osv_fixed_version(http: &reqwest::Client, advisory_id: &str, 
 /// resolves a proposed fix version via OSV.dev.
 pub async fn discover_fix_candidates(root: &Path, deps_client: &DepsDevClient, http: &reqwest::Client) -> Vec<FixCandidate> {
     let manifests: Vec<VulnScanManifest> = scan_dependency_vulnerabilities(root, deps_client).await.unwrap_or_default();
+    let ignore_rules = load_dependabot_ignore_rules(root);
     let mut candidates = Vec::new();
 
     for manifest in &manifests {
         for dep in &manifest.dependencies {
             let Some(line) = dep.line else { continue };
             if !is_simple_range(&dep.version_range) {
+                continue;
+            }
+            if dependabot_ignores(&ignore_rules, manifest.ecosystem, &dep.name) {
                 continue;
             }
             for vuln in &dep.vulnerabilities {
@@ -274,6 +282,7 @@ fn latest_stable_version(versions: &[String]) -> Option<String> {
 pub async fn discover_routine_update_candidates(root: &Path, deps_client: &DepsDevClient) -> Vec<FixCandidate> {
     let mut candidates = Vec::new();
     let Ok(files) = ignite_fs_utils::walk_files(root) else { return candidates };
+    let ignore_rules = load_dependabot_ignore_rules(root);
 
     for file in files {
         let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -285,6 +294,9 @@ pub async fn discover_routine_update_candidates(root: &Path, deps_client: &DepsD
 
         for dep in &raw_deps {
             if !is_simple_range(&dep.version_range) {
+                continue;
+            }
+            if dependabot_ignores(&ignore_rules, spec.ecosystem, &dep.name) {
                 continue;
             }
             let Some(current) = lockfile_versions.get(&dep.name).cloned().or_else(|| ignite_license_classification::best_effort_version(&dep.version_range)) else { continue };
@@ -1288,5 +1300,16 @@ mod tests {
         assert_eq!(c.kind, FixKind::RoutineUpdate);
         assert!(c.advisory_id.is_empty());
         assert_ne!(c.fixed_version, "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn discover_routine_update_candidates_respects_a_dependabot_yml_ignore_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), r#"{"dependencies": {"left-pad": "1.0.0"}}"#).unwrap();
+        fs::create_dir_all(dir.path().join(".github")).unwrap();
+        fs::write(dir.path().join(".github/dependabot.yml"), "version: 2\nupdates:\n  - package-ecosystem: \"npm\"\n    directory: \"/\"\n    ignore:\n      - dependency-name: \"left-pad\"\n").unwrap();
+        let deps_client = DepsDevClient::new();
+        let candidates = discover_routine_update_candidates(dir.path(), &deps_client).await;
+        assert!(candidates.is_empty(), "a dependency ignored in dependabot.yml must never surface as a candidate, network available or not: {candidates:?}");
     }
 }
