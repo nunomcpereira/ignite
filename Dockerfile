@@ -88,6 +88,14 @@ ARG ORT_VERSION=92.6.0
 ENV PIPX_HOME=/opt/pipx
 ENV PIPX_BIN_DIR=/opt/pipx/bin
 ENV PATH="/opt/pipx/bin:${PATH}"
+# pip's installer runs `compileall` on every package by default, baking a
+# `.pyc` alongside every `.py` it installs - across checkov/semgrep/
+# guarddog/zizmor that's ~125MB of bytecode cache for no runtime benefit
+# CLI tools actually get (each invocation is a fresh process; Python
+# recompiles on-demand in-memory regardless, the same one-time-per-process
+# cost either way). Standard slim-image practice, not an Ignite-specific
+# tradeoff.
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # git/gh/act shell out to these; ca-certificates+gnupg for the various
 # curl|install-script tools below; python3-pip/pipx for checkov/semgrep/
