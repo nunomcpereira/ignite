@@ -24,8 +24,11 @@
 //!
 //! **Supported providers**: GitHub (personal access / fine-grained /
 //! OAuth tokens), Slack (bot/user/legacy tokens), Stripe (secret/
-//! restricted API keys), GCP (API keys) — single unauthenticated-looking
-//! bearer/basic-auth/query-param HTTP calls. AWS (`sts:GetCallerIdentity`)
+//! restricted API keys), GCP (API keys), OpenAI (`sk-...` secret keys),
+//! Anthropic (`sk-ant-...` API keys), npm (`npm_...` access tokens), and
+//! Datadog (API keys, via Datadog's own documented `/api/v1/validate`
+//! endpoint) — single unauthenticated-looking bearer/basic-auth/
+//! query-param/header HTTP calls. AWS (`sts:GetCallerIdentity`)
 //! is also implemented, via a real SigV4 signing implementation (see
 //! `verify_aws_credentials`) — unlike the others, it needs both halves of
 //! the credential (access key id *and* secret access key) together to
@@ -49,6 +52,15 @@
 //! merely failing safe into `Unknown` the way every other provider's
 //! failure modes here do. Shipping that without real scrutiny is exactly
 //! the risk this module's own original AWS deferral was about.
+//!
+//! **PyPI is also deliberately still unsupported**, for a different
+//! reason than Azure: PyPI has no documented read-only "check this
+//! token" endpoint at all. The only authenticated thing an upload token
+//! can do is the actual package-upload endpoint
+//! (`https://upload.pypi.org/legacy/`), which is a write path — sending
+//! it a real request (even one designed to fail past auth) risks
+//! mutating a real project's release state, exactly the kind of side
+//! effect every other provider here was chosen specifically to avoid.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -91,6 +103,10 @@ enum Provider {
     Stripe,
     Gcp,
     Aws,
+    OpenAi,
+    Anthropic,
+    Npm,
+    Datadog,
 }
 
 /// Maps a secret-scan finding `kind` — gitleaks' own rule id
@@ -113,6 +129,17 @@ fn provider_for_kind(kind: &str) -> Option<Provider> {
         Some(Provider::Gcp)
     } else if lower.contains("aws") {
         Some(Provider::Aws)
+    } else if lower.contains("anthropic") {
+        // Checked before the generic OpenAI substring — an Anthropic kind
+        // never contains "openai", but keeping this branch first avoids
+        // any future ordering surprise if that ever changed.
+        Some(Provider::Anthropic)
+    } else if lower.contains("openai") {
+        Some(Provider::OpenAi)
+    } else if lower.contains("npm") {
+        Some(Provider::Npm)
+    } else if lower.contains("datadog") {
+        Some(Provider::Datadog)
     } else {
         None
     }
@@ -124,6 +151,20 @@ static STRIPE_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(sk|rk)_(live|te
 static GCP_API_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bAIza[0-9A-Za-z_\-]{35}\b").unwrap());
 static AWS_ACCESS_KEY_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b").unwrap());
 static AWS_SECRET_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)aws_secret_access_key\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?"#).unwrap());
+// Anthropic's `sk-ant-...` shape is checked (and extracted) separately
+// from OpenAI's bare `sk-...` — both start with `sk-`, but the provider
+// is already disambiguated by `provider_for_kind` before either regex
+// ever runs, so there's no cross-provider ambiguity in practice.
+static ANTHROPIC_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bsk-ant-[A-Za-z0-9_-]{20,250}\b").unwrap());
+static OPENAI_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,250}\b").unwrap());
+static NPM_TOKEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bnpm_[A-Za-z0-9]{36,}\b").unwrap());
+// Datadog API keys have no distinctive prefix (a bare 32-char lowercase
+// hex string) — safe to extract this loosely only because
+// `provider_for_kind` has already gated on the finding's own `kind`
+// naming Datadog specifically, the same way every other provider here
+// relies on the caller's classification rather than the regex alone to
+// avoid false-positive extraction.
+static DATADOG_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[0-9a-f]{32}\b").unwrap());
 
 /// Pulls the exact token substring out of `line_text` for `kind`'s
 /// provider, using the same publicly-documented token-format patterns
@@ -140,6 +181,10 @@ pub fn extract_secret_value(kind: &str, line_text: &str) -> Option<String> {
         Provider::Slack => SLACK_TOKEN_RE.find(line_text).map(|m| m.as_str().to_string()),
         Provider::Stripe => STRIPE_KEY_RE.find(line_text).map(|m| m.as_str().to_string()),
         Provider::Gcp => GCP_API_KEY_RE.find(line_text).map(|m| m.as_str().to_string()),
+        Provider::Anthropic => ANTHROPIC_KEY_RE.find(line_text).map(|m| m.as_str().to_string()),
+        Provider::OpenAi => OPENAI_KEY_RE.find(line_text).map(|m| m.as_str().to_string()),
+        Provider::Npm => NPM_TOKEN_RE.find(line_text).map(|m| m.as_str().to_string()),
+        Provider::Datadog => DATADOG_KEY_RE.find(line_text).map(|m| m.as_str().to_string()),
         // AWS needs both halves of the credential together to sign with —
         // see `extract_aws_credential_pair`/`verify_secret_pair` instead.
         Provider::Aws => None,
@@ -190,6 +235,10 @@ pub async fn verify_secret(http: &reqwest::Client, config: &SecretVerifierConfig
         Provider::Slack => verify_slack_token(http, value, timeout).await,
         Provider::Stripe => verify_stripe_key(http, value, timeout).await,
         Provider::Gcp => verify_gcp_api_key(http, value, timeout).await,
+        Provider::Anthropic => verify_anthropic_key(http, value, timeout).await,
+        Provider::OpenAi => verify_openai_key(http, value, timeout).await,
+        Provider::Npm => verify_npm_token(http, value, timeout).await,
+        Provider::Datadog => verify_datadog_key(http, value, timeout).await,
         // See `extract_secret_value`'s Aws arm — no single-string value
         // to verify.
         Provider::Aws => VerificationOutcome::Unsupported,
@@ -275,6 +324,63 @@ async fn verify_gcp_api_key(http: &reqwest::Client, value: &str, timeout: Durati
         VerificationOutcome::Live
     } else {
         VerificationOutcome::Unknown
+    }
+}
+
+/// `GET /v1/models` is OpenAI's own lightest authenticated read — lists
+/// the caller's available models, mutates nothing.
+async fn verify_openai_key(http: &reqwest::Client, value: &str, timeout: Duration) -> VerificationOutcome {
+    let resp = http.get("https://api.openai.com/v1/models").bearer_auth(value).timeout(timeout).send().await;
+    match resp {
+        Ok(r) if r.status().is_success() => VerificationOutcome::Live,
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => VerificationOutcome::Revoked,
+        _ => VerificationOutcome::Unknown,
+    }
+}
+
+/// `GET /v1/models` is Anthropic's own lightest authenticated read.
+/// Anthropic's API authenticates via the `x-api-key` header (not a bearer
+/// token) plus a required `anthropic-version` header — both per
+/// Anthropic's own documented API contract, not a bearer/basic-auth
+/// convention like the other providers here.
+async fn verify_anthropic_key(http: &reqwest::Client, value: &str, timeout: Duration) -> VerificationOutcome {
+    let resp = http.get("https://api.anthropic.com/v1/models").header("x-api-key", value).header("anthropic-version", "2023-06-01").timeout(timeout).send().await;
+    match resp {
+        Ok(r) if r.status().is_success() => VerificationOutcome::Live,
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => VerificationOutcome::Revoked,
+        _ => VerificationOutcome::Unknown,
+    }
+}
+
+/// `GET /-/npm/v1/user` is the npm registry's own documented "who am I"
+/// endpoint for a granular/legacy access token — read-only, mutates
+/// nothing.
+async fn verify_npm_token(http: &reqwest::Client, value: &str, timeout: Duration) -> VerificationOutcome {
+    let resp = http.get("https://registry.npmjs.org/-/npm/v1/user").bearer_auth(value).timeout(timeout).send().await;
+    match resp {
+        Ok(r) if r.status().is_success() => VerificationOutcome::Live,
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED || r.status() == reqwest::StatusCode::FORBIDDEN => VerificationOutcome::Revoked,
+        _ => VerificationOutcome::Unknown,
+    }
+}
+
+/// `GET /api/v1/validate` is Datadog's own documented, purpose-built
+/// "is this API key valid" endpoint — unlike every other provider here,
+/// Datadog ships a dedicated validation call rather than this module
+/// repurposing an unrelated read, so there's no ambiguity about whether
+/// calling it is an intended, safe use of the key.
+async fn verify_datadog_key(http: &reqwest::Client, value: &str, timeout: Duration) -> VerificationOutcome {
+    let resp = http.get("https://api.datadoghq.com/api/v1/validate").header("DD-API-KEY", value).timeout(timeout).send().await;
+    let Ok(resp) = resp else { return VerificationOutcome::Unknown };
+    let status = resp.status();
+    if status == reqwest::StatusCode::FORBIDDEN {
+        return VerificationOutcome::Revoked;
+    }
+    let Ok(body) = resp.json::<serde_json::Value>().await else { return VerificationOutcome::Unknown };
+    match body.get("valid").and_then(|v| v.as_bool()) {
+        Some(true) if status.is_success() => VerificationOutcome::Live,
+        Some(false) => VerificationOutcome::Revoked,
+        _ => VerificationOutcome::Unknown,
     }
 }
 
@@ -486,6 +592,91 @@ mod tests {
         assert_eq!(provider_for_kind("google-api-key"), Some(Provider::Gcp));
         assert_eq!(provider_for_kind("aws-access-token"), Some(Provider::Aws));
         assert_eq!(provider_for_kind("AWS-Secret-Key"), Some(Provider::Aws));
+    }
+
+    #[test]
+    fn provider_for_kind_matches_openai_anthropic_npm_and_datadog() {
+        assert_eq!(provider_for_kind("openai-api-key"), Some(Provider::OpenAi));
+        assert_eq!(provider_for_kind("anthropic-api-key"), Some(Provider::Anthropic));
+        assert_eq!(provider_for_kind("npm-access-token"), Some(Provider::Npm));
+        assert_eq!(provider_for_kind("Datadog-API-Key"), Some(Provider::Datadog));
+    }
+
+    #[test]
+    fn extract_secret_value_distinguishes_anthropic_from_openai_by_kind() {
+        let fake_anthropic = format!("sk-ant-api03-{}", "a".repeat(30));
+        let line = format!(r#"const key = "{fake_anthropic}";"#);
+        let value = extract_secret_value("anthropic-api-key", &line).unwrap();
+        assert!(value.starts_with("sk-ant-"));
+
+        let fake_openai = format!("sk-{}", "b".repeat(40));
+        let line2 = format!(r#"const key = "{fake_openai}";"#);
+        let value2 = extract_secret_value("openai-api-key", &line2).unwrap();
+        assert!(value2.starts_with("sk-"));
+    }
+
+    #[test]
+    fn extract_secret_value_pulls_npm_token_out_of_a_code_line() {
+        let fake_token = format!("npm_{}", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8");
+        let line = format!(r#"NPM_TOKEN="{fake_token}""#);
+        let value = extract_secret_value("npm-access-token", &line).unwrap();
+        assert!(value.starts_with("npm_"));
+    }
+
+    #[test]
+    fn extract_secret_value_pulls_datadog_key_out_of_a_code_line() {
+        let fake_key = "0".repeat(32);
+        let line = format!(r#"DD_API_KEY="{fake_key}""#);
+        let value = extract_secret_value("datadog-api-key", &line).unwrap();
+        assert_eq!(value.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn verify_openai_key_reports_revoked_for_a_syntactically_valid_but_fake_key() {
+        let http = reqwest::Client::new();
+        let fake_key = format!("sk-{}", "0".repeat(40));
+        let outcome = verify_secret(&http, &enabled_config(), "openai-api-key", &fake_key).await;
+        if outcome == VerificationOutcome::Unknown {
+            eprintln!("skipping: could not reach api.openai.com (network unavailable in this environment)");
+            return;
+        }
+        assert_eq!(outcome, VerificationOutcome::Revoked);
+    }
+
+    #[tokio::test]
+    async fn verify_anthropic_key_reports_revoked_for_a_syntactically_valid_but_fake_key() {
+        let http = reqwest::Client::new();
+        let fake_key = format!("sk-ant-api03-{}", "0".repeat(30));
+        let outcome = verify_secret(&http, &enabled_config(), "anthropic-api-key", &fake_key).await;
+        if outcome == VerificationOutcome::Unknown {
+            eprintln!("skipping: could not reach api.anthropic.com (network unavailable in this environment)");
+            return;
+        }
+        assert_eq!(outcome, VerificationOutcome::Revoked);
+    }
+
+    #[tokio::test]
+    async fn verify_npm_token_reports_revoked_for_a_syntactically_valid_but_fake_token() {
+        let http = reqwest::Client::new();
+        let fake_token = format!("npm_{}", "0".repeat(36));
+        let outcome = verify_secret(&http, &enabled_config(), "npm-access-token", &fake_token).await;
+        if outcome == VerificationOutcome::Unknown {
+            eprintln!("skipping: could not reach registry.npmjs.org (network unavailable in this environment)");
+            return;
+        }
+        assert_eq!(outcome, VerificationOutcome::Revoked);
+    }
+
+    #[tokio::test]
+    async fn verify_datadog_key_reports_revoked_for_a_syntactically_valid_but_fake_key() {
+        let http = reqwest::Client::new();
+        let fake_key = "0".repeat(32);
+        let outcome = verify_secret(&http, &enabled_config(), "datadog-api-key", &fake_key).await;
+        if outcome == VerificationOutcome::Unknown {
+            eprintln!("skipping: could not reach api.datadoghq.com (network unavailable in this environment)");
+            return;
+        }
+        assert_eq!(outcome, VerificationOutcome::Revoked);
     }
 
     #[test]
