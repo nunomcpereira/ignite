@@ -371,6 +371,21 @@ pub fn find_manifest_dep_line(content: &str, dep_name: &str, ecosystem: &str) ->
             let needle = format!("\"{}\"", dep_name);
             content.split('\n').position(|l| !l.trim_start().starts_with("//") && l.contains(&needle)).map(|i| i + 1)
         }
+        "gradle" => {
+            // `dep_name` is `"group:artifact"`; a real declaration line
+            // contains that same substring immediately followed by `:` and
+            // the version (`'group:artifact:version'`). Comments are `//`
+            // (Groovy/Kotlin), not `#` — the generic fallback arm below
+            // would miss a commented-out Gradle line entirely.
+            let needle = format!("{dep_name}:");
+            content.split('\n').position(|l| !l.trim_start().starts_with("//") && l.contains(&needle)).map(|i| i + 1)
+        }
+        "nuget" => {
+            // Same quoted-substring approach as npm, but XML comments
+            // (`<!--`) rather than `//`.
+            let needle = format!("\"{}\"", dep_name);
+            content.split('\n').position(|l| !l.trim_start().starts_with("<!--") && l.contains(&needle)).map(|i| i + 1)
+        }
         "pypi" => {
             // A real declaration line starts (after whitespace) with the
             // package name — case-insensitive, `-`/`_`/`.` interchangeable
@@ -458,6 +473,15 @@ mod tests {
 
         let pom = "<project>\n  <dependencies>\n    <dependency>\n      <artifactId>guava</artifactId>\n    </dependency>\n  </dependencies>\n</project>\n";
         assert_eq!(find_manifest_dep_line(pom, "com.google.guava:guava", "maven"), Some(4));
+    }
+
+    #[test]
+    fn find_manifest_dep_line_locates_gradle_and_nuget_deps() {
+        let gradle = "dependencies {\n    // implementation 'commented:out:1.0.0'\n    implementation 'com.google.guava:guava:32.1.3-jre'\n}\n";
+        assert_eq!(find_manifest_dep_line(gradle, "com.google.guava:guava", "gradle"), Some(3));
+
+        let csproj = "<Project>\n  <ItemGroup>\n    <!-- <PackageReference Include=\"Newtonsoft.Json\" Version=\"12.0.0\" /> -->\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.1\" />\n  </ItemGroup>\n</Project>\n";
+        assert_eq!(find_manifest_dep_line(csproj, "Newtonsoft.Json", "nuget"), Some(4));
     }
 
     /// Real bug hit against a live `uv export`-generated requirements.txt:

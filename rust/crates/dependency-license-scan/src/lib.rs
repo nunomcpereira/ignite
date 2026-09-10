@@ -25,7 +25,7 @@ use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry
 use ignite_fs_utils::{build_snippet, walk_files, SnippetOptions};
 use ignite_license_classification::{classify_license_tier, is_internal_dependency_ref, best_effort_version, LicenseTier};
 use ignite_override_engine::{build_issue_id, derive_cwe_owasp, score_for_issue, BuildIssueIdArgs, CweOwaspHint, Issue, Severity};
-use ignite_studio_manifests::{lockfile_specs, studio_manifests, ManifestDep, STUDIO_MAX_DEPS_PER_MANIFEST};
+use ignite_studio_manifests::{find_manifest_spec, lockfile_specs, ManifestDep, STUDIO_MAX_DEPS_PER_MANIFEST};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -131,7 +131,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
     let mut manifests = Vec::new();
     for file in walk_files(root)? {
         let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let Some(spec) = studio_manifests().iter().find(|m| m.file == base) else { continue };
+        let Some(spec) = find_manifest_spec(&base) else { continue };
         if skip_ecosystems.contains(spec.ecosystem) {
             continue;
         }
@@ -295,7 +295,7 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
     let mut manifests = Vec::new();
     for file in walk_files(root)? {
         let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let Some(spec) = studio_manifests().iter().find(|m| m.file == base) else { continue };
+        let Some(spec) = find_manifest_spec(&base) else { continue };
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
         let raw_deps: Vec<ManifestDep> = (spec.parse)(&content).into_iter().take(STUDIO_MAX_DEPS_PER_MANIFEST).collect();
         let lockfile_versions = resolve_lockfile_versions(&file, root, spec.ecosystem);
@@ -530,17 +530,28 @@ async fn ensure_git_root_for_ort(root: &Path, runner: &ToolRunner, mut log: impl
 
 /// ORT's own package-manager `type` values, mapped onto the same fixed
 /// ecosystem identifiers `studio_manifests`'s fallback scanner uses — an
-/// ORT-detected ecosystem outside this set (e.g. Conan, NuGet) still
-/// contributes its findings, just isn't recognized for the
-/// skip-ecosystems de-dup against the fallback scanner, so it may (rarely)
-/// be double-reported by both scanners rather than silently dropped.
+/// ORT-detected ecosystem outside this set (e.g. Conan) still contributes
+/// its findings, just isn't recognized for the skip-ecosystems de-dup
+/// against the fallback scanner, so it may (rarely) be double-reported by
+/// both scanners rather than silently dropped.
+///
+/// `"gradle"` maps to the `"gradle"` tag, not `"maven"` — before
+/// `studio_manifests`'s fallback scanner had its own Gradle parser, this
+/// intentionally folded Gradle into Maven's tag so the two scanners'
+/// results would at least de-dup against each other; now that the
+/// fallback scanner tags its own Gradle findings `"gradle"` too, keeping
+/// this mapped to `"maven"` would have caused exactly the double-report
+/// this function exists to prevent (ORT's Gradle findings never matching
+/// the fallback scanner's differently-tagged ones).
 fn map_ort_ecosystem(ort_type: &str) -> Option<&'static str> {
     match ort_type.to_lowercase().as_str() {
         "npm" | "yarn" | "pnpm" => Some("npm"),
         "cargo" => Some("cargo"),
         "pip" | "pypi" | "pipenv" | "poetry" => Some("pypi"),
         "gomod" | "go" => Some("go"),
-        "maven" | "gradle" => Some("maven"),
+        "maven" => Some("maven"),
+        "gradle" => Some("gradle"),
+        "nuget" => Some("nuget"),
         _ => None,
     }
 }
@@ -808,6 +819,12 @@ fn purl_ecosystem(ecosystem: &str) -> &'static str {
         "pypi" => "pypi",
         "go" => "golang",
         "maven" => "maven",
+        // Gradle artifacts are addressed via Maven-Central coordinates —
+        // there's no separate `pkg:gradle/` PURL type in the package-url
+        // spec, so this folds into the same `"maven"` PURL type
+        // `map_ort_ecosystem` already folds Gradle's *ecosystem* tag into.
+        "gradle" => "maven",
+        "nuget" => "nuget",
         _ => "generic",
     }
 }
@@ -1719,7 +1736,8 @@ mod tests {
         assert_eq!(map_ort_ecosystem("PIP"), Some("pypi"));
         assert_eq!(map_ort_ecosystem("GoMod"), Some("go"));
         assert_eq!(map_ort_ecosystem("Maven"), Some("maven"));
-        assert_eq!(map_ort_ecosystem("Gradle"), Some("maven"));
+        assert_eq!(map_ort_ecosystem("Gradle"), Some("gradle"));
+        assert_eq!(map_ort_ecosystem("NuGet"), Some("nuget"));
         assert_eq!(map_ort_ecosystem("Conan"), None);
     }
 

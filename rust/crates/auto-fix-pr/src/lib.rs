@@ -2,8 +2,8 @@
 //! open: Ignite's `dependency-vulnerability` check (deps.dev advisories,
 //! see `ignite-dependency-license-scan`) *detects* a known-vulnerable
 //! dependency but never proposes the fix the way Dependabot's version-bump
-//! PRs do. This crate closes that gap for the five manifest ecosystems
-//! `ignite-studio-manifests` already parses (npm/pypi/cargo/go/maven):
+//! PRs do. This crate closes that gap for every manifest ecosystem
+//! `ignite-studio-manifests` parses (npm/pypi/cargo/go/maven/gradle/nuget):
 //! for each vulnerable dependency, look up the advisory's minimum fixed
 //! version (OSV.dev — deps.dev's own advisory schema doesn't carry a
 //! per-package fixed-version field, only the generic CVE/GHSA metadata
@@ -89,6 +89,13 @@ fn osv_ecosystem(ecosystem: &str) -> Option<&'static str> {
         "cargo" => Some("crates.io"),
         "go" => Some("Go"),
         "maven" => Some("Maven"),
+        // Gradle artifacts resolve via Maven Central coordinates and OSV
+        // advisories for them are filed under the "Maven" ecosystem too —
+        // same "gradle folds into maven" convention `dependency-license-
+        // scan`'s own `map_ort_ecosystem` already uses for ORT-detected
+        // findings.
+        "gradle" => Some("Maven"),
+        "nuget" => Some("NuGet"),
         _ => None,
     }
 }
@@ -111,6 +118,14 @@ pub fn is_simple_range(range: &str) -> bool {
     }
     let rest: String = range.chars().skip_while(|c| RANGE_PREFIX_CHARS.contains(c)).collect();
     if rest.is_empty() || rest.contains(['x', 'X', '*']) {
+        return false;
+    }
+    // Gradle's dynamic-version wildcard is a trailing `+` (`1.2.+`), not
+    // `x`/`*` like the other ecosystems above — reject only a *bare*
+    // trailing `+` (no more characters after it), so real semver build
+    // metadata (`1.2.3+build.1`, accepted by the character class below)
+    // is unaffected.
+    if rest.ends_with('+') {
         return false;
     }
     rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+')
@@ -262,7 +277,7 @@ pub async fn discover_routine_update_candidates(root: &Path, deps_client: &DepsD
 
     for file in files {
         let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let Some(spec) = ignite_studio_manifests::studio_manifests().iter().find(|m| m.file == base) else { continue };
+        let Some(spec) = ignite_studio_manifests::find_manifest_spec(&base) else { continue };
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
         let raw_deps: Vec<ignite_studio_manifests::ManifestDep> = (spec.parse)(&content).into_iter().take(ignite_studio_manifests::STUDIO_MAX_DEPS_PER_MANIFEST).collect();
         let lockfile_versions = ignite_dependency_license_scan::resolve_lockfile_versions(&file, root, spec.ecosystem);
@@ -546,6 +561,25 @@ fn lockfile_command(manifest_dir: &Path, candidate: &FixCandidate) -> Option<(&'
             Some(("cargo", vec!["update".to_string(), "-p".to_string(), candidate.dep_name.clone(), "--precise".to_string(), candidate.fixed_version.clone()], "Cargo.lock"))
         }
         "go" if manifest_dir.join("go.sum").is_file() => Some(("go", vec!["mod".to_string(), "tidy".to_string()], "go.sum")),
+        // `dotnet restore` regenerates `packages.lock.json` in place when
+        // the project already opts into
+        // `<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>`
+        // — same "only regenerate if the lockfile already exists" gate
+        // every other ecosystem here uses, so a project that never opted
+        // into lockfiles at all is left untouched.
+        "nuget" if manifest_dir.join("packages.lock.json").is_file() => {
+            Some(("dotnet", vec!["restore".to_string(), "--force-evaluate".to_string()], "packages.lock.json"))
+        }
+        // A single-module Gradle project's lockfile sits right next to its
+        // `build.gradle` as `gradle.lockfile` — a multi-module project
+        // instead writes one lockfile per subproject
+        // (`gradle/dependency-locks/*.lockfile`), which this doesn't
+        // attempt to locate; same posture as every other best-effort step
+        // here, a miss just means the lockfile doesn't get regenerated,
+        // not that the fix fails.
+        "gradle" if manifest_dir.join("gradle.lockfile").is_file() => {
+            Some(("gradle", vec!["dependencies".to_string(), "--write-locks".to_string()], "gradle.lockfile"))
+        }
         _ => None,
     }
 }
@@ -883,6 +917,14 @@ mod tests {
     }
 
     #[test]
+    fn is_simple_range_rejects_gradle_dynamic_version_but_accepts_build_metadata() {
+        assert!(!is_simple_range("1.2.+"));
+        // Real semver build metadata, not a dynamic-version wildcard —
+        // must stay accepted.
+        assert!(is_simple_range("1.2.3+build.1"));
+    }
+
+    #[test]
     fn rewrite_range_preserves_prefix() {
         assert_eq!(rewrite_range("^1.2.3", "2.0.1"), "^2.0.1");
         assert_eq!(rewrite_range("==1.2.3", "2.0.1"), "==2.0.1");
@@ -1020,6 +1062,38 @@ mod tests {
         assert_eq!(tool, "go");
         assert_eq!(args, vec!["mod", "tidy"]);
         assert_eq!(name, "go.sum");
+    }
+
+    #[test]
+    fn lockfile_command_dotnet_restore_when_packages_lock_json_present() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("packages.lock.json"), "{}").unwrap();
+        let mut candidate = npm_candidate();
+        candidate.ecosystem = "nuget";
+        let (tool, args, name) = lockfile_command(dir.path(), &candidate).unwrap();
+        assert_eq!(tool, "dotnet");
+        assert_eq!(args, vec!["restore", "--force-evaluate"]);
+        assert_eq!(name, "packages.lock.json");
+    }
+
+    #[test]
+    fn lockfile_command_none_for_nuget_without_packages_lock_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut candidate = npm_candidate();
+        candidate.ecosystem = "nuget";
+        assert!(lockfile_command(dir.path(), &candidate).is_none());
+    }
+
+    #[test]
+    fn lockfile_command_gradle_write_locks_when_gradle_lockfile_present() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("gradle.lockfile"), "").unwrap();
+        let mut candidate = npm_candidate();
+        candidate.ecosystem = "gradle";
+        let (tool, args, name) = lockfile_command(dir.path(), &candidate).unwrap();
+        assert_eq!(tool, "gradle");
+        assert_eq!(args, vec!["dependencies", "--write-locks"]);
+        assert_eq!(name, "gradle.lockfile");
     }
 
     #[test]

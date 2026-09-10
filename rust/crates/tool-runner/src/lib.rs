@@ -29,7 +29,7 @@ pub fn allowed_commands() -> &'static [&'static str] {
 /// invokes after editing a manifest constraint — resolved directly off
 /// `PATH` like `git`/`gh`, since a project's package manager is never a
 /// user-configurable "scanner tool" the way trivy/semgrep are.
-const FIXED_COMMANDS: &[&str] = &["git", "gh", "act", "docker", "licensee", "ort", "npm", "yarn", "pnpm", "cargo", "go", "poetry", "pip-compile"];
+const FIXED_COMMANDS: &[&str] = &["git", "gh", "act", "docker", "licensee", "ort", "npm", "yarn", "pnpm", "cargo", "go", "poetry", "pip-compile", "dotnet", "gradle"];
 /// Commands `run_tool_streaming` actually supports (a strict subset of
 /// `allowed_commands()` — the JS original only wires up git/gh/act/docker/
 /// codeql for streaming; everything else only ever goes through the

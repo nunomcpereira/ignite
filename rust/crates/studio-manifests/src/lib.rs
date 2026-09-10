@@ -1,11 +1,13 @@
-//! The 5-ecosystem manifest parsers server.js's dependency license/
-//! vulnerability scanning (STUDIO_MANIFESTS) uses — distinct from
+//! The manifest parsers server.js's dependency license/vulnerability
+//! scanning (STUDIO_MANIFESTS) uses — distinct from
 //! `ignite-package-hallucination`'s own npm/PyPI-only parsers, which are a
 //! separate JS module (`checks/package-hallucination.js`) with slightly
-//! different regexes for a different purpose. Faithful port of
-//! server.js's `parsePackageJsonDeps`/`parseCargoTomlDeps`/
-//! `parseRequirementsTxtDeps`/`parseGoModDeps`/`parsePomXmlDeps` and the
-//! `STUDIO_MANIFESTS` table.
+//! different regexes for a different purpose. The original 5 ecosystems
+//! (npm/cargo/pypi/go/maven) are a faithful port of server.js's
+//! `parsePackageJsonDeps`/`parseCargoTomlDeps`/`parseRequirementsTxtDeps`/
+//! `parseGoModDeps`/`parsePomXmlDeps` and the `STUDIO_MANIFESTS` table;
+//! Gradle (`build.gradle`/`build.gradle.kts`) and NuGet (`*.csproj`) were
+//! added later, Rust-only, with no Node original to port from.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -137,6 +139,52 @@ pub fn parse_pom_xml_deps(content: &str) -> Vec<ManifestDep> {
     deps
 }
 
+// Gradle's Groovy DSL (`build.gradle`) and Kotlin DSL (`build.gradle.kts`)
+// share one line-oriented "string notation" dependency declaration —
+// `implementation 'group:artifact:version'` or, with the optional Kotlin
+// DSL parens, `implementation("group:artifact:version")` — one regex
+// covers both, the only syntactic difference being the optional `(`/`)`.
+// Deliberately doesn't attempt Gradle's map notation
+// (`implementation group: 'a', name: 'b', version: '1.0'`) or version
+// catalogs (`implementation(libs.someLib)`, whose actual version lives in
+// a separate `libs.versions.toml`, not on this line at all) — same
+// conservatism `auto-fix-pr`'s own module doc already applies to complex
+// version ranges: string notation covers the overwhelming majority of
+// real `build.gradle` files, and guessing at the rest risks a wrong edit
+// rather than just missing a candidate.
+static GRADLE_DEP_STRING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:implementation|api|compile|testImplementation|testCompile|androidTestImplementation|runtimeOnly|compileOnly|annotationProcessor|kapt|ksp)\s*\(?\s*['"]([^:'"]+):([^:'"]+):([^'"]+)['"]"#).unwrap());
+
+pub fn parse_build_gradle_deps(content: &str) -> Vec<ManifestDep> {
+    content
+        .split('\n')
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .filter_map(|l| GRADLE_DEP_STRING_RE.captures(l))
+        .map(|m| ManifestDep { name: format!("{}:{}", &m[1], &m[2]), version_range: m[3].to_string() })
+        .collect()
+}
+
+// NuGet's modern `<PackageReference>` element — attributes can appear in
+// either order, and some tooling emits a nested `<Version>` child element
+// instead of a `Version=` attribute, so (mirroring `parse_pom_xml_deps`'s
+// own block-then-search-inside approach rather than a single rigid
+// attribute-order regex) the whole element is matched first and its
+// `Include`/`Version` are searched for independently within it.
+static CSPROJ_PACKAGE_REF_BLOCK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<PackageReference\b[^>]*?(?:/>|>.*?</PackageReference>)").unwrap());
+static CSPROJ_INCLUDE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"Include\s*=\s*"([^"]+)""#).unwrap());
+static CSPROJ_VERSION_ATTR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"Version\s*=\s*"([^"]+)""#).unwrap());
+static CSPROJ_VERSION_ELEM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<Version>([^<]+)</Version>").unwrap());
+
+pub fn parse_csproj_deps(content: &str) -> Vec<ManifestDep> {
+    let mut deps = Vec::new();
+    for block in CSPROJ_PACKAGE_REF_BLOCK_RE.find_iter(content) {
+        let block = block.as_str();
+        let Some(include) = CSPROJ_INCLUDE_RE.captures(block).map(|m| m[1].trim().to_string()) else { continue };
+        let version = CSPROJ_VERSION_ATTR_RE.captures(block).or_else(|| CSPROJ_VERSION_ELEM_RE.captures(block)).map(|m| m[1].trim().to_string()).unwrap_or_default();
+        deps.push(ManifestDep { name: include, version_range: version });
+    }
+    deps
+}
+
 pub struct StudioManifestSpec {
     pub file: &'static str,
     pub ecosystem: &'static str,
@@ -153,8 +201,30 @@ pub fn studio_manifests() -> &'static [StudioManifestSpec] {
         StudioManifestSpec { file: "requirements.txt", ecosystem: "pypi", system: "PYPI", parse: parse_requirements_txt_deps },
         StudioManifestSpec { file: "go.mod", ecosystem: "go", system: "GO", parse: parse_go_mod_deps },
         StudioManifestSpec { file: "pom.xml", ecosystem: "maven", system: "MAVEN", parse: parse_pom_xml_deps },
+        StudioManifestSpec { file: "build.gradle", ecosystem: "gradle", system: "MAVEN", parse: parse_build_gradle_deps },
+        StudioManifestSpec { file: "build.gradle.kts", ecosystem: "gradle", system: "MAVEN", parse: parse_build_gradle_deps },
+        // `*.csproj` is the one entry whose filename isn't fixed (a real
+        // project names it after itself, e.g. `MyApp.csproj`) — matched by
+        // suffix via `find_manifest_spec` below rather than the exact-name
+        // equality every other entry (and every direct `.file ==`
+        // comparison elsewhere in the codebase) uses.
+        StudioManifestSpec { file: "*.csproj", ecosystem: "nuget", system: "NUGET", parse: parse_csproj_deps },
     ];
     MANIFESTS
+}
+
+/// Looks up the `StudioManifestSpec` matching `file_name`. Every entry
+/// except NuGet's matches by exact filename; a `"*.ext"` entry (currently
+/// only `*.csproj`) matches by extension instead, since that's the one
+/// ecosystem here whose manifest isn't named the same thing in every
+/// project. Callers that used to do `studio_manifests().iter().find(|m|
+/// m.file == base)` directly should use this instead so NuGet projects
+/// are actually found.
+pub fn find_manifest_spec(file_name: &str) -> Option<&'static StudioManifestSpec> {
+    studio_manifests().iter().find(|m| match m.file.strip_prefix("*.") {
+        Some(ext) => file_name.ends_with(&format!(".{ext}")),
+        None => m.file == file_name,
+    })
 }
 
 // --- Lockfiles -------------------------------------------------------
@@ -445,9 +515,36 @@ mod tests {
     }
 
     #[test]
-    fn studio_manifests_covers_five_ecosystems() {
+    fn studio_manifests_covers_seven_ecosystem_entries() {
         let files: Vec<&str> = studio_manifests().iter().map(|m| m.file).collect();
-        assert_eq!(files, vec!["package.json", "Cargo.toml", "requirements.txt", "go.mod", "pom.xml"]);
+        assert_eq!(files, vec!["package.json", "Cargo.toml", "requirements.txt", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "*.csproj"]);
+    }
+
+    #[test]
+    fn parse_build_gradle_deps_reads_groovy_and_kotlin_dsl_string_notation() {
+        let content = "dependencies {\n    implementation 'com.google.guava:guava:32.1.3-jre'\n    api(\"org.slf4j:slf4j-api:2.0.9\")\n    // testImplementation 'commented:out:1.0.0'\n    testImplementation 'junit:junit:4.13.2'\n}\n";
+        let deps = parse_build_gradle_deps(content);
+        assert_eq!(deps.len(), 3);
+        assert!(deps.iter().any(|d| d.name == "com.google.guava:guava" && d.version_range == "32.1.3-jre"));
+        assert!(deps.iter().any(|d| d.name == "org.slf4j:slf4j-api" && d.version_range == "2.0.9"));
+        assert!(deps.iter().any(|d| d.name == "junit:junit" && d.version_range == "4.13.2"));
+    }
+
+    #[test]
+    fn parse_csproj_deps_reads_attribute_and_nested_version_forms() {
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.1\" />\n    <PackageReference Include=\"Serilog\">\n      <Version>3.1.1</Version>\n    </PackageReference>\n  </ItemGroup>\n</Project>\n";
+        let deps = parse_csproj_deps(content);
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().any(|d| d.name == "Newtonsoft.Json" && d.version_range == "13.0.1"));
+        assert!(deps.iter().any(|d| d.name == "Serilog" && d.version_range == "3.1.1"));
+    }
+
+    #[test]
+    fn find_manifest_spec_matches_csproj_by_suffix_and_others_by_exact_name() {
+        assert_eq!(find_manifest_spec("MyApp.csproj").map(|m| m.ecosystem), Some("nuget"));
+        assert_eq!(find_manifest_spec("pom.xml").map(|m| m.ecosystem), Some("maven"));
+        assert_eq!(find_manifest_spec("build.gradle.kts").map(|m| m.ecosystem), Some("gradle"));
+        assert!(find_manifest_spec("random.txt").is_none());
     }
 
     #[test]
