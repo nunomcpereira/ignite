@@ -113,6 +113,24 @@
     html[data-theme="dark"] #studioOutputPanel {
       filter: invert(1) hue-rotate(180deg);
     }
+    /* Chromium quirk, not spec behavior: a `position: fixed` descendant of a
+       `filter`-ed ancestor doesn't actually inherit that ancestor's filter
+       painting (verified directly - these 6 modals rendered in their
+       un-inverted, blinding-white authored colors while the rest of the
+       page was correctly dark). Each needs body's invert applied again
+       directly on itself. This is still only ONE filter reaching any given
+       pixel in these modals (body's never got there in the first place),
+       so it doesn't add a second link to the two-filter chain-depth limit
+       above - a `.terminal`/`#studioOutputPanel` nested inside one of these
+       still nets out to exactly one counter-invert on top of this. */
+    html[data-theme="dark"] #reviewModal,
+    html[data-theme="dark"] #studioView,
+    html[data-theme="dark"] #issuesViewModal,
+    html[data-theme="dark"] #fixPrModal,
+    html[data-theme="dark"] #checksReportModal,
+    html[data-theme="dark"] #phaseMaxModal {
+      filter: invert(1) hue-rotate(180deg);
+    }
     #themeToggleBtn svg { transition: transform .2s ease; }
   </style>
   <script>
