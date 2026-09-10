@@ -91,11 +91,18 @@ ENV PATH="/opt/pipx/bin:${PATH}"
 
 # git/gh/act shell out to these; ca-certificates+gnupg for the various
 # curl|install-script tools below; python3-pip/pipx for checkov/semgrep/
-# guarddog; ruby+build deps for the licensee gem's native extension;
-# libgit2-dev+pkg-config back guarddog's pygit2 dependency if no prebuilt
-# wheel matches this platform. (The JRE ORT needs is installed separately
-# below - Debian bookworm's default-jre-headless (OpenJDK 17) is too old:
-# ORT 91.1.0's classes are compiled for class file version 69, i.e. JRE 25.)
+# guarddog; ruby for the licensee/cocoapods gems. (The JRE ORT needs is
+# installed separately below - Debian bookworm's default-jre-headless
+# (OpenJDK 17) is too old: ORT 91.1.0's classes are compiled for class
+# file version 69, i.e. JRE 25.)
+#
+# Deliberately NOT installed here: build-essential/cmake/libgit2-dev/
+# pkg-config/libicu-dev/zlib1g-dev - the compiler toolchain only
+# guarddog's pygit2 (native ext) and the licensee/cocoapods gems (native
+# ext) actually need. Those get installed and purged together in ONE RUN
+# right before that trio below, instead of here - see that RUN's own
+# comment for why installing them in this early, permanent layer (as this
+# file used to) would make the later purge unable to reclaim their size.
 #
 # `apt-get upgrade` runs first: the node:24-bookworm-slim base layer is
 # built once and then sits in registries/caches, so by the time this image
@@ -107,11 +114,15 @@ ENV PATH="/opt/pipx/bin:${PATH}"
 # rebuild-time step - it doesn't change which packages are installed, only
 # their patch level within the same Debian release.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-      curl ca-certificates gnupg git unzip cmake \
+      curl ca-certificates gnupg git unzip \
       python3 python3-pip python3-venv pipx \
-      ruby-full build-essential libicu-dev zlib1g-dev \
-      libgit2-dev pkg-config \
+      ruby-full \
     && rm -rf /var/lib/apt/lists/*
+# `gnupg`/`unzip` are deliberately never purged (unlike the build-only
+# packages below) - CodeQL's install still needs `unzip` well after this
+# point, and chasing down every later `curl | sh` script's own possible
+# `gpg` use to prove `gnupg` is safe to drop wasn't worth it for the
+# ~1-3MB these two packages actually cost.
 
 # npm ships bundled inside the node:* base image and carries its own vendored
 # dependency tree (brace-expansion, undici, fast-uri, ip-address, ...) that's
@@ -167,7 +178,39 @@ RUN if [ "$INSTALL_BEARER" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
         | sh -s -- -b /usr/local/bin; \
     fi
-RUN if [ "$INSTALL_GUARDDOG" = "true" ]; then pipx install guarddog && pipx ensurepath; fi
+# guarddog (pygit2 native ext) and licensee/cocoapods (Ruby native ext,
+# see the two RUNs below this one) are the only tools in this whole file
+# needing a compiler toolchain at all. Installing build-essential/cmake/
+# libgit2-dev/pkg-config/libicu-dev/zlib1g-dev AND purging them again
+# happens inside this SAME RUN (one layer) - that's what actually
+# reclaims their size. Docker layers are append-only: installing them
+# here and purging in a later, separate RUN (as this file used to) would
+# leave every purged byte permanently baked into this layer regardless -
+# a later layer's deletions are only whiteout markers, never a
+# retroactive shrink of an earlier layer's already-committed diff.
+#
+# Same reasoning applies to guarddog's own `chmod -R o+rwX` below
+# (guarddog writes a package-popularity cache file into its own installed
+# package directory at scan time, needing o+w there): scoped to just
+# guarddog's own venv directory, and run in the same layer guarddog was
+# just installed in, so it chmods files freshly written *in this layer*
+# rather than forcing an overlayfs copy-up of every already-installed
+# pipx tool (checkov/semgrep/picklescan/zizmor) sitting in earlier
+# layers - that copy-up is what made the equivalent whole-`/opt/pipx`
+# chmod this file used to run at the very end cost ~800MB on its own.
+RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake libicu-dev zlib1g-dev libgit2-dev pkg-config; \
+    fi \
+    && if [ "$INSTALL_GUARDDOG" = "true" ]; then \
+         pipx install guarddog && pipx ensurepath \
+         && chmod -R o+rwX "${PIPX_HOME}/venvs/guarddog"; \
+       fi \
+    && if [ "$INSTALL_LICENSEE" = "true" ]; then gem install licensee; fi \
+    && if [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then gem install cocoapods; fi \
+    && apt-get purge -y build-essential cmake libgit2-dev pkg-config libicu-dev zlib1g-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan && pipx ensurepath; fi
 RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor && pipx ensurepath; fi
 RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
@@ -208,33 +251,15 @@ RUN if [ "$INSTALL_GOCLOC" = "true" ]; then \
     fi
 
 # --- License compliance ---------------------------------------------------
-RUN if [ "$INSTALL_LICENSEE" = "true" ]; then gem install licensee; fi
-RUN if [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then gem install cocoapods; fi
+# licensee/cocoapods themselves are installed above, alongside guarddog,
+# in the one RUN that also installs+purges the compiler toolchain all
+# three need.
 RUN if [ "$INSTALL_ORT" = "true" ]; then \
       curl -fsSL -o /tmp/ort.tgz \
         "https://github.com/oss-review-toolkit/ort/releases/download/${ORT_VERSION}/ort-${ORT_VERSION}.tgz" \
       && mkdir -p /opt/ort && tar xzf /tmp/ort.tgz -C /opt/ort --strip-components=1 \
       && ln -s /opt/ort/bin/ort /usr/local/bin/ort && rm /tmp/ort.tgz; \
     fi
-
-# Everything above that needed a compiler toolchain has already run by this
-# point: guarddog's pygit2 (native ext, needs libgit2-dev+pkg-config+
-# build-essential if no prebuilt wheel matched) and the licensee gem (native
-# ext, needs ruby's build-essential-based toolchain) are both installed.
-# None of that is needed again post-build, and it was Ignite's own single
-# largest source of container-image-cve findings scanning its own image -
-# build-essential pulls in linux-libc-dev (kernel headers, never executed,
-# irrelevant at runtime) which alone accounted for ~30% of all findings.
-# `apt-get purge` (not `--auto-remove` on the whole system) targets only the
-# build-only packages themselves; the separate `autoremove` then drops
-# whatever was pulled in solely for them (gcc, linux-libc-dev, etc.) while
-# leaving alone anything still relied on by git/python3/ruby/openssl/curl -
-# those keep their own runtime shared libraries regardless of this cleanup.
-RUN apt-get purge -y \
-      build-essential cmake libgit2-dev pkg-config libicu-dev zlib1g-dev \
-      gnupg unzip \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
 
 # --- Phase 5 org governance CI (act) - talks to the *host* Docker daemon via
 # the socket docker-compose.yml mounts in, not a nested Docker-in-Docker ---
@@ -268,12 +293,12 @@ RUN if [ "$INSTALL_GH" = "true" ]; then \
     fi
 
 # Non-root app user. Added to a `docker` group at the configured GID so it
-# can use the bind-mounted host socket without running as root.
-# guarddog writes a package-popularity cache file into its own installed
-# package directory at scan time (rather than a user cache dir) - o+rwX,
-# not just o+rX, so that write doesn't hit a permission error at runtime.
-RUN chmod -R o+rwX /opt/pipx \
-    && groupadd -g "${DOCKER_GID}" docker \
+# can use the bind-mounted host socket without running as root. guarddog's
+# own `o+rwX` (it writes a package-popularity cache file into its own
+# installed package directory at scan time, rather than a user cache dir)
+# is applied earlier, right where guarddog itself is installed - see that
+# RUN's comment for why doing it there instead of here matters for size.
+RUN groupadd -g "${DOCKER_GID}" docker \
     && groupadd -g 10001 ignite \
     && useradd -m -u 10001 -g 10001 -G docker -s /bin/bash ignite
 
