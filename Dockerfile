@@ -89,13 +89,16 @@ ENV PIPX_HOME=/opt/pipx
 ENV PIPX_BIN_DIR=/opt/pipx/bin
 ENV PATH="/opt/pipx/bin:${PATH}"
 # pip's installer runs `compileall` on every package by default, baking a
-# `.pyc` alongside every `.py` it installs - across checkov/semgrep/
-# guarddog/zizmor that's ~125MB of bytecode cache for no runtime benefit
-# CLI tools actually get (each invocation is a fresh process; Python
-# recompiles on-demand in-memory regardless, the same one-time-per-process
-# cost either way). Standard slim-image practice, not an Ignite-specific
-# tradeoff.
-ENV PYTHONDONTWRITEBYTECODE=1
+# `.pyc` alongside every `.py` it installs, REGARDLESS of
+# PYTHONDONTWRITEBYTECODE (that env var only stops bytecode caching at
+# *import* time - pip's installer explicitly invokes the compiler as a
+# separate step during install, so the env var alone is a no-op here,
+# confirmed by measuring zero size difference with just it set). The
+# actual fix is `--pip-args="--no-compile"` on each `pipx install` below.
+# Across checkov/semgrep/guarddog/zizmor that's ~125MB of bytecode cache
+# for no runtime benefit these CLI tools actually get anyway (each
+# invocation is a fresh process; Python recompiles on-demand in memory
+# regardless, the same one-time-per-process cost either way).
 
 # git/gh/act shell out to these; ca-certificates+gnupg for the various
 # curl|install-script tools below; python3-pip/pipx for checkov/semgrep/
@@ -156,7 +159,7 @@ RUN if [ "$INSTALL_TRIVY" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
         | sh -s -- -b /usr/local/bin "$TRIVY_VERSION"; \
     fi
-RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov && pipx ensurepath; fi
+RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov --pip-args="--no-compile" && pipx ensurepath; fi
 RUN if [ "$INSTALL_HADOLINT" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
       curl -fsSL -o /usr/local/bin/hadolint \
@@ -181,7 +184,7 @@ RUN if [ "$INSTALL_COSIGN" = "true" ]; then \
         "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${arch}" \
       && chmod +x /usr/local/bin/cosign; \
     fi
-RUN if [ "$INSTALL_SEMGREP" = "true" ]; then pipx install semgrep && pipx ensurepath; fi
+RUN if [ "$INSTALL_SEMGREP" = "true" ]; then pipx install semgrep --pip-args="--no-compile" && pipx ensurepath; fi
 RUN if [ "$INSTALL_BEARER" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
         | sh -s -- -b /usr/local/bin; \
@@ -211,7 +214,7 @@ RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [
         build-essential cmake libicu-dev zlib1g-dev libgit2-dev pkg-config; \
     fi \
     && if [ "$INSTALL_GUARDDOG" = "true" ]; then \
-         pipx install guarddog && pipx ensurepath \
+         pipx install guarddog --pip-args="--no-compile" && pipx ensurepath \
          && chmod -R o+rwX "${PIPX_HOME}/venvs/guarddog"; \
        fi \
     && if [ "$INSTALL_LICENSEE" = "true" ]; then gem install licensee; fi \
@@ -219,8 +222,8 @@ RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [
     && apt-get purge -y build-essential cmake libgit2-dev pkg-config libicu-dev zlib1g-dev \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
-RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan && pipx ensurepath; fi
-RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor && pipx ensurepath; fi
+RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan --pip-args="--no-compile" && pipx ensurepath; fi
+RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor --pip-args="--no-compile" && pipx ensurepath; fi
 RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64)"; \
       ver="$(echo "$OASDIFF_VERSION" | tr -d v)"; \
