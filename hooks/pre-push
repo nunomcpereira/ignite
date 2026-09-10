@@ -162,7 +162,7 @@ OVERRIDES_JSON="$(jq -n --arg text "$REVIEW_TEXT" '
     })
   | map(select(.ack | length > 0))
   | map({issueId: .id, justification: .ack} + (if .code then {code: .code} else {} end))
-)')
+)')"
 
 echo "→ Running Ignite checks against $REPO_PATH ..."
 if [ "$OVERRIDES_JSON" != "[]" ]; then
