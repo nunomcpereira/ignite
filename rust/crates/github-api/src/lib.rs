@@ -448,7 +448,27 @@ impl<'a> GithubApi<'a> {
     /// this always goes through the raw REST call.
     #[allow(clippy::too_many_arguments)]
     pub async fn gh_create_pr_review_comment(&self, full_name: &str, pr_number: u64, commit_id: &str, path: &str, line: i64, body: &str, token: &str) -> Result<(), GithubApiError> {
-        let payload = serde_json::json!({ "body": body, "commit_id": commit_id, "path": path, "line": line, "side": "RIGHT" });
+        self.gh_create_pr_review_comment_range(full_name, pr_number, commit_id, path, None, line, body, token).await
+    }
+
+    /// Same as [`gh_create_pr_review_comment`], but anchors the comment
+    /// across `start_line..=line` when `start_line` is `Some` — GitHub's
+    /// multi-line suggestion form, needed for a fenced `suggestion` block
+    /// that spans more than one line (semantic-SAST fixes, unlike the
+    /// single-line dependency-version-bump case `gh_create_pr_review_comment`
+    /// was originally written for).
+    /// `start_side`/`side` both anchor to the head (`"RIGHT"`) version of
+    /// the diff, same as the single-line case — a suggestion can only ever
+    /// apply against the PR's current content.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn gh_create_pr_review_comment_range(&self, full_name: &str, pr_number: u64, commit_id: &str, path: &str, start_line: Option<i64>, line: i64, body: &str, token: &str) -> Result<(), GithubApiError> {
+        let mut payload = serde_json::json!({ "body": body, "commit_id": commit_id, "path": path, "line": line, "side": "RIGHT" });
+        if let Some(start_line) = start_line {
+            if start_line < line {
+                payload["start_line"] = serde_json::json!(start_line);
+                payload["start_side"] = serde_json::json!("RIGHT");
+            }
+        }
         self.github_api_request(token, "POST", &format!("/repos/{full_name}/pulls/{pr_number}/comments"), Some(&payload), None).await?;
         Ok(())
     }

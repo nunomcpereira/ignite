@@ -84,6 +84,21 @@ fn issue_user_prompt(issue: &FixIssueInput, snippet: &Snippet) -> String {
 /// that just happened to sit within 3 lines of the flagged one.
 pub const SINGLE_LINE_FIX_CATEGORIES: &[&str] = &["dependency-vulnerability"];
 
+/// Categories whose fix is allowed to span more than one line in an inline
+/// PR suggestion — GHAS Copilot-Autofix parity for real SAST findings
+/// (semgrep/bearer-family taint/semantic issues land under
+/// `semantic-sast`; see `override-engine/src/collect.rs`), as opposed to
+/// the single-line-only manifest-bump case [`SINGLE_LINE_FIX_CATEGORIES`]
+/// covers. Deliberately excludes `codeql-sast` and `iac-security` for
+/// now — this is the same one-category-at-a-time posture the rest of this
+/// codebase uses when extending a check to a new class of finding (e.g.
+/// the Go-only function-level reachability check), not a blanket "SAST is
+/// safe" assumption. [`build_pr_suggestions`] additionally requires a
+/// bracket-depth-signature match (the same structural safety net
+/// [`apply_candidate_to_content`] uses) before ever turning one of these
+/// into a posted suggestion.
+pub const MULTI_LINE_SUGGESTION_CATEGORIES: &[&str] = &["semantic-sast"];
+
 /// For categories in [`SINGLE_LINE_FIX_CATEGORIES`], narrows `snippet`
 /// down to just the one line at `line` — so there's no neighboring line
 /// left in the prompt for the model to prune. Falls back to the original
@@ -656,26 +671,35 @@ pub fn suggestion_marker(issue_id: &str) -> String {
 pub struct PrSuggestion {
     pub issue_id: String,
     pub file: String,
+    /// `Some` only for a genuine multi-line suggestion (`start_line !=
+    /// end_line` on the source candidate) — `None` posts as the plain
+    /// single-line comment [`ignite_github_api::GithubApi::
+    /// gh_create_pr_review_comment`] already sent.
+    pub start_line: Option<i64>,
     pub line: i64,
     pub body: String,
 }
 
-/// Builds one [`PrSuggestion`] per candidate safe for GitHub's single-line
-/// suggestion UI (`start_line == end_line`) — a multi-line suggestion is
-/// technically possible via the Review Comments API's `start_line`/`line`
-/// pair, but restricting to single-line mirrors `auto-fix-pr`'s own
-/// conservatism: nothing here proposes an inline suggestion wider than
-/// what the rest of Ignite already trusts itself to mechanically apply
-/// unattended. In practice this only ever keeps candidates from
-/// [`SINGLE_LINE_FIX_CATEGORIES`], since [`narrow_snippet_for_edit`]
-/// already narrows those down to one line before the LLM ever sees them —
-/// other categories' multi-line snippets are filtered out here rather
-/// than relied on to happen to come back as one line.
+/// Builds one [`PrSuggestion`] per candidate safe for GitHub's suggestion
+/// UI. A single-line candidate (`start_line == end_line`) is always kept —
+/// GitHub's PR diff viewer renders a one-click "Commit suggestion" button
+/// for it regardless of category. A multi-line candidate is only kept when
+/// its category is in [`MULTI_LINE_SUGGESTION_CATEGORIES`] *and* its
+/// `original`/`replacement` share the same bracket-depth signature (the
+/// same structural safety net [`apply_candidate_to_content`] uses before
+/// writing a bulk-fix edit to disk) — a multi-line suggestion outside that
+/// category list, or one whose replacement orphans/mismatches a bracket
+/// pair, is dropped rather than posted, mirroring `auto-fix-pr`'s own
+/// conservatism: nothing here proposes an inline suggestion riskier than
+/// what the rest of Ignite already trusts itself to mechanically apply.
 pub fn build_pr_suggestions(candidates: &[FixCandidate]) -> Vec<PrSuggestion> {
     candidates
         .iter()
-        .filter(|c| c.start_line == c.end_line)
-        .map(|c| PrSuggestion { issue_id: c.issue_id.clone(), file: c.file.clone(), line: c.start_line, body: format!("{}\n\n```suggestion\n{}\n```\n{}", c.explanation, c.replacement, suggestion_marker(&c.issue_id)) })
+        .filter(|c| c.start_line == c.end_line || (MULTI_LINE_SUGGESTION_CATEGORIES.contains(&c.category.as_str()) && bracket_depth_signatures(&c.original) == bracket_depth_signatures(&c.replacement)))
+        .map(|c| {
+            let start_line = if c.start_line != c.end_line { Some(c.start_line) } else { None };
+            PrSuggestion { issue_id: c.issue_id.clone(), file: c.file.clone(), start_line, line: c.end_line, body: format!("{}\n\n```suggestion\n{}\n```\n{}", c.explanation, c.replacement, suggestion_marker(&c.issue_id)) }
+        })
         .collect()
 }
 
@@ -982,8 +1006,28 @@ mod tests {
     }
 
     #[test]
-    fn build_pr_suggestions_skips_multi_line_candidates() {
+    fn build_pr_suggestions_skips_multi_line_candidates_outside_the_allowed_categories() {
         let c = candidate("f.py", 2, 3, "a\nb", "A\nB");
+        assert!(build_pr_suggestions(&[c]).is_empty());
+    }
+
+    #[test]
+    fn build_pr_suggestions_keeps_multi_line_semantic_sast_with_matching_bracket_shape() {
+        let mut c = candidate("app.py", 2, 3, "if (x) {\n  y();", "if (x && z) {\n  y();");
+        c.category = "semantic-sast".to_string();
+        let suggestions = build_pr_suggestions(&[c]);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].start_line, Some(2));
+        assert_eq!(suggestions[0].line, 3);
+    }
+
+    #[test]
+    fn build_pr_suggestions_drops_multi_line_semantic_sast_with_mismatched_bracket_shape() {
+        // Original leaves its `{` unclosed within the span (closed further
+        // down, outside it); the replacement self-closes it — same rough
+        // shape as a naive count, but a different depth signature.
+        let mut c = candidate("app.py", 1, 2, ".iconBtn {\n  background: none;", "/* .iconBtn {\n  background: none;\n} */");
+        c.category = "semantic-sast".to_string();
         assert!(build_pr_suggestions(&[c]).is_empty());
     }
 

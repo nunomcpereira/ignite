@@ -225,22 +225,29 @@ async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): Re
     }
 
     // GHAS "Copilot Autofix"-parity inline suggestion comments: for each
-    // still-open, single-line-fixable finding (the same conservative
-    // category set `ignite-fix-pr`'s narrowed-snippet edit already trusts
-    // to mechanically apply, e.g. dependency-vulnerability version bumps),
-    // post a PR review comment carrying a ```suggestion block GitHub's
-    // diff viewer renders with a one-click "Commit suggestion" button —
-    // without a developer leaving the PR to review a bulk fix-PR. Reuses
-    // fix-pr's own LLM fix-computation rather than reimplementing it.
-    // Best-effort/non-fatal like every other push in this handler; deduped
-    // per issue via a hidden marker (`gh_list_pr_review_comments` +
+    // still-open finding whose category is trusted for either a
+    // single-line edit (`ignite-fix-pr::SINGLE_LINE_FIX_CATEGORIES`, e.g.
+    // dependency-vulnerability version bumps) or a multi-line one
+    // (`ignite-fix-pr::MULTI_LINE_SUGGESTION_CATEGORIES`, real SAST
+    // findings — semgrep/bearer-family `semantic-sast` issues), post a PR
+    // review comment carrying a ```suggestion block GitHub's diff viewer
+    // renders with a one-click "Commit suggestion" button — without a
+    // developer leaving the PR to review a bulk fix-PR. Reuses fix-pr's own
+    // LLM fix-computation rather than reimplementing it. Best-effort/
+    // non-fatal like every other push in this handler; deduped per issue
+    // via a hidden marker (`gh_list_pr_review_comments` +
     // `find_review_comment_marker`) so a re-run of github-check against
     // the same PR never reposts a suggestion already sitting there.
     if state.config.security.pr_suggestions.enabled {
         if let Some(pr) = pr_number {
             let fixable: Vec<FixIssueInput> = issues
                 .iter()
-                .filter(|i| i.status == "open" && i.file.is_some() && i.line.is_some() && ignite_fix_pr::SINGLE_LINE_FIX_CATEGORIES.contains(&i.category.as_str()))
+                .filter(|i| {
+                    i.status == "open"
+                        && i.file.is_some()
+                        && i.line.is_some()
+                        && (ignite_fix_pr::SINGLE_LINE_FIX_CATEGORIES.contains(&i.category.as_str()) || ignite_fix_pr::MULTI_LINE_SUGGESTION_CATEGORIES.contains(&i.category.as_str()))
+                })
                 .map(|i| FixIssueInput { issue_id: i.id.clone(), category: i.category.clone(), severity: i.severity.clone(), file: i.file.clone().unwrap(), line: i.line.unwrap(), summary: i.summary.clone(), snippet: i.snippet.clone() })
                 .collect();
             if !fixable.is_empty() {
@@ -256,7 +263,7 @@ async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): Re
                                     if ignite_github_api::find_review_comment_marker(&existing, &marker) {
                                         continue;
                                     }
-                                    if let Err(e) = api.gh_create_pr_review_comment(&full_name, pr as u64, &sha, &s.file, s.line, &s.body, &gh_token).await {
+                                    if let Err(e) = api.gh_create_pr_review_comment_range(&full_name, pr as u64, &sha, &s.file, s.start_line, s.line, &s.body, &gh_token).await {
                                         tracing::warn!("PR suggestion comment failed for {full_name}#{pr} ({}:{}): {e}", s.file, s.line);
                                     }
                                 }
