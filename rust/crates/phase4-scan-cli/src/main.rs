@@ -84,6 +84,7 @@ async fn main() {
         org: "bench-org".to_string(),
         repo: "bench-repo".to_string(),
         project_id: None,
+        keep_codeql_db_dir: None,
         secrets: ignite_secrets::SecretsConfig::default(),
         secret_verification: ignite_secret_verifier::SecretVerifierConfig::default(),
         llm: None,
