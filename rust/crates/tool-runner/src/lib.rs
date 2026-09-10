@@ -267,6 +267,7 @@ pub struct RunToolOptions {
     pub timeout_ms: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct ToolRunner {
     binaries: HashMap<&'static str, String>,
 }

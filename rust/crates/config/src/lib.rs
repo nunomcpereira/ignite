@@ -681,6 +681,28 @@ pub struct SecretScanningConfig {
     pub inbound_webhook_secret: Option<String>,
 }
 
+/// Zero-touch repo onboarding — GitHub's org-level "Security Configurations"
+/// auto-apply to any new repo; Ignite previously only enrolled a repo (its
+/// `projects` table row) when someone manually uploaded/scanned it or ran
+/// `enforce-gate-branch-protection`/`scheduled-rescan` against it by name,
+/// leaving a gap between "repo created in the org" and "Ignite knows about
+/// it or has protected it." See `routes/repository_events_webhook.rs`.
+/// Same posture as the other inbound webhooks: unset secret means the
+/// endpoint 404s. `apply_org_ruleset`/`trigger_baseline_scan` are separate,
+/// both off by default — applying branch protection and kicking off a real
+/// clone-and-scan against a repo the operator didn't explicitly name are
+/// each their own explicit opt-in, same posture as `pushProtection.autoFileIssue`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryEventsConfig {
+    #[serde(default)]
+    pub inbound_webhook_secret: Option<String>,
+    #[serde(default)]
+    pub apply_org_ruleset: bool,
+    #[serde(default)]
+    pub trigger_baseline_scan: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
@@ -707,6 +729,7 @@ pub struct SecurityConfig {
     pub secret_verification: SecretVerificationConfig,
     pub push_protection: PushProtectionConfig,
     pub secret_scanning: SecretScanningConfig,
+    pub repository_events: RepositoryEventsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1066,6 +1089,9 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("PUSH_PROTECTION_INBOUND_WEBHOOK_SECRET") { merged.security.push_protection.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("PUSH_PROTECTION_AUTO_FILE_ISSUE") { merged.security.push_protection.auto_file_issue = v; }
     if let Some(v) = env_str("SECRET_SCANNING_INBOUND_WEBHOOK_SECRET") { merged.security.secret_scanning.inbound_webhook_secret = Some(v); }
+    if let Some(v) = env_str("REPOSITORY_EVENTS_INBOUND_WEBHOOK_SECRET") { merged.security.repository_events.inbound_webhook_secret = Some(v); }
+    if let Some(v) = env_bool("REPOSITORY_EVENTS_APPLY_ORG_RULESET") { merged.security.repository_events.apply_org_ruleset = v; }
+    if let Some(v) = env_bool("REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN") { merged.security.repository_events.trigger_baseline_scan = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }

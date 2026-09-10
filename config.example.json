@@ -140,6 +140,11 @@
     "secretScanning": {
       "inboundWebhookSecret": null
     },
+    "repositoryEvents": {
+      "inboundWebhookSecret": null,
+      "applyOrgRuleset": false,
+      "triggerBaselineScan": false
+    },
     "codeql": {
       "enabled": true,
       "binary": "codeql",

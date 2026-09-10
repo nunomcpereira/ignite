@@ -365,6 +365,50 @@ and `publicly_leaked` have no Ignite issue-state equivalent (Ignite's own
 finding already exists from its own scan) — they're audit-log-only
 events, with `publicly_leaked` always logged at `critical` severity.
 
+## Zero-touch repo onboarding
+
+GitHub's org-level "Security Configurations" apply automatically to any
+new repo created in the org — GHAS parity Ignite previously lacked
+entirely: a repo only ever got a `projects` table row (or any branch
+protection) once a human manually uploaded/scanned it, or ran
+`enforce-gate-branch-protection`/`scheduled-rescan` against it by name.
+A newly-created repo sat completely unprotected and unknown to Ignite
+until someone remembered it existed.
+
+`POST /api/webhooks/github/repository-events` closes that gap: register
+a webhook on the org for `repository` events pointing at that URL, set a
+shared secret, and set the same value as
+`REPOSITORY_EVENTS_INBOUND_WEBHOOK_SECRET` on the Ignite server — same
+`X-Hub-Signature-256`/404-until-configured posture as every other inbound
+webhook here. Actions `created` and `transferred` are treated the same
+(a repo transferred into the org is just as new to this org's Ignite
+deployment); every other action (`deleted`, `archived`, `renamed`, ...)
+is acknowledged and ignored.
+
+On a match, Ignite always inserts a minimal `projects` row so the repo
+shows up in Onboarded Repos immediately (`status` stays unset until a
+real scan runs). Two further steps are each independently opt-in and off
+by default, since each is a real side effect against a repo the operator
+never explicitly named:
+
+- `security.repositoryEvents.applyOrgRuleset` (`REPOSITORY_EVENTS_APPLY_ORG_RULESET=true`):
+  applies/updates the org's `ignite-gate` Repository Ruleset, reusing
+  `enforce-gate-branch-protection --org`'s own library functions rather
+  than reimplementing them or shelling out to the binary. Since an org
+  ruleset already covers every repo in the org automatically, this step
+  is normally a no-op confirming coverage — genuinely useful only for an
+  org that hasn't run the CLI at all yet.
+- `security.repositoryEvents.triggerBaselineScan` (`REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN=true`):
+  kicks off a real baseline scan in the background — the same
+  shallow-clone + `validate-all` + `github-check` sequence
+  `scheduled-rescan` already runs for existing onboarded repos, aimed
+  instead at a repo that's never been scanned before. Fire-and-forget:
+  the webhook response never waits on it, since a real scan can take
+  several minutes.
+
+Both are best-effort/non-fatal — a failure in either is logged and
+audited but never turns the webhook response into a 5xx.
+
 ## Keep GitHub's secret push-protection even without full GHAS
 
 If you're dropping GitHub Advanced Security in favor of Ignite's gate
