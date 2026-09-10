@@ -6,6 +6,16 @@
 //! Usage: ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL] [--fast]
 //! Exit codes: 0 = passed, 1 = blocking issues / validation failure,
 //! 2 = couldn't reach the Ignite server or bad usage.
+//!
+//! `ignite check [path]` — see `check.rs`'s own doc comment. The
+//! `hooks/pre-push`-oriented sibling command: also resubmits
+//! `.ignite/acknowledgments.md` as overrides and regenerates it
+//! afterward, which `scan` deliberately never touches (a plain `ignite
+//! scan` run from an agent/CI shouldn't have the side effect of writing
+//! into the working tree).
+
+mod acknowledgments;
+mod check;
 
 use serde_json::Value;
 
@@ -85,13 +95,31 @@ fn print_human_summary(result: &Value) {
     }
 }
 
+fn resolve_project_path(raw: Option<String>) -> std::path::PathBuf {
+    let raw = raw.unwrap_or_else(|| ".".to_string());
+    std::fs::canonicalize(&raw).unwrap_or_else(|_| std::path::PathBuf::from(raw))
+}
+
 #[tokio::main]
 async fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = parse_args(&argv);
 
+    if args.command.as_deref() == Some("check") {
+        let base_url = args.base_url.or_else(|| std::env::var("IGNITE_BASE_URL").ok()).unwrap_or_else(|| "http://localhost:51337".to_string());
+        let base_url = base_url.trim_end_matches('/').to_string();
+        let project_path = resolve_project_path(args.project_path);
+        let review_file = std::env::var("IGNITE_REVIEW_FILE").map(std::path::PathBuf::from).unwrap_or_else(|_| project_path.join(".ignite/acknowledgments.md"));
+        let run_local_ci = std::env::var("IGNITE_RUN_LOCAL_CI").map(|v| v != "false").unwrap_or(true);
+        let warning_decision = std::env::var("IGNITE_WARNING_MODE").unwrap_or_else(|_| "continue".to_string());
+        let fast = args.fast || std::env::var("IGNITE_FAST_SCAN").map(|v| v == "true").unwrap_or(false);
+        let check_args = check::CheckArgs { project_path, base_url, review_file, run_local_ci, warning_decision, fast, json: args.json };
+        std::process::exit(check::run(check_args).await);
+    }
+
     if args.command.as_deref() != Some("scan") {
         eprintln!("Usage: ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL] [--fast]");
+        eprintln!("       ignite check [path] [--json] [--base-url URL] [--fast]");
         std::process::exit(2);
     }
 
