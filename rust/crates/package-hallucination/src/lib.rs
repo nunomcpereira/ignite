@@ -58,6 +58,15 @@ pub fn parse_requirements_txt(content: &str) -> Vec<ManifestDependency> {
         if line.is_empty() || line.starts_with('-') {
             continue;
         }
+        // A direct URL/VCS reference (`git+https://...`, `https://...`,
+        // `./local/path`) has no registry package name to extract at
+        // all — without this check, the generic name/rest regex below
+        // would happily capture "git" or "https" as if it were the
+        // package name and hand it to the registry lookup as a bogus
+        // query.
+        if NON_REGISTRY_VERSION_RE.is_match(line) || line.contains("://") {
+            continue;
+        }
         if let Some(caps) = REQUIREMENTS_LINE_RE.captures(line) {
             let name = caps[1].to_string();
             let rest = caps.get(2).map(|m| m.as_str().trim().to_string()).filter(|s| !s.is_empty());

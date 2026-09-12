@@ -33,15 +33,68 @@ static DECISION_RE: Lazy<Regex> =
 static OPEN_BRACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[{(]").unwrap());
 static CLOSE_BRACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[})]").unwrap());
 
-fn count_decisions(line: &str) -> usize {
+fn count_decisions(line: &str, is_rust: bool) -> usize {
     let mut count = 0;
     for m in DECISION_RE.find_iter(line) {
-        if m.as_str() == "?" && line[m.end()..].starts_with('.') {
-            continue; // optional chaining, not a ternary
+        if m.as_str() == "?" {
+            if line[m.end()..].starts_with('.') {
+                continue; // optional chaining, not a ternary
+            }
+            // Rust has no ternary `?:` — a bare `?` there is always the
+            // error-propagation operator, a single early-return, not a
+            // branch point the way `?:`/`&&`/`||` are in every other
+            // supported language. Counting it here silently inflated
+            // cognitive complexity on any Rust function using `?` more
+            // than a couple of times.
+            if is_rust {
+                continue;
+            }
         }
         count += 1;
     }
     count
+}
+
+/// Removes the *contents* of quoted string/template literals (replaced
+/// with spaces, preserving column positions and the surrounding quotes)
+/// before brace-depth/decision counting runs — a literal like `"foo("` or
+/// a `/[{(]/`-shaped regex previously left brace-depth tracking
+/// permanently drifted upward for the rest of the file, since a `{`/`(`
+/// inside a string was indistinguishable from a real one. Deliberately
+/// simple (no real tokenizer): handles `'...'`, `"..."`, `` `...` `` with
+/// backslash-escaping, which covers the overwhelming majority of real
+/// source lines without needing full per-language lexing.
+fn strip_string_literals(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_string: Option<char> = None;
+    while let Some(c) = chars.next() {
+        match in_string {
+            Some(q) => {
+                if c == '\\' {
+                    out.push(' ');
+                    if chars.peek().is_some() {
+                        out.push(' ');
+                        chars.next();
+                    }
+                    continue;
+                }
+                if c == q {
+                    in_string = None;
+                    out.push(c);
+                } else {
+                    out.push(' ');
+                }
+            }
+            None => {
+                if c == '\'' || c == '"' || c == '`' {
+                    in_string = Some(c);
+                }
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 pub struct CyclomaticAndCognitive {
@@ -50,15 +103,20 @@ pub struct CyclomaticAndCognitive {
 }
 
 pub fn cyclomatic_and_cognitive(content: &str) -> CyclomaticAndCognitive {
+    cyclomatic_and_cognitive_for(content, false)
+}
+
+pub fn cyclomatic_and_cognitive_for(content: &str, is_rust: bool) -> CyclomaticAndCognitive {
     let mut cyclomatic: i64 = 1;
     let mut cognitive: i64 = 0;
     let mut depth: i64 = 0;
-    for line in content.split(['\n']).flat_map(|l| l.strip_suffix('\r').or(Some(l))) {
-        let decisions = count_decisions(line) as i64;
+    for raw_line in content.split(['\n']).flat_map(|l| l.strip_suffix('\r').or(Some(l))) {
+        let line = strip_string_literals(raw_line);
+        let decisions = count_decisions(&line, is_rust) as i64;
         cyclomatic += decisions;
         cognitive += decisions * (1 + depth);
-        let opens = OPEN_BRACE_RE.find_iter(line).count() as i64;
-        let closes = CLOSE_BRACE_RE.find_iter(line).count() as i64;
+        let opens = OPEN_BRACE_RE.find_iter(&line).count() as i64;
+        let closes = CLOSE_BRACE_RE.find_iter(&line).count() as i64;
         depth = (depth + opens - closes).max(0);
     }
     CyclomaticAndCognitive { cyclomatic, cognitive }
@@ -203,7 +261,8 @@ pub fn check_complexity_health(
         if loc == 0 {
             continue;
         }
-        let CyclomaticAndCognitive { cyclomatic, cognitive } = cyclomatic_and_cognitive(&content);
+        let is_rust = file.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("rs")).unwrap_or(false);
+        let CyclomaticAndCognitive { cyclomatic, cognitive } = cyclomatic_and_cognitive_for(&content, is_rust);
         let mi = maintainability_index(cyclomatic, loc);
         let rel = rel_str(root, file);
         let coverage = coverage_for_file(&rel);

@@ -53,6 +53,11 @@ pub struct Step {
     pub title: String,
     pub state: String,
     pub logs: String,
+    /// Phase 4 only: `phase4-orchestrator`'s per-check timings as a JSON
+    /// array of `{name, ms}`, serialized already — the client parses it,
+    /// this layer doesn't need to know its shape. `None` for every other
+    /// phase and for any phase-4 row written before this column existed.
+    pub task_timings: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -375,6 +380,21 @@ pub struct CustomSecretPatternRow {
     pub enabled: bool,
     pub created_by: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditEventRow {
+    pub id: i64,
+    pub event_type: String,
+    pub severity: String,
+    pub summary: String,
+    pub actor: Option<String>,
+    pub org: Option<String>,
+    pub repo: Option<String>,
+    pub metadata_json: Option<String>,
+    pub created_at: String,
+    pub prev_hash: String,
+    pub hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

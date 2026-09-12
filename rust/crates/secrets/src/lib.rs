@@ -149,17 +149,37 @@ pub fn parse_gitleaks_allowlist(text: &str) -> GitleaksAllowlist {
     }
     let block = block_lines.join("\n");
 
+    // Deliberately not `field\s*=\s*\[([\s\S]*?)\]` — a non-greedy match
+    // up to the *first* `]` truncates the array as soon as any quoted
+    // regex item itself contains a `]` (a character class like
+    // `[a-z0-9]`), silently discarding every entry after it. Instead,
+    // walk quoted items one at a time from just after `[` and only stop
+    // at an actual unquoted `]` (or malformed input).
     let extract_array = |field: &str| -> Vec<Regex> {
-        let field_re = Regex::new(&format!(r"(?s){field}\s*=\s*\[([\s\S]*?)\]")).unwrap();
-        let Some(arr_match) = field_re.captures(&block) else { return vec![] };
+        let start_re = Regex::new(&format!(r"{field}\s*=\s*\[")).unwrap();
+        let Some(start) = start_re.find(&block) else { return vec![] };
+        let rest = &block[start.end()..];
         let mut items = Vec::new();
-        for cap in ITEM_RE.captures_iter(&arr_match[1]) {
+        let mut pos = 0;
+        loop {
+            while rest[pos..].starts_with(|c: char| c.is_whitespace() || c == ',') {
+                pos += rest[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            }
+            if pos >= rest.len() || rest[pos..].starts_with(']') {
+                break;
+            }
+            let Some(cap) = ITEM_RE.captures(&rest[pos..]) else { break };
+            let Some(full) = cap.get(0) else { break };
+            if full.start() != 0 {
+                break; // next thing isn't a quoted item or `]` — malformed, bail
+            }
             let raw = cap.get(1).or_else(|| cap.get(2)).or_else(|| cap.get(3)).or_else(|| cap.get(4)).map(|m| m.as_str());
             if let Some(raw) = raw {
                 if let Ok(re) = Regex::new(raw) {
                     items.push(re);
                 }
             }
+            pos += full.end();
         }
         items
     };
@@ -626,7 +646,18 @@ pub fn test_pattern_against_sample(regex_str: &str, sample: &str) -> Result<Vec<
         return Err(format!("Pattern is too long (max {MAX_CUSTOM_PATTERN_LEN} characters).").into());
     }
     let re = Regex::new(regex_str).map_err(|e| format!("Invalid regex: {e}"))?;
-    let truncated = if sample.len() > MAX_PLAYGROUND_SAMPLE_LEN { &sample[..MAX_PLAYGROUND_SAMPLE_LEN] } else { sample };
+    let truncated = if sample.len() > MAX_PLAYGROUND_SAMPLE_LEN {
+        // A byte-offset slice can land mid-codepoint on multi-byte UTF-8
+        // input — walk back to the nearest char boundary at or before the
+        // cap rather than panicking.
+        let mut end = MAX_PLAYGROUND_SAMPLE_LEN;
+        while end > 0 && !sample.is_char_boundary(end) {
+            end -= 1;
+        }
+        &sample[..end]
+    } else {
+        sample
+    };
     Ok(re.find_iter(truncated).take(MAX_PLAYGROUND_MATCHES).map(|m| PatternMatch { start: m.start(), end: m.end(), matched_text: m.as_str().to_string() }).collect())
 }
 

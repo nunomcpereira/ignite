@@ -85,15 +85,32 @@ fn line_at(content: Option<&str>, line: usize) -> String {
 }
 
 /// Firebase web apiKey values are public identifiers, not auth secrets.
-fn is_firebase_public_api_key_finding(title: &str, source_line: &str, content: Option<&str>) -> bool {
+/// Only ever looks at a small window of lines around the actual finding
+/// — checking the *whole file's* content would dismiss this finding just
+/// because a Firebase key sits somewhere else in the same file, silently
+/// swallowing a genuine, unrelated hardcoded secret (an AWS key, a DB
+/// password) reported a hundred lines away.
+fn is_firebase_public_api_key_finding(title: &str, source_line: &str, content: Option<&str>, line: usize) -> bool {
     if !HARD_CODED_SECRET_USAGE_RE.is_match(title) {
         return false;
     }
     if API_KEY_MENTION_RE.is_match(source_line) && FIREBASE_WEB_API_KEY_RE.is_match(source_line) {
         return true;
     }
-    let content = content.unwrap_or("");
-    API_KEY_MENTION_RE.is_match(content) && FIREBASE_WEB_API_KEY_RE.is_match(content)
+    // A Firebase config object often spreads the `apiKey: "..."` line and
+    // the accompanying comment/label across a couple of nearby lines
+    // rather than one — a small window covers that without risking a
+    // match against an unrelated secret finding elsewhere in the file.
+    const WINDOW: usize = 3;
+    let Some(content) = content else { return false };
+    let lines: Vec<&str> = content.split('\n').collect();
+    let start = line.saturating_sub(1).saturating_sub(WINDOW);
+    let end = (line.saturating_sub(1) + WINDOW + 1).min(lines.len());
+    if start >= end {
+        return false;
+    }
+    let window = lines[start..end].join("\n");
+    API_KEY_MENTION_RE.is_match(&window) && FIREBASE_WEB_API_KEY_RE.is_match(&window)
 }
 
 pub fn is_likely_test_or_fixture_path(file: &str) -> bool {
@@ -107,8 +124,14 @@ pub fn is_likely_test_or_fixture_path(file: &str) -> bool {
 /// wasn't a real one already, since overwriting a genuine origin/HEAD
 /// would destroy the signal `resolve_bearer_diff_base` depends on.
 pub async fn ensure_git_context_for_bearer(root: &Path, runner: &ToolRunner) {
+    // Only a repo *we* just initialized here (no `.git` existed at all)
+    // gets a fake origin/HEAD synthesized below — a real repo that simply
+    // has no `origin` remote configured (common for a local-only clone)
+    // must never have one force-added, since that permanently mutates
+    // the user's actual `.git/config`.
+    let we_initialized = !root.join(".git").exists();
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        if !root.join(".git").exists() {
+        if we_initialized {
             runner.run_tool("git", &["init".to_string(), "-q".to_string()], &root.to_string_lossy(), RunToolOptions::default()).await?;
             runner.run_tool("git", &["add".to_string(), "-A".to_string()], &root.to_string_lossy(), RunToolOptions::default()).await?;
             runner
@@ -133,7 +156,7 @@ pub async fn ensure_git_context_for_bearer(root: &Path, runner: &ToolRunner) {
         }
 
         let has_origin = runner.run_tool("git", &["remote".to_string(), "get-url".to_string(), "origin".to_string()], &root.to_string_lossy(), RunToolOptions::default()).await.is_ok();
-        if !has_origin {
+        if we_initialized && !has_origin {
             let branch = runner.run_tool("git", &["symbolic-ref".to_string(), "--short".to_string(), "HEAD".to_string()], &root.to_string_lossy(), RunToolOptions::default()).await;
             let branch_name = branch.map(|o| o.stdout.trim().to_string()).unwrap_or_default();
             let branch_name = if branch_name.is_empty() { "main".to_string() } else { branch_name };
@@ -273,7 +296,7 @@ pub async fn check_pii_data_flow(root: &Path, runner: &ToolRunner, config: &PiiD
             let content = std::fs::read_to_string(root.join(&rel_file)).ok();
             let title = e.get("title").and_then(|t| t.as_str()).unwrap_or("Sensitive data-flow finding").to_string();
             let source_line = line_at(content.as_deref(), line);
-            if is_firebase_public_api_key_finding(&title, &source_line, content.as_deref()) {
+            if is_firebase_public_api_key_finding(&title, &source_line, content.as_deref(), line) {
                 continue;
             }
             let forced_warning = BEARER_FORCE_WARNING_TITLES.iter().any(|re| re.is_match(&title))
@@ -352,8 +375,8 @@ mod tests {
     #[test]
     fn firebase_public_api_key_is_excluded_only_for_hard_coded_secret_title() {
         let line = r#"const apiKey = "AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe";"#;
-        assert!(is_firebase_public_api_key_finding("Usage of hard-coded secret", line, None));
-        assert!(!is_firebase_public_api_key_finding("Some other finding", line, None));
+        assert!(is_firebase_public_api_key_finding("Usage of hard-coded secret", line, None, 1));
+        assert!(!is_firebase_public_api_key_finding("Some other finding", line, None, 1));
     }
 
     #[test]

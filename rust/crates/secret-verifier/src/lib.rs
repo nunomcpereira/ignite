@@ -152,6 +152,13 @@ static STRIPE_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(sk|rk)_(live|te
 static GCP_API_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bAIza[0-9A-Za-z_\-]{35}\b").unwrap());
 static AWS_ACCESS_KEY_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b").unwrap());
 static AWS_SECRET_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)aws_secret_access_key\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?"#).unwrap());
+/// A temporary credential's session token (`ASIA...` access key ids only)
+/// — STS requires this third value alongside the access key id/secret for
+/// any request signed with a temporary credential; a permanent `AKIA...`
+/// credential never has one. Matched the same "next to its own keyword"
+/// way as the secret key, since a session token is a long opaque base64-
+/// ish blob with no distinctive shape of its own to anchor on.
+static AWS_SESSION_TOKEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)aws_session_token\s*[:=]\s*['"]?([A-Za-z0-9/+=]{20,})['"]?"#).unwrap());
 // Anthropic's `sk-ant-...` shape is checked (and extracted) separately
 // from OpenAI's bare `sk-...` — both start with `sk-`, but the provider
 // is already disambiguated by `provider_for_kind` before either regex
@@ -201,6 +208,10 @@ pub fn extract_secret_value(kind: &str, line_text: &str) -> Option<String> {
 pub struct AwsCredentialPair {
     pub access_key_id: String,
     pub secret_access_key: String,
+    /// Present only for a temporary (`ASIA...`) credential — STS requires
+    /// this signed alongside the access key id/secret for those; `None`
+    /// for a permanent `AKIA...` credential, which has no session token.
+    pub session_token: Option<String>,
 }
 
 /// Pulls an AWS credential pair out of `snippet_text` — the finding's
@@ -216,7 +227,8 @@ pub struct AwsCredentialPair {
 pub fn extract_aws_credential_pair(snippet_text: &str) -> Option<AwsCredentialPair> {
     let access_key_id = AWS_ACCESS_KEY_ID_RE.find(snippet_text)?.as_str().to_string();
     let secret_access_key = AWS_SECRET_KEY_RE.captures(snippet_text)?.get(1)?.as_str().to_string();
-    Some(AwsCredentialPair { access_key_id, secret_access_key })
+    let session_token = AWS_SESSION_TOKEN_RE.captures(snippet_text).and_then(|c| c.get(1)).map(|m| m.as_str().to_string());
+    Some(AwsCredentialPair { access_key_id, secret_access_key, session_token })
 }
 
 /// Verifies `value` (already extracted, e.g. via `extract_secret_value`)
@@ -445,8 +457,14 @@ fn sign_get_caller_identity(pair: &AwsCredentialPair, amz_date: &str, date_stamp
     let host = "sts.amazonaws.com";
 
     let canonical_querystring = "Action=GetCallerIdentity&Version=2011-06-15";
-    let canonical_headers = format!("host:{host}\nx-amz-date:{amz_date}\n");
-    let signed_headers = "host;x-amz-date";
+    // A temporary credential's session token must be both an included
+    // header and part of the signed-headers set — STS rejects the
+    // request otherwise (`InvalidClientTokenId`), which previously made
+    // every real ASIA credential misclassify as Revoked.
+    let (canonical_headers, signed_headers) = match &pair.session_token {
+        Some(token) => (format!("host:{host}\nx-amz-date:{amz_date}\nx-amz-security-token:{token}\n"), "host;x-amz-date;x-amz-security-token"),
+        None => (format!("host:{host}\nx-amz-date:{amz_date}\n"), "host;x-amz-date"),
+    };
     let payload_hash = to_hex(&Sha256::digest(b""));
     let canonical_request = format!("GET\n/\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
 
@@ -472,12 +490,25 @@ fn sign_get_caller_identity(pair: &AwsCredentialPair, amz_date: &str, date_stamp
 /// found-in-code credential the same way this crate's other providers
 /// only ever call a read-only identity/balance check.
 async fn verify_aws_credentials(http: &reqwest::Client, pair: &AwsCredentialPair, timeout: Duration) -> VerificationOutcome {
+    // A temporary (`ASIA...`) credential needs its session token signed
+    // alongside it — without one extracted from the snippet, there's no
+    // way to build a request STS would even consider well-formed, so
+    // this can't be classified `Revoked` (that would misreport a
+    // possibly-live temporary credential as dead just because this
+    // scanner couldn't find its third half nearby).
+    if pair.access_key_id.starts_with("ASIA") && pair.session_token.is_none() {
+        return VerificationOutcome::Unknown;
+    }
     let now = chrono::Utc::now();
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let date_stamp = now.format("%Y%m%d").to_string();
     let Some(req) = sign_get_caller_identity(pair, &amz_date, &date_stamp) else { return VerificationOutcome::Unknown };
 
-    let resp = http.get(&req.url).header("Host", "sts.amazonaws.com").header("X-Amz-Date", &req.amz_date).header("Authorization", req.authorization).timeout(timeout).send().await;
+    let mut builder = http.get(&req.url).header("Host", "sts.amazonaws.com").header("X-Amz-Date", &req.amz_date).header("Authorization", req.authorization);
+    if let Some(token) = &pair.session_token {
+        builder = builder.header("X-Amz-Security-Token", token);
+    }
+    let resp = builder.timeout(timeout).send().await;
     match resp {
         Ok(r) if r.status().is_success() => VerificationOutcome::Live,
         // AWS returns 403 Forbidden for both `InvalidClientTokenId` (the
@@ -735,7 +766,7 @@ mod tests {
     /// literal matching a real provider token shape regardless of
     /// authenticity, "EXAMPLE"-suffixed or not).
     fn fixed_aws_pair() -> AwsCredentialPair {
-        AwsCredentialPair { access_key_id: format!("AKIA{}", "IOSFODNN7EXAMPLE"), secret_access_key: format!("{:0<40}", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLE") }
+        AwsCredentialPair { access_key_id: format!("AKIA{}", "IOSFODNN7EXAMPLE"), secret_access_key: format!("{:0<40}", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLE"), session_token: None }
     }
 
     #[test]

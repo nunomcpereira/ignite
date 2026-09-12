@@ -70,7 +70,7 @@ impl DbStore {
                  FROM overrides o
                  INNER JOIN projects p ON p.id = o.project_id
                  LEFT JOIN issue_first_seen f ON f.org = p.org AND f.repo = p.repo AND f.issue_id = o.issue_id
-                 WHERE o.created_at BETWEEN ?1 AND ?2
+                 WHERE o.created_at BETWEEN ?1 AND ?2 AND o.status = 'approved'
                  ORDER BY o.created_at DESC",
             )
             .unwrap();
@@ -111,7 +111,7 @@ impl DbStore {
                  FROM overrides o
                  INNER JOIN projects p ON p.id = o.project_id
                  LEFT JOIN issue_first_seen f ON f.org = p.org AND f.repo = p.repo AND f.issue_id = o.issue_id
-                 WHERE o.created_at BETWEEN ?1 AND ?2
+                 WHERE o.created_at BETWEEN ?1 AND ?2 AND o.status = 'approved'
                  GROUP BY o.severity
                  ORDER BY o.severity",
             )

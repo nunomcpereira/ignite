@@ -19,6 +19,7 @@
 
 mod ai_explanations;
 mod api_keys;
+mod audit_events;
 mod auth;
 mod baseline;
 mod caches;

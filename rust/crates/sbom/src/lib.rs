@@ -85,7 +85,7 @@ pub async fn generate_sbom(root: &Path, runner: &ToolRunner, enabled: bool, mani
         return Ok(SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(generate_sbom_fallback(root, manifests, max_deps_per_manifest)?) });
     }
 
-    let report_path = std::env::temp_dir().join(format!("ignite-syft-{}.json", std::process::id()));
+    let report_path = std::env::temp_dir().join(format!("ignite-syft-{}-{}.json", std::process::id(), uuid::Uuid::new_v4()));
     let run_result = runner
         .run_tool(
             "syft",

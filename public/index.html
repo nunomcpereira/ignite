@@ -36,7 +36,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20260905"></script>
+  <script src="i18n.js?v=20260912"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -436,6 +436,9 @@
       <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.checksReportTitle">
         <span data-i18n="pipeline.checksReport">📋 Checks report</span>
       </button>
+      <button id="viewPerformanceBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.performanceTitle">
+        <span data-i18n="pipeline.performance">⏱ Performance</span>
+      </button>
       <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.viewIssuesTitle" data-hint="hint.action.viewIssues">
         <span data-i18n="pipeline.viewIssues">View flagged issues</span>
       </button>
@@ -523,6 +526,7 @@
     <div class="flex items-center gap-1 border-b border-slate-200 mb-6">
       <button id="governanceCampaignsTabBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-brand-700 border-b-2 border-brand-600 -mb-px transition-colors" data-i18n="governance.campaignsTab">Campaigns</button>
       <button id="governanceComplianceTabBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n="governance.complianceTab">Compliance</button>
+      <button id="governanceAuditLogTabBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n="governance.auditLogTab">Audit Log</button>
     </div>
 
     <!-- Campaigns tab -->
@@ -570,6 +574,70 @@
       <div id="complianceLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
       <div id="complianceError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="governance.complianceLoadError">Could not load the audit pack.</div>
       <div id="complianceResults" class="hidden space-y-5"></div>
+    </div>
+
+    <!-- Audit Log tab -->
+    <div id="governanceAuditLogPane" class="hidden">
+      <div class="flex items-end gap-3 flex-wrap mb-5">
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.auditOrg">Org</label>
+          <input id="auditLogOrgInput" type="text" placeholder="acme" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 w-32">
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.auditRepo">Repo</label>
+          <input id="auditLogRepoInput" type="text" placeholder="widgets" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 w-32">
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.auditEventType">Event type</label>
+          <input id="auditLogEventTypeInput" type="text" placeholder="gate.push_rejected" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 w-44">
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.auditSeverity">Severity</label>
+          <select id="auditLogSeverityInput" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+            <option value="">Any</option>
+            <option value="critical">critical</option>
+            <option value="high">high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+            <option value="info">info</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.fromDate">From</label>
+          <input id="auditLogFromInput" type="date" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="governance.toDate">To</label>
+          <input id="auditLogToInput" type="date" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+        </div>
+        <button id="auditLogFilterBtn" type="button" class="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600" data-i18n="governance.filter">Filter</button>
+        <button id="auditLogVerifyBtn" type="button" class="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="governance.verifyChain">Verify chain</button>
+        <button id="auditLogDownloadBtn" type="button" class="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="governance.download">⬇ Download</button>
+      </div>
+      <div id="auditLogVerifyResult" class="hidden mb-4 text-xs font-semibold px-3 py-2 rounded-lg"></div>
+      <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                <th class="px-4 py-3" data-i18n="governance.colTime">Time (UTC)</th>
+                <th class="px-4 py-3" data-i18n="governance.colEventType">Event type</th>
+                <th class="px-4 py-3" data-i18n="governance.colSeverity">Severity</th>
+                <th class="px-4 py-3" data-i18n="governance.colSummary">Summary</th>
+                <th class="px-4 py-3" data-i18n="governance.colRepo">Org / repo</th>
+                <th class="px-4 py-3" data-i18n="governance.colActor">Actor</th>
+              </tr>
+            </thead>
+            <tbody id="auditLogTableBody" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
+        <div id="auditLogLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
+        <div id="auditLogEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="governance.auditLogEmpty">No audit events match this filter.</div>
+        <div id="auditLogError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="governance.auditLogLoadError">Could not load the audit log.</div>
+      </div>
+      <div class="flex justify-center mt-4">
+        <button id="auditLogLoadMoreBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="governance.loadMore">Load more</button>
+      </div>
     </div>
   </div>
 
@@ -896,6 +964,26 @@
         </div>
       </div>
       <div id="checksReportBody" class="px-6 py-4 space-y-5 overflow-y-auto flex-1"></div>
+    </div>
+  </div>
+
+  <!-- Performance modal — per-check wall-clock timing from Phase 4's
+       concurrent fan-out (phase4-orchestrator's own `task_timings`), so
+       the slowest check on a given run (CodeQL/Bearer/Trivy/etc. — whichever
+       actually was the bottleneck this time) is visible without reading
+       server logs. Backed by the live status event during/just after a run,
+       and by the persisted `steps.task_timings_json` column for a reopened
+       past project — see renderPerformanceModal's two call sites. -->
+  <div id="performanceModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-slate-800" data-i18n="performance.title">Performance</p>
+          <p id="performanceSubtitle" class="text-xs text-slate-500 mt-0.5" data-i18n="performance.subtitle">Per-check wall-clock time from this run's Phase 4 scan.</p>
+        </div>
+        <button id="performanceCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0" data-i18n-title="common.close">✕</button>
+      </div>
+      <div id="performanceBody" class="px-6 py-4 space-y-1.5 overflow-y-auto flex-1"></div>
     </div>
   </div>
 
@@ -1657,6 +1745,7 @@
       });
 
       renderPipelineStatusBadge();
+      updateViewPerformanceButton();
     }
 
     // Copies one phase's full raw log to the clipboard, with a brief
@@ -2740,6 +2829,57 @@
       } catch {
         renderChecksReportModal([], 'Could not load checks for this run.');
       }
+    });
+
+    /* ---------------- Performance modal — Phase 4's per-check timing -----
+       ---------------- breakdown (phase4-orchestrator's own task_timings), -
+       ---------------- so the slowest check this run is visible without ---
+       ---------------- reading server logs. --------------------------- */
+    function renderPerformanceModal(taskTimings, subtitle) {
+      $('performanceSubtitle').textContent = subtitle || 'Per-check wall-clock time from this run\'s Phase 4 scan.';
+      // Historical runs may hand this a JSON-encoded string (or a
+      // double-encoded one) rather than an already-parsed array — normalize
+      // before treating it as a list, so reopening an old run's modal never
+      // throws "(taskTimings || []).filter is not a function".
+      let normalized = taskTimings;
+      for (let i = 0; i < 2 && typeof normalized === 'string'; i++) {
+        try { normalized = JSON.parse(normalized); } catch { normalized = null; break; }
+      }
+      if (!Array.isArray(normalized)) normalized = [];
+      // phase4Total is the fan-out's own wall time, not a check — shown
+      // separately as the reference bar, not mixed into the sorted list.
+      const rows = normalized.filter((t) => t.name !== 'phase4Total').slice().sort((a, b) => b.ms - a.ms);
+      const total = normalized.find((t) => t.name === 'phase4Total')?.ms || Math.max(1, ...rows.map((r) => r.ms));
+      const maxMs = Math.max(1, ...rows.map((r) => r.ms));
+      $('performanceBody').innerHTML = rows.length === 0
+        ? '<p class="text-xs text-slate-400">No timing data for this run yet — it becomes available once Phase 4 finishes.</p>'
+        : rows.map(({ name, ms }) => {
+            const pct = Math.round((ms / maxMs) * 100);
+            const isBottleneck = ms === maxMs && rows.length > 1;
+            return `<div class="flex items-center gap-3 text-xs py-1.5">
+              <span class="w-40 shrink-0 truncate text-slate-700" title="${escapeHtml(name)}">${escapeHtml(name)}${isBottleneck ? ' <span class="text-rose-500" title="Bottleneck — slowest check this run">⬤</span>' : ''}</span>
+              <div class="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                <div class="h-full rounded-full ${isBottleneck ? 'bg-rose-400' : 'bg-brand-400'}" style="width:${pct}%"></div>
+              </div>
+              <span class="w-16 shrink-0 text-right font-mono text-slate-500">${ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms'}</span>
+            </div>`;
+          }).join('') + (total ? `<p class="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100">Phase 4 total: ${total >= 1000 ? (total / 1000).toFixed(1) + 's' : total + 'ms'} (checks run concurrently — total is the slowest one, not the sum).</p>` : '');
+      $('performanceModal').classList.remove('hidden');
+    }
+    $('performanceCloseBtn').addEventListener('click', () => $('performanceModal').classList.add('hidden'));
+    $('performanceModal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'performanceModal') $('performanceModal').classList.add('hidden');
+    });
+
+    function updateViewPerformanceButton() {
+      const job = trackedJobs.get(activeJobId);
+      const ph = (job || state).phases?.[4];
+      $('viewPerformanceBtn').classList.toggle('hidden', !ph || !ph.taskTimings);
+    }
+    $('viewPerformanceBtn').addEventListener('click', () => {
+      const job = trackedJobs.get(activeJobId);
+      const ph = (job || state).phases?.[4];
+      renderPerformanceModal(ph?.taskTimings, ph?.state === 'running' ? 'Phase 4 still running — showing checks completed so far.' : undefined);
     });
 
     function handleReviewRequired(ev) {
@@ -6185,6 +6325,7 @@
         ph.state = ev.state;
         ph.issueCount = ev.issueCount || 0;
         ph.blockingCount = ev.blockingCount || 0;
+        if (ev.taskTimings) ph.taskTimings = ev.taskTimings;
         if (ev.state === 'running') {
           ph.startedAt = Date.now();
           ph.endedAt = null;
@@ -6334,6 +6475,7 @@
             <div class="flex items-center gap-3 flex-wrap">
               ${p.status === 'running' && p.job_id ? `<button type="button" class="hist-switch-to-job text-[11px] font-semibold text-emerald-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="${escapeAttr(t('history.switchToRunTitle'))}">${t('history.switchToRun')}</button>` : ''}
               <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.checksBtn')}</button>
+              ${p.status !== 'running' ? `<button type="button" class="hist-view-performance text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}">${t('pipeline.performance')}</button>` : ''}
               ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${escapeAttr(p.retained ? t('history.fullStudioTitle') : t('history.readOnlyStudioTitle'))}">${p.retained ? `${t('history.studioBtn')}${p.retained_tier === 'pruned' ? ` (${t('history.flaggedFilesOnly')})` : ` (${t('common.full')})`}` : t('history.studioBtn')}</button>` : ''}
               ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
               ${p.issue_count > 0 && p.job_id ? `<button type="button" class="hist-fix-pr text-[11px] font-semibold text-brand-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="${escapeAttr(t('pipeline.generateFixPrTitle'))}">${t('history.fixPrBtn')}</button>` : ''}
@@ -6418,6 +6560,25 @@
               { org: btn.dataset.org, repo: btn.dataset.repo });
           } catch {
             renderChecksReportModal([], 'Could not load checks for this project.');
+          }
+        });
+      });
+
+      historyList.querySelectorAll('.hist-view-performance').forEach((btn) => {
+        btn.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const id = Number(btn.dataset.id);
+          try {
+            const res = await fetch(`/api/projects/${id}`);
+            const data = await res.json();
+            const phase4 = (data.steps || []).find((s) => s.phase === 4);
+            const taskTimings = phase4?.task_timings ? JSON.parse(phase4.task_timings) : null;
+            renderPerformanceModal(taskTimings, taskTimings
+              ? 'Read-only — Phase 4 per-check timing for this project.'
+              : 'No timing data recorded for this project (scanned before this feature, or Phase 4 never ran).');
+          } catch {
+            renderPerformanceModal(null, 'Could not load timing data for this project.');
           }
         });
       });
@@ -6652,22 +6813,24 @@
     let campaignsLoaded = false;
     let campaignsCache = [];
 
-    $('governanceCampaignsTabBtn').addEventListener('click', () => {
-      $('governanceCampaignsPane').classList.remove('hidden');
-      $('governanceCompliancePane').classList.add('hidden');
-      $('governanceCampaignsTabBtn').classList.add('text-brand-700', 'border-brand-600');
-      $('governanceCampaignsTabBtn').classList.remove('text-slate-500', 'border-transparent');
-      $('governanceComplianceTabBtn').classList.add('text-slate-500', 'border-transparent');
-      $('governanceComplianceTabBtn').classList.remove('text-brand-700', 'border-brand-600');
-    });
-    $('governanceComplianceTabBtn').addEventListener('click', () => {
-      $('governanceCompliancePane').classList.remove('hidden');
-      $('governanceCampaignsPane').classList.add('hidden');
-      $('governanceComplianceTabBtn').classList.add('text-brand-700', 'border-brand-600');
-      $('governanceComplianceTabBtn').classList.remove('text-slate-500', 'border-transparent');
-      $('governanceCampaignsTabBtn').classList.add('text-slate-500', 'border-transparent');
-      $('governanceCampaignsTabBtn').classList.remove('text-brand-700', 'border-brand-600');
-    });
+    const GOVERNANCE_TABS = ['governanceCampaigns', 'governanceCompliance', 'governanceAuditLog'];
+    function switchGovernanceTab(active) {
+      GOVERNANCE_TABS.forEach((tab) => {
+        const isActive = tab === active;
+        $(`${tab}Pane`).classList.toggle('hidden', !isActive);
+        $(`${tab}TabBtn`).classList.toggle('text-brand-700', isActive);
+        $(`${tab}TabBtn`).classList.toggle('border-brand-600', isActive);
+        $(`${tab}TabBtn`).classList.toggle('text-slate-500', !isActive);
+        $(`${tab}TabBtn`).classList.toggle('border-transparent', !isActive);
+      });
+      if (active === 'governanceAuditLog' && !auditLogLoaded) {
+        auditLogLoaded = true;
+        loadAuditLog();
+      }
+    }
+    $('governanceCampaignsTabBtn').addEventListener('click', () => switchGovernanceTab('governanceCampaigns'));
+    $('governanceComplianceTabBtn').addEventListener('click', () => switchGovernanceTab('governanceCompliance'));
+    $('governanceAuditLogTabBtn').addEventListener('click', () => switchGovernanceTab('governanceAuditLog'));
 
     // Campaign API responses are snake_case (`CampaignRow` has no
     // `#[serde(rename_all)]`) — unlike every other endpoint this file
@@ -6869,6 +7032,112 @@
       const a = document.createElement('a');
       a.href = url;
       a.download = `ignite-compliance-audit-pack-${complianceCache.period.from}-to-${complianceCache.period.to}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    // Governance — Audit Log tab. Reads the tamper-evident local trail
+    // (GET /api/audit-log, db-store/src/audit_events.rs) — cursor-paginated,
+    // so "Load more" re-fetches with the last-seen row id rather than
+    // re-fetching everything.
+    let auditLogLoaded = false;
+    let auditLogItems = [];
+    let auditLogNextCursor = null;
+
+    function auditLogSeverityBadge(sev) {
+      const map = { critical: 'border-rose-200 text-rose-700 bg-rose-50', high: 'border-orange-200 text-orange-700 bg-orange-50', medium: 'border-amber-200 text-amber-700 bg-amber-50', low: 'border-slate-200 text-slate-600 bg-slate-50', info: 'border-slate-200 text-slate-500 bg-slate-50' };
+      const cls = map[sev] || map.info;
+      return `<span class="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full border ${cls}">${escapeHtml(sev || 'info')}</span>`;
+    }
+
+    function renderAuditLog(items, { append } = {}) {
+      auditLogItems = append ? auditLogItems.concat(items) : items;
+      $('auditLogEmpty').classList.toggle('hidden', auditLogItems.length > 0);
+      const rowsHtml = items.map((e) => {
+        const repoCell = e.org || e.repo ? `${escapeHtml(e.org || '—')} / ${escapeHtml(e.repo || '—')}` : '<span class="text-slate-300">—</span>';
+        return `
+        <tr class="align-top">
+          <td class="px-4 py-3 text-[11px] text-slate-500 whitespace-nowrap font-mono">${escapeHtml(e.createdAt)}</td>
+          <td class="px-4 py-3 text-slate-700 font-mono text-[11px]">${escapeHtml(e.eventType)}</td>
+          <td class="px-4 py-3">${auditLogSeverityBadge(e.severity)}</td>
+          <td class="px-4 py-3 text-slate-700">${escapeHtml(e.summary)}</td>
+          <td class="px-4 py-3 text-[11px] text-slate-500 whitespace-nowrap">${repoCell}</td>
+          <td class="px-4 py-3 text-[11px] text-slate-500">${e.actor ? escapeHtml(e.actor) : '<span class="text-slate-300">—</span>'}</td>
+        </tr>`;
+      }).join('');
+      $('auditLogTableBody').innerHTML = append ? $('auditLogTableBody').innerHTML + rowsHtml : rowsHtml;
+    }
+
+    async function loadAuditLog({ append } = {}) {
+      $('auditLogError').classList.add('hidden');
+      if (!append) {
+        $('auditLogEmpty').classList.add('hidden');
+        $('auditLogTableBody').innerHTML = '';
+        auditLogNextCursor = null;
+      }
+      $('auditLogLoading').classList.remove('hidden');
+      $('auditLogLoadMoreBtn').classList.add('hidden');
+      try {
+        const params = new URLSearchParams();
+        const org = $('auditLogOrgInput').value.trim();
+        const repo = $('auditLogRepoInput').value.trim();
+        const eventType = $('auditLogEventTypeInput').value.trim();
+        const severity = $('auditLogSeverityInput').value;
+        const from = $('auditLogFromInput').value;
+        const to = $('auditLogToInput').value;
+        if (org) params.set('org', org);
+        if (repo) params.set('repo', repo);
+        if (eventType) params.set('eventType', eventType);
+        if (severity) params.set('severity', severity);
+        if (from) params.set('from', from);
+        if (to) params.set('to', to);
+        if (append && auditLogNextCursor != null) params.set('cursor', String(auditLogNextCursor));
+        const res = await fetch(`/api/audit-log?${params.toString()}`);
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        renderAuditLog(data.items || [], { append });
+        auditLogNextCursor = data.nextCursor ?? null;
+        $('auditLogLoadMoreBtn').classList.toggle('hidden', auditLogNextCursor == null);
+      } catch {
+        $('auditLogError').classList.remove('hidden');
+      } finally {
+        $('auditLogLoading').classList.add('hidden');
+      }
+    }
+    $('auditLogFilterBtn').addEventListener('click', () => loadAuditLog());
+    $('auditLogLoadMoreBtn').addEventListener('click', () => loadAuditLog({ append: true }));
+
+    $('auditLogVerifyBtn').addEventListener('click', async () => {
+      const el = $('auditLogVerifyResult');
+      el.classList.remove('hidden', 'bg-emerald-50', 'text-emerald-700', 'bg-rose-50', 'text-rose-700');
+      el.textContent = t('common.loading');
+      el.classList.add('bg-slate-50', 'text-slate-500');
+      try {
+        const res = await fetch('/api/audit-log/verify');
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        el.classList.remove('bg-slate-50', 'text-slate-500');
+        if (data.intact) {
+          el.classList.add('bg-emerald-50', 'text-emerald-700');
+          el.textContent = t('governance.chainIntact');
+        } else {
+          el.classList.add('bg-rose-50', 'text-rose-700');
+          el.textContent = t('governance.chainBroken', { id: data.firstBrokenId });
+        }
+      } catch (e) {
+        el.classList.remove('bg-slate-50', 'text-slate-500');
+        el.classList.add('bg-rose-50', 'text-rose-700');
+        el.textContent = e.message;
+      }
+    });
+    $('auditLogDownloadBtn').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(auditLogItems, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ignite-audit-log-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();

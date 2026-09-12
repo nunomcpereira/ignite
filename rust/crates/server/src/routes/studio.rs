@@ -253,6 +253,14 @@ async fn put_file(State(state): State<Arc<AppState>>, Path(job_id): Path<String>
             Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
         }
     }
+    // `walk_files` caches a root's file list — without invalidating it
+    // here, a file just written by this endpoint (especially a brand new
+    // one) stays invisible to every check that walks the staged root
+    // until something else happens to invalidate the cache first.
+    ignite_fs_utils::invalidate_walk_cache(&ctx.root);
+    if ctx.backup_root != ctx.root {
+        ignite_fs_utils::invalidate_walk_cache(&ctx.backup_root);
+    }
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -499,7 +507,16 @@ struct CodeqlQueryBody {
 /// running task borrows the receiver directly into its `tokio::select!`,
 /// so setting it to `true` wakes the task immediately instead of needing
 /// to be polled.
-static CODEQL_QUERY_CANCELLATIONS: Lazy<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+// Keyed by job_id, but each entry also carries the distinct query
+// execution id (a fresh UUID per request) it belongs to — two overlapping
+// queries against the same job_id (a restarted query racing its own
+// still-finishing predecessor) previously shared one job_id-keyed slot,
+// so the first query's completion cleanup (`.remove(&job_id)`) could
+// delete the *second* query's still-live sender out from under it,
+// leaving a later Cancel click with nothing to signal. Cleanup now only
+// removes the entry when its query id still matches the one this
+// request inserted.
+static CODEQL_QUERY_CANCELLATIONS: Lazy<Mutex<HashMap<String, (uuid::Uuid, tokio::sync::watch::Sender<bool>)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 const CODEQL_QUERY_CANCELLED_SENTINEL: &str = "__ignite_codeql_query_cancelled__";
 
@@ -532,7 +549,8 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
     let query_text = body.query;
 
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-    CODEQL_QUERY_CANCELLATIONS.lock().insert(job_id.clone(), cancel_tx);
+    let query_id = uuid::Uuid::new_v4();
+    CODEQL_QUERY_CANCELLATIONS.lock().insert(job_id.clone(), (query_id, cancel_tx));
 
     tokio::spawn(async move {
         // Validated up front, outside the select! below: these are
@@ -595,7 +613,12 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
                 }
             }
         };
-        CODEQL_QUERY_CANCELLATIONS.lock().remove(&job_id);
+        {
+            let mut map = CODEQL_QUERY_CANCELLATIONS.lock();
+            if map.get(&job_id).is_some_and(|(id, _)| *id == query_id) {
+                map.remove(&job_id);
+            }
+        }
 
         match result {
             Ok(r) => {
@@ -632,7 +655,7 @@ async fn codeql_query_cancel(Path(job_id): Path<String>) -> Response {
     let cancelled = CODEQL_QUERY_CANCELLATIONS
         .lock()
         .get(&job_id)
-        .map(|tx| tx.send(true).is_ok())
+        .map(|(_, tx)| tx.send(true).is_ok())
         .unwrap_or(false);
     Json(json!({ "ok": true, "cancelled": cancelled })).into_response()
 }

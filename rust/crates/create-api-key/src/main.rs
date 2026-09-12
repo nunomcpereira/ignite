@@ -76,9 +76,16 @@ pub fn attempt_owner_notification(result: &MintResult, label: Option<&str>) -> (
 /// blocks on the dispatch rather than the fire-and-forget `tokio::spawn`
 /// the server uses — correctness (the mint output is already printed
 /// before this runs) matters more than shaving a network round-trip off a
-/// one-shot operator command. Silently a no-op when audit logging isn't
-/// configured, same as every other call site.
-fn emit_audit_event_blocking(result: &MintResult) {
+/// one-shot operator command.
+///
+/// The local durable-audit-trail write (`db.record_audit_event`) always
+/// happens, same posture as `AppState::emit_audit_event` — a GxP
+/// deployment's local trail can't depend on a SIEM sink being configured.
+/// Only the external sink dispatch below stays gated on
+/// `audit_log.enabled`/sinks being configured.
+fn emit_audit_event_blocking(db: &ignite_db_store::DbStore, result: &MintResult) {
+    db.record_audit_event("api_key.created", "warning", &format!("headless API key created for {}", result.user_email), Some(&result.operator), None, None, Some(&serde_json::json!({ "apiKeyId": result.api_key_id }).to_string()));
+
     let config_dir = env::var("IGNITE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
     let Ok(config) = ignite_config::load_config(&config_dir) else { return };
     if !config.audit_log.enabled || config.audit_log.sinks.is_empty() {
@@ -134,7 +141,7 @@ fn main() {
             println!("Store this now — it will not be shown again. Use it as:");
             println!("  Authorization: Bearer {}", result.raw_key);
 
-            emit_audit_event_blocking(&result);
+            emit_audit_event_blocking(&db, &result);
 
             let (sent, reason) = attempt_owner_notification(&result, label.as_deref());
             if sent {

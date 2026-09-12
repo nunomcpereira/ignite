@@ -30,7 +30,7 @@ fn action_to_json(result: &ignite_auto_fix::FixResult) -> Value {
     Value::Object(obj)
 }
 
-async fn auto_fix(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+async fn auto_fix(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
     let _ = &state; // no shared state needed today — kept for parity with other handlers
     let raw_path = body.get("projectPath").and_then(|v| v.as_str()).unwrap_or("");
     let project_path = match ignite_tool_runner::sanitize_absolute_project_path(raw_path) {

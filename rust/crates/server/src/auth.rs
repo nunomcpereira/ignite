@@ -303,7 +303,8 @@ async fn auth_login(State(state): State<Arc<AppState>>, axum::extract::ConnectIn
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid email or password." }))).into_response();
     }
     let user = user.unwrap();
-    ignite_auth::login_limiter().reset(&email);
+    ignite_auth::login_limiter().reset(&combined_key);
+    ignite_auth::login_limiter().reset(&per_ip_key);
     issue_session_response(&state.db, user.id, json!({ "user": { "id": user.id, "email": user.email, "name": user.name } }), StatusCode::OK)
 }
 

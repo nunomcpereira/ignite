@@ -83,9 +83,16 @@ fn parse_picklescan_output(root: &Path, stdout: &str) -> Vec<ModelArtifactFindin
         let Some(m) = FINDING_LINE_RE.captures(line.trim()) else { continue };
         let location = &m[1];
         let global_import = &m[2];
-        let mut parts = location.split(':');
-        let fs_path = parts.next().unwrap_or("");
-        let archive_member = parts.collect::<Vec<_>>().join(":");
+        // A Windows drive letter prefix (`C:\path\...`) has its own `:`
+        // that isn't the path/archive-member separator picklescan uses —
+        // skip over it before splitting, or `fs_path` ends up as just
+        // "C" with the real path misread as an archive member.
+        let has_drive_prefix = location.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && location.get(1..2) == Some(":");
+        let search_from = if has_drive_prefix { 2 } else { 0 };
+        let (fs_path, archive_member) = match location[search_from..].find(':') {
+            Some(idx) => (&location[..search_from + idx], location[search_from + idx + 1..].to_string()),
+            None => (location, String::new()),
+        };
         let rel_file = relative_to_root(root, fs_path).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
         findings.push(ModelArtifactFinding {
             file: rel_file,

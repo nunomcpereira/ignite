@@ -128,12 +128,16 @@ impl Drop for TagCleanupGuard {
     fn drop(&mut self) {
         if self.active {
             let tag = self.tag.clone();
-            // If dropped prematurely (e.g. timeout or task cancellation), spawn cleanup
-            let _ = std::process::Command::new("docker")
-                .args(["rmi", "-f", &tag])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+            // If dropped prematurely (e.g. timeout or task cancellation),
+            // spawn cleanup on a detached thread that waits on the child
+            // — a bare `.spawn()` with the `Child` handle immediately
+            // dropped never reaps the process, leaving a zombie behind
+            // every time this guard fires without ever being `defuse`d.
+            if let Ok(mut child) = std::process::Command::new("docker").args(["rmi", "-f", &tag]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
         }
     }
 }
@@ -167,7 +171,13 @@ pub async fn check_container_image_vulnerabilities(root: &Path, runner: &ToolRun
     let mut findings = Vec::new();
     for dockerfile in &dockerfiles {
         let rel_dockerfile = dockerfile.strip_prefix(root).unwrap_or(dockerfile).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-        let build_context = dockerfile.parent().unwrap_or(root);
+        // Build context is always the repo root, not the Dockerfile's own
+        // directory — a nested Dockerfile (`services/api/Dockerfile`) that
+        // `COPY`s something from outside its own directory (a shared
+        // `lockfile`/`lib/` one level up) needs the wider context to
+        // resolve those paths; `-f` still points `docker build` at the
+        // actual Dockerfile regardless of which directory is the context.
+        let build_context = root;
         let tag = format!("ignite-trivyscan-{}:latest", unique_suffix());
         let mut cleanup_guard = TagCleanupGuard::new(tag.clone());
         let report_path = std::env::temp_dir().join(format!("ignite-trivy-image-{}.json", unique_suffix()));

@@ -194,8 +194,20 @@ pub fn check_boundaries(root: &Path, config: &BoundariesConfig) -> std::io::Resu
                 continue;
             }
             let imp_stem = imp.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            // A bare `l.contains("import") && l.contains(&imp_stem)` false-
+            // matches the *first* import line whenever the offending
+            // module has a generic stem (`index`, `types`, `utils`) that
+            // also happens to substring-match an unrelated earlier import
+            // (e.g. `import { Foo } from './types'` matching a violation
+            // actually importing `./zoneB/types`). Require the stem to
+            // appear as the module specifier's own trailing path segment —
+            // immediately preceded by `/` or a quote, and immediately
+            // followed by the closing quote (optionally after a file
+            // extension) — so it can only match the specifier this import
+            // actually names, not any other line mentioning the same stem.
+            let stem_boundary_re = regex::Regex::new(&format!(r#"(?:/|['"]){}(?:\.[A-Za-z]+)?['"]"#, regex::escape(&imp_stem))).ok();
             let line_idx = node.content.split('\n').position(|l| {
-                l.contains(imp_rel.as_str()) || (l.contains("import") && l.contains(&imp_stem))
+                l.contains(imp_rel.as_str()) || (l.contains("import") && stem_boundary_re.as_ref().is_some_and(|re| re.is_match(l)))
             });
             let line = line_idx.map(|i| i + 1).unwrap_or(1);
             let to_label = if to.zone.name == from.zone.name {

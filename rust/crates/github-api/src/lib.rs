@@ -146,13 +146,14 @@ impl<'a> GithubApi<'a> {
     }
 
     pub async fn github_api_request(&self, token: &str, method: &str, api_path: &str, body: Option<&Value>, accept: Option<&str>) -> Result<Option<Value>, GithubApiError> {
-        let url = format!("https://api.github.com{api_path}");
+        let url = format!("https://api.github.com/{}", api_path.trim_start_matches('/'));
         let accept_header = accept.unwrap_or("application/vnd.github+json");
         let mut req = self
             .http
             .request(reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET), &url)
             .timeout(Duration::from_secs(15))
             .header("Accept", accept_header)
+            .header("User-Agent", "ignite")
             .header("X-GitHub-Api-Version", "2022-11-28");
         if !token.is_empty() {
             req = req.header("Authorization", format!("Bearer {token}"));

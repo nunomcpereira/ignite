@@ -10,7 +10,7 @@ use regex::Regex;
 use serde::Serialize;
 use std::path::Path;
 
-static FROM_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*FROM\s+(\S+?)(?:\s+AS\s+\S+)?\s*$").unwrap());
+static FROM_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+?)(?:\s+AS\s+\S+)?\s*$").unwrap());
 static USER_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*USER\s+\S+").unwrap());
 static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r":([^@\s]+)$").unwrap());
 
@@ -277,10 +277,15 @@ pub fn check_iac_security_fallback(root: &Path) -> std::io::Result<Vec<IacFindin
         }
         let content = String::from_utf8_lossy(&buffer).into_owned();
         let rel = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+        // Tracked per build stage — a multi-stage Dockerfile resets this
+        // on each `FROM`, since a `USER` set in an earlier stage (e.g. a
+        // builder stage) says nothing about whether the final runtime
+        // stage that's actually shipped drops root.
         let mut has_user = false;
         for (i, line) in content.split('\n').enumerate() {
             let line = line.strip_suffix('\r').unwrap_or(line);
             if let Some(m) = FROM_LINE_RE.captures(line) {
+                has_user = false;
                 let image = m.get(1).map(|x| x.as_str()).unwrap_or("");
                 let has_digest = image.contains("@sha256:");
                 let tag = TAG_RE.captures(image).and_then(|c| c.get(1)).map(|m| m.as_str());

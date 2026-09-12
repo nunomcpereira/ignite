@@ -152,9 +152,18 @@ fn apply_governance_fix(root: &Path, file: &str, line_no: Option<usize>) -> std:
         None => return Ok((false, true)),
     };
     let close_byte_idx = char_byte_idx(&line, close_paren_char_idx);
+    let open_byte_idx = char_byte_idx(&line, open_paren_char_idx);
+    // `invoke()` with no existing argument must not get a leading `, ` —
+    // that produces `invoke(, { recursionLimit: 25 })`, a syntax error.
+    let has_existing_args = !line[open_byte_idx + 1..close_byte_idx].trim().is_empty();
 
     let is_python = Path::new(file).extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("py")).unwrap_or(false);
-    let insertion = if is_python { format!(", config={{\"recursion_limit\": {DEFAULT_RECURSION_LIMIT}}}") } else { format!(", {{ recursionLimit: {DEFAULT_RECURSION_LIMIT} }}") };
+    let insertion = match (is_python, has_existing_args) {
+        (true, true) => format!(", config={{\"recursion_limit\": {DEFAULT_RECURSION_LIMIT}}}"),
+        (true, false) => format!("config={{\"recursion_limit\": {DEFAULT_RECURSION_LIMIT}}}"),
+        (false, true) => format!(", {{ recursionLimit: {DEFAULT_RECURSION_LIMIT} }}"),
+        (false, false) => format!("{{ recursionLimit: {DEFAULT_RECURSION_LIMIT} }}"),
+    };
     let new_line = format!("{}{}{}", &line[..close_byte_idx], insertion, &line[close_byte_idx..]);
     lines[line_idx] = new_line;
     let eol = if uses_crlf { "\r\n" } else { "\n" };
@@ -188,22 +197,28 @@ fn apply_narrow_export(root: &Path, file: &str, name: Option<&str>) -> std::io::
     let abs = root.join(file);
     let content = std::fs::read_to_string(&abs)?;
     let Some(name) = name else { return Ok(false) };
-    let Some(m) = EXPORT_LIST_RE.captures(&content) else { return Ok(false) };
-    let full_match = m.get(0).unwrap();
-    let trailing = &content[full_match.end()..];
-    if TRAILING_FROM_RE.is_match(trailing) {
-        return Ok(false); // re-export ("export { x } from ...") — not this case
+    // A file can have several `export { ... }` blocks — stopping at the
+    // first (via `captures`) silently gave up whenever the flagged name
+    // lived in a later block, reporting "needs a human" for something
+    // this function could have handled.
+    for m in EXPORT_LIST_RE.captures_iter(&content) {
+        let full_match = m.get(0).unwrap();
+        let trailing = &content[full_match.end()..];
+        if TRAILING_FROM_RE.is_match(trailing) {
+            continue; // re-export ("export { x } from ...") — not this case
+        }
+        let list = &m[1];
+        let names: Vec<&str> = list.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let kept: Vec<&str> = names.iter().copied().filter(|n| AS_ALIAS_RE.replace(n, "").trim() != name).collect();
+        if kept.len() == names.len() {
+            continue; // name wasn't in this export list — check the next one
+        }
+        let replacement = if kept.is_empty() { String::new() } else { format!("export {{ {} }}", kept.join(", ")) };
+        let new_content = format!("{}{}{}", &content[..full_match.start()], replacement, &content[full_match.end()..]);
+        std::fs::write(&abs, new_content)?;
+        return Ok(true);
     }
-    let list = &m[1];
-    let names: Vec<&str> = list.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-    let kept: Vec<&str> = names.iter().copied().filter(|n| AS_ALIAS_RE.replace(n, "").trim() != name).collect();
-    if kept.len() == names.len() {
-        return Ok(false); // name wasn't in an export list — needs a human
-    }
-    let replacement = if kept.is_empty() { String::new() } else { format!("export {{ {} }}", kept.join(", ")) };
-    let new_content = format!("{}{}{}", &content[..full_match.start()], replacement, &content[full_match.end()..]);
-    std::fs::write(&abs, new_content)?;
-    Ok(true)
+    Ok(false) // name wasn't in any export list — needs a human
 }
 
 pub fn apply_auto_fix_plan(plan: AutoFixPlan, root: &Path, dry_run: bool) -> (bool, Vec<FixResult>) {

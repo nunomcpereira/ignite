@@ -99,13 +99,19 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Fire-and-forget audit-event emission (Milestone 3.3): spawns the
-    /// actual delivery so a slow/unreachable SIEM endpoint can never add
-    /// latency to — or fail — the request that triggered the event. A
-    /// no-op (no task spawned at all) when `audit_log.enabled` is false or
-    /// no sinks are configured, so this is cheap to call unconditionally
-    /// from every event site.
+    /// Persists the event to the local, tamper-evident audit trail
+    /// (`db_store::audit_events`) unconditionally — GxP/Part-11-style
+    /// auditability can't depend on an operator having configured an
+    /// external SIEM sink, so this write always happens regardless of
+    /// `audit_log.enabled`. It's then fire-and-forget-dispatched to any
+    /// configured sinks as before: that half spawns the actual delivery so
+    /// a slow/unreachable SIEM endpoint can never add latency to — or
+    /// fail — the request that triggered the event, and stays a no-op
+    /// (nothing spawned) when no sinks are configured.
     pub fn emit_audit_event(&self, event: ignite_audit_log::AuditEvent) {
+        let metadata_json = if event.metadata.is_null() { None } else { Some(event.metadata.to_string()) };
+        self.db.record_audit_event(&event.event_type, &event.severity, &event.summary, event.actor.as_deref(), event.org.as_deref(), event.repo.as_deref(), metadata_json.as_deref());
+
         if !self.config.audit_log.enabled || self.config.audit_log.sinks.is_empty() {
             return;
         }

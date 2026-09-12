@@ -372,6 +372,32 @@ pub fn classify_vulnerability_severity(cvss3_score: Option<f64>) -> &'static str
 /// (e.g. `anyio==4.14.2` immediately followed by `# via starlette` would
 /// otherwise misattribute `starlette`'s finding to that comment, several
 /// lines above where `starlette==0.35.1` is actually declared).
+/// `true` when `dep_name` occurs in `line` with no identifier character
+/// (alphanumeric/`_`/`-`) immediately before or after the match — a plain
+/// `contains` would let `rand` match a `rand_core = "0.6"` line that
+/// happens to declare an earlier, unrelated dependency sharing that
+/// prefix.
+fn line_contains_dep_name_at_word_boundary(line: &str, dep_name: &str) -> bool {
+    if dep_name.is_empty() {
+        return false;
+    }
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    let mut start = 0;
+    while let Some(rel) = line[start..].find(dep_name) {
+        let idx = start + rel;
+        let before_ok = line[..idx].chars().next_back().is_none_or(|c| !is_ident(c));
+        let after_ok = line[idx + dep_name.len()..].chars().next().is_none_or(|c| !is_ident(c));
+        if before_ok && after_ok {
+            return true;
+        }
+        start = idx + dep_name.len().max(1);
+        if start >= line.len() {
+            break;
+        }
+    }
+    false
+}
+
 pub fn find_manifest_dep_line(content: &str, dep_name: &str, ecosystem: &str) -> Option<usize> {
     match ecosystem {
         "maven" => {
@@ -417,7 +443,7 @@ pub fn find_manifest_dep_line(content: &str, dep_name: &str, ecosystem: &str) ->
                 })
                 .map(|i| i + 1)
         }
-        _ => content.split('\n').position(|l| !l.trim_start().starts_with('#') && l.contains(dep_name)).map(|i| i + 1),
+        _ => content.split('\n').position(|l| !l.trim_start().starts_with('#') && line_contains_dep_name_at_word_boundary(l, dep_name)).map(|i| i + 1),
     }
 }
 

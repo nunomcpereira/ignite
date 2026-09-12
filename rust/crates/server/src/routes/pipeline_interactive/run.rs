@@ -278,8 +278,18 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     if issue_count > 0 {
                         log.log(4, &format!("⚠ {issue_count} flagged issue(s) ({blocking_count} blocking) — will be presented for final review before push."));
                     }
+                    // `task_timings` (see phase4-orchestrator's own doc
+                    // comment) is which check was the bottleneck this run —
+                    // sent both live (the status event, for the
+                    // in-progress/just-finished popup) and persisted (so
+                    // reopening this project later, via `/api/projects/:id`,
+                    // still shows it).
+                    let task_timings: Vec<Value> = output.task_timings.iter().map(|(name, ms)| json!({ "name": name, "ms": ms })).collect();
                     persist!();
-                    log.status(4, "success", Some(json!({ "issueCount": issue_count, "blockingCount": blocking_count })));
+                    log.status(4, "success", Some(json!({ "issueCount": issue_count, "blockingCount": blocking_count, "taskTimings": task_timings })));
+                    if let Some(pid) = project_id {
+                        state.db.set_step_task_timings(pid, 4, &serde_json::to_string(&task_timings).unwrap());
+                    }
                 }
                 Err(e) => {
                     let msg = e.to_string();

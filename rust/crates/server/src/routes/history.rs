@@ -116,7 +116,7 @@ fn job_status_from_db(state: &AppState, job_id: &str) -> Response {
     Json(json!({ "ok": true, "running": false, "project": details.project, "steps": details.steps })).into_response()
 }
 
-async fn delete_project(State(state): State<Arc<AppState>>, Path(id_raw): Path<String>) -> Response {
+async fn delete_project(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
     if !state.db.project_exists(id) {
         return err(StatusCode::NOT_FOUND, "Project not found.");
@@ -129,7 +129,7 @@ async fn delete_project(State(state): State<Arc<AppState>>, Path(id_raw): Path<S
     Json(json!({ "ok": true })).into_response()
 }
 
-async fn delete_all_projects(State(state): State<Arc<AppState>>) -> Response {
+async fn delete_all_projects(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
     for source in state.db.list_retained_sources() {
         let _ = std::fs::remove_dir_all(source.dir_path);
     }

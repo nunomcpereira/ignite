@@ -228,7 +228,10 @@ pub async fn discover_fix_candidates(root: &Path, deps_client: &DepsDevClient, h
                 if dep.version.as_deref().is_some_and(|resolved| is_non_improving_fix(resolved, &fixed_version)) {
                     continue;
                 }
-                let major_bump = dep.version.as_deref().map(|resolved| is_major_bump(resolved, &fixed_version)).unwrap_or(false);
+                // No lockfile-resolved version to diff against fixed_version —
+                // can't rule out a major bump, so treat it as one (leave it
+                // for a human) rather than silently defaulting to safe.
+                let major_bump = dep.version.as_deref().map(|resolved| is_major_bump(resolved, &fixed_version)).unwrap_or(true);
                 let mut summary = format!("{}@{} -> {fixed_version} ({advisory_id})", dep.name, dep.version.clone().unwrap_or_else(|| dep.version_range.clone()));
                 if let Some(title) = &vuln.title {
                     summary.push_str(&format!(": {title}"));

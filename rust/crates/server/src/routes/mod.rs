@@ -1,3 +1,4 @@
+pub mod audit_log;
 pub mod auto_fix;
 pub mod baseline;
 pub mod campaigns;

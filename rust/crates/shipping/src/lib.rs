@@ -168,7 +168,7 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
     push_args.extend(s(&["push", "-u", "origin"]));
     push_args.push(format!("HEAD:{onboard_branch}"));
     git(runner, &push_args, &root_str, gh_token).await?;
-    let sha = git(runner, &s(&["rev-parse", "HEAD"]), &root_str, gh_token).await?.stdout;
+    let sha = git(runner, &s(&["rev-parse", "HEAD"]), &root_str, gh_token).await?.stdout.trim().to_string();
 
     if !main_exists {
         // Try to create main directly from the compliant commit (works in

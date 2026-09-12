@@ -18,8 +18,22 @@ static MARKUP_EXT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\.(js|jsx|ts|t
 // `next_char_ends_selector` re-checks the character right after the match
 // manually, same effective condition.
 static CLASS_SELECTOR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.(-?[A-Za-z_][A-Za-z0-9_-]*)").unwrap());
-static CLASS_ATTR_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"\b(?:class|className)\s*=\s*(?:"([^"]*)"|'([^']*)'|\{`([^`]*)`\})"#).unwrap());
+// `class="..."`/`className='...'` plain string forms, plus the JSX
+// `className={`...`}` template-literal form the JS original already
+// covered — extended here with `className={'...'}`/`className={"..."}`
+// (a string literal *inside* the `{}` expression, not a template
+// literal — equally common in real JSX and previously unmatched
+// entirely, so any class only ever referenced that way was invisible to
+// `extract_used_classes` and got misreported as dead).
+static CLASS_ATTR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\b(?:class|className)\s*=\s*(?:"([^"]*)"|'([^']*)'|\{`([^`]*)`\}|\{"([^"]*)"\}|\{'([^']*)'\})"#).unwrap()
+});
+// Svelte's `class:name` / `class:name={expr}` directive shorthand — the
+// class named right in the attribute is applied whenever `expr` (or the
+// implied same-named variable) is truthy, so it counts as "used" on its
+// own regardless of what's inside `{}`. Previously unmatched, so every
+// class only ever referenced this way was flagged as dead code.
+static SVELTE_CLASS_DIRECTIVE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bclass:([A-Za-z_-][\w-]*)").unwrap());
 static SKIP_PREFIX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(is-|has-|js-)").unwrap());
 
 fn next_char_ends_selector(rest: &str) -> bool {
@@ -52,10 +66,13 @@ pub fn extract_declared_classes(css_content: &str) -> Vec<String> {
 pub fn extract_used_classes(markup_content: &str) -> HashSet<String> {
     let mut names = HashSet::new();
     for cap in CLASS_ATTR_RE.captures_iter(markup_content) {
-        let raw = cap.get(1).or_else(|| cap.get(2)).or_else(|| cap.get(3)).map(|m| m.as_str()).unwrap_or("");
+        let raw = cap.get(1).or_else(|| cap.get(2)).or_else(|| cap.get(3)).or_else(|| cap.get(4)).or_else(|| cap.get(5)).map(|m| m.as_str()).unwrap_or("");
         for cls in raw.split_whitespace() {
             names.insert(cls.to_string());
         }
+    }
+    for cap in SVELTE_CLASS_DIRECTIVE_RE.captures_iter(markup_content) {
+        names.insert(cap[1].to_string());
     }
     names
 }
@@ -144,8 +161,13 @@ pub fn check_css_dead_code(root: &Path, config: &CssDeadCodeConfig) -> std::io::
             if SKIP_PREFIX_RE.is_match(cls) {
                 continue;
             }
+            // Plain `.contains` would match `.btn` inside a `.btn-primary`
+            // line and misattribute the finding to the wrong selector's
+            // line — require the class name to actually end there (same
+            // "not immediately followed by an identifier char" check
+            // `next_char_ends_selector` already applies during extraction).
             let needle = format!(".{cls}");
-            let line_idx = content.split('\n').position(|l| l.contains(&needle));
+            let line_idx = content.split('\n').position(|l| l.match_indices(&needle).any(|(i, _)| next_char_ends_selector(&l[i + needle.len()..])));
             let line = line_idx.map(|i| i + 1).unwrap_or(1);
             findings.push(CssDeadCodeFinding {
                 file: rel.clone(),

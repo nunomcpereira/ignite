@@ -29,7 +29,7 @@ async fn list_patterns(State(state): State<Arc<AppState>>) -> Response {
     Json(state.db.list_custom_secret_patterns()).into_response()
 }
 
-async fn create_pattern(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+async fn create_pattern(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
     let Some(name) = body.get("name").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) else {
         return err(StatusCode::BAD_REQUEST, "Request body must include a non-empty name.");
     };
@@ -51,7 +51,7 @@ async fn create_pattern(State(state): State<Arc<AppState>>, Json(body): Json<Val
     }
 }
 
-async fn set_pattern_enabled(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(body): Json<Value>) -> Response {
+async fn set_pattern_enabled(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id): Path<i64>, Json(body): Json<Value>) -> Response {
     let Some(enabled) = body.get("enabled").and_then(|v| v.as_bool()) else {
         return err(StatusCode::BAD_REQUEST, "Request body must include a boolean enabled field.");
     };
@@ -59,7 +59,7 @@ async fn set_pattern_enabled(State(state): State<Arc<AppState>>, Path(id): Path<
     Json(json!({ "ok": ok, "id": id })).into_response()
 }
 
-async fn delete_pattern(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
+async fn delete_pattern(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id): Path<i64>) -> Response {
     let deleted = state.db.delete_custom_secret_pattern(id);
     Json(json!({ "ok": deleted, "id": id })).into_response()
 }
@@ -186,6 +186,16 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    /// A valid `Authorization: Bearer ignite_<key>` header value for a
+    /// freshly created local user in `state`'s db — the mutating
+    /// endpoints in this file now require `RequireAuth`.
+    fn auth_header(state: &AppState) -> String {
+        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash");
+        let raw_key = ignite_auth::generate_api_key();
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
+        format!("Bearer {raw_key}")
+    }
+
     #[tokio::test]
     async fn test_pattern_route_reports_matches_without_persisting_anything() {
         let state = test_state();
@@ -210,9 +220,10 @@ mod tests {
     #[tokio::test]
     async fn create_list_and_delete_round_trip() {
         let state = test_state();
+        let auth = auth_header(&state);
         let app = router().with_state(state.clone());
 
-        let create_req = Request::post("/api/secret-patterns").header("content-type", "application/json").body(Body::from(r#"{"name":"Internal Token","regex":"tok_[a-z0-9]+"}"#)).unwrap();
+        let create_req = Request::post("/api/secret-patterns").header("content-type", "application/json").header("authorization", &auth).body(Body::from(r#"{"name":"Internal Token","regex":"tok_[a-z0-9]+"}"#)).unwrap();
         let create_res = app.clone().oneshot(create_req).await.unwrap();
         assert_eq!(create_res.status(), StatusCode::CREATED);
         let created = body_json(create_res).await;
@@ -222,7 +233,7 @@ mod tests {
         let list = body_json(list_res).await;
         assert_eq!(list.as_array().unwrap().len(), 1);
 
-        let delete_res = app.oneshot(Request::delete(format!("/api/secret-patterns/{id}")).body(Body::empty()).unwrap()).await.unwrap();
+        let delete_res = app.oneshot(Request::delete(format!("/api/secret-patterns/{id}")).header("authorization", &auth).body(Body::empty()).unwrap()).await.unwrap();
         let deleted = body_json(delete_res).await;
         assert_eq!(deleted["ok"], true);
         assert!(state.db.list_custom_secret_patterns().is_empty());
@@ -230,24 +241,36 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_missing_name_or_regex() {
-        let app = router().with_state(test_state());
-        let res = app.oneshot(Request::post("/api/secret-patterns").header("content-type", "application/json").body(Body::from(r#"{"regex":"x"}"#)).unwrap()).await.unwrap();
+        let state = test_state();
+        let auth = auth_header(&state);
+        let app = router().with_state(state);
+        let res = app.oneshot(Request::post("/api/secret-patterns").header("content-type", "application/json").header("authorization", &auth).body(Body::from(r#"{"regex":"x"}"#)).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn create_rejects_uncompilable_regex() {
-        let app = router().with_state(test_state());
-        let res = app.oneshot(Request::post("/api/secret-patterns").header("content-type", "application/json").body(Body::from(r#"{"name":"Bad","regex":"(unclosed"}"#)).unwrap()).await.unwrap();
+        let state = test_state();
+        let auth = auth_header(&state);
+        let app = router().with_state(state);
+        let res = app.oneshot(Request::post("/api/secret-patterns").header("content-type", "application/json").header("authorization", &auth).body(Body::from(r#"{"name":"Bad","regex":"(unclosed"}"#)).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_requires_auth() {
+        let app = router().with_state(test_state());
+        let res = app.oneshot(Request::post("/api/secret-patterns").header("content-type", "application/json").body(Body::from(r#"{"name":"Bad","regex":"x"}"#)).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn set_enabled_toggles_and_persists() {
         let state = test_state();
+        let auth = auth_header(&state);
         let id = state.db.create_custom_secret_pattern("P", "a", None);
         let app = router().with_state(state.clone());
-        let res = app.oneshot(Request::post(format!("/api/secret-patterns/{id}/enabled")).header("content-type", "application/json").body(Body::from(r#"{"enabled":false}"#)).unwrap()).await.unwrap();
+        let res = app.oneshot(Request::post(format!("/api/secret-patterns/{id}/enabled")).header("content-type", "application/json").header("authorization", &auth).body(Body::from(r#"{"enabled":false}"#)).unwrap()).await.unwrap();
         let json = body_json(res).await;
         assert_eq!(json["ok"], true);
         assert!(!state.db.get_custom_secret_pattern(id).unwrap().enabled);

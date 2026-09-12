@@ -1,0 +1,17 @@
+[profile.default]
+# cargo-nextest runs every test binary as its own process and schedules
+# them across a global thread pool (unlike `cargo test`, which runs one
+# binary at a time and only parallelizes *within* it) — across ~70
+# workspace crates that difference is most of the wall-clock win. No
+# `test-threads` override: default is the number of logical cores, which
+# is what we want here too.
+slow-timeout = { period = "60s", terminate-after = 3 }
+# A handful of tests hit real external tools/network and self-skip via an
+# early `eprintln!("skipping: ...")` + return when unavailable (per
+# ../CLAUDE.md) rather than failing — nothing here should need retries for
+# correctness, only for genuine environment flakiness (e.g. a real
+# provider API call in secret-verifier's own tests).
+retries = 0
+
+[profile.ci]
+retries = 2

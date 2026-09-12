@@ -90,7 +90,7 @@ fn job_from_saved_row(row: ignite_db_store::FixPrPreviewRow) -> FixPrPreviewJob 
 /// already finished (possibly in a previous server process — see
 /// `persist_finished_job`) is served straight from there instead of
 /// re-running what can be an expensive LLM pass.
-async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+async fn preview(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim().to_string();
 
     if state.fix_pr_previews.lock().contains_key(&job_id) {
@@ -165,7 +165,7 @@ async fn preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>)
     Json(response).into_response()
 }
 
-async fn preview_status(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+async fn preview_status(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
     if let Some(job) = state.fix_pr_previews.lock().get(job_id) {
         return Json(job_status_json(job)).into_response();
@@ -187,7 +187,7 @@ async fn preview_status(State(state): State<Arc<AppState>>, Path(job_id): Path<S
 /// in-flight LLM call can itself take up to 60s. A no-op (but still
 /// `ok: true`) if the job already finished or doesn't exist — cancelling
 /// something that's already done isn't an error.
-async fn cancel_preview(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+async fn cancel_preview(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
     let mut jobs = state.fix_pr_previews.lock();
     let Some(job) = jobs.get_mut(job_id) else {

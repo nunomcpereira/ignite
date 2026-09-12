@@ -75,9 +75,9 @@ cd rust
 cargo build --release -p ignite-server
 IGNITE_CONFIG_DIR=.. ./target/release/ignite-server     # → http://localhost:51337
 
-cargo test --workspace                                   # every crate's test suite
-cargo test -p ignite-secrets                              # single crate
-cargo test -p ignite-secrets gitleaks                     # single test by name pattern
+cargo nextest run --workspace                             # every crate's test suite — prefer this over `cargo test`, it parallelizes across all ~70 crates' test binaries instead of running them one at a time (config: rust/.config/nextest.toml)
+cargo nextest run -p ignite-secrets                       # single crate
+cargo nextest run -p ignite-secrets -- gitleaks           # single test by name pattern
 cargo clippy --workspace --all-targets
 
 cargo run --bin ignite -- scan [path] [--changed-files a.js,b.py] [--json] [--fast]   # CLI wrapper around validate-all

@@ -224,7 +224,7 @@ impl DbStore {
                 "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification, o.actor_email, o.actor_name, o.email_sent, o.created_at
                  FROM overrides o
                  INNER JOIN projects p ON o.project_id = p.id
-                 WHERE p.org = ? AND p.repo = ? AND p.id != ?
+                 WHERE p.org = ? AND p.repo = ? AND p.id != ? AND o.status = 'approved'
                  ORDER BY o.created_at DESC, o.id DESC",
             )
             .unwrap();

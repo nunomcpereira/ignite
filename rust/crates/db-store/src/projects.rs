@@ -28,8 +28,25 @@ impl DbStore {
         conn.last_insert_rowid()
     }
 
+    /// Also records a `scan.completed` audit event (`audit_events.rs`) for
+    /// every project regardless of outcome — the one choke point every
+    /// scan path (headless `validate-all`, interactive upload, onboarding)
+    /// already runs through, so a GxP deployment's local audit trail
+    /// covers every scan, not just the ones that hit an override/gate/
+    /// webhook event site.
+    ///
+    /// `project_id` can be `0`/nonexistent here: the onboarding/interactive
+    /// routes validate org/repo names *before* calling `create_project`,
+    /// and report that failure through this same "failed" path with
+    /// whatever `project_id` local var they'd initialized to (`0`, never
+    /// written to a real row) — so the org/repo/job_id lookup below is
+    /// `.optional()`, and the audit event (and the row update itself) is
+    /// simply skipped when there's no such project.
     pub fn finish_project(&self, status: &str, error: Option<&str>, repo_url: Option<&str>, pr_url: Option<&str>, project_id: i64) {
         let conn = self.conn.lock();
+        let found: Option<(String, String, String)> =
+            conn.query_row("SELECT org, repo, job_id FROM projects WHERE id = ?", params![project_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().unwrap();
+        let Some((org, repo, job_id)) = found else { return };
         conn.execute(
             "UPDATE projects SET status = ?, error = ?, repo_url = ?, pr_url = ?, finished_at = datetime('now') WHERE id = ?",
             params![status, error, repo_url, pr_url, project_id],
@@ -38,6 +55,12 @@ impl DbStore {
         if let Some(url) = pr_url {
             conn.execute("INSERT INTO pull_requests (project_id, kind, url) VALUES (?, 'onboarding', ?)", params![project_id, url]).unwrap();
         }
+        drop(conn); // release before record_audit_event re-acquires the same lock
+
+        let severity = if status == "failed" { "warning" } else { "info" };
+        let summary = format!("scan {status} for {org}/{repo} (job {job_id})");
+        let metadata = error.map(|e| serde_json::json!({ "error": e }).to_string());
+        self.record_audit_event("scan.completed", severity, &summary, None, Some(&org), Some(&repo), metadata.as_deref());
     }
 
     /// The most recently created project row for `(org, repo)` — used by
@@ -84,6 +107,17 @@ impl DbStore {
             params![project_id, phase, title, state, logs],
         )
         .unwrap();
+    }
+
+    /// Attaches `phase4-orchestrator`'s per-check timing breakdown to
+    /// phase 4's already-existing `steps` row (written by `upsert_step`
+    /// just before this, same as every other phase's log/state) — a
+    /// targeted `UPDATE` rather than a parameter added to `upsert_step`
+    /// itself, since every other phase's completion site would otherwise
+    /// need to pass `None` through a call chain that never cares about it.
+    pub fn set_step_task_timings(&self, project_id: i64, phase: i64, task_timings_json: &str) {
+        let conn = self.conn.lock();
+        conn.execute("UPDATE steps SET task_timings_json = ? WHERE project_id = ? AND phase = ?", params![task_timings_json, project_id, phase]).unwrap();
     }
 
     pub fn add_upload_document(&self, project_id: i64, name: &str, mime: Option<&str>, size: i64, data: &[u8]) {
@@ -297,10 +331,10 @@ impl DbStore {
         let conn = self.conn.lock();
         let project = Self::get_project_row(&conn, project_id)?;
 
-        let mut steps_stmt = conn.prepare_cached("SELECT phase, title, state, logs FROM steps WHERE project_id = ? ORDER BY phase").unwrap();
+        let mut steps_stmt = conn.prepare_cached("SELECT phase, title, state, logs, task_timings_json FROM steps WHERE project_id = ? ORDER BY phase").unwrap();
         let steps = steps_stmt
             .query_map(params![project_id], |row| {
-                Ok(Step { phase: row.get(0)?, title: row.get(1)?, state: row.get(2)?, logs: row.get(3)? })
+                Ok(Step { phase: row.get(0)?, title: row.get(1)?, state: row.get(2)?, logs: row.get(3)?, task_timings: row.get(4)? })
             })
             .unwrap()
             .map(|r| r.unwrap())

@@ -22,7 +22,7 @@ pub fn allowed_commands() -> &'static [&'static str] {
         "git", "gh", "act", "docker", "gitleaks", "licensee", "ort", "trivy", "checkov",
         "hadolint", "syft", "cosign", "semgrep", "bearer", "jscpd", "gocloc", "spectral",
         "guarddog", "codeql", "picklescan", "oasdiff", "zizmor",
-        "npm", "yarn", "pnpm", "cargo", "go", "poetry", "pip-compile",
+        "npm", "yarn", "pnpm", "cargo", "go", "poetry", "pip-compile", "dotnet", "gradle",
     ]
 }
 

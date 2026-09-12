@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use futures::FutureExt;
-use ignite_override_engine::{validate_overrides, Issue, Severity, SubmittedOverride};
+use ignite_override_engine::{is_critical_score, partition_for_dual_custody, validate_overrides, Issue, Severity, SubmittedOverride};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -411,12 +411,83 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                 overridden_ids.insert(issue.id.clone());
             }
             if !result.applied.is_empty() {
-                let Some((email, _name)) = resolve_actor(&body) else {
+                let Some((email, name)) = resolve_actor(&body) else {
                     return Err(PipelineError::new(4, "Overrides were submitted but no authenticated user or actor {email,name} was provided — cannot attribute the audit record."));
                 };
-                logger.log(4, &format!("⚠ {} flagged issue(s) overridden by {email}:", result.applied.len()));
-                for (issue, justification) in &result.applied {
+
+                // Dual-custody: a critical-severity override submitted here
+                // must not resolve its issue until a *different* reviewer
+                // approves it — same `security.overrideApproval` gate
+                // `routes/effectivate.rs`/`pipeline_interactive/run.rs`
+                // apply, kept in sync here since this is the other place a
+                // human submits a brand-new override.
+                let (auto_applied, needs_approval): (Vec<ignite_override_engine::AppliedOverride>, Vec<ignite_override_engine::AppliedOverride>) = if state.config.security.override_approval.enabled {
+                    let already_approved: std::collections::HashSet<String> = result.applied.iter().filter(|(i, _)| state.db.has_approved_override(project_id, &i.id)).map(|(i, _)| i.id.clone()).collect();
+                    partition_for_dual_custody(result.applied.clone(), |i| is_critical_score(i.score), &already_approved)
+                } else {
+                    (result.applied.clone(), Vec::new())
+                };
+
+                logger.log(4, &format!("⚠ {} flagged issue(s) overridden by {email}:", auto_applied.len()));
+                for (issue, justification) in &auto_applied {
                     logger.log(4, &format!("    ⚠ [override] [{:?}] {}:{} — {} — \"{justification}\"", issue.severity, issue.file.as_deref().unwrap_or(""), issue.line.unwrap_or(0), issue.summary));
+                    state.db.add_override(ignite_db_store::AddOverrideArgs {
+                        project_id,
+                        job_id: &job_id,
+                        phase: 4,
+                        issue_id: &issue.id,
+                        category: &issue.category,
+                        severity: match issue.severity {
+                            Severity::Error => "error",
+                            Severity::Warning => "warning",
+                        },
+                        summary: &issue.summary,
+                        file: issue.file.as_deref(),
+                        line: issue.line,
+                        justification,
+                        actor_email: &email,
+                        actor_name: Some(&name),
+                        email_sent: false,
+                    });
+                    state.emit_audit_event(
+                        ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
+                            .actor(email.clone())
+                            .repo(&org, &repo)
+                            .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                    );
+                }
+
+                if !needs_approval.is_empty() {
+                    for (issue, justification) in &needs_approval {
+                        overridden_ids.remove(&issue.id);
+                        if !state.db.has_pending_override(project_id, &issue.id) {
+                            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+                                project_id,
+                                job_id: &job_id,
+                                phase: 4,
+                                issue_id: &issue.id,
+                                category: &issue.category,
+                                severity: match issue.severity {
+                                    Severity::Error => "error",
+                                    Severity::Warning => "warning",
+                                },
+                                summary: &issue.summary,
+                                file: issue.file.as_deref(),
+                                line: issue.line,
+                                justification,
+                                actor_email: &email,
+                                actor_name: Some(&name),
+                                email_sent: false,
+                            });
+                            state.emit_audit_event(
+                                ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
+                                    .actor(email.clone())
+                                    .repo(&org, &repo)
+                                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                            );
+                        }
+                    }
+                    return Err(PipelineError::new(4, format!("{} critical finding(s) require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.", needs_approval.len())));
                 }
             }
             if !result.ok {

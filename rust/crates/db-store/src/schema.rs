@@ -242,6 +242,21 @@ CREATE TABLE IF NOT EXISTS custom_secret_patterns (
   created_by  TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS audit_events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type    TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  summary       TEXT NOT NULL,
+  actor         TEXT,
+  org           TEXT,
+  repo          TEXT,
+  metadata_json TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  prev_hash     TEXT NOT NULL,
+  hash          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_events_org_repo ON audit_events(org, repo);
 "#;
 
 /// One-time-per-row backfill, safe to re-run every startup: every historical
@@ -309,4 +324,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     (23, "ALTER TABLE overrides ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'"),
     (24, "ALTER TABLE overrides ADD COLUMN approved_by_email TEXT"),
     (25, "ALTER TABLE overrides ADD COLUMN approved_at TEXT"),
+    // Per-check Phase 4 wall-clock timings (`phase4-orchestrator`'s own
+    // `task_timings`), so the "Performance" popup can show which check was
+    // the bottleneck on a *past* scan, not just a currently-streaming one.
+    // JSON array of `{name, ms}`; NULL for every row written before this
+    // migration and for any phase other than 4.
+    (26, "ALTER TABLE steps ADD COLUMN task_timings_json TEXT"),
 ];

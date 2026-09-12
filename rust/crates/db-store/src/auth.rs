@@ -102,7 +102,7 @@ impl DbStore {
         conn.query_row(
             "SELECT s.id, s.expires_at, u.id AS user_id, u.email, u.name, u.provider
              FROM sessions s JOIN users u ON u.id = s.user_id
-             WHERE s.id = ? AND s.expires_at >= datetime('now')",
+             WHERE s.id = ? AND datetime(s.expires_at) >= datetime('now')",
             params![session_id],
             |row| {
                 Ok(SessionRow {
@@ -121,7 +121,7 @@ impl DbStore {
 
     pub fn sweep_expired_sessions(&self) {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM sessions WHERE expires_at < datetime('now')", []).unwrap();
+        conn.execute("DELETE FROM sessions WHERE datetime(expires_at) < datetime('now')", []).unwrap();
     }
 
     pub fn delete_session(&self, session_id: &str) {

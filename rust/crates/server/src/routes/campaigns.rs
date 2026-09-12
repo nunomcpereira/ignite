@@ -13,11 +13,11 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-async fn list_campaigns(State(state): State<Arc<AppState>>) -> Response {
+async fn list_campaigns(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
     Json(state.db.list_campaigns()).into_response()
 }
 
-async fn create_campaign(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+async fn create_campaign(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
     let Some(title) = body.get("title").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "Request body must include a non-empty title." }))).into_response();
     };
@@ -33,7 +33,7 @@ async fn create_campaign(State(state): State<Arc<AppState>>, Json(body): Json<Va
     }
 }
 
-async fn close_campaign(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
+async fn close_campaign(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id): Path<i64>) -> Response {
     let closed = state.db.close_campaign(id);
     Json(json!({ "ok": closed, "id": id })).into_response()
 }
