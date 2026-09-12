@@ -44,14 +44,29 @@ use std::path::Path;
 /// lockfile) — only the first lockfile that both exists and parses to a
 /// non-empty map is used.
 pub fn resolve_lockfile_versions(manifest_file: &Path, root: &Path, ecosystem: &str) -> HashMap<String, String> {
-    let dir = manifest_file.parent().unwrap_or(root);
+    let start_dir = manifest_file.parent().unwrap_or(root);
     for spec in lockfile_specs().iter().filter(|s| s.ecosystem == ecosystem) {
-        for candidate_dir in [dir, root] {
-            if let Ok(content) = std::fs::read_to_string(candidate_dir.join(spec.file)) {
+        // Walk every ancestor directory from the manifest up to (and
+        // including) the project root, not just the manifest's immediate
+        // parent and the root itself — a workspace member nested more than
+        // one level below the root (e.g. `rust/crates/foo/Cargo.toml` under
+        // a lockfile at `rust/Cargo.lock`) previously never found its own
+        // workspace's lockfile at all, and reported every range-versioned
+        // dependency as unresolvable even though a real lockfile pinned it.
+        let mut dir = start_dir;
+        loop {
+            if let Ok(content) = std::fs::read_to_string(dir.join(spec.file)) {
                 let versions = (spec.parse)(&content);
                 if !versions.is_empty() {
                     return versions;
                 }
+            }
+            if dir == root || !dir.starts_with(root) {
+                break;
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent,
+                None => break,
             }
         }
     }
@@ -1630,6 +1645,22 @@ mod tests {
 
         let versions = resolve_lockfile_versions(&manifest, root, "cargo");
         assert_eq!(versions.get("serde"), Some(&"1.0.210".to_string()), "expected the lockfile next to the manifest, not the root one");
+    }
+
+    #[test]
+    fn resolve_lockfile_versions_walks_up_past_an_intermediate_directory() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // e.g. `<root>/rust/Cargo.lock` for a workspace member at
+        // `<root>/rust/crates/foo/Cargo.toml` — two levels below the
+        // lockfile, one level below `root` itself.
+        fs::create_dir_all(root.join("rust/crates/foo")).unwrap();
+        fs::write(root.join("rust/Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.210\"\n").unwrap();
+        let manifest = root.join("rust/crates/foo/Cargo.toml");
+        fs::write(&manifest, "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n").unwrap();
+
+        let versions = resolve_lockfile_versions(&manifest, root, "cargo");
+        assert_eq!(versions.get("serde"), Some(&"1.0.210".to_string()), "expected the intermediate rust/Cargo.lock to be found, not skipped");
     }
 
     #[test]
