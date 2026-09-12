@@ -257,40 +257,56 @@ WHERE pr_url IS NOT NULL
   AND id NOT IN (SELECT project_id FROM pull_requests WHERE kind = 'onboarding');
 "#;
 
+/// One migration: a stable, never-reused version number plus its DDL.
+/// `run_migrations` (`store.rs`) records each applied version in
+/// `schema_migrations` so a migration runs at most once — unlike the old
+/// scheme (every entry re-run on every `open()`, relying on `ALTER TABLE
+/// ... ADD COLUMN` being safe to repeat forever), which had no way to
+/// express a migration that *isn't* a repeatable additive `ADD COLUMN`
+/// (a rename, a drop, a data backfill that must not run twice). Version
+/// numbers are assigned in the order migrations were written and must
+/// never be reused or reordered — `run_migrations` uses the number itself
+/// as the "already applied" key, not the array index.
+pub(crate) type Migration = (u32, &'static str);
+
 /// Same forward-compatible-migration dance as the JS original: `ALTER
 /// TABLE ... ADD COLUMN` against a table that might already have the
-/// column (an existing DB from before this column existed), swallowing
-/// only the "duplicate column" error.
-pub(crate) const MIGRATIONS: &[&str] = &[
-    "ALTER TABLE issues ADD COLUMN score INTEGER",
-    "ALTER TABLE issues ADD COLUMN cross_file INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE issues ADD COLUMN chain_json TEXT",
-    "ALTER TABLE issues ADD COLUMN cwe TEXT",
-    "ALTER TABLE projects ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'",
-    "ALTER TABLE projects ADD COLUMN scan_location TEXT",
-    "ALTER TABLE projects ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE projects ADD COLUMN schedule_interval TEXT",
-    "ALTER TABLE projects ADD COLUMN next_scheduled_run_at TEXT",
-    "ALTER TABLE projects ADD COLUMN last_scheduled_run_at TEXT",
-    "ALTER TABLE projects ADD COLUMN last_scheduled_status TEXT",
-    "ALTER TABLE projects ADD COLUMN last_scheduled_error TEXT",
-    "ALTER TABLE api_keys ADD COLUMN created_by TEXT",
-    "ALTER TABLE api_keys ADD COLUMN created_via TEXT NOT NULL DEFAULT 'cli'",
-    "ALTER TABLE projects ADD COLUMN source_commit_sha TEXT",
-    "ALTER TABLE projects ADD COLUMN shipped_commit_sha TEXT",
-    "ALTER TABLE retained_sources ADD COLUMN tier TEXT NOT NULL DEFAULT 'full'",
-    "ALTER TABLE issues ADD COLUMN owasp TEXT",
-    "ALTER TABLE issues ADD COLUMN tool TEXT",
-    "ALTER TABLE issues ADD COLUMN references_json TEXT",
-    "ALTER TABLE issues ADD COLUMN duplicate_ref_json TEXT",
-    "ALTER TABLE dependency_scan_cache ADD COLUMN previous_scan_json TEXT",
+/// column (an existing DB from before this column existed, migrated back
+/// when every entry here re-ran unconditionally), swallowing only the
+/// "duplicate column" error. `run_migrations` still needs this fallback
+/// once, on first run against such a DB, to backfill `schema_migrations`
+/// without erroring — new migrations appended after this comment run
+/// exactly once and don't need their DDL to tolerate re-application.
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    (1, "ALTER TABLE issues ADD COLUMN score INTEGER"),
+    (2, "ALTER TABLE issues ADD COLUMN cross_file INTEGER NOT NULL DEFAULT 0"),
+    (3, "ALTER TABLE issues ADD COLUMN chain_json TEXT"),
+    (4, "ALTER TABLE issues ADD COLUMN cwe TEXT"),
+    (5, "ALTER TABLE projects ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'"),
+    (6, "ALTER TABLE projects ADD COLUMN scan_location TEXT"),
+    (7, "ALTER TABLE projects ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 0"),
+    (8, "ALTER TABLE projects ADD COLUMN schedule_interval TEXT"),
+    (9, "ALTER TABLE projects ADD COLUMN next_scheduled_run_at TEXT"),
+    (10, "ALTER TABLE projects ADD COLUMN last_scheduled_run_at TEXT"),
+    (11, "ALTER TABLE projects ADD COLUMN last_scheduled_status TEXT"),
+    (12, "ALTER TABLE projects ADD COLUMN last_scheduled_error TEXT"),
+    (13, "ALTER TABLE api_keys ADD COLUMN created_by TEXT"),
+    (14, "ALTER TABLE api_keys ADD COLUMN created_via TEXT NOT NULL DEFAULT 'cli'"),
+    (15, "ALTER TABLE projects ADD COLUMN source_commit_sha TEXT"),
+    (16, "ALTER TABLE projects ADD COLUMN shipped_commit_sha TEXT"),
+    (17, "ALTER TABLE retained_sources ADD COLUMN tier TEXT NOT NULL DEFAULT 'full'"),
+    (18, "ALTER TABLE issues ADD COLUMN owasp TEXT"),
+    (19, "ALTER TABLE issues ADD COLUMN tool TEXT"),
+    (20, "ALTER TABLE issues ADD COLUMN references_json TEXT"),
+    (21, "ALTER TABLE issues ADD COLUMN duplicate_ref_json TEXT"),
+    (22, "ALTER TABLE dependency_scan_cache ADD COLUMN previous_scan_json TEXT"),
     // Dual-custody approval for critical-severity overrides (see
     // `overrides.rs`'s `add_pending_override`/`approve_override`/
     // `reject_override`) — every pre-existing row (and every row inserted
     // via the ordinary `add_override`) defaults to `'approved'`, so this
     // migration changes nothing about how any existing override already
     // resolves an issue.
-    "ALTER TABLE overrides ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'",
-    "ALTER TABLE overrides ADD COLUMN approved_by_email TEXT",
-    "ALTER TABLE overrides ADD COLUMN approved_at TEXT",
+    (23, "ALTER TABLE overrides ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'"),
+    (24, "ALTER TABLE overrides ADD COLUMN approved_by_email TEXT"),
+    (25, "ALTER TABLE overrides ADD COLUMN approved_at TEXT"),
 ];

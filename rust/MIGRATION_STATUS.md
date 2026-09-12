@@ -1,5 +1,10 @@
 # Rust rewrite — migration status
 
+> **Historical log, not actively maintained.** This file tracks real
+> behavioral findings from the Node→Rust port itself (the last entry is
+> 2026-09-02). Feature work since then — including the GHAS-bypass-hardening
+> crates — is documented in `CLAUDE.md` instead, not backfilled here.
+
 ## New crate: `auto-fix-pr` — Dependabot-parity auto-fix PR bot (2026-09-02)
 
 GHAS-bypass-hardening gap: `scheduled-rescan` detects newly-disclosed CVEs

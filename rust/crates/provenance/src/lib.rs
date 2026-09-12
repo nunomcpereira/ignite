@@ -3,6 +3,7 @@
 //! (no keyless/KMS signing, no transparency-log entry, no verified
 //! builder identity) — a same-shape, unsigned in-toto Statement/SLSA-
 //! provenance-v1 predicate recording what was scanned, by what, and when.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::walk_files;
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

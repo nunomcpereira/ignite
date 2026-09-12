@@ -6,6 +6,7 @@
 //!
 //! `FAST_MODE_TASKS` filtering (secrets/governance/semanticSast/
 //! fileEncapsulation only) is implemented.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::DbStore;
 use ignite_override_engine::{CheckResult, CodeqlFinding as OeCodeqlFinding, CodeqlResult, Issue, LlmFinding as OeLlmFinding, LlmResult, Phase4Inputs, RawFinding};

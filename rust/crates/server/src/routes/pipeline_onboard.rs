@@ -17,6 +17,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use futures::FutureExt;
 use ignite_override_engine::{validate_overrides, Issue, Severity, SubmittedOverride};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -123,6 +124,19 @@ impl PipelineError {
     }
 }
 
+/// Best-effort extraction of a panic payload's message — covers the two
+/// shapes `panic!`/`.unwrap()`/`.expect()` actually produce (`&str` for a
+/// string-literal panic message, `String` for a formatted one).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
     ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone(), owasp: i.owasp.clone(), tool: i.tool.clone(), references: if i.references.is_empty() { None } else { Some(serde_json::to_value(&i.references).unwrap()) }, duplicate_ref: i.duplicate_ref.clone() }
 }
@@ -181,7 +195,12 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
     let mut repo_url: Option<String> = None;
     let mut pr_url: Option<String> = None;
 
-    let result: Result<(), PipelineError> = async {
+    // See pipeline_validate.rs's identical comment: without catch_unwind
+    // here, a panic anywhere inside this block would skip the staging-dir/
+    // walk-cache cleanup below entirely, leaking both for the rest of the
+    // process's lifetime and violating this codebase's own "always removed
+    // regardless of success or failure" hardening invariant.
+    let result: Result<(), PipelineError> = match std::panic::AssertUnwindSafe(async {
         logger.status(1, "running", None);
         if !GITHUB_NAME_RE.is_match(&org) {
             return Err(PipelineError::new(1, format!("Invalid GitHub organization name: \"{org}\"")));
@@ -380,8 +399,13 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         }
 
         Ok(())
-    }
-    .await;
+    })
+    .catch_unwind()
+    .await
+    {
+        Ok(r) => r,
+        Err(panic) => Err(PipelineError::new(0, format!("internal error: {}", panic_message(&*panic)))),
+    };
 
     let phases = logger.phase_summary();
     let events = logger.events();

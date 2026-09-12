@@ -5,6 +5,7 @@
 //! .env-file / CODEOWNERS presence checks. HTTP-framework-specific pieces
 //! (Express's `req`/`res`, multer upload handling) are represented here as
 //! plain structs an axum handler will construct, not ported as-is.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_auth::is_valid_email;
 use ignite_fs_utils::{is_env_template_file, is_gitignored, load_gitignore_patterns, walk_files};

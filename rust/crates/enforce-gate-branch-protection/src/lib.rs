@@ -52,11 +52,38 @@
 //! `ignite_github_api::GithubApi::gh_api_write`, which already detects a
 //! non-scalar field and routes through the raw REST fallback instead of
 //! mangling it through `-f`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_github_api::{is_valid_github_owner, parse_org_repo, GithubApi};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+
+/// Replaces this crate's previous ad-hoc `Result<_, String>` — every
+/// existing caller (`main.rs`'s `eprintln!("{e}")` sites,
+/// `repository_events_webhook.rs`'s `tracing::warn!("...{e}")`) only ever
+/// displays the error, never matches on its text, so `Display` rendering
+/// identical to the old strings is what matters, not the variant shape.
+/// `From<String>`/`From<&str>` let every existing `Err(format!(...))` /
+/// `Err("literal".to_string())` / `ok_or("literal")?` site keep compiling
+/// unchanged — this crate's own errors are always just a rendered
+/// message, and `ignite_github_api::parse_org_repo`'s `Result<_, String>`
+/// (out of scope to convert here — that crate has much wider fan-out)
+/// still flows through `?` the same way.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct EnforceGateError(String);
+
+impl From<String> for EnforceGateError {
+    fn from(s: String) -> Self {
+        EnforceGateError(s)
+    }
+}
+impl From<&str> for EnforceGateError {
+    fn from(s: &str) -> Self {
+        EnforceGateError(s.to_string())
+    }
+}
 
 #[derive(Debug)]
 pub struct ParsedArgs {
@@ -78,7 +105,7 @@ pub struct ParsedArgs {
     pub check_drift: bool,
 }
 
-pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
+pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, EnforceGateError> {
     let mut repos = Vec::new();
     let mut orgs = Vec::new();
     let mut apply = false;
@@ -100,11 +127,11 @@ pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
                 i += 1;
                 let org = raw.get(i).ok_or("--org requires a value")?;
                 if !is_valid_github_owner(org) {
-                    return Err(format!("Invalid GitHub owner/org: \"{org}\""));
+                    return Err(format!("Invalid GitHub owner/org: \"{org}\"").into());
                 }
                 orgs.push(org.clone());
             }
-            other if other.starts_with("--") => return Err(format!("Unknown flag: {other}")),
+            other if other.starts_with("--") => return Err(format!("Unknown flag: {other}").into()),
             other => repos.push(parse_org_repo(other)?),
         }
         i += 1;
@@ -112,10 +139,10 @@ pub fn parse_args(raw: &[String]) -> Result<ParsedArgs, String> {
     let _ = saw_dry_run_flag; // --dry-run is the (redundant) default; only --apply flips it off.
 
     if repos.is_empty() && orgs.is_empty() {
-        return Err("Usage: enforce-gate-branch-protection <org/repo> [<org/repo>...] [--org <org-name>...] [--apply] [--check-drift]".to_string());
+        return Err("Usage: enforce-gate-branch-protection <org/repo> [<org/repo>...] [--org <org-name>...] [--apply] [--check-drift]".into());
     }
     if check_drift && orgs.is_empty() {
-        return Err("--check-drift requires at least one --org target.".to_string());
+        return Err("--check-drift requires at least one --org target.".into());
     }
     Ok(ParsedArgs { repos, orgs, apply, check_drift })
 }
@@ -149,7 +176,7 @@ pub struct PlannedCall {
     pub body: Value,
 }
 
-pub async fn plan_for_repo(runner: &ToolRunner, org: &str, repo: &str) -> Result<PlannedCall, String> {
+pub async fn plan_for_repo(runner: &ToolRunner, org: &str, repo: &str) -> Result<PlannedCall, EnforceGateError> {
     let full_name = format!("{org}/{repo}");
     let api = ignite_github_api::GithubApi::new(runner);
     let default_branch = api.default_branch(&full_name, &ignite_github_api::resolve_server_github_token()).await.map_err(|e| format!("Failed to look up {full_name}: {e}"))?;
@@ -165,7 +192,7 @@ pub fn print_plan(plan: &PlannedCall) {
     println!("{}", serde_json::to_string_pretty(&plan.body).unwrap_or_default().lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n"));
 }
 
-pub async fn apply_plan(runner: &ToolRunner, plan: &PlannedCall) -> Result<(), String> {
+pub async fn apply_plan(runner: &ToolRunner, plan: &PlannedCall) -> Result<(), EnforceGateError> {
     let tmp = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     std::fs::write(tmp.path(), serde_json::to_vec(&plan.body).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let args = vec!["api".to_string(), "-X".to_string(), "PUT".to_string(), format!("repos/{}/branches/{}/protection", plan.full_name, plan.default_branch), "--input".to_string(), tmp.path().to_string_lossy().to_string()];
@@ -224,7 +251,7 @@ pub fn org_ruleset_payload() -> Value {
 /// The `id` of `org`'s existing ruleset named `ORG_RULESET_NAME`, if any
 /// — read-only, safe in dry-run. `Some` means `plan_for_org` should
 /// `PUT` (update in place) rather than `POST` (create a duplicate).
-pub async fn find_existing_org_ruleset_id(api: &GithubApi<'_>, org: &str, token: &str) -> Result<Option<u64>, String> {
+pub async fn find_existing_org_ruleset_id(api: &GithubApi<'_>, org: &str, token: &str) -> Result<Option<u64>, EnforceGateError> {
     let rulesets = api.gh_api_get(&format!("orgs/{org}/rulesets"), token).await.map_err(|e| format!("Failed to list rulesets for org {org}: {e}"))?;
     Ok(rulesets
         .and_then(|v| v.as_array().cloned())
@@ -308,7 +335,7 @@ pub struct OrgPlannedCall {
     pub drift: Vec<String>,
 }
 
-pub async fn plan_for_org(runner: &ToolRunner, org: &str) -> Result<OrgPlannedCall, String> {
+pub async fn plan_for_org(runner: &ToolRunner, org: &str) -> Result<OrgPlannedCall, EnforceGateError> {
     let api = GithubApi::new(runner);
     let token = ignite_github_api::resolve_server_github_token();
     let existing_ruleset_id = find_existing_org_ruleset_id(&api, org, &token).await?;
@@ -342,7 +369,7 @@ pub fn print_org_plan(plan: &OrgPlannedCall) {
     println!("{}", serde_json::to_string_pretty(&plan.body).unwrap_or_default().lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n"));
 }
 
-pub async fn apply_org_plan(runner: &ToolRunner, plan: &OrgPlannedCall) -> Result<(), String> {
+pub async fn apply_org_plan(runner: &ToolRunner, plan: &OrgPlannedCall) -> Result<(), EnforceGateError> {
     let api = GithubApi::new(runner);
     let token = ignite_github_api::resolve_server_github_token();
     let fields: HashMap<String, Value> = match &plan.body {
@@ -410,7 +437,7 @@ mod tests {
     #[test]
     fn parse_args_rejects_invalid_org_name_after_org_flag() {
         let err = parse_args(&["--org".to_string(), "-bad".to_string()]).unwrap_err();
-        assert!(err.contains("Invalid GitHub owner/org"));
+        assert!(err.to_string().contains("Invalid GitHub owner/org"));
     }
 
     #[test]
@@ -432,13 +459,13 @@ mod tests {
     #[test]
     fn parse_args_rejects_invalid_org_repo_spec() {
         let err = parse_args(&["not-a-spec".to_string()]).unwrap_err();
-        assert!(err.contains("org/repo"));
+        assert!(err.to_string().contains("org/repo"));
     }
 
     #[test]
     fn parse_args_rejects_invalid_owner_name() {
         let err = parse_args(&["-bad/repo".to_string()]).unwrap_err();
-        assert!(err.contains("Invalid GitHub owner/org"));
+        assert!(err.to_string().contains("Invalid GitHub owner/org"));
     }
 
     #[test]
@@ -662,7 +689,7 @@ exit 1
     #[test]
     fn parse_args_check_drift_requires_an_org_target() {
         let err = parse_args(&["--check-drift".to_string(), "acme/widgets".to_string()]).unwrap_err();
-        assert!(err.contains("--check-drift requires"));
+        assert!(err.to_string().contains("--check-drift requires"));
     }
 
     #[test]

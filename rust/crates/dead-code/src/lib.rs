@@ -17,6 +17,7 @@
 //! positives than the Node version does when TypeScript happens to be
 //! available. Advisory-only, so the cost of that gap is a human glancing
 //! at one extra candidate, not a wrong block.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, SnippetOptions};
 use ignite_module_graph::{build_module_graph, find_cycles, ModuleGraph, JS_TS_EXT};

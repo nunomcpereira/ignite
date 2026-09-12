@@ -5,6 +5,7 @@
 //! actually ends up installed inside the image. Off by default: the one
 //! Phase 4 check that needs a real image build, not just a static read.
 //! Faithful port of `checks/container-image-vulnerabilities.js`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{is_dockerfile_name, walk_files};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

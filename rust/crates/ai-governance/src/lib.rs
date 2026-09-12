@@ -8,6 +8,7 @@
 //! caller supplies and an output map of fresh entries the caller persists
 //! — same data, same cache-hit behavior, but decoupled from `ignite-db-store`
 //! so this crate can be tested (and used) without a database at hand.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, hash_buffer, looks_binary, walk_files, Snippet, SnippetOptions};
 use once_cell::sync::Lazy;

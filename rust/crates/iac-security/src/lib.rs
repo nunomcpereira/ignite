@@ -1,6 +1,7 @@
 //! IaC/container misconfiguration scan (Dockerfiles, Terraform, Kubernetes
 //! manifests, Helm charts) via Trivy (primary) + Checkov + Hadolint,
 //! running concurrently. Faithful port of `checks/iac-security.js`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, is_dockerfile_name, looks_binary, walk_files, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

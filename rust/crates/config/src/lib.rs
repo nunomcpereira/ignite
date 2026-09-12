@@ -11,10 +11,29 @@
 //! mutating the typed struct directly — one block per JS `if
 //! (process.env.X) ...` line, in the same order, for an easy side-by-side
 //! diff against config.js.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::{Path, PathBuf};
+
+/// Placeholder shown by a redacted-`Debug` config struct in place of a
+/// secret field's real value — never the value itself, so an accidental
+/// `{:?}`/`tracing::debug!("{:?}", config)` on a struct holding an API
+/// key, webhook secret, or SMTP password can't leak it into logs.
+const REDACTED: &str = "[REDACTED]";
+
+fn redact_str(s: &str) -> &str {
+    if s.is_empty() {
+        ""
+    } else {
+        REDACTED
+    }
+}
+
+fn redact_opt(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(|s| if s.is_empty() { "" } else { REDACTED })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,7 +107,7 @@ pub struct AuditLogConfig {
     pub sinks: Vec<AuditSinkConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditSinkConfig {
     pub url: String,
@@ -96,6 +115,11 @@ pub struct AuditSinkConfig {
     pub kind: String,
     #[serde(default)]
     pub token: Option<String>,
+}
+impl std::fmt::Debug for AuditSinkConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuditSinkConfig").field("url", &self.url).field("kind", &self.kind).field("token", &redact_opt(&self.token)).finish()
+    }
 }
 
 /// GHAS-parity SLA tracking: how many days an open issue may sit
@@ -188,12 +212,17 @@ impl Default for LlmConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAiLlmConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+}
+impl std::fmt::Debug for OpenAiLlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiLlmConfig").field("api_key", &redact_str(&self.api_key)).field("base_url", &self.base_url).field("model", &self.model).finish()
+    }
 }
 impl Default for OpenAiLlmConfig {
     fn default() -> Self {
@@ -201,12 +230,17 @@ impl Default for OpenAiLlmConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicLlmConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+}
+impl std::fmt::Debug for AnthropicLlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnthropicLlmConfig").field("api_key", &redact_str(&self.api_key)).field("base_url", &self.base_url).field("model", &self.model).finish()
+    }
 }
 impl Default for AnthropicLlmConfig {
     fn default() -> Self {
@@ -214,7 +248,7 @@ impl Default for AnthropicLlmConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AzureFoundryLlmConfig {
     pub api_key: String,
@@ -229,19 +263,29 @@ pub struct AzureFoundryLlmConfig {
     pub deployment: String,
     pub api_version: String,
 }
+impl std::fmt::Debug for AzureFoundryLlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AzureFoundryLlmConfig").field("api_key", &redact_str(&self.api_key)).field("endpoint", &self.endpoint).field("deployment", &self.deployment).field("api_version", &self.api_version).finish()
+    }
+}
 impl Default for AzureFoundryLlmConfig {
     fn default() -> Self {
         AzureFoundryLlmConfig { api_key: String::new(), endpoint: String::new(), deployment: String::new(), api_version: "2024-10-21".into() }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OauthConfig {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_uri: String,
     pub scope: String,
+}
+impl std::fmt::Debug for OauthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OauthConfig").field("client_id", &self.client_id).field("client_secret", &redact_str(&self.client_secret)).field("redirect_uri", &self.redirect_uri).field("scope", &self.scope).finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,7 +330,7 @@ impl Default for GovernanceConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SmtpConfig {
     pub host: String,
@@ -295,6 +339,11 @@ pub struct SmtpConfig {
     pub user: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<String>,
+}
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConfig").field("host", &self.host).field("port", &self.port).field("secure", &self.secure).field("user", &self.user).field("pass", &redact_opt(&self.pass)).finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,7 +368,7 @@ impl Default for NotificationsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OidcConfig {
     pub issuer: String,
@@ -327,6 +376,11 @@ pub struct OidcConfig {
     pub client_secret: String,
     pub redirect_uri: String,
     pub scope: String,
+}
+impl std::fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcConfig").field("issuer", &self.issuer).field("client_id", &self.client_id).field("client_secret", &redact_str(&self.client_secret)).field("redirect_uri", &self.redirect_uri).field("scope", &self.scope).finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -563,7 +617,7 @@ impl Default for DependencyGraphConfig {
     fn default() -> Self { DependencyGraphConfig { enabled: true } }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeScanningConfig {
     pub enabled: bool,
@@ -593,6 +647,11 @@ pub struct CodeScanningConfig {
 }
 impl Default for CodeScanningConfig {
     fn default() -> Self { CodeScanningConfig { enabled: true, sync_dismissals: true, inbound_webhook_secret: None } }
+}
+impl std::fmt::Debug for CodeScanningConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodeScanningConfig").field("enabled", &self.enabled).field("sync_dismissals", &self.sync_dismissals).field("inbound_webhook_secret", &redact_opt(&self.inbound_webhook_secret)).finish()
+    }
 }
 
 fn default_true() -> bool {
@@ -656,13 +715,18 @@ impl Default for SecretVerificationConfig {
 /// `gh_create_issue` summarizing the bypass — an operator's explicit
 /// call to make, not a default this should silently do on an
 /// unattended webhook delivery.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PushProtectionConfig {
     #[serde(default)]
     pub inbound_webhook_secret: Option<String>,
     #[serde(default)]
     pub auto_file_issue: bool,
+}
+impl std::fmt::Debug for PushProtectionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushProtectionConfig").field("inbound_webhook_secret", &redact_opt(&self.inbound_webhook_secret)).field("auto_file_issue", &self.auto_file_issue).finish()
+    }
 }
 
 /// Inbound `secret_scanning_alert` webhook parity — `code_scanning.enabled`'s
@@ -674,11 +738,16 @@ pub struct PushProtectionConfig {
 /// `routes/secret_scanning_webhook.rs`. Same posture as the other two
 /// inbound webhooks: unset secret means the endpoint 404s, so an
 /// unconfigured deployment exposes nothing new.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretScanningConfig {
     #[serde(default)]
     pub inbound_webhook_secret: Option<String>,
+}
+impl std::fmt::Debug for SecretScanningConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretScanningConfig").field("inbound_webhook_secret", &redact_opt(&self.inbound_webhook_secret)).finish()
+    }
 }
 
 /// Zero-touch repo onboarding — GitHub's org-level "Security Configurations"
@@ -692,7 +761,7 @@ pub struct SecretScanningConfig {
 /// both off by default — applying branch protection and kicking off a real
 /// clone-and-scan against a repo the operator didn't explicitly name are
 /// each their own explicit opt-in, same posture as `pushProtection.autoFileIssue`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryEventsConfig {
     #[serde(default)]
@@ -701,6 +770,11 @@ pub struct RepositoryEventsConfig {
     pub apply_org_ruleset: bool,
     #[serde(default)]
     pub trigger_baseline_scan: bool,
+}
+impl std::fmt::Debug for RepositoryEventsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RepositoryEventsConfig").field("inbound_webhook_secret", &redact_opt(&self.inbound_webhook_secret)).field("apply_org_ruleset", &self.apply_org_ruleset).field("trigger_baseline_scan", &self.trigger_baseline_scan).finish()
+    }
 }
 
 /// Dual-custody / role-based approval for critical-severity overrides —
@@ -1209,6 +1283,34 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use tempfile::tempdir;
+
+    #[test]
+    fn debug_redacts_secret_fields_but_keeps_non_secret_fields_visible() {
+        let mut cfg = Config::default();
+        cfg.llm.openai.api_key = "sk-live-supersecret".to_string();
+        cfg.github.oauth.client_secret = "oauth-secret-value".to_string();
+        cfg.security.code_scanning.inbound_webhook_secret = Some("whsec-supersecret".to_string());
+        cfg.notifications.smtp.pass = Some("smtp-password".to_string());
+        let out = format!("{cfg:?}");
+        assert!(!out.contains("sk-live-supersecret"));
+        assert!(!out.contains("oauth-secret-value"));
+        assert!(!out.contains("whsec-supersecret"));
+        assert!(!out.contains("smtp-password"));
+        assert!(out.contains("[REDACTED]"));
+        // Non-secret fields must still be visible for the redaction to be
+        // useful for debugging rather than swallowing the whole struct.
+        assert!(out.contains("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn debug_redacts_empty_secret_as_empty_not_as_redacted() {
+        // An unset secret should read as empty, not as "[REDACTED]" —
+        // that distinction (configured-but-hidden vs. not-configured-at-all)
+        // matters when debugging a deployment.
+        let cfg = Config::default();
+        let out = format!("{:?}", cfg.llm.openai);
+        assert!(!out.contains("[REDACTED]"));
+    }
 
     // Env vars are process-global state — serialize tests that touch them
     // so they don't race each other (same reasoning as the Node suite's

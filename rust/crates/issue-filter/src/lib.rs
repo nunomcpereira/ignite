@@ -4,6 +4,7 @@
 //! the files I just touched get flagged" view). This is a response *view*,
 //! never a gate: callers must still resolve/override every issue in the
 //! full list for the run to pass.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_override_engine::Issue;
 use std::collections::HashSet;

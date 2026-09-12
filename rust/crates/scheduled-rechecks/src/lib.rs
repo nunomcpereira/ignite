@@ -7,6 +7,7 @@
 //! check, the ORT-based license/vulnerability checks, act/Docker-based
 //! local CI, and the governance-workflow fetch) — porting them faithfully
 //! needs those pieces to exist first, not a stubbed-out orchestrator.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use chrono::{DateTime, Datelike, Days, TimeZone, Timelike, Utc};
 

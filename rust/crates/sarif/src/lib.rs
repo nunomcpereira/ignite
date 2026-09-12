@@ -4,6 +4,7 @@
 //! without booting a server. `routes/sarif.js`'s HTTP wiring (live
 //! in-flight job vs. completed-job DB read vs. 404) isn't ported here —
 //! it needs the HTTP server layer, which doesn't exist yet.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::IssueRow;
 use once_cell::sync::Lazy;

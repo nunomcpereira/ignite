@@ -5,6 +5,7 @@
 //! checkpoints (a zip archive of pickles). Deliberately scoped to
 //! pickle-based formats only: `.safetensors`/`.onnx` are not pickle-based
 //! and out of scope by design.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{relative_to_root, walk_files};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

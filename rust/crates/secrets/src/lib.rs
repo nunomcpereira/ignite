@@ -7,6 +7,7 @@
 //! applies to gitleaks' raw results. The caller (`phase4-orchestrator`) is
 //! responsible for calling `run_gitleaks_scan` + `merge_gitleaks_findings`
 //! after `check_secrets` when `security.gitleaks.enabled` is set.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{
     build_snippet, hash_buffer, is_gitignored, load_gitignore_patterns, looks_binary, walk_files, IgnorePattern, Snippet,
@@ -17,6 +18,21 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// Replaces `test_pattern_against_sample`'s previous `Result<_, String>`
+/// — its one caller (`routes/custom_secret_patterns.rs`) only ever
+/// forwards the rendered message into a 400 response body, never matches
+/// on it, so `Display` is what matters. `From<String>` lets the existing
+/// `.map_err(|e| format!(...))?` site keep working unchanged.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct PatternTestError(String);
+
+impl From<String> for PatternTestError {
+    fn from(s: String) -> Self {
+        PatternTestError(s)
+    }
+}
 
 // Captures the quote char (if any) separately from the value so callers
 // can tell a string literal from a bare identifier/property-access
@@ -602,12 +618,12 @@ const MAX_PLAYGROUND_MATCHES: usize = 200;
 /// catastrophic-backtracking failure mode, so this is safe to run
 /// synchronously against arbitrary operator-supplied input; the length
 /// caps below exist for sane response sizes, not because of a ReDoS risk.
-pub fn test_pattern_against_sample(regex_str: &str, sample: &str) -> Result<Vec<PatternMatch>, String> {
+pub fn test_pattern_against_sample(regex_str: &str, sample: &str) -> Result<Vec<PatternMatch>, PatternTestError> {
     if regex_str.is_empty() {
-        return Err("Pattern must not be empty.".to_string());
+        return Err("Pattern must not be empty.".to_string().into());
     }
     if regex_str.len() > MAX_CUSTOM_PATTERN_LEN {
-        return Err(format!("Pattern is too long (max {MAX_CUSTOM_PATTERN_LEN} characters)."));
+        return Err(format!("Pattern is too long (max {MAX_CUSTOM_PATTERN_LEN} characters).").into());
     }
     let re = Regex::new(regex_str).map_err(|e| format!("Invalid regex: {e}"))?;
     let truncated = if sample.len() > MAX_PLAYGROUND_SAMPLE_LEN { &sample[..MAX_PLAYGROUND_SAMPLE_LEN] } else { sample };
@@ -960,7 +976,7 @@ id = "generic-api-key"
     #[test]
     fn test_pattern_against_sample_rejects_invalid_regex() {
         let err = test_pattern_against_sample("(unclosed", "sample").unwrap_err();
-        assert!(err.contains("Invalid regex"), "{err}");
+        assert!(err.to_string().contains("Invalid regex"), "{err}");
     }
 
     #[test]
@@ -972,7 +988,7 @@ id = "generic-api-key"
     fn test_pattern_against_sample_rejects_oversized_pattern() {
         let huge = "a".repeat(MAX_CUSTOM_PATTERN_LEN + 1);
         let err = test_pattern_against_sample(&huge, "sample").unwrap_err();
-        assert!(err.contains("too long"), "{err}");
+        assert!(err.to_string().contains("too long"), "{err}");
     }
 
     #[test]

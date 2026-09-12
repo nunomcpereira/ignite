@@ -4,6 +4,7 @@
 //! transparency log) and the verdict is fanned back out to every
 //! file/line occurrence that referenced it. Never throws: any tool/network
 //! failure becomes an "unverifiable" finding rather than aborting the run.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::DbStore;
 use ignite_fs_utils::{build_snippet, is_dockerfile_name, looks_binary, walk_files, Snippet, SnippetOptions};

@@ -10,6 +10,7 @@
 //! constructor-injected there) — this crate ships small working parsers
 //! for `package.json` (npm) and `requirements.txt` (pypi) as a real,
 //! directly-usable default, not a stub.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::walk_files;
 use once_cell::sync::Lazy;
@@ -150,6 +151,24 @@ pub struct PackageHallucinationResult {
 /// and — unlike GuardDog's manifest cache — deliberately isn't persisted,
 /// since a stale "not found" surviving a restart is exactly the failure
 /// mode to avoid.
+///
+/// `MAX_CACHE_ENTRIES` bounds this: `ignite-server` holds one
+/// `PackageHallucinationChecker` in `AppState` for its entire (indefinite)
+/// process lifetime, and every distinct `(ecosystem, package name)` ever
+/// checked across every scan it ever processes was previously inserted
+/// and never removed — an unbounded, attacker/user-influenceable-keyed
+/// leak (package names come straight from uploaded manifests). On
+/// overflow the whole cache is cleared rather than evicting piecemeal
+/// (e.g. LRU) — safe precisely because a cache miss here only costs one
+/// extra registry lookup, never wrong behavior, so the simplest correct
+/// bound is preferred over a more complex eviction policy.
+#[cfg(not(test))]
+const MAX_CACHE_ENTRIES: usize = 50_000;
+// Small in tests so the eviction path is actually cheap to exercise
+// directly, rather than needing 50,000 inserts to prove it fires.
+#[cfg(test)]
+const MAX_CACHE_ENTRIES: usize = 5;
+
 pub struct PackageHallucinationChecker<C: RegistryChecker> {
     checker: C,
     cache: Mutex<HashMap<String, Option<bool>>>,
@@ -166,7 +185,11 @@ impl<C: RegistryChecker> PackageHallucinationChecker<C> {
             return *cached;
         }
         let result = self.checker.exists(ecosystem, name).await;
-        self.cache.lock().unwrap().insert(key, result);
+        let mut cache = self.cache.lock().unwrap();
+        if cache.len() >= MAX_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(key, result);
         result
     }
 
@@ -270,6 +293,19 @@ mod tests {
         assert_eq!(result.findings.len(), 1);
         assert!(result.findings[0].message.contains("definitely-hallucinated-pkg-xyz"));
         ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn registry_cache_never_grows_past_max_entries() {
+        // AppState holds one PackageHallucinationChecker for the server's
+        // entire process lifetime — this cache must never grow unbounded
+        // as new, distinct (ecosystem, package) pairs get checked across
+        // every scan the server ever processes.
+        let checker = PackageHallucinationChecker::new(FakeRegistry { hallucinated: vec![] });
+        for i in 0..(MAX_CACHE_ENTRIES * 4) {
+            checker.exists_on_registry("npm", &format!("pkg-{i}")).await;
+            assert!(checker.cache.lock().unwrap().len() <= MAX_CACHE_ENTRIES, "cache grew past MAX_CACHE_ENTRIES after {} inserts", i + 1);
+        }
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@
 //! anchored at its first occurrence, referencing the second in the
 //! message. No built-in fallback — duplicate-block detection needs the
 //! real tool.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, relative_to_root, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

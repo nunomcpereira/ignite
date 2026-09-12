@@ -53,31 +53,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
-use hmac::{Hmac, Mac};
+use ignite_github_api::verify_webhook_signature;
 use ignite_scheduled_rescan::{rescan_one, AutoFixMode, RescanTarget};
 use serde_json::{json, Value};
-use sha2::Sha256;
 use std::sync::Arc;
-
-type HmacSha256 = Hmac<Sha256>;
-
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
-}
-
-/// Same implementation as the other three inbound webhooks' own copies —
-/// no shared "webhook utils" crate, kept duplicated deliberately (see
-/// those files' own comments on this).
-fn verify_signature(secret: &str, body: &[u8], header_value: &str) -> bool {
-    let Some(hex_sig) = header_value.strip_prefix("sha256=") else { return false };
-    let Some(sig_bytes) = decode_hex(hex_sig) else { return false };
-    let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else { return false };
-    mac.update(body);
-    mac.verify_slice(&sig_bytes).is_ok()
-}
 
 fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, axum::Json(json!({ "error": message.into() }))).into_response()
@@ -90,7 +69,7 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
     let Some(signature) = headers.get("x-hub-signature-256").and_then(|v| v.to_str().ok()) else {
         return err(StatusCode::UNAUTHORIZED, "Missing X-Hub-Signature-256 header.".to_string());
     };
-    if !verify_signature(secret, &body, signature) {
+    if !verify_webhook_signature(secret, &body, signature) {
         return err(StatusCode::UNAUTHORIZED, "Signature verification failed.".to_string());
     }
 
@@ -170,22 +149,6 @@ pub fn router() -> Router<Arc<AppState>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn verify_signature_accepts_a_correctly_signed_body() {
-        let mut mac = HmacSha256::new_from_slice(b"topsecret").unwrap();
-        mac.update(b"hello world");
-        let sig = hex::encode(mac.finalize().into_bytes());
-        assert!(verify_signature("topsecret", b"hello world", &format!("sha256={sig}")));
-    }
-
-    #[test]
-    fn verify_signature_rejects_wrong_secret() {
-        let mut mac = HmacSha256::new_from_slice(b"topsecret").unwrap();
-        mac.update(b"hello world");
-        let sig = hex::encode(mac.finalize().into_bytes());
-        assert!(!verify_signature("wrongsecret", b"hello world", &format!("sha256={sig}")));
-    }
-
     #[tokio::test]
     async fn webhook_404s_when_secret_not_configured() {
         let db_dir = tempfile::tempdir().unwrap();
@@ -205,11 +168,5 @@ mod tests {
         });
         let res = repository_events_webhook(State(state), HeaderMap::new(), Bytes::new()).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-    }
-
-    mod hex {
-        pub fn encode(bytes: impl AsRef<[u8]>) -> String {
-            bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
-        }
     }
 }

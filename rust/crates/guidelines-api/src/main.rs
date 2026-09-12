@@ -1,6 +1,7 @@
 //! REST API exposing the same company AI validation guidelines as
 //! mcp-server.js, for callers that want plain HTTP instead of MCP.
 //! Faithful port of `guidelines-api.js`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use axum::extract::{ConnectInfo, Path, Query};
 use axum::http::StatusCode;

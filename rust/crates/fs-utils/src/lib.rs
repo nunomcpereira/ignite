@@ -8,6 +8,7 @@
 //! event loop, not because directory traversal is actually asynchronous
 //! I/O-bound in a way that benefits from it. A plain synchronous walk (this
 //! port) is the more direct translation of what the code is doing.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

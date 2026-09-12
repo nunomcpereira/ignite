@@ -180,18 +180,19 @@ impl DbStore {
 
         let mut count_stmt = conn.prepare_cached("SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND status = 'open' AND (?2 IS NULL OR category = ?2)").unwrap();
         let mut sla_stmt = conn
-            .prepare_cached(
+            .prepare_cached(&format!(
                 "SELECT COUNT(*) FROM issues i
                  JOIN issue_first_seen f ON f.org = ?1 AND f.repo = ?2 AND f.issue_id = i.issue_id
                  WHERE i.project_id = ?3 AND i.status = 'open'
                    AND (julianday('now') - julianday(f.first_detected_at)) > (
                      CASE
-                       WHEN COALESCE(i.score, 0) >= 9 THEN ?4
+                       WHEN COALESCE(i.score, 0) >= {} THEN ?4
                        WHEN COALESCE(i.score, 0) >= 7 THEN ?5
                        ELSE ?6
                      END
                    )",
-            )
+                ignite_override_engine::CRITICAL_SCORE_THRESHOLD
+            ))
             .unwrap();
         let mut acks_stmt = conn
             .prepare_cached(

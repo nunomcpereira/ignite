@@ -39,6 +39,7 @@
 //!   dependency is later fixed some other way, or track an in-flight
 //!   PR's review state. An operator/cron still supervises this the same
 //!   way `scheduled-rescan` is supervised.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod dependabot_config;
 

@@ -10,6 +10,7 @@
 //! gate like the other thirteen external tools — a malicious/vulnerable
 //! workflow is exactly the kind of supply-chain risk a compliance
 //! gatekeeper exists to catch before a repo is pushed.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, relative_to_root, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
@@ -172,7 +173,21 @@ fn parse_zizmor_output(root: &Path, stdout: &str) -> Vec<GhaSecurityFinding> {
         let detail_loc = find_primary_location(&locations).unwrap_or(first_loc);
 
         // zizmor's row/column are 0-indexed (tree-sitter convention).
-        let line = find_first_num(detail_loc, &["row", "line"]).map(|n| (n + 1).max(1) as usize).unwrap_or(1);
+        //
+        // Prefer `location_point`'s explicit `concrete.location.start_point`
+        // path over the generic `find_first_num` tree walk: serde_json's
+        // default `Map` (this crate doesn't enable the `preserve_order`
+        // feature) iterates object keys alphabetically, not in JSON source
+        // order — so for a `location` object containing both `start_point`
+        // and `end_point`, the walk visits `end_point` first ('e' < 's') and
+        // returns *its* row whenever the two differ, silently reporting the
+        // end of a multi-line Primary span as the finding's line instead of
+        // the start. `find_first_num` remains the fallback for a future
+        // zizmor schema shape that doesn't nest under `start_point` at all.
+        let line = location_point(detail_loc, "start_point")
+            .map(|(row, _)| row + 1)
+            .or_else(|| find_first_num(detail_loc, &["row", "line"]).map(|n| (n + 1).max(1) as usize))
+            .unwrap_or(1);
         let feature = detail_loc.get("concrete").and_then(|c| c.get("feature")).and_then(|v| v.as_str());
 
         let content = std::fs::read_to_string(root.join(&rel_file)).ok();
@@ -361,6 +376,42 @@ mod tests {
         assert!(findings[1].message.contains("env.B"));
         assert!(findings[0].code.is_some(), "a resolvable source location should produce a code snippet");
         assert!(findings[1].code.is_some());
+    }
+
+    #[test]
+    fn line_uses_start_point_not_end_point_for_a_multi_line_span() {
+        // Regression test: serde_json's default (non-preserve_order) Map
+        // iterates object keys alphabetically, so a naive generic tree
+        // search over a location object containing both start_point/
+        // end_point visits "end_point" before "start_point" and would
+        // silently report the finding on the wrong (end) line whenever a
+        // Primary location spans multiple lines.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::write(root.join(".github/workflows/ci.yml"), "jobs:\n  build:\n    steps:\n      - run: |\n          multi\n          line\n          block\n").unwrap();
+
+        let stdout = serde_json::json!([
+            {
+                "ident": "template-injection",
+                "desc": "code injection via template expansion",
+                "determinations": { "severity": "Low" },
+                "locations": [
+                    {
+                        "symbolic": { "key": { "Local": { "verbatim_path": ".github/workflows/ci.yml" } }, "kind": "Primary" },
+                        "concrete": {
+                            "location": { "start_point": { "row": 3, "column": 6 }, "end_point": { "row": 6, "column": 0 } },
+                            "feature": "run: |\n          multi\n          line\n          block\n"
+                        }
+                    }
+                ]
+            }
+        ])
+        .to_string();
+
+        let findings = parse_zizmor_output(root, &stdout);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 4, "must report the start row (4), not the end row (7)");
     }
 
     #[test]

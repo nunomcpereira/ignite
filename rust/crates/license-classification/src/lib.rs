@@ -3,6 +3,7 @@
 //! of the pure (no-network) pieces of server.js's dependency-license
 //! logic: `LICENSE_TIERS`, `normalizeLicenseId`, `classifyLicenseTier`,
 //! `bestEffortVersion`, `isInternalDependencyRef`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use once_cell::sync::Lazy;
 use regex::Regex;

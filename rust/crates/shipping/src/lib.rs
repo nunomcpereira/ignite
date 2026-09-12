@@ -2,6 +2,7 @@
 //! Provisions (or reuses) the target GitHub repo, pushes the compliant
 //! code, and — when an org ruleset requires it — opens a PR into main
 //! with auto-merge armed, watching the required remote checks.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::DbStore;
 use ignite_github_api::GithubApi;

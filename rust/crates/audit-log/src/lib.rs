@@ -20,6 +20,7 @@
 //! token verification unimplemented), a materially different integration
 //! than "POST JSON to an HTTPS URL". A generic HTTPS webhook already
 //! covers any collector that fronts S3 with its own ingest endpoint.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

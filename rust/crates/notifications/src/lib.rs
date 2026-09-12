@@ -4,6 +4,7 @@
 //! `send*Notification`'s actual SMTP send (nodemailer, with a sendmail
 //! fallback) isn't wired up yet — needs a mail-transport crate decision
 //! and the HTTP/background-job layer that would call it.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::BTreeMap;
 

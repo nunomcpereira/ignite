@@ -17,6 +17,7 @@
 //!    bundling all of them. Mirrors `ignite-auto-fix-pr`'s clone/branch/
 //!    commit/push/PR-open pattern, generalized from "one PR per CVE fix"
 //!    to "one PR for every accepted finding fix".
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::Snippet;
 use ignite_github_api::GithubApi;
@@ -27,6 +28,21 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+
+/// Replaces `generate_fix_diff_local`'s previous `Result<_, String>` —
+/// its one caller (`routes/fix_pr.rs`'s `generate_diff` handler) only
+/// ever forwards the rendered message into a 502 response body, never
+/// matches on it, so `Display` is what matters. `From<String>` lets every
+/// existing `.map_err(|e| format!(...))?` site keep working unchanged.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct FixDiffError(String);
+
+impl From<String> for FixDiffError {
+    fn from(s: String) -> Self {
+        FixDiffError(s)
+    }
+}
 
 const ISSUE_SUGGEST_FIX_PROMPT: &str = "You are a senior software engineer proposing a concrete fix for one single flagged code issue, using the exact numbered code snippet shown.\nPropose a corrected replacement for ONLY the exact line range shown in the snippet (from its first to its last numbered line) — do not rewrite the whole file, do not renumber lines, do not add lines outside that range.\nRespond in EXACTLY this plain-text format and nothing else — no JSON, no code fences, no text before or after:\nEXPLANATION: <1-3 sentences: what changed and why it fixes the issue>\nREPLACEMENT:\n<the corrected text for that exact line range, copied verbatim with no escaping, newline-separated, no line-number prefixes>\nIf you cannot safely propose a fix from the snippet alone, respond:\nEXPLANATION: <why not>\nREPLACEMENT: NONE";
 
@@ -547,9 +563,9 @@ pub struct LocalFixDiff {
 /// diffs/format-patches against that baseline — so the output is a
 /// normal unified diff with real `a/<path> b/<path>` headers despite
 /// never touching a real git history.
-pub async fn generate_fix_diff_local(runner: &ToolRunner, root: &Path, candidates: &[FixCandidate], commit_subject: &str) -> Result<LocalFixDiff, String> {
+pub async fn generate_fix_diff_local(runner: &ToolRunner, root: &Path, candidates: &[FixCandidate], commit_subject: &str) -> Result<LocalFixDiff, FixDiffError> {
     if candidates.is_empty() {
-        return Err("no candidates to apply".to_string());
+        return Err("no candidates to apply".to_string().into());
     }
 
     let scratch = tempfile::tempdir().map_err(|e| format!("failed to create scratch dir: {e}"))?;
@@ -580,7 +596,7 @@ pub async fn generate_fix_diff_local(runner: &ToolRunner, root: &Path, candidate
 
     let files_changed = apply_candidates_to_files(repo_dir, candidates).map_err(|e| format!("failed to apply fixes: {e}"))?;
     if files_changed.is_empty() {
-        return Err("none of the candidates' line ranges matched the current file contents".to_string());
+        return Err("none of the candidates' line ranges matched the current file contents".to_string().into());
     }
 
     let diff = git(runner, &repo_dir_str, &["diff"]).await?;

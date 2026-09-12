@@ -8,6 +8,7 @@
 //!
 //! Always dry-run by default (`apply_auto_fix_plan`'s `dry_run: true`) —
 //! actually touching disk requires an explicit `dry_run: false`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use once_cell::sync::Lazy;
 use regex::Regex;

@@ -8,6 +8,7 @@
 //! yet; `scan_dependency_licenses_fallback` alone is what server.js itself
 //! falls back to when ORT isn't installed, so this crate's behavior is
 //! correct (just not ORT-augmented) until that piece is added.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod dependency_diff;
 pub use dependency_diff::{diff_dependency_scans, render_dependency_diff_comment, DependencyChange, DependencyChangeKind, DEPENDENCY_REVIEW_MARKER};

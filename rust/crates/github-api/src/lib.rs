@@ -5,6 +5,7 @@
 //! dependency the same way trivy/semgrep are for their checks — probed
 //! once per `GithubApi` instance, transparently replaced with a direct
 //! HTTPS call carrying the same token when the binary isn't installed.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use base64::Engine;
 use flate2::write::GzEncoder;
@@ -17,6 +18,9 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::time::Duration;
 use tokio::sync::OnceCell;
+
+mod webhook_auth;
+pub use webhook_auth::verify_webhook_signature;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubApiError {

@@ -17,6 +17,7 @@
 //! integration point/content is real and tested) but never actually sent;
 //! this binary always reports it as not sent, with that reason, rather than
 //! silently pretending to send it.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::env;
 

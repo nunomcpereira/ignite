@@ -13,6 +13,7 @@
 //! (one long-lived server on `MCP_HTTP_PORT`, default 51338, all
 //! clients connect over Streamable HTTP at `POST/GET /mcp`), faithful
 //! to `mcp-server.js`'s `main()`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_guidelines::catalog::Severity;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -89,6 +90,49 @@ struct GxpLink {
 struct OverrideEntry {
     issue_id: String,
     justification: String,
+}
+
+/// Every backend override endpoint (`pipeline_onboard.rs`, `effectivate.rs`,
+/// `pipeline_interactive/handlers.rs`) reads each entry's id via
+/// `o.get("issueId")` — this crate's `OverrideEntry` keeps `issue_id`
+/// snake_case (matching every other MCP tool-arg field's incoming schema
+/// casing, e.g. `dry_run`/`run_local_ci`), so passing `Vec<OverrideEntry>`
+/// straight through `serde_json::json!()` would serialize `"issue_id"` and
+/// every submitted override would silently match no issue (`unwrap_or("")`
+/// on the backend). Explicit remapping here, mirroring how every scalar
+/// field elsewhere in this file is manually renamed from its snake_case
+/// Rust field to the backend's camelCase JSON key when forwarding.
+fn overrides_to_json(overrides: &Option<Vec<OverrideEntry>>) -> Value {
+    match overrides {
+        Some(list) => serde_json::Value::Array(list.iter().map(|o| serde_json::json!({ "issueId": o.issue_id, "justification": o.justification })).collect()),
+        None => serde_json::Value::Array(vec![]),
+    }
+}
+
+#[cfg(test)]
+mod overrides_to_json_tests {
+    use super::*;
+
+    #[test]
+    fn overrides_to_json_uses_camel_case_issue_id_key() {
+        // Regression: the backend (pipeline_onboard.rs/effectivate.rs/
+        // pipeline_interactive/handlers.rs) reads each entry via
+        // `o.get("issueId")`. Serializing `OverrideEntry` directly would
+        // emit its Rust field name "issue_id" instead, silently dropping
+        // every override submitted through the MCP tools.
+        let overrides = Some(vec![OverrideEntry { issue_id: "secret::app.js::1".to_string(), justification: "reviewed".to_string() }]);
+        let json = overrides_to_json(&overrides);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].get("issueId").and_then(|v| v.as_str()), Some("secret::app.js::1"));
+        assert!(arr[0].get("issue_id").is_none(), "must not emit the snake_case key");
+        assert_eq!(arr[0].get("justification").and_then(|v| v.as_str()), Some("reviewed"));
+    }
+
+    #[test]
+    fn overrides_to_json_none_becomes_empty_array() {
+        assert_eq!(overrides_to_json(&None), serde_json::json!([]));
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -255,7 +299,7 @@ impl IgniteMcp {
                 "gxpLinks": req.gxp_links,
                 "runLocalCi": req.run_local_ci,
                 "warningDecision": req.warning_decision,
-                "overrides": req.overrides,
+                "overrides": overrides_to_json(&req.overrides),
                 "actor": req.actor,
             }),
         )
@@ -267,7 +311,7 @@ impl IgniteMcp {
     )]
     async fn resolve_review_decision(&self, Parameters(req): Parameters<ResolveReviewDecisionRequest>) -> Result<CallToolResult, McpError> {
         let endpoint = format!("/api/pipeline/{}/review-decision", urlencoding::encode(&req.job_id));
-        self.proxy_to_ignite(&endpoint, serde_json::json!({ "proceed": req.proceed, "overrides": req.overrides, "actor": req.actor })).await
+        self.proxy_to_ignite(&endpoint, serde_json::json!({ "proceed": req.proceed, "overrides": overrides_to_json(&req.overrides), "actor": req.actor })).await
     }
 
     #[tool(
@@ -275,7 +319,7 @@ impl IgniteMcp {
     )]
     async fn effectivate_project(&self, Parameters(req): Parameters<EffectivateProjectRequest>) -> Result<CallToolResult, McpError> {
         let endpoint = format!("/api/projects/{}/effectivate", req.project_id);
-        self.proxy_to_ignite(&endpoint, serde_json::json!({ "overrides": req.overrides, "actor": req.actor })).await
+        self.proxy_to_ignite(&endpoint, serde_json::json!({ "overrides": overrides_to_json(&req.overrides), "actor": req.actor })).await
     }
 
     #[tool(

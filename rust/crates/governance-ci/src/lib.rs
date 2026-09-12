@@ -4,6 +4,7 @@
 //! workflow, localizes its reusable sub-workflow references so `act` can
 //! resolve them, and executes it against the staged project in Docker so
 //! local pass/fail matches what a real PR would get.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::DbStore;
 use ignite_github_api::GithubApi;

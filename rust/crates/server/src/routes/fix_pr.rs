@@ -268,7 +268,7 @@ async fn generate_diff(State(state): State<Arc<AppState>>, crate::auth::RequireA
     let commit_subject = format!("Ignite: fix {} finding(s)", candidates.len());
     match ignite_fix_pr::generate_fix_diff_local(&state.runner, &ctx.root, &candidates, &commit_subject).await {
         Ok(result) => Json(json!({ "ok": true, "diff": result.diff, "patch": result.patch, "filesChanged": result.files_changed })).into_response(),
-        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+        Err(e) => err(StatusCode::BAD_GATEWAY, e.to_string()),
     }
 }
 

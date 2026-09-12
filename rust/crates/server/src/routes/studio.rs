@@ -468,7 +468,7 @@ async fn studio_call_graph(State(state): State<Arc<AppState>>, Path(job_id): Pat
             }
             Err(e) => {
                 log(&format!("✗ {e}"));
-                send(json!({ "type": "done", "ok": false, "error": e }));
+                send(json!({ "type": "done", "ok": false, "error": e.to_string() }));
             }
         }
     });
@@ -563,7 +563,9 @@ async fn codeql_query(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
         let result = match validation {
             Err(e) => Err(e),
             Ok((db_dir, timeout_ms)) => {
-                let run = ignite_codeql_cross_file::run_custom_codeql_query(&ctx.root, &db_dir, &language, &query_text, &state.runner, timeout_ms, |line| log(line));
+                let run = async {
+                    ignite_codeql_cross_file::run_custom_codeql_query(&ctx.root, &db_dir, &language, &query_text, &state.runner, timeout_ms, |line| log(line)).await.map_err(|e| e.to_string())
+                };
                 // Only an explicit `true` sent through `cancel_tx` counts as
                 // a cancel. A closed channel (`changed()` returning `Err`) is
                 // NOT one — the sender can be dropped by our own cleanup

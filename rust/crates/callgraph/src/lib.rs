@@ -24,6 +24,7 @@
 //!     `fn foo` in the project when there are several — capped at 6
 //!     candidates per call site (see `MAX_AMBIGUOUS_TARGETS`) past which the
 //!     call is dropped rather than fanned out into noise.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_codeql_cross_file::{run_custom_codeql_query, QueryResult};
 use ignite_tool_runner::ToolRunner;
@@ -194,8 +195,8 @@ pub async fn build_codeql_call_graph(
     runner: &ToolRunner,
     timeout_ms: u64,
     log: impl FnMut(&str),
-) -> Result<CallGraph, String> {
-    let query = codeql_call_graph_query(language).ok_or_else(|| format!("No call-graph query available for language \"{language}\"."))?;
+) -> Result<CallGraph, ignite_codeql_cross_file::CodeqlError> {
+    let query = codeql_call_graph_query(language).ok_or_else(|| ignite_codeql_cross_file::CodeqlError::Message(format!("No call-graph query available for language \"{language}\".")))?;
     let result = run_custom_codeql_query(root, db_dir, language, query, runner, timeout_ms, log).await?;
     Ok(call_graph_from_query_result(&result))
 }

@@ -4,6 +4,7 @@
 //! own concurrent process — measured slower in the JS original (343s vs
 //! 264s on a 950k-LOC monorepo), so this port also uses one process with
 //! multiple `--config` flags.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, relative_to_root, skip_dirs, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

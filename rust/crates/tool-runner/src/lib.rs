@@ -5,6 +5,7 @@
 //! `ToolRunner::new(binaries)` takes each tool's resolved binary path/name
 //! as a parameter rather than reading config itself — same reasoning as
 //! the JS factory: no config-derived state of its own to go stale.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

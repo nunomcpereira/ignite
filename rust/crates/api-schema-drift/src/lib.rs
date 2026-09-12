@@ -6,6 +6,7 @@
 //! git history to diff against (a clean tree and a distinct parent
 //! commit); a fresh ZIP/folder upload has nothing to compare, so this
 //! simply contributes nothing rather than fabricating a baseline.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_api_schema::discover_api_schema_files;
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

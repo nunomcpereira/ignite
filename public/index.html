@@ -5500,12 +5500,12 @@
         resultBanner.innerHTML = `
           <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center shadow-card">
             <p class="text-emerald-800 font-semibold mb-1">${t('result.shipped')}</p>
-            <a href="${repoUrl}" target="_blank" rel="noopener"
+            <a href="${escapeAttr(repoUrl)}" target="_blank" rel="noopener"
                class="inline-flex items-center gap-2 mt-2 text-sm font-mono text-emerald-700 hover:text-emerald-900 underline underline-offset-4">
-              ${repoUrl}
+              ${escapeHtml(repoUrl)}
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
             </a>
-            ${prUrl ? `<p class="text-xs text-emerald-700 mt-3">${t('result.onboardingPrNote')} <a href="${prUrl}" target="_blank" rel="noopener" class="underline underline-offset-2 font-mono">${prUrl}</a></p>` : ''}
+            ${prUrl ? `<p class="text-xs text-emerald-700 mt-3">${t('result.onboardingPrNote')} <a href="${escapeAttr(prUrl)}" target="_blank" rel="noopener" class="underline underline-offset-2 font-mono">${escapeHtml(prUrl)}</a></p>` : ''}
           </div>`;
       } else {
         const canEffectivate = !!effectivatable && projectId != null;

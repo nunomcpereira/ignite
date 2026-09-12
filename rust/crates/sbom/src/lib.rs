@@ -3,6 +3,7 @@
 //! `ManifestDependency` (the same manifest parsers the JS original's
 //! `scanDependencyLicensesFallback`/`studioManifests` share) rather than
 //! redefining an identical manifest-parsing abstraction.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_package_hallucination::{ManifestDependency, ManifestSpec};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

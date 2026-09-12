@@ -8,6 +8,7 @@
 //! `parseGoModDeps`/`parsePomXmlDeps` and the `STUDIO_MANIFESTS` table;
 //! Gradle (`build.gradle`/`build.gradle.kts`) and NuGet (`*.csproj`) were
 //! added later, Rust-only, with no Node original to port from.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use once_cell::sync::Lazy;
 use regex::Regex;

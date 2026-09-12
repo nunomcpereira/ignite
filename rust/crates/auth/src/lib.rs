@@ -6,6 +6,7 @@
 //! handlers, OIDC/GitHub OAuth flows) is deliberately not ported here —
 //! that wiring depends on the HTTP framework chosen for the eventual axum
 //! server crate and belongs there, not in this framework-agnostic crate.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use once_cell::sync::Lazy;
 use rand_core::{OsRng, RngCore};

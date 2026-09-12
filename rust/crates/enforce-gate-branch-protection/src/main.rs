@@ -5,6 +5,7 @@
 //! onboarding webhook (`routes/repository_events_webhook.rs`) can call
 //! `plan_for_org`/`apply_org_plan` directly instead of shelling out to
 //! this binary.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_enforce_gate_branch_protection::{apply_org_plan, apply_plan, default_runner, parse_args, plan_for_org, plan_for_repo, print_org_plan, print_plan};
 

@@ -5,6 +5,7 @@
 //! resolve_see_license_in_file, resolve_best_published_version,
 //! satisfies_version_range, classify_vulnerability_severity,
 //! find_manifest_dep_line.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_license_classification::{best_effort_version, classify_license_tier, LicenseTier};
 use once_cell::sync::Lazy;
@@ -14,10 +15,20 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// Patch segment is optional (defaults to 0) — a version *range* like
+/// `"^1.2"` (valid npm/Cargo shorthand; Cargo treats bare `"1.2"` as a
+/// caret-range by default) is a legitimate input here via
+/// `satisfies_version_range`'s `best_effort_version` extraction, which
+/// itself tolerates a missing patch segment. Requiring the full triplet
+/// used to make `parse_semver` return `None` for those, which
+/// `satisfies_version_range` treated as "can't determine range, allow
+/// anything" — silently widening the accepted-version pool for exactly
+/// the 2-segment ranges real manifests actually use.
 pub fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
-    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(\d+)\.(\d+)\.(\d+)").unwrap());
+    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(\d+)\.(\d+)(?:\.(\d+))?").unwrap());
     let m = RE.captures(v)?;
-    Some((m[1].parse().ok()?, m[2].parse().ok()?, m[3].parse().ok()?))
+    let patch = m.get(3).map(|p| p.as_str()).unwrap_or("0");
+    Some((m[1].parse().ok()?, m[2].parse().ok()?, patch.parse().ok()?))
 }
 
 pub fn compare_semver(a: (u64, u64, u64), b: (u64, u64, u64)) -> std::cmp::Ordering {
@@ -535,6 +546,25 @@ mod tests {
     fn satisfies_version_range_zero_major_caret_narrows_to_minor() {
         assert!(satisfies_version_range("0.5.9", "^0.5.0"));
         assert!(!satisfies_version_range("0.6.0", "^0.5.0"));
+    }
+
+    #[test]
+    fn satisfies_version_range_handles_two_segment_range_shorthand() {
+        // "^1.2" (no patch segment) is valid npm/Cargo range shorthand —
+        // previously parse_semver("1.2") returned None, which
+        // satisfies_version_range treated as "undeterminable, allow
+        // anything", silently accepting versions below the real floor.
+        assert!(satisfies_version_range("1.2.0", "^1.2"));
+        assert!(satisfies_version_range("1.9.9", "^1.2"));
+        assert!(!satisfies_version_range("0.5.0", "^1.2"));
+        assert!(!satisfies_version_range("2.0.0", "^1.2"));
+    }
+
+    #[test]
+    fn parse_semver_defaults_missing_patch_segment_to_zero() {
+        assert_eq!(parse_semver("1.2"), Some((1, 2, 0)));
+        assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_semver("not-a-version"), None);
     }
 
     #[tokio::test]

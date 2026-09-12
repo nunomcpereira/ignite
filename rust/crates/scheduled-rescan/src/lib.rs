@@ -18,6 +18,7 @@
 //! API surface, matching this codebase's stated preference (see the
 //! `changedFiles` design note in CLAUDE.md) for reusing an existing
 //! response shape/view over adding a new endpoint per use case.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_auto_fix_pr::{apply_fix, discover_fix_candidates};
 use ignite_db_store::{DbStore, ProjectListRow};
@@ -271,8 +272,16 @@ pub fn default_runner() -> ToolRunner {
     ToolRunner::new(std::collections::HashMap::new())
 }
 
-pub fn open_db(db_path: &str) -> Result<DbStore, String> {
-    DbStore::open(std::path::Path::new(db_path)).map_err(|e| format!("failed to open db at {db_path}: {e}"))
+#[derive(Debug, thiserror::Error)]
+#[error("failed to open db at {path}: {source}")]
+pub struct OpenDbError {
+    path: String,
+    #[source]
+    source: rusqlite::Error,
+}
+
+pub fn open_db(db_path: &str) -> Result<DbStore, OpenDbError> {
+    DbStore::open(std::path::Path::new(db_path)).map_err(|e| OpenDbError { path: db_path.to_string(), source: e })
 }
 
 #[cfg(test)]

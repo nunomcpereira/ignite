@@ -3,6 +3,7 @@
 //! `llmAvailableCached`/`logLlmExchange` (a per-process cache + a debug
 //! trace log, both server-process-lifetime concerns) aren't ported —
 //! deferred to when the HTTP server's own process-lifetime state exists.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

@@ -10,6 +10,7 @@
 //! caller (once the HTTP server layer exists) is responsible for running
 //! `git log --name-only` and the runtime-coverage lookup and handing the
 //! results in, same data, different wiring point.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, looks_binary, walk_files, SnippetOptions};
 use once_cell::sync::Lazy;

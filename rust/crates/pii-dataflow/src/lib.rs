@@ -4,6 +4,7 @@
 //! results are filtered to only what Bearer itself tags PII/Personal-Data
 //! relevant via `category_groups` — everything else is Semgrep's job
 //! (`checkSemanticSast`) and would otherwise double up here mislabeled.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, relative_to_root, skip_dirs, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

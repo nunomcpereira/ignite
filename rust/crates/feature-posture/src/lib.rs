@@ -10,6 +10,7 @@
 //! ported `ignite-semantic-sast` crate; once that crate exists, this
 //! should share its probe the same way the JS does, instead of running
 //! its own `semgrep --version`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, looks_binary, relative_to_root, walk_files, Snippet, SnippetOptions, BINARY_EXTENSIONS};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

@@ -3,6 +3,7 @@
 //! that's `severity: "error"` (blocking) despite being a built-in,
 //! no-external-tool check: an uncommitted `.igniteignore` is a silent,
 //! unreviewable scan bypass.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde::Serialize;

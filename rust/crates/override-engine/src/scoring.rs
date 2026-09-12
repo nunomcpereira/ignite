@@ -51,13 +51,14 @@ fn category_scores() -> &'static HashMap<&'static str, i32> {
     &SCORES
 }
 
-/// The same `>= 9` "critical" threshold `db-store`'s SLA bucketing
+/// The same "critical" threshold `db-store`'s SLA bucketing
 /// (`count_sla_breaches`/`list_sla_breaches`/`list_onboarded_repo_summaries`)
-/// already uses for its shortest breach window — reused here as the
+/// uses for its shortest breach window — `db-store` depends on this crate
+/// and interpolates this constant directly into its SQL (rather than
+/// duplicating the literal `9`), so "critical" means the same thing in
+/// both places and can't drift out of sync — reused here as the
 /// dual-custody trigger (`security.overrideApproval`,
-/// `routes/effectivate.rs`/`routes/pipeline_interactive/run.rs`) so
-/// "critical" means the same thing in both places rather than each
-/// picking its own number.
+/// `routes/effectivate.rs`/`routes/pipeline_interactive/run.rs`).
 pub const CRITICAL_SCORE_THRESHOLD: i32 = 9;
 
 pub fn is_critical_score(score: i32) -> bool {

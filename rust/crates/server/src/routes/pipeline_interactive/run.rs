@@ -711,6 +711,17 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                             let flagged: std::collections::HashSet<String> =
                                 state.db.get_project_issues(row.project_id).into_iter().filter_map(|i| i.file).collect();
                             prune_retained_source_to_findings(std::path::Path::new(&row.dir_path), &flagged);
+                            // Studio's file-tree browsing (`routes/studio.rs`)
+                            // calls `walk_files` against a retained source's
+                            // own directory, which — unlike the per-job
+                            // staging dirs (see pipeline_validate.rs/
+                            // pipeline_onboard.rs) — was never invalidated
+                            // here on either prune or eviction below. A
+                            // prune deletes most of the tree's files but
+                            // leaves the directory at the same path, so a
+                            // pre-prune WALK_CACHE entry would keep serving
+                            // the stale (now-mostly-deleted) file list.
+                            ignite_fs_utils::invalidate_walk_cache(std::path::Path::new(&row.dir_path));
                             state.db.set_retained_source_tier(row.project_id, "pruned");
                         }
                     }
@@ -718,6 +729,14 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     for evicted in state.db.list_evictable_retained_sources(RETAINED_TOTAL_KEEP) {
                         let _ = std::fs::remove_dir_all(&evicted.dir_path);
                         let _ = std::fs::remove_dir_all(ignite_data_dir().join("codeql-dbs").join(evicted.project_id.to_string()));
+                        // Same gap as the prune case above, worse here: the
+                        // directory is gone for good, so a WALK_CACHE entry
+                        // for it (from a prior Studio browse) would leak in
+                        // process memory for the rest of the server's
+                        // lifetime — one stale entry per evicted project,
+                        // forever, since nothing else ever touches this key
+                        // again to naturally overwrite/evict it.
+                        ignite_fs_utils::invalidate_walk_cache(std::path::Path::new(&evicted.dir_path));
                         state.db.delete_retained_source(evicted.project_id);
                     }
                 }
@@ -725,6 +744,16 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
         }
     }
 
+    // Known gap, not yet closed here: `pipeline_validate.rs`/
+    // `pipeline_onboard.rs` wrap their equivalent inner-async-block-then-
+    // cleanup pattern in `catch_unwind` so a panic partway through the scan
+    // can't skip this cleanup and leak the staging dir + its `WALK_CACHE`
+    // entry. This function's body isn't structured as a single inner async
+    // block awaited once (it's the `async fn` body itself, hundreds of
+    // lines, with review-gate/event-log interactions threaded through) —
+    // wrapping it the same way needs restructuring the whole function into
+    // a nested block first, deferred rather than done as a rushed
+    // undertested change to this much larger interactive-path handler.
     ignite_fs_utils::invalidate_walk_cache(&staging_dir);
     if let Some(root) = &project_root {
         ignite_fs_utils::invalidate_walk_cache(root);

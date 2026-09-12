@@ -2,6 +2,7 @@
 //! `checks/file-encapsulation.js`. Flags any single source file over
 //! max_lines lines - a cheap, language-agnostic proxy for "too many
 //! responsibilities in one file". Always advisory.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, looks_binary, walk_files, Snippet, SnippetOptions, SECRET_SCAN_CODE_EXTS};
 use serde::Serialize;

@@ -4,6 +4,7 @@
 //! own stdout so they appear inline on the "Files changed" / job log view
 //! with no upload step or extra permissions. `routes/github-annotations.js`'s
 //! HTTP wiring isn't ported here — needs the HTTP server layer.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::IssueRow;
 

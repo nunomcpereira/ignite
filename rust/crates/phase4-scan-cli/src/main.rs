@@ -8,6 +8,7 @@
 //! each gap): ORT license/dependency resolution (fallback-only for now),
 //! the local LLM deep-scan endpoint, org-governance CI via `act`, and any
 //! git/gh push path (this tool never ships — it only scans).
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashMap;
 use std::path::PathBuf;

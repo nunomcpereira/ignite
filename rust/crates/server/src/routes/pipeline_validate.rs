@@ -17,6 +17,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use futures::FutureExt;
 use ignite_override_engine::{validate_overrides, Issue, Severity, SubmittedOverride};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -141,6 +142,80 @@ impl PipelineError {
     }
 }
 
+/// Best-effort extraction of a panic payload's message — covers the two
+/// shapes `panic!`/`.unwrap()`/`.expect()` actually produce (`&str` for a
+/// string-literal panic message, `String` for a formatted one).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+#[cfg(test)]
+mod panic_message_tests {
+    use super::panic_message;
+
+    #[test]
+    fn extracts_a_str_literal_panic_message() {
+        let result = std::panic::catch_unwind(|| panic!("boom")).unwrap_err();
+        assert_eq!(panic_message(&*result), "boom");
+    }
+
+    #[test]
+    fn extracts_a_formatted_string_panic_message() {
+        let detail = "widgets";
+        let result = std::panic::catch_unwind(move || panic!("failed on {detail}")).unwrap_err();
+        assert_eq!(panic_message(&*result), "failed on widgets");
+    }
+
+    /// Regression test for the actual bug: proves the exact
+    /// catch_unwind-then-cleanup pattern used around `run_validate_all`'s
+    /// inner async block actually prevents a panic from skipping cleanup —
+    /// the staging directory and its `WALK_CACHE` entry must both be gone
+    /// even though the "scan" panicked partway through.
+    #[tokio::test]
+    async fn catch_unwind_pattern_still_cleans_up_after_a_panic() {
+        use futures::FutureExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "x").unwrap();
+        let staging_dir = dir.path().to_path_buf();
+        // Populate the real WALK_CACHE the same way a real scan would.
+        ignite_fs_utils::walk_files(&staging_dir).unwrap();
+
+        let result: Result<(), String> = match std::panic::AssertUnwindSafe(async {
+            panic!("simulated scan panic");
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+        .catch_unwind()
+        .await
+        {
+            Ok(r) => r,
+            Err(panic) => Err(panic_message(&*panic)),
+        };
+
+        ignite_fs_utils::invalidate_walk_cache(&staging_dir);
+        let _ = std::fs::remove_dir_all(&staging_dir);
+
+        assert_eq!(result, Err("simulated scan panic".to_string()));
+        assert!(!staging_dir.exists(), "staging dir must be removed even though the scan panicked");
+
+        // Recreate the same path with different content: if the cache
+        // entry hadn't actually been evicted, this would still return the
+        // stale pre-panic [f.txt] list instead of re-walking.
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(staging_dir.join("g.txt"), "y").unwrap();
+        let files = ignite_fs_utils::walk_files(&staging_dir).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("g.txt"), "cache must not have served the stale pre-panic file list");
+    }
+}
+
 #[allow(clippy::result_large_err)]
 async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (Value, Value)> {
     let org = body.get("org").and_then(|v| v.as_str()).unwrap_or("local-validation").trim().to_string();
@@ -188,7 +263,18 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut project_id: i64 = 0;
 
-    let result: Result<(), PipelineError> = async {
+    // The staging directory / walk-cache cleanup below (`invalidate_walk_cache`
+    // + `remove_dir_all`) previously ran as plain code after this block's
+    // `.await` — meaning it only ever ran on a normal `Ok`/`Err` return, not
+    // if anything inside the block panicked (a `.unwrap()`/`.expect()` deep
+    // in any Phase 3/4 check, for instance). A panic would unwind straight
+    // past the cleanup, leaking the staging directory on disk and its
+    // `WALK_CACHE` entry in memory for the rest of the process's lifetime —
+    // silently violating this codebase's own stated hardening invariant
+    // ("Staging directories... are always removed regardless of success or
+    // failure"). `catch_unwind` turns a panic into an `Err` here so the
+    // existing cleanup code (unchanged below) still always runs.
+    let result: Result<(), PipelineError> = match std::panic::AssertUnwindSafe(async {
         // Phase 1
         logger.status(1, "running", None);
         if !REPO_NAME_RE.is_match(&repo) || repo == "." || repo == ".." {
@@ -402,8 +488,13 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
 
         state.db.finish_project("success", None, None, None, project_id);
         Ok(())
-    }
-    .await;
+    })
+    .catch_unwind()
+    .await
+    {
+        Ok(r) => r,
+        Err(panic) => Err(PipelineError::new(0, format!("internal error: {}", panic_message(&*panic)))),
+    };
 
     let phases = logger.phase_summary();
     let events = logger.events();

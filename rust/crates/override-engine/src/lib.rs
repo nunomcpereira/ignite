@@ -9,6 +9,7 @@
 //! gate). Everything is re-exported at the crate root so existing callers
 //! (`ignite_override_engine::Issue`, `::validate_overrides`, etc.) are
 //! unaffected by the split.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod collect;
 mod model;

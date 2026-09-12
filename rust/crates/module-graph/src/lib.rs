@@ -3,6 +3,7 @@
 //! specifiers to real files on disk. Faithful port of
 //! `lib/module-graph.js`. Shared by the dead-code and boundaries checks so
 //! both walk the exact same graph.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use once_cell::sync::Lazy;
 use regex::Regex;

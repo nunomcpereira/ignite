@@ -2,6 +2,7 @@
 //! Session auth, the streaming pipeline endpoints, and upload handling
 //! aren't ported yet — see each `routes/*.rs` module's doc comment for
 //! what it covers.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod ai_justify;
 mod auth;

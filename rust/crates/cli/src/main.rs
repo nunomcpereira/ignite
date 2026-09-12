@@ -13,6 +13,7 @@
 //! afterward, which `scan` deliberately never touches (a plain `ignite
 //! scan` run from an agent/CI shouldn't have the side effect of writing
 //! into the working tree).
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod acknowledgments;
 mod check;

@@ -3,6 +3,7 @@
 //! quality/encapsulation), each finding re-validated against the raw
 //! source text to catch the model's own false positives. Faithful port
 //! of `checks/llm-deep-scan.js`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, is_gitignored, load_gitignore_patterns, looks_binary, walk_files, hash_buffer, Snippet, SnippetOptions};
 use ignite_llm_client::{llm_available, llm_chat, LlmClientConfig};
@@ -335,7 +336,13 @@ fn build_chunks(files_to_scan: &[ScannedFile], chunk_chars: usize) -> (Vec<Strin
                 chunks.push(std::mem::take(&mut current));
                 chunk_files.push(std::mem::take(&mut current_files));
             }
-            let slice_len = (chunk_chars.saturating_sub(header.chars().count()).saturating_sub(40)).max(1000);
+            // Floor only guards against a degenerate near-zero value (e.g. a
+            // tiny configured `chunk_chars` that's smaller than the header
+            // itself) so the loop below always makes progress — it must
+            // never override a legitimately small configured `chunk_chars`
+            // (a local LLM with a tight context window), which a flat
+            // `.max(1000)` used to do unconditionally.
+            let slice_len = (chunk_chars.saturating_sub(header.chars().count()).saturating_sub(40)).max(100);
             let body_chars: Vec<char> = body.chars().collect();
             let total_parts = body_chars.len().div_ceil(slice_len).max(1);
             let mut part = 0;
@@ -556,6 +563,21 @@ mod tests {
         let (chunks, chunk_files) = build_chunks(&files, 2000);
         assert!(chunks.len() > 1);
         assert!(chunk_files.iter().all(|f| f == &vec!["big.js".to_string()]));
+    }
+
+    #[test]
+    fn build_chunks_respects_a_small_configured_chunk_chars_instead_of_flooring_to_1000() {
+        // A tight local-LLM context window can legitimately configure a
+        // small chunk_chars (e.g. 400) — the split-part size must actually
+        // honor that budget, not silently inflate every part toward 1000+
+        // chars regardless of what was configured.
+        let big_content = "x\n".repeat(2000); // ~4000 chars
+        let files = vec![ScannedFile { rel: "big.js".to_string(), content: big_content, hash: "h".to_string() }];
+        let (chunks, _) = build_chunks(&files, 400);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(chunk.chars().count() <= 600, "chunk exceeded the configured budget: {} chars", chunk.chars().count());
+        }
     }
 
     #[test]

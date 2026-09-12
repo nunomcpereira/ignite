@@ -25,6 +25,7 @@
 //! system load) — so this defaults much higher than a typical HTTP
 //! client's timeout to avoid a scheduled sweep spuriously failing on
 //! exactly the large/slow repos this job most needs to cover.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_scheduled_rescan::{auto_fix_mode_from_env, default_runner, dedupe_projects, find_sla_breaches, open_db, rescan_one, AutoFixMode};
 

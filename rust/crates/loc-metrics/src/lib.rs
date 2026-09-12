@@ -1,5 +1,6 @@
 //! Per-language LOC metrics via gocloc. Faithful port of
 //! `checks/loc-metrics.js`. Purely descriptive — never produces issues.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{relative_to_root, skip_dirs_regex};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

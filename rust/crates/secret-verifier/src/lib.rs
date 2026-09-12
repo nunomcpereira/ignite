@@ -61,6 +61,7 @@
 //! it a real request (even one designed to fail past auth) risks
 //! mutating a real project's release state, exactly the kind of side
 //! effect every other provider here was chosen specifically to avoid.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use once_cell::sync::Lazy;
 use regex::Regex;

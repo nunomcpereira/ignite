@@ -2,6 +2,7 @@
 //! `checks/codeql-cross-file.js`, including `runCustomCodeqlQuery`
 //! (Studio's ad-hoc query runner, `run_custom_codeql_query` here) and the
 //! `keepDbDir` database-retention hook it depends on.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::DbStore;
 use ignite_fs_utils::{build_snippet, hash_buffer, relative_to_root, skip_dirs, walk_files, Snippet, SnippetOptions};
@@ -11,6 +12,23 @@ use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// Replaces the ad-hoc `Result<_, String>` this crate's two `pub`
+/// functions used to return — `Display` renders identically to the old
+/// `format!`/`.to_string()` text so every existing caller (which only
+/// ever logs or forwards the error's rendered text, never matches on it)
+/// keeps working unchanged.
+#[derive(Debug, thiserror::Error)]
+pub enum CodeqlError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Tool(#[from] ignite_tool_runner::ToolError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    Message(String),
+}
 
 fn ext_to_language(ext: &str) -> Option<&'static str> {
     match ext {
@@ -324,16 +342,13 @@ async fn run_one_language(
     config: &CodeqlConfig,
     keep_db_dir: Option<&Path>,
     mut log: impl FnMut(&str),
-) -> Result<Vec<CodeqlFinding>, String> {
+) -> Result<Vec<CodeqlFinding>, CodeqlError> {
     let Some(suite) = config.query_suites.get(language) else {
         return Ok(vec![]); // no CodeQL query suite configured for this language — skipped
     };
     // A unique dir per call (not just per process) — two concurrent
     // database builds for the same language must never share a work dir.
-    let work_dir_guard = tempfile::Builder::new()
-        .prefix(&format!("ignite-codeql-{language}-"))
-        .tempdir_in(std::env::temp_dir())
-        .map_err(|e| e.to_string())?;
+    let work_dir_guard = tempfile::Builder::new().prefix(&format!("ignite-codeql-{language}-")).tempdir_in(std::env::temp_dir())?;
     let work_dir = work_dir_guard.path().to_path_buf();
     let db_path = work_dir.join("db");
     let sarif_path = work_dir.join("results.sarif");
@@ -357,7 +372,7 @@ async fn run_one_language(
         runner
             .run_tool_streaming("codeql", &create_args, &root.to_string_lossy(), |l| create_lines.push(l.to_string()), &env, config.timeout_ms)
             .await
-            .map_err(|e| format!("{e} Last output: {}", create_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | ")))?;
+            .map_err(|e| CodeqlError::Message(format!("{e} Last output: {}", create_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | "))))?;
 
         // Keep this database around (outside work_dir, which is always wiped
         // below) so Studio's ad-hoc query runner (run_custom_codeql_query)
@@ -387,9 +402,9 @@ async fn run_one_language(
         runner
             .run_tool_streaming("codeql", &analyze_args, &root.to_string_lossy(), |l| analyze_lines.push(l.to_string()), &HashMap::new(), config.timeout_ms)
             .await
-            .map_err(|e| format!("{e} Last output: {}", analyze_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | ")))?;
+            .map_err(|e| CodeqlError::Message(format!("{e} Last output: {}", analyze_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | "))))?;
 
-        parse_sarif(root, &sarif_path, language).await.map_err(|e| e.to_string())
+        parse_sarif(root, &sarif_path, language).await.map_err(CodeqlError::from)
     }
     .await;
 
@@ -484,7 +499,7 @@ pub async fn check_codeql_cross_file_with_log(
                 }
                 Err(e) => {
                     log(&format!("  ✗ codeql could not analyze {language}: {e}"));
-                    failed_languages.push((language.clone(), e));
+                    failed_languages.push((language.clone(), e.to_string()));
                     continue;
                 }
             }
@@ -622,14 +637,11 @@ pub async fn run_custom_codeql_query(
     runner: &ToolRunner,
     timeout_ms: u64,
     mut log: impl FnMut(&str),
-) -> Result<QueryResult, String> {
+) -> Result<QueryResult, CodeqlError> {
     if !tokio::fs::metadata(db_dir).await.is_ok() {
-        return Err(format!("No CodeQL database found for \"{language}\" — click \"Run CodeQL\" first to build one."));
+        return Err(CodeqlError::Message(format!("No CodeQL database found for \"{language}\" — click \"Run CodeQL\" first to build one.")));
     }
-    let work_dir_guard = tempfile::Builder::new()
-        .prefix(&format!("ignite-codeql-query-{language}-"))
-        .tempdir_in(std::env::temp_dir())
-        .map_err(|e| e.to_string())?;
+    let work_dir_guard = tempfile::Builder::new().prefix(&format!("ignite-codeql-query-{language}-")).tempdir_in(std::env::temp_dir())?;
     let work_dir = work_dir_guard.path().to_path_buf();
     let pack_dir = work_dir.join("pack");
     let query_file = pack_dir.join("query.ql");
@@ -637,14 +649,13 @@ pub async fn run_custom_codeql_query(
     let json_path = work_dir.join("results.json");
 
     let result = async {
-        tokio::fs::create_dir_all(&pack_dir).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(&pack_dir).await?;
         tokio::fs::write(
             pack_dir.join("qlpack.yml"),
             format!("name: ignite/ad-hoc-query\nversion: 0.0.0\ndependencies:\n  codeql/{language}-all: \"*\"\n"),
         )
-        .await
-        .map_err(|e| e.to_string())?;
-        tokio::fs::write(&query_file, query_text).await.map_err(|e| e.to_string())?;
+        .await?;
+        tokio::fs::write(&query_file, query_text).await?;
 
         log(&format!("  → resolving query pack dependencies for {language}..."));
         let mut install_lines = Vec::new();
@@ -658,7 +669,7 @@ pub async fn run_custom_codeql_query(
                 5 * 60_000,
             )
             .await
-            .map_err(|e| format!("{e} Last output: {}", install_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | ")))?;
+            .map_err(|e| CodeqlError::Message(format!("{e} Last output: {}", install_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | "))))?;
 
         log(&format!("  → running query against the {language} database..."));
         let mut run_lines = Vec::new();
@@ -678,7 +689,7 @@ pub async fn run_custom_codeql_query(
                 timeout_ms,
             )
             .await
-            .map_err(|e| format!("{e} Last output: {}", run_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | ")))?;
+            .map_err(|e| CodeqlError::Message(format!("{e} Last output: {}", run_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | "))))?;
 
         runner
             .run_tool(
@@ -694,11 +705,10 @@ pub async fn run_custom_codeql_query(
                 &pack_dir.to_string_lossy(),
                 RunToolOptions::default(),
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
-        let raw = tokio::fs::read_to_string(&json_path).await.map_err(|e| e.to_string())?;
-        let json: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let raw = tokio::fs::read_to_string(&json_path).await?;
+        let json: serde_json::Value = serde_json::from_str(&raw)?;
         Ok(parse_query_result_json(root, &json))
     }
     .await;
@@ -916,6 +926,6 @@ mod tests {
         let root = dir.path();
         let missing_db = dir.path().join("does-not-exist");
         let err = run_custom_codeql_query(root, &missing_db, "javascript", "select 1", &runner(), 60_000, |_| {}).await.unwrap_err();
-        assert!(err.contains("No CodeQL database found"), "unexpected error: {err}");
+        assert!(err.to_string().contains("No CodeQL database found"), "unexpected error: {err}");
     }
 }

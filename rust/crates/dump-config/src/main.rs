@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 fn main() {
     let root = std::env::args().nth(1).expect("usage: dump-config <ignite-repo-root>");
     let cfg = ignite_config::load_config(std::path::Path::new(&root)).expect("load_config failed");

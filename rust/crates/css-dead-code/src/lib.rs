@@ -2,6 +2,7 @@
 //! `checks/css-dead-code.js`. Deliberately one-directional: only
 //! declared-but-unused CSS classes are flagged, never "unused Tailwind
 //! utilities" (those only exist if referenced in the first place).
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, looks_binary, walk_files, SnippetOptions};
 use once_cell::sync::Lazy;

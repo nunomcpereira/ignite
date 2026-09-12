@@ -1,6 +1,7 @@
 //! Runs the onboarded project's own unit test suite, sandboxed inside a
 //! throwaway Docker container per detected language (never on the host).
 //! Faithful port of `checks/unit-test-runner.js`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use once_cell::sync::Lazy;
 use regex::Regex;

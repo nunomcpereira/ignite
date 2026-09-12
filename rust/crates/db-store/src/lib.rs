@@ -15,6 +15,7 @@
 //! every domain still ends up as a method directly on `DbStore`, so
 //! nothing outside this crate needs to change; only the internal layout
 //! moved.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod ai_explanations;
 mod api_keys;
@@ -647,6 +648,58 @@ mod tests {
         // already-existing tables/columns — must not error.
         let store2 = DbStore::open(&path).unwrap();
         assert_eq!(store2.list_projects().len(), 1);
+    }
+
+    #[test]
+    fn every_migration_version_is_recorded_exactly_once() {
+        let (_dir, store) = open_test_db();
+        let conn = store.conn.lock();
+        let recorded: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0)).unwrap();
+        assert_eq!(recorded as usize, crate::schema::MIGRATIONS.len());
+        for (version, _) in crate::schema::MIGRATIONS {
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations WHERE version = ?", [version], |row| row.get(0)).unwrap();
+            assert_eq!(count, 1, "version {version} should be recorded exactly once");
+        }
+    }
+
+    #[test]
+    fn reopening_does_not_reinsert_already_applied_migration_rows() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        DbStore::open(&path).unwrap();
+        let store2 = DbStore::open(&path).unwrap();
+        let conn = store2.conn.lock();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0)).unwrap();
+        assert_eq!(count as usize, crate::schema::MIGRATIONS.len());
+    }
+
+    #[test]
+    fn a_pre_existing_db_with_columns_already_applied_but_no_tracking_table_backfills_cleanly() {
+        // Simulates a DB created before `schema_migrations` existed: schema
+        // + every migration's DDL already applied by hand, but no tracking
+        // table yet. `run_migrations` must swallow the resulting "duplicate
+        // column" errors once and backfill `schema_migrations`, not fail.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(crate::schema::SCHEMA_SQL).unwrap();
+            for (_, ddl) in crate::schema::MIGRATIONS {
+                // Fresh `SCHEMA_SQL` already declares every column these
+                // migrations add (that's how a genuinely pre-versioning DB
+                // ended up with them too, over time) — swallow the
+                // resulting "duplicate column", same as the old pre-tracking
+                // runner always did.
+                if let Err(e) = conn.execute_batch(ddl) {
+                    assert!(e.to_string().to_lowercase().contains("duplicate column"), "unexpected error: {e}");
+                }
+            }
+            // No schema_migrations table at all — the pre-versioning state.
+        }
+        let store = DbStore::open(&path).unwrap();
+        let conn = store.conn.lock();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0)).unwrap();
+        assert_eq!(count as usize, crate::schema::MIGRATIONS.len());
     }
 
     #[test]

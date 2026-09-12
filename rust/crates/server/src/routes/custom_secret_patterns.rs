@@ -41,7 +41,7 @@ async fn create_pattern(State(state): State<Arc<AppState>>, Json(body): Json<Val
     // actual point where a bad pattern would otherwise silently never
     // match anything once it's fed into `build_gitleaks_config_for_patterns`.
     if let Err(e) = ignite_secrets::test_pattern_against_sample(regex, "") {
-        return err(StatusCode::BAD_REQUEST, e);
+        return err(StatusCode::BAD_REQUEST, e.to_string());
     }
     let created_by = body.get("createdBy").and_then(|v| v.as_str());
     let id = state.db.create_custom_secret_pattern(name, regex, created_by);
@@ -76,7 +76,7 @@ async fn test_pattern(Json(body): Json<Value>) -> Response {
             let matches: Vec<Value> = matches.into_iter().map(|m| json!({ "start": m.start, "end": m.end, "matchedText": m.matched_text })).collect();
             Json(json!({ "ok": true, "matchCount": matches.len(), "matches": matches })).into_response()
         }
-        Err(e) => err(StatusCode::BAD_REQUEST, e),
+        Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
     }
 }
 

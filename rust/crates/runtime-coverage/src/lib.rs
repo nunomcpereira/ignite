@@ -4,6 +4,7 @@
 //! shape `db-store`'s `ingest_runtime_coverage` stores. The Ignite-side
 //! counterpart to a project's own CI uploading whatever coverage report
 //! its test suite already produces.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::RuntimeCoverageInput;
 use serde_json::Value;

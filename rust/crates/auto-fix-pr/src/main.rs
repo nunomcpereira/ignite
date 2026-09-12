@@ -24,6 +24,7 @@
 //! scans (real, read-only against the repo) but only prints the plan —
 //! which branches/PRs it would create — never pushes or opens anything.
 //! Pass `--apply` to actually push branches and open PRs.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_auto_fix_pr::{apply_fix_group, discover_fix_candidates, discover_routine_update_candidates, group_candidates, GroupBy};
 use ignite_deps_dev_client::DepsDevClient;

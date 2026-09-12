@@ -4,6 +4,7 @@
 //! shape deliberately: same "view, not a gate" caveat — the caller must
 //! still apply `baselineMode` handling for this to actually affect
 //! pass/fail.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_override_engine::Issue;
 use std::collections::HashSet;

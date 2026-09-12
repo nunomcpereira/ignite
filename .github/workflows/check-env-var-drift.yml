@@ -1,0 +1,26 @@
+name: Check env var drift
+
+on:
+  pull_request:
+    paths:
+      - 'rust/crates/**/src/**'
+      - '.env.example'
+      - 'rust/scripts/check-env-var-drift.sh'
+      - 'rust/scripts/env-var-drift-baseline.txt'
+  push:
+    branches: [main]
+    paths:
+      - 'rust/crates/**/src/**'
+      - '.env.example'
+      - 'rust/scripts/check-env-var-drift.sh'
+      - 'rust/scripts/env-var-drift-baseline.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rust/scripts/check-env-var-drift.sh

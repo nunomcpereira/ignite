@@ -6,6 +6,7 @@
 //! can't catch, since a freshly-published malicious package has no
 //! advisory yet. Only npm (package.json) and PyPI (requirements.txt) are
 //! supported.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_db_store::DbStore;
 use ignite_fs_utils::{hash_buffer, walk_files};

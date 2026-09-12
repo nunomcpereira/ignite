@@ -3,6 +3,7 @@
 //! passed on the command line — so this does its own discovery: any
 //! .yaml/.yml/.json file whose top-level content declares
 //! openapi/swagger/asyncapi (a content sniff, not a filename convention).
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{build_snippet, looks_binary, relative_to_root, walk_files, Snippet, SnippetOptions};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};

@@ -1,6 +1,7 @@
 //! EU AI Act doc-presence scan. Faithful port of
 //! `checks/compliance-documents.js`. Filename/path pattern match only —
 //! never produces issues, never blocks a run, advisory context for a human.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_fs_utils::{relative_to_root, walk_files};
 use once_cell::sync::Lazy;
