@@ -98,6 +98,8 @@ Prerequisites for full pipeline runs: Rust (stable toolchain), `git` on PATH, `g
 
 Some tests skip a real-binary/real-network end-to-end case via an early `eprintln!("skipping: ...")` + `return` rather than failing when the corresponding tool/Docker/network isn't available — this is expected in most dev environments; the fake-CLI/offline coverage in the same test files still runs regardless.
 
+**If a `launchd` service is managing the server locally** (`~/Library/LaunchAgents/com.ignite.server.plist`, `KeepAlive` + `WatchPaths` on the release binary — check `launchctl list | grep ignite.server`): just rebuild with `cargo build --release --manifest-path rust/Cargo.toml -p ignite-server` and let launchd pick up the new binary and restart the process on its own. Don't manually `pkill`/relaunch `ignite-server` in that case — it fights the watcher, which immediately relaunches its own copy anyway.
+
 ## Architecture
 
 See `README.md`'s "System Architecture" diagram and "Pipeline Checks" table for the full request-flow/phase breakdown — it's accurate and Rust-only, and more detailed than what belongs here. In short: **three request paths, one set of phase-check functions** — the interactive browser upload (`POST /api/pipeline`, streaming NDJSON), the synchronous headless path used by the pre-push hook/CLI/CI (`POST /api/pipeline/validate-all`, phases 1-5 only, never ships), and the MCP path (a thin proxy from the standalone `mcp-server` binary to the same HTTP API — the MCP process itself never runs `git`/`gh`).
