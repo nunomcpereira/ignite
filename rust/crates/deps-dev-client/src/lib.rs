@@ -66,10 +66,24 @@ pub struct DepsDevPackageInfo {
     pub advisory_ids: Vec<String>,
 }
 
+/// Bounds how many deps.dev/OSV.dev requests this client has in flight at
+/// once. A project with many manifests (e.g. a large Cargo workspace)
+/// fires one future per dependency via `join_all`, all awaited
+/// concurrently — with no cap, a project with hundreds of dependencies
+/// opens hundreds of sockets to the same host simultaneously, and the
+/// resulting local contention (not actual server-side throttling — the
+/// same lookups succeed fine issued one at a time) pushes plenty of
+/// individual requests past their own 10s timeout, which this client
+/// reports as an ordinary "not found" lookup failure instead of what it
+/// actually is. `Arc` since every `fetch_*` method takes `&self`, not
+/// owned, and needs to share one permit pool across concurrent callers.
+const MAX_CONCURRENT_REQUESTS: usize = 24;
+
 /// Immutable per-(system,name,version) result — cached for the process
 /// lifetime, same as the JS original's module-level `Map`.
 pub struct DepsDevClient {
     http: reqwest::Client,
+    request_limiter: std::sync::Arc<tokio::sync::Semaphore>,
     package_info_cache: Mutex<HashMap<String, Option<DepsDevPackageInfo>>>,
     version_list_cache: Mutex<HashMap<String, Option<Vec<String>>>>,
     advisory_cache: Mutex<HashMap<String, Option<serde_json::Value>>>,
@@ -84,7 +98,14 @@ impl Default for DepsDevClient {
 
 impl DepsDevClient {
     pub fn new() -> Self {
-        DepsDevClient { http: reqwest::Client::new(), package_info_cache: Mutex::new(HashMap::new()), version_list_cache: Mutex::new(HashMap::new()), advisory_cache: Mutex::new(HashMap::new()), osv_record_cache: Mutex::new(HashMap::new()) }
+        DepsDevClient {
+            http: reqwest::Client::new(),
+            request_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)),
+            package_info_cache: Mutex::new(HashMap::new()),
+            version_list_cache: Mutex::new(HashMap::new()),
+            advisory_cache: Mutex::new(HashMap::new()),
+            osv_record_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// One deps.dev call returns both licenses and known-vulnerability
@@ -115,7 +136,8 @@ impl DepsDevClient {
         // through body read) in one outer `tokio::time::timeout` closes
         // that gap; a timeout here is just another lookup failure (`None`),
         // same as any other soft-fail path in this client.
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let _permit = self.request_limiter.acquire().await.ok()?;
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
             let res = self.http.get(&url).send().await.ok()?;
             if !res.status().is_success() {
                 return None;
@@ -146,7 +168,8 @@ impl DepsDevClient {
             return cached.clone();
         }
         let url = format!("https://api.deps.dev/v3/systems/{}/packages/{}", system, urlencoding::encode(name));
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let _permit = self.request_limiter.acquire().await.ok()?;
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
             let res = self.http.get(&url).send().await.ok()?;
             if !res.status().is_success() {
                 return None;
@@ -167,7 +190,8 @@ impl DepsDevClient {
             return cached.clone();
         }
         let url = format!("https://api.deps.dev/v3/advisories/{}", urlencoding::encode(id));
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let _permit = self.request_limiter.acquire().await.ok()?;
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
             let res = self.http.get(&url).send().await.ok()?;
             if res.status().is_success() {
                 res.json::<serde_json::Value>().await.ok()
@@ -198,7 +222,8 @@ impl DepsDevClient {
             return cached.clone();
         }
         let url = format!("https://api.osv.dev/v1/vulns/{}", urlencoding::encode(id));
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let _permit = self.request_limiter.acquire().await.ok()?;
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
             let res = self.http.get(&url).send().await.ok()?;
             if res.status().is_success() {
                 res.json::<serde_json::Value>().await.ok()
