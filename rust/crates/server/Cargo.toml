@@ -71,11 +71,11 @@ ignite-ai-governance = { path = "../ai-governance" }
 ignite-deps-dev-client = { path = "../deps-dev-client" }
 ignite-provenance = { path = "../provenance" }
 axum = { version = "0.7", features = ["multipart"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tower-http = { version = "0.5", features = ["trace", "fs"] }
+tower-http = { version = "0.6", features = ["trace", "fs"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
@@ -83,7 +83,7 @@ async-trait = "0.1"
 
 [dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 rsa = "0.9"
 rand = "0.8"
 base64 = "0.22"

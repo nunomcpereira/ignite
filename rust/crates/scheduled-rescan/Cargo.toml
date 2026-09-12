@@ -15,11 +15,11 @@ ignite-auto-fix-pr = { path = "../auto-fix-pr" }
 ignite-deps-dev-client = { path = "../deps-dev-client" }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tempfile = "3"
-thiserror = "1"
+thiserror = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]

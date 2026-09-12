@@ -12,4 +12,4 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt"] }
