@@ -95,15 +95,15 @@ pub async fn generate_sbom(root: &Path, runner: &ToolRunner, enabled: bool, mani
         )
         .await;
 
-    let result = match run_result {
+    let result: std::io::Result<SbomResult> = match run_result {
         Ok(_) => match tokio::fs::read_to_string(&report_path).await {
             Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
                 Ok(sbom) => Ok(SbomResult { engine: "syft", sbom: SbomOutcome::Syft(sbom) }),
-                Err(_) => Ok(SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(generate_sbom_fallback(root, manifests, max_deps_per_manifest)?) }),
+                Err(_) => generate_sbom_fallback(root, manifests, max_deps_per_manifest).map(|f| SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(f) }),
             },
-            Err(_) => Ok(SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(generate_sbom_fallback(root, manifests, max_deps_per_manifest)?) }),
+            Err(_) => generate_sbom_fallback(root, manifests, max_deps_per_manifest).map(|f| SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(f) }),
         },
-        Err(_) => Ok(SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(generate_sbom_fallback(root, manifests, max_deps_per_manifest)?) }),
+        Err(_) => generate_sbom_fallback(root, manifests, max_deps_per_manifest).map(|f| SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(f) }),
     };
     let _ = tokio::fs::remove_file(&report_path).await;
     result

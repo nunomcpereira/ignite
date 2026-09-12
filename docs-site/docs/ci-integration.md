@@ -243,6 +243,35 @@ The `github-check` request body accepts an optional `ref` field (e.g.
 when omitted, Ignite looks up the repo's current default branch and uses
 that.
 
+## PR "Dependency Review" sticky comment
+
+GHAS's `dependency-review-action` posts a PR summary of what a change adds,
+removes, or version-bumps in the dependency tree — Ignite's own
+`github-check` now posts the equivalent. It diffs the current dependency
+scan against this project's own previously cached scan (added, removed,
+version-changed, and license-changed dependencies), and renders the result
+as one collapsible markdown comment with tier badges, upserted via
+GitHub's PR comments API — a marker hidden in the comment body means a
+repeat push edits the same comment in place instead of piling up a new one
+on every push, the same "sticky comment" pattern GitHub's own action uses.
+
+Best-effort/non-fatal, wired into the same `github-check` call as the
+SARIF/dependency-graph pushes above, and only fires when the request
+carries a `prNumber`. Toggleable in `config.json` (on by default):
+
+```json
+"security": {
+  "dependencyReview": { "enabled": true }
+}
+```
+
+Or via env var: `DEPENDENCY_REVIEW_ENABLED=false`.
+
+**Caveat**: the diff compares against this project's own *previous* cached
+scan, not a fresh clone-and-rescan of the PR's actual base branch — correct
+for the common case of a PR based on the repo's own last-scanned default
+branch, but it can surface unrelated changes when that isn't true.
+
 ## Inline PR review suggestions (Copilot Autofix parity)
 
 GitHub's Copilot Autofix posts inline PR review comments carrying a
@@ -276,6 +305,13 @@ enough to be safe unattended):
 ```
 
 Or via env var: `PR_SUGGESTIONS_ENABLED=false`.
+
+Also covers multi-line edits for `semantic-sast` (Semgrep/Bearer-family
+taint/semantic) findings, not just the single-line dependency-bump case —
+using GitHub's `start_line`/`start_side` fields for a multi-line suggestion
+range, kept only when the proposed edit's bracket-depth structure matches
+the original (the same structural safety net the bulk fix-PR feature
+already applies before writing to disk).
 
 ## Inbound alert-dismissal sync (GitHub → Ignite)
 

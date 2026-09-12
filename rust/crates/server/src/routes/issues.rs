@@ -204,7 +204,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn explain(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+async fn explain(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
     let Some(issue) = parse_issue_from_body(&body) else {
         return err(StatusCode::BAD_REQUEST, "category and summary are required.".to_string());
     };
@@ -230,7 +230,7 @@ async fn explain(State(state): State<Arc<AppState>>, Json(body): Json<Value>) ->
     }
 }
 
-async fn suggest_fix(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+async fn suggest_fix(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
     let Some(issue) = parse_issue_from_body(&body) else {
         return err(StatusCode::BAD_REQUEST, "category and summary are required.".to_string());
     };

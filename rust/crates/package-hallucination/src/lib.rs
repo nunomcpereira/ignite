@@ -18,7 +18,7 @@ use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::Duration;
 
 static NON_REGISTRY_VERSION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(git\+|git:|https?:|file:|link:|workspace:|npm:.*@|github:)").unwrap());
@@ -190,11 +190,11 @@ impl<C: RegistryChecker> PackageHallucinationChecker<C> {
 
     async fn exists_on_registry(&self, ecosystem: &str, name: &str) -> Option<bool> {
         let key = format!("{ecosystem}:{name}");
-        if let Some(cached) = self.cache.lock().unwrap().get(&key) {
+        if let Some(cached) = self.cache.lock().get(&key) {
             return *cached;
         }
         let result = self.checker.exists(ecosystem, name).await;
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         if cache.len() >= MAX_CACHE_ENTRIES {
             cache.clear();
         }
@@ -313,7 +313,7 @@ mod tests {
         let checker = PackageHallucinationChecker::new(FakeRegistry { hallucinated: vec![] });
         for i in 0..(MAX_CACHE_ENTRIES * 4) {
             checker.exists_on_registry("npm", &format!("pkg-{i}")).await;
-            assert!(checker.cache.lock().unwrap().len() <= MAX_CACHE_ENTRIES, "cache grew past MAX_CACHE_ENTRIES after {} inserts", i + 1);
+            assert!(checker.cache.lock().len() <= MAX_CACHE_ENTRIES, "cache grew past MAX_CACHE_ENTRIES after {} inserts", i + 1);
         }
     }
 

@@ -42,18 +42,21 @@ pub fn parse_package_json_deps(content: &str) -> Vec<ManifestDep> {
 }
 
 static CARGO_SECTION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[.*\]$").unwrap());
-static CARGO_DEPS_SECTION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(dependencies|dev-dependencies|build-dependencies)\]$").unwrap());
+static CARGO_DEPS_SECTION_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\[(dependencies|dev-dependencies|build-dependencies|workspace\.dependencies|target\..+\.(?:dependencies|dev-dependencies|build-dependencies))\]$").unwrap());
+static CARGO_WORKSPACE_DEPS_SECTION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[workspace\.dependencies\]$").unwrap());
 static CARGO_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Za-z0-9_-]+)\s*=\s*(.+)$").unwrap());
 static CARGO_VERSION_KV_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"version\s*=\s*"([^"]+)""#).unwrap());
 static CARGO_VERSION_BARE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^"([^"]+)""#).unwrap());
+static CARGO_WORKSPACE_TRUE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"workspace\s*=\s*true").unwrap());
 
-pub fn parse_cargo_toml_deps(content: &str) -> Vec<ManifestDep> {
+fn parse_cargo_toml_section_lines(content: &str, in_section: impl Fn(&str) -> bool) -> Vec<ManifestDep> {
     let mut deps = Vec::new();
     let mut in_deps = false;
     for raw_line in content.split('\n') {
         let line = raw_line.trim();
         if CARGO_SECTION_RE.is_match(line) {
-            in_deps = CARGO_DEPS_SECTION_RE.is_match(line);
+            in_deps = in_section(line);
             continue;
         }
         if !in_deps || line.is_empty() || line.starts_with('#') {
@@ -63,6 +66,21 @@ pub fn parse_cargo_toml_deps(content: &str) -> Vec<ManifestDep> {
         let rest = &m[2];
         let version = CARGO_VERSION_KV_RE.captures(rest).or_else(|| CARGO_VERSION_BARE_RE.captures(rest)).map(|c| c[1].to_string()).unwrap_or_else(|| rest.trim().to_string());
         deps.push(ManifestDep { name: m[1].to_string(), version_range: version });
+    }
+    deps
+}
+
+pub fn parse_cargo_toml_deps(content: &str) -> Vec<ManifestDep> {
+    let workspace_versions: HashMap<String, String> =
+        parse_cargo_toml_section_lines(content, |line| CARGO_WORKSPACE_DEPS_SECTION_RE.is_match(line)).into_iter().map(|d| (d.name, d.version_range)).collect();
+
+    let mut deps = parse_cargo_toml_section_lines(content, |line| CARGO_DEPS_SECTION_RE.is_match(line));
+    for dep in &mut deps {
+        if CARGO_WORKSPACE_TRUE_RE.is_match(&dep.version_range) {
+            if let Some(v) = workspace_versions.get(&dep.name) {
+                dep.version_range = v.clone();
+            }
+        }
     }
     deps
 }

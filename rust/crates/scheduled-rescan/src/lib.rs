@@ -20,7 +20,7 @@
 //! response shape/view over adding a new endpoint per use case.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use ignite_auto_fix_pr::{apply_fix, discover_fix_candidates};
+use ignite_auto_fix_pr::{apply_fix, discover_fix_candidates, GateContext};
 use ignite_db_store::{DbStore, ProjectListRow};
 use ignite_deps_dev_client::DepsDevClient;
 use ignite_github_api::GithubApi;
@@ -104,7 +104,7 @@ pub struct AutoFixSummary {
 /// idempotent via `branch_exists_on_remote`, major-version bumps always
 /// skipped) — this is the same tool, just triggered automatically instead
 /// of requiring an operator to run it by hand after noticing a finding.
-pub async fn run_auto_fix(runner: &ToolRunner, http: &reqwest::Client, full_name: &str, base_branch: &str, clone_dir: &Path, token: &str, mode: AutoFixMode) -> AutoFixSummary {
+pub async fn run_auto_fix(runner: &ToolRunner, http: &reqwest::Client, server_base: &str, full_name: &str, base_branch: &str, clone_dir: &Path, token: &str, mode: AutoFixMode) -> AutoFixSummary {
     let mut summary = AutoFixSummary::default();
     if mode == AutoFixMode::Off {
         return summary;
@@ -119,8 +119,9 @@ pub async fn run_auto_fix(runner: &ToolRunner, http: &reqwest::Client, full_name
 
     let github_api = GithubApi::new(runner);
     let apply = mode == AutoFixMode::Apply;
+    let gate = GateContext { http, server_base, deps_client: &deps_client };
     for candidate in &candidates {
-        let outcome = apply_fix(runner, &github_api, full_name, base_branch, &clone_dir.to_string_lossy(), candidate, token, apply).await;
+        let outcome = apply_fix(runner, &github_api, full_name, base_branch, &clone_dir.to_string_lossy(), candidate, token, apply, &gate).await;
         match (outcome.pr_url, outcome.error) {
             (Some(url), _) => summary.pr_urls.push(url),
             (None, Some(err)) => summary.errors.push(format!("{}: {err}", outcome.candidate_summary)),
@@ -227,7 +228,7 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
     // second clone. Runs before the github-check POST so a fresh PR (if
     // any) exists by the time a human reads the commit-status/PR-comment
     // this rescan is about to post.
-    let auto_fix = run_auto_fix(runner, http, &full_name, &default_branch, &dest, gh_token, auto_fix_mode).await;
+    let auto_fix = run_auto_fix(runner, http, server_base, &full_name, &default_branch, &dest, gh_token, auto_fix_mode).await;
 
     let check_res = http
         .post(format!("{server_base}/api/pipeline/{job_id}/github-check"))
@@ -361,7 +362,7 @@ mod tests {
         // proves discover_fix_candidates was never reached.
         let runner = default_runner();
         let http = reqwest::Client::new();
-        let summary = run_auto_fix(&runner, &http, "acme/widgets", "main", Path::new("/nonexistent/path"), "tok", AutoFixMode::Off).await;
+        let summary = run_auto_fix(&runner, &http, "http://127.0.0.1:1", "acme/widgets", "main", Path::new("/nonexistent/path"), "tok", AutoFixMode::Off).await;
         assert_eq!(summary.candidates_found, 0);
         assert!(summary.pr_urls.is_empty());
     }

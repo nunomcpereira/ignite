@@ -328,16 +328,22 @@ async fn verify_gcp_api_key(http: &reqwest::Client, value: &str, timeout: Durati
         return VerificationOutcome::Live;
     }
     let message = body.get("error").and_then(|e| e.get("message")).and_then(|v| v.as_str()).unwrap_or("");
-    if message.to_lowercase().contains("api key not valid") {
-        VerificationOutcome::Revoked
-    } else if !message.is_empty() {
-        // Some other 4xx (missing q/target params, etc.) — the key
-        // itself was accepted, the request just wasn't otherwise
-        // complete enough to actually translate anything.
-        VerificationOutcome::Live
-    } else {
-        VerificationOutcome::Unknown
+    let message_lower = message.to_lowercase();
+    if status.is_server_error() {
+        // A 5xx tells us nothing about the key itself.
+        return VerificationOutcome::Unknown;
     }
+    if status == reqwest::StatusCode::BAD_REQUEST && (message_lower.contains("api key not valid") || message_lower.contains("api key expired")) {
+        return VerificationOutcome::Revoked;
+    }
+    if status == reqwest::StatusCode::BAD_REQUEST && message_lower.contains("required parameter") {
+        // The key itself was accepted — the request just wasn't
+        // otherwise complete enough to actually translate anything.
+        return VerificationOutcome::Live;
+    }
+    // Anything else (403 restricted/blocked, an unrecognized message,
+    // etc.) doesn't prove the key is either live or dead.
+    VerificationOutcome::Unknown
 }
 
 /// `GET /v1/models` is OpenAI's own lightest authenticated read — lists

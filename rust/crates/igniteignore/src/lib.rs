@@ -36,16 +36,13 @@ async fn is_git_repo(runner: &ToolRunner, root: &str) -> bool {
         .is_ok()
 }
 
+/// `git ls-files --error-unmatch` succeeds for a file merely staged (`git
+/// add`) in the index, not necessarily committed to `HEAD` — a user could
+/// stage `.igniteignore` and pass this check without ever committing it,
+/// bypassing code review of the ignore rules themselves. `git cat-file -e
+/// HEAD:<path>` checks the committed tree directly instead.
 async fn is_tracked_by_git(runner: &ToolRunner, root: &str, rel_file: &str) -> bool {
-    runner
-        .run_tool(
-            "git",
-            &["ls-files".to_string(), "--error-unmatch".to_string(), "--".to_string(), rel_file.to_string()],
-            root,
-            RunToolOptions::default(),
-        )
-        .await
-        .is_ok()
+    runner.run_tool("git", &["cat-file".to_string(), "-e".to_string(), format!("HEAD:{rel_file}")], root, RunToolOptions::default()).await.is_ok()
 }
 
 /// `content_root` is where `.igniteignore` itself is read from (the

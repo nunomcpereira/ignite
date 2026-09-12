@@ -48,32 +48,36 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
             code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }).collect())
         .unwrap_or_default();
-    // The actor comes from the authenticated session when there is one,
-    // else from a client-supplied {email, name} in the body — same
-    // resolution `routes/effectivate.rs` uses. Only actually overriding a
-    // blocking finding needs a real identity for the audit trail; a bare
-    // decline (`proceed: false`, no overrides) or a continue with nothing
-    // left to justify has nothing to attribute, so those go through
-    // unauthenticated. This matters in practice: this is also the request
+    // Actually overriding a blocking finding needs a real identity for the
+    // audit trail — that identity must come from the authenticated
+    // session, never from a client-supplied {email, name} in the body,
+    // which anyone can spoof to attribute a dual-custody override to
+    // someone else. A bare decline (`proceed: false`, no overrides) or a
+    // continue with nothing left to justify has nothing to attribute, so
+    // those still go through unauthenticated — this is also the request
     // Esc/✕ on the review modal sends (as a decline), and a session that
-    // expired during a long-paused review must still be able to close that
-    // modal — a hard 401 here used to leave it with no way out.
-    let actor = if let Some(user) = user {
-        Some(Actor { email: user.email.clone(), name: user.name.clone().unwrap_or(user.email) })
-    } else {
-        body.get("actor").and_then(|a| {
-            let email = a.get("email").and_then(|v| v.as_str())?.trim();
-            if email.is_empty() {
-                return None;
-            }
-            let name = a.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(email);
-            Some(Actor { email: email.to_string(), name: name.to_string() })
-        })
-    };
-    if !overrides.is_empty() && actor.is_none() {
-        return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Log in, or provide actor {email,name}, to submit overrides." }))).into_response();
+    // expired during a long-paused review must still be able to close
+    // that modal.
+    if !overrides.is_empty() && user.is_none() {
+        return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Log in to submit overrides — an anonymous or client-supplied actor identity is not accepted for the audit trail." }))).into_response();
     }
-    let actor = actor.unwrap_or_default();
+    let actor = match user {
+        Some(user) => Actor { email: user.email.clone(), name: user.name.clone().unwrap_or(user.email) },
+        // Reached only when `overrides` is empty (guaranteed above) — a
+        // body-supplied actor here is display/logging convenience only,
+        // never attributed to a security-relevant override.
+        None => body
+            .get("actor")
+            .and_then(|a| {
+                let email = a.get("email").and_then(|v| v.as_str())?.trim();
+                if email.is_empty() {
+                    return None;
+                }
+                let name = a.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(email);
+                Some(Actor { email: email.to_string(), name: name.to_string() })
+            })
+            .unwrap_or_default(),
+    };
     let resolved = state.review_gate.resolve(&job_id, ReviewDecisionInput { proceed, overrides, actor });
     if !resolved {
         return (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response();

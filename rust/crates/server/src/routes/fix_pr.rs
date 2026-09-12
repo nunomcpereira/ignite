@@ -93,9 +93,25 @@ fn job_from_saved_row(row: ignite_db_store::FixPrPreviewRow) -> FixPrPreviewJob 
 async fn preview(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim().to_string();
 
-    if state.fix_pr_previews.lock().contains_key(&job_id) {
-        let job = state.fix_pr_previews.lock();
-        return Json(job_status_json(job.get(&job_id).unwrap())).into_response();
+    // Reserve the map slot *before* anything that awaits (the DB lookup is
+    // synchronous; `llm_available` below is the actual network hop) —
+    // two concurrent requests for the same `job_id` racing past a
+    // check-then-release-the-lock read here would otherwise both see "no
+    // job yet" and both spawn a redundant background LLM pass, each
+    // clobbering the other's state in `fix_pr_previews`. Whichever request
+    // actually inserts the vacant entry is the sole owner that proceeds
+    // past this point; a loser just reports back whatever the winner's
+    // job currently looks like.
+    {
+        let mut previews = state.fix_pr_previews.lock();
+        match previews.entry(job_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+                return Json(job_status_json(e.get())).into_response();
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(FixPrPreviewJob::default());
+            }
+        }
     }
 
     if let Some(row) = state.db.get_fix_pr_preview(&job_id) {
@@ -106,6 +122,7 @@ async fn preview(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_u
     }
 
     let Some(issues) = lookup_job_issues(&state, &job_id) else {
+        state.fix_pr_previews.lock().remove(&job_id);
         return err(StatusCode::NOT_FOUND, "Unknown job id.");
     };
 
@@ -229,7 +246,12 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
         Err(e) => return err(StatusCode::BAD_GATEWAY, format!("Failed to resolve default branch for {full_name}: {e}")),
     };
 
-    let outcome = ignite_fix_pr::open_fix_pr(&state.runner, &github_api, &full_name, &base_branch, job_id, &candidates, &token).await;
+    let http = reqwest::Client::new();
+    // A loopback call to this same server — same `PORT`-env-overrides-
+    // `config.json` precedence `main.rs` binds with.
+    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
+    let server_base = format!("http://127.0.0.1:{port}");
+    let outcome = ignite_fix_pr::open_fix_pr(&state.runner, &github_api, &http, &state.llm_config, &server_base, &full_name, &base_branch, job_id, &candidates, &token).await;
     if outcome.already_open {
         return Json(json!({ "ok": true, "alreadyOpen": true, "branch": outcome.branch })).into_response();
     }

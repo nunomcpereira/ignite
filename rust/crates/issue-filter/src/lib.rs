@@ -9,9 +9,20 @@
 use ignite_override_engine::Issue;
 use std::collections::HashSet;
 
+// Issue file paths are always forward-slash-normalized, repo-root-relative
+// (no leading `./` or `/`) — see every other crate's `relative_to_root`
+// calls. A caller-supplied changed-file path isn't guaranteed to already
+// be in that shape (a client tool might emit `./src/main.rs`, or
+// Windows-style `src\main.rs`), so it's normalized the same way before the
+// set lookup, or every issue for that file silently fails to match.
+fn normalize_changed_file(f: &str) -> String {
+    let f = f.trim().replace('\\', "/");
+    f.strip_prefix("./").unwrap_or(&f).trim_start_matches('/').to_string()
+}
+
 pub fn filter_issues_by_changed_files(issues: Vec<Issue>, changed_files: Option<&[String]>) -> Vec<Issue> {
     let Some(changed_files) = changed_files else { return issues };
-    let set: HashSet<&str> = changed_files.iter().map(|f| f.trim()).filter(|f| !f.is_empty()).collect();
+    let set: HashSet<String> = changed_files.iter().map(|f| normalize_changed_file(f)).filter(|f| !f.is_empty()).collect();
     issues.into_iter().filter(|issue| issue.file.as_deref().is_some_and(|f| set.contains(f))).collect()
 }
 

@@ -102,6 +102,20 @@ fn gh_token_env(token: &str) -> HashMap<String, String> {
     }
 }
 
+/// Sets `http.extraheader` for a raw `git` invocation via the
+/// `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` environment
+/// variables (supported since Git 2.31) instead of a `-c` command-line
+/// argument — the token never appears in `git`'s own argv, so it isn't
+/// visible to other users on the host via `/proc/<pid>/cmdline` or `ps
+/// aux` the way an inline `-c http.extraheader=...bearer {token}` would be.
+pub fn git_extraheader_token_env(token: &str) -> HashMap<String, String> {
+    HashMap::from([
+        ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+        ("GIT_CONFIG_KEY_0".to_string(), "http.extraheader".to_string()),
+        ("GIT_CONFIG_VALUE_0".to_string(), format!("AUTHORIZATION: bearer {token}")),
+    ])
+}
+
 /// The `id` of the first comment in `comments` (as returned by
 /// `GET .../issues/{n}/comments`) whose `body` contains `marker`, if any
 /// — pulled out of `gh_upsert_pr_sticky_comment` so the "which comment is
@@ -531,7 +545,7 @@ impl<'a> GithubApi<'a> {
             return Err(GithubApiError::NoToken);
         }
         self.runner
-            .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "clone".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
+            .run_tool("git", &["clone".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env: git_extraheader_token_env(token), ..Default::default() })
             .await?;
         Ok(())
     }
@@ -552,7 +566,7 @@ impl<'a> GithubApi<'a> {
             return Err(GithubApiError::NoToken);
         }
         self.runner
-            .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "clone".to_string(), "--branch".to_string(), branch.to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
+            .run_tool("git", &["clone".to_string(), "--branch".to_string(), branch.to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env: git_extraheader_token_env(token), ..Default::default() })
             .await?;
         Ok(())
     }
@@ -570,7 +584,7 @@ impl<'a> GithubApi<'a> {
         // unlike embedding the token in the remote URL, it's never written
         // to the cloned repo's own .git/config.
         self.runner
-            .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "clone".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions::default())
+            .run_tool("git", &["clone".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string(), format!("https://github.com/{full_name}.git"), dest_dir.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env: git_extraheader_token_env(token), ..Default::default() })
             .await?;
         Ok(())
     }

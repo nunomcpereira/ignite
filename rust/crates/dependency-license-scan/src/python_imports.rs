@@ -60,7 +60,12 @@ pub fn expected_python_import_name(pip_package_name: &str) -> String {
     normalized.replace(['-', '.'], "_")
 }
 
-static PY_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*import\s+([A-Za-z_][\w]*)").unwrap());
+// Captures the whole comma-separated clause after `import` (`os, sys,
+// math` for `import os, sys, math`) rather than just the first module name
+// — `PY_IMPORT_RE`'s old capture group 1 only ever grabbed the first
+// identifier on the line, silently dropping every subsequent module in a
+// multi-import statement.
+static PY_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*import\s+([A-Za-z_][\w.,\s]*)").unwrap());
 static PY_FROM_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*from\s+([A-Za-z_][\w]*)").unwrap());
 
 /// Every distinct top-level module name imported (`import x`, `import
@@ -76,10 +81,19 @@ pub fn collect_python_imported_modules(root: &Path) -> HashSet<String> {
     let Ok(files) = ignite_fs_utils::walk_files(root) else { return modules };
     for file in files.into_iter().filter(|f| f.extension().is_some_and(|e| e == "py")) {
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
-        for re in [&*PY_IMPORT_RE, &*PY_FROM_IMPORT_RE] {
-            for cap in re.captures_iter(&content) {
-                modules.insert(cap[1].to_lowercase());
+        for cap in PY_IMPORT_RE.captures_iter(&content) {
+            // `import os, sys, math` (and `import numpy as np, os.path`) —
+            // split the whole clause on `,`, drop each entry's `as alias`
+            // and any `.submodule` suffix, keeping just the top-level name.
+            for entry in cap[1].split(',') {
+                let name = entry.split_whitespace().next().unwrap_or("").split('.').next().unwrap_or("");
+                if !name.is_empty() {
+                    modules.insert(name.to_lowercase());
+                }
             }
+        }
+        for cap in PY_FROM_IMPORT_RE.captures_iter(&content) {
+            modules.insert(cap[1].to_lowercase());
         }
     }
     modules

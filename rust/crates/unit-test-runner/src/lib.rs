@@ -162,7 +162,14 @@ pub async fn run_project_unit_tests(root: &Path, runner: &ToolRunner, mut log: i
     let mut languages = Vec::new();
     for m in &matches {
         log(&format!("Detected {} project ({}). Running its test suite in an isolated {} container (no host access, no network beyond dependency install)...", m.language, m.detail, m.image));
-        let args = vec!["run".to_string(), "--rm".to_string(), "-v".to_string(), format!("{root_str}:/repo"), "-w".to_string(), "/repo".to_string(), m.image.clone(), "sh".to_string(), "-c".to_string(), m.command.clone()];
+        // The host checkout is mounted read-only: a malicious test script
+        // in the onboarded repo must not be able to tamper with the
+        // staged code drop that Phase 6 later pushes to GitHub after
+        // scans have passed. `cp -a` into a private, container-local
+        // `/work` first gives the test command (install steps, build
+        // artifacts — `npm install`, `cargo test`'s `target/`, etc.) a
+        // real writable workspace that's discarded with the container.
+        let args = vec!["run".to_string(), "--rm".to_string(), "-v".to_string(), format!("{root_str}:/repo:ro"), "-w".to_string(), "/work".to_string(), m.image.clone(), "sh".to_string(), "-c".to_string(), format!("cp -a /repo /work && {}", m.command)];
         let env = std::collections::HashMap::new();
         runner.run_tool_streaming("docker", &args, &std::env::temp_dir().to_string_lossy(), |line| log(&line.chars().take(400).collect::<String>()), &env, 10 * 60_000).await.map_err(|e| UnitTestError::TestsFailed(m.language, e.to_string()))?;
         log(&format!("✓ {} unit tests passed.", m.language));

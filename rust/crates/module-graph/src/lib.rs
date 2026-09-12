@@ -24,15 +24,28 @@ static EXPORT_DECL_RE: Lazy<Regex> =
 // crate has no lookaround support, so the "not followed by `from`"
 // condition is checked manually against the text right after each match
 // (see `extract_exports` below) instead of being part of the pattern.
-static EXPORT_LIST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bexport\s*\{([^}]*)\}").unwrap());
+// TypeScript type-only exports (`export type { Foo, Bar }`) put `type`
+// between `export` and `{` — previously unmatched, so a type export was
+// treated as unexported and falsely flagged as dead code.
+static EXPORT_LIST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bexport\s*(?:type\s+)?\{([^}]*)\}").unwrap());
 static EXPORT_LIST_FOLLOWED_BY_FROM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*from").unwrap());
 static EXPORT_DEFAULT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bexport\s+default\b").unwrap());
 static CJS_EXPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:module\.exports\.|exports\.)([A-Za-z_$][\w$]*)\s*=").unwrap());
 static CJS_EXPORT_OBJECT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bmodule\.exports\s*=\s*\{([^}]*)\}").unwrap());
 static NAME_AS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([\w$]+)(?:\s+as\s+([\w$]+))?$").unwrap());
 
+// A leading `/` is not a relative specifier in real JS/TS module
+// resolution — Node/bundlers treat only `.`/`..`-prefixed specifiers as
+// relative-to-the-importing-file; a bare `/foo` is either an absolute
+// filesystem path or a bundler-specific root alias, neither of which this
+// crate's simple relative-specifier resolver has any business treating as
+// "resolve `spec` against `from_file`'s directory". `resolve_specifier`
+// only ever returns a match already present in the project's own
+// `file_set`, so this was never a real path-escape risk — but excluding
+// `/` here means an absolute specifier is now correctly treated as a bare
+// (external) specifier instead of being run through resolution at all.
 pub fn is_relative_specifier(spec: &str) -> bool {
-    spec.starts_with('.') || spec.starts_with('/')
+    spec.starts_with('.')
 }
 
 fn resolve_specifier(from_file: &Path, spec: &str, file_set: &HashSet<PathBuf>) -> Option<PathBuf> {

@@ -108,7 +108,7 @@ async fn code_scanning_webhook(State(state): State<Arc<AppState>>, headers: Head
             Some(c) if !c.is_empty() => format!("Dismissed on GitHub ({reason}): {c}"),
             _ => format!("Dismissed on GitHub: {reason}"),
         };
-        state.db.add_override(ignite_db_store::AddOverrideArgs {
+        let override_args = ignite_db_store::AddOverrideArgs {
             project_id,
             job_id: &job_id,
             phase: issue.phase.unwrap_or(4),
@@ -122,13 +122,32 @@ async fn code_scanning_webhook(State(state): State<Arc<AppState>>, headers: Head
             actor_email: GITHUB_DISMISSAL_ACTOR_EMAIL,
             actor_name: dismissed_by,
             email_sent: false,
-        });
-        state.db.set_issue_status(project_id, &issue_id, "overridden");
-        state.emit_audit_event(
-            ignite_audit_log::AuditEvent::new("code_scanning_alert.dismissed_on_github", "info", format!("alert for {}: {} dismissed on GitHub ({reason})", issue.category, issue.summary))
-                .repo(&org, &repo)
-                .metadata(json!({ "issueId": issue_id, "reason": reason })),
-        );
+        };
+        // Dual-custody: a GitHub-side dismissal is still a human decision
+        // to override a finding, and a critical-severity one must not
+        // bypass the same second-reviewer approval every other override
+        // entry point (`routes/effectivate.rs`, `pipeline_interactive/run.rs`,
+        // `routes/pipeline_validate.rs`) enforces — otherwise any repo
+        // collaborator who can dismiss a GitHub alert (no Ignite
+        // permissions needed at all) could silently clear a critical
+        // finding through Ignite's gate.
+        let is_critical = state.config.security.override_approval.enabled && ignite_override_engine::is_critical_score(issue.score.unwrap_or(0) as i32);
+        if is_critical {
+            state.db.add_pending_override(override_args);
+            state.emit_audit_event(
+                ignite_audit_log::AuditEvent::new("code_scanning_alert.dismissed_on_github", "info", format!("alert for {}: {} dismissed on GitHub ({reason}) — critical, held pending a second reviewer's approval", issue.category, issue.summary))
+                    .repo(&org, &repo)
+                    .metadata(json!({ "issueId": issue_id, "reason": reason, "pendingApproval": true })),
+            );
+        } else {
+            state.db.add_override(override_args);
+            state.db.set_issue_status(project_id, &issue_id, "overridden");
+            state.emit_audit_event(
+                ignite_audit_log::AuditEvent::new("code_scanning_alert.dismissed_on_github", "info", format!("alert for {}: {} dismissed on GitHub ({reason})", issue.category, issue.summary))
+                    .repo(&org, &repo)
+                    .metadata(json!({ "issueId": issue_id, "reason": reason })),
+            );
+        }
     } else {
         let removed = state.db.delete_github_dismissal_overrides(&org, &repo, &issue_id);
         if removed > 0 && !state.db.issue_has_override(project_id, &issue_id) {

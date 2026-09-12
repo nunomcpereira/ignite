@@ -90,7 +90,13 @@ impl AuditEvent {
             "warning" => 5,
             _ => 2,
         };
-        let escape = |s: &str| s.replace('\\', "\\\\").replace('=', "\\=").replace('|', "\\|");
+        // CEF is a single-line syslog record — an unescaped `\r`/`\n` in a
+        // field (an event summary, an actor email, ...) splits the record
+        // across multiple lines, corrupting the framing every downstream
+        // syslog/CEF parser relies on. Escaped the same way CEF's own
+        // spec-mandated `\`/`=`/`|` are, per convention (there's no
+        // standard CEF escape for raw newlines otherwise).
+        let escape = |s: &str| s.replace('\\', "\\\\").replace('=', "\\=").replace('|', "\\|").replace('\r', "\\r").replace('\n', "\\n");
         let mut ext = format!("msg={} rt={}", escape(&self.summary), escape(&self.timestamp));
         if let Some(actor) = &self.actor {
             ext.push_str(&format!(" suser={}", escape(actor)));

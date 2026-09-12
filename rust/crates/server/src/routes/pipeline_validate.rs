@@ -108,7 +108,18 @@ impl Logger {
     }
 }
 
-fn resolve_actor(body: &Value) -> Option<(String, String)> {
+/// A resolved session/API-key identity always wins over the request
+/// body's own `actor` field — trusting the body outright would let any
+/// caller attribute an override to an arbitrary email, spoofing the audit
+/// trail. The body-supplied actor is only ever used as a fallback for a
+/// genuinely unauthenticated deployment (headless CI with no session and
+/// no API key configured), matching this endpoint's documented "agent/CI
+/// callers" use case.
+fn resolve_actor(headers: &axum::http::HeaderMap, db: &ignite_db_store::DbStore, body: &Value) -> Option<(String, String)> {
+    if let Some(user) = crate::auth::resolve_user(headers, db) {
+        let name = user.name.clone().unwrap_or_else(|| user.email.clone());
+        return Some((user.email, name));
+    }
     let email = body.get("actor").and_then(|a| a.get("email")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
     let name = body.get("actor").and_then(|a| a.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if !ignite_auth::is_valid_email(&email) {
@@ -217,7 +228,7 @@ mod panic_message_tests {
 }
 
 #[allow(clippy::result_large_err)]
-async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (Value, Value)> {
+async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (Value, Value)> {
     let org = body.get("org").and_then(|v| v.as_str()).unwrap_or("local-validation").trim().to_string();
     let org = if org.is_empty() { "local-validation".to_string() } else { org };
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("local-project").trim().to_string();
@@ -411,7 +422,7 @@ async fn run_validate_all(state: Arc<AppState>, body: Value) -> Result<Value, (V
                 overridden_ids.insert(issue.id.clone());
             }
             if !result.applied.is_empty() {
-                let Some((email, name)) = resolve_actor(&body) else {
+                let Some((email, name)) = resolve_actor(&headers, &state.db, &body) else {
                     return Err(PipelineError::new(4, "Overrides were submitted but no authenticated user or actor {email,name} was provided — cannot attribute the audit record."));
                 };
 
@@ -687,8 +698,8 @@ fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Op
     crate::phase4_config::from_config(&state.config, org, repo, project_id, fast, igniteignore_git_check_root)
 }
 
-async fn validate_all(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
-    match run_validate_all(state, body).await {
+async fn validate_all(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    match run_validate_all(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err((v, _)) => (StatusCode::BAD_REQUEST, Json(v)).into_response(),
     }

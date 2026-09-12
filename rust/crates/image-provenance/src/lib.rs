@@ -84,9 +84,14 @@ pub fn discover_base_images(root: &Path) -> std::io::Result<Vec<BaseImageOccurre
             let Some(m) = FROM_LINE_RE.captures(line) else { continue };
             let image = m.get(1).map(|x| x.as_str().to_string()).unwrap_or_default();
             if let Some(stage) = m.get(2) {
-                stage_names.insert(stage.as_str().to_string());
+                stage_names.insert(stage.as_str().to_lowercase());
             }
-            if stage_names.contains(&image) || image.eq_ignore_ascii_case("scratch") {
+            // Docker stage names are case-insensitive (`FROM base AS
+            // Builder` followed by `FROM builder` is a valid same-stage
+            // reference) — comparing lowercased forms on both sides
+            // avoids treating a later-stage reference as an external
+            // image to verify/query on a public registry.
+            if stage_names.contains(&image.to_lowercase()) || image.eq_ignore_ascii_case("scratch") {
                 continue;
             }
             occurrences.push(BaseImageOccurrence { file: rel.clone(), line: i + 1, image });

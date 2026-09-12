@@ -34,6 +34,18 @@ static CLASS_ATTR_RE: Lazy<Regex> = Lazy::new(|| {
 // own regardless of what's inside `{}`. Previously unmatched, so every
 // class only ever referenced this way was flagged as dead code.
 static SVELTE_CLASS_DIRECTIVE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bclass:([A-Za-z_-][\w-]*)").unwrap());
+// Vue's `:class="..."`/`v-bind:class="..."` binding — same string-literal
+// shape as `class=`, just a different attribute name. A dynamic
+// object/array expression (`:class="{ active: isActive }"`) still has its
+// class names as bare quoted strings inside, which the shared
+// `extract_quoted_words` helper below picks up regardless.
+static VUE_CLASS_BIND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:v-bind:class|:class)\s*=\s*"([^"]*)""#).unwrap());
+// `clsx(...)`/`classnames(...)`/`cn(...)` utility calls and
+// `classList.add/remove/toggle(...)` — extracts every quoted-string
+// argument's contents (each may itself be space-separated classes) rather
+// than trying to fully parse the call's actual JS argument expression.
+static CLASS_UTILITY_CALL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:clsx|classnames|cn|classList\.(?:add|remove|toggle))\(([^)]*)\)").unwrap());
+static QUOTED_STRING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#""([^"]*)"|'([^']*)'|`([^`]*)`"#).unwrap());
 static SKIP_PREFIX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(is-|has-|js-)").unwrap());
 
 fn next_char_ends_selector(rest: &str) -> bool {
@@ -73,6 +85,19 @@ pub fn extract_used_classes(markup_content: &str) -> HashSet<String> {
     }
     for cap in SVELTE_CLASS_DIRECTIVE_RE.captures_iter(markup_content) {
         names.insert(cap[1].to_string());
+    }
+    for cap in VUE_CLASS_BIND_RE.captures_iter(markup_content) {
+        for cls in cap[1].split_whitespace() {
+            names.insert(cls.to_string());
+        }
+    }
+    for cap in CLASS_UTILITY_CALL_RE.captures_iter(markup_content) {
+        for qcap in QUOTED_STRING_RE.captures_iter(&cap[1]) {
+            let raw = qcap.get(1).or_else(|| qcap.get(2)).or_else(|| qcap.get(3)).map(|m| m.as_str()).unwrap_or("");
+            for cls in raw.split_whitespace() {
+                names.insert(cls.to_string());
+            }
+        }
     }
     names
 }

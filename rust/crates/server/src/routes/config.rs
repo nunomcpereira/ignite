@@ -5,14 +5,37 @@ use crate::routes::phase_meta::resolve_phase_meta;
 use crate::state::AppState;
 use axum::extract::State;
 use axum::Json;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const IGNITE_VERSION: &str = "0.1.0";
 
-async fn config(State(state): State<Arc<AppState>>) -> Json<Value> {
+// `/api/config` is public/unauthenticated and was probing the configured
+// LLM provider live on every single request with no caching or rate
+// limiting — an attacker could flood this endpoint to exhaust the
+// provider's quota/incur cost, or just cause request pile-up against a
+// slow/unreachable provider. Cached with a short TTL instead of a live
+// call per request.
+static AI_AVAILABLE_CACHE: Lazy<Mutex<Option<(Instant, bool)>>> = Lazy::new(|| Mutex::new(None));
+const AI_AVAILABLE_TTL: Duration = Duration::from_secs(30);
+
+async fn cached_llm_available(state: &AppState) -> bool {
+    if let Some((checked_at, value)) = *AI_AVAILABLE_CACHE.lock() {
+        if checked_at.elapsed() < AI_AVAILABLE_TTL {
+            return value;
+        }
+    }
     let http = reqwest::Client::new();
-    let ai_available = ignite_llm_client::llm_available(&http, &state.llm_config).await;
+    let value = ignite_llm_client::llm_available(&http, &state.llm_config).await;
+    *AI_AVAILABLE_CACHE.lock() = Some((Instant::now(), value));
+    value
+}
+
+async fn config(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let ai_available = cached_llm_available(&state).await;
 
     let meta = resolve_phase_meta(&state.config);
     // Phase 4 still runs everything else with no LLM configured or

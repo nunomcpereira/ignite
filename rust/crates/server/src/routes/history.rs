@@ -1,6 +1,4 @@
 //! /api/projects/*, /api/documents/:id — faithful port of routes/history.js.
-//! `auth.requireAuth` on the schedule endpoint isn't enforced yet — no
-//! session/auth middleware exists.
 
 use crate::routes::job_issues::lookup_job_issues;
 use crate::state::AppState;
@@ -27,7 +25,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn list_projects(State(state): State<Arc<AppState>>) -> Response {
+async fn list_projects(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
     Json(state.db.list_projects()).into_response()
 }
 
@@ -37,7 +35,7 @@ async fn list_projects(State(state): State<Arc<AppState>>) -> Response {
 // shadow it. axum's router doesn't have that ordering pitfall (it always
 // prefers the more specific literal match), but the route stays doc'd
 // here for parity with the JS source.
-async fn list_effectivated(State(state): State<Arc<AppState>>) -> Response {
+async fn list_effectivated(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
     Json(json!({ "projects": state.db.list_effectivated_projects() })).into_response()
 }
 
@@ -45,7 +43,7 @@ fn parse_id(raw: &str) -> Option<i64> {
     raw.parse::<i64>().ok()
 }
 
-async fn project_details(State(state): State<Arc<AppState>>, Path(id_raw): Path<String>) -> Response {
+async fn project_details(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
     match state.db.get_project_details(id) {
         Some(project) => Json(project).into_response(),
@@ -53,7 +51,7 @@ async fn project_details(State(state): State<Arc<AppState>>, Path(id_raw): Path<
     }
 }
 
-async fn project_issues(State(state): State<Arc<AppState>>, Path(id_raw): Path<String>) -> Response {
+async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
     if !state.db.project_exists(id) {
         return err(StatusCode::NOT_FOUND, "Project not found.");
@@ -140,7 +138,7 @@ async fn delete_all_projects(State(state): State<Arc<AppState>>, crate::auth::Re
 
 static SCHEDULE_INTERVALS: Lazy<Vec<&'static str>> = Lazy::new(|| ignite_scheduled_rechecks::SCHEDULE_INTERVALS.to_vec());
 
-async fn set_schedule(State(state): State<Arc<AppState>>, Path(id_raw): Path<String>, Json(body): Json<Value>) -> Response {
+async fn set_schedule(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>, Json(body): Json<Value>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
     if !state.db.project_exists(id) {
         return err(StatusCode::NOT_FOUND, "Project not found.");

@@ -8,8 +8,33 @@
 
 use std::collections::BTreeMap;
 
+/// Strips CR/LF before interpolating into an email subject line —
+/// unescaped newlines in an org/repo name would let it inject extra SMTP
+/// headers into the message. `escape_html_mail` handles the HTML body's
+/// own injection risk but doesn't touch `\r`/`\n`, so subject-line
+/// construction needs this separately.
+fn strip_crlf(s: &str) -> String {
+    s.replace(['\r', '\n'], "")
+}
+
 pub fn escape_html_mail(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Caps a failed phase's log block to its last `MAX_LOG_LINES` lines — a
+/// build that produced tens of megabytes of log output would otherwise
+/// balloon the generated email to a size some SMTP relays reject outright,
+/// and it's the *end* of the log (closest to the actual failure) that
+/// matters most for triage anyway.
+const MAX_LOG_LINES: usize = 100;
+
+fn truncate_logs(logs: &[String]) -> String {
+    if logs.len() <= MAX_LOG_LINES {
+        return logs.join("\n");
+    }
+    let omitted = logs.len() - MAX_LOG_LINES;
+    let tail = logs[logs.len() - MAX_LOG_LINES..].join("\n");
+    format!("… ({omitted} earlier line(s) omitted) …\n{tail}")
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +94,7 @@ pub fn build_failure_email(phase_titles: &BTreeMap<i64, String>, details: &Failu
         .filter(|(_, ph)| ph.state == "failed" && !ph.logs.is_empty())
         .map(|(id, ph)| {
             let title = phase_titles.get(id).map(String::as_str).unwrap_or("Unknown");
-            let logs = escape_html_mail(&ph.logs.join("\n"));
+            let logs = escape_html_mail(&truncate_logs(&ph.logs));
             format!(
                 "\n        <h3 style=\"margin:24px 0 8px;color:#0f172a;\">Phase {id} — {title} logs</h3>\n        <pre style=\"background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12px;line-height:1.6;overflow-x:auto;white-space:pre-wrap;\">{logs}</pre>"
             )
@@ -77,7 +102,7 @@ pub fn build_failure_email(phase_titles: &BTreeMap<i64, String>, details: &Failu
         .collect();
 
     let failed_phase_title = phase_titles.get(&details.failed_phase).map(String::as_str).unwrap_or("Unknown");
-    let subject = format!("[Ignite] \u{274c} Onboarding failed at Phase {} — {}/{}", details.failed_phase, details.org, details.repo);
+    let subject = format!("[Ignite] \u{274c} Onboarding failed at Phase {} — {}/{}", details.failed_phase, strip_crlf(details.org), strip_crlf(details.repo));
     let insight_block = details
         .insight
         .map(|insight| {
@@ -92,7 +117,7 @@ pub fn build_failure_email(phase_titles: &BTreeMap<i64, String>, details: &Failu
         "\n    <div style=\"font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:720px;margin:0 auto;color:#334155;\">\n      <h2 style=\"color:#e11d48;\">Ignite onboarding pipeline failed</h2>\n      <p><strong>Target:</strong> {}/{} (private)<br/>\n         <strong>Job:</strong> {}<br/>\n         <strong>Failed at:</strong> Phase {} — {failed_phase_title}<br/>\n         <strong>Error:</strong> {}</p>\n      <table style=\"border-collapse:collapse;width:100%;font-size:14px;\">\n        <tr style=\"background:#f1f5f9;\">\n          <th style=\"padding:6px 12px;text-align:left;\">#</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Phase</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Status</th>\n        </tr>\n        {rows}\n      </table>\n      {insight_block}\n      {failed_sections}\n      <p style=\"color:#94a3b8;font-size:12px;margin-top:24px;\">Sent by Ignite — staging files were cleaned up. Fix the violations and re-run the pipeline.</p>\n    </div>",
         escape_html_mail(details.org),
         escape_html_mail(details.repo),
-        details.job_id,
+        escape_html_mail(details.job_id),
         details.failed_phase,
         escape_html_mail(details.error),
     );
@@ -146,13 +171,13 @@ pub fn build_override_email(phase_titles: &BTreeMap<i64, String>, details: &Over
 
     let error_count = details.applied.iter().filter(|a| a.issue.severity == "error").count();
     let phase_title = phase_titles.get(&details.phase).map(String::as_str).unwrap_or("Unknown");
-    let subject = format!("[Ignite] \u{26a0} {} guideline override(s) at Phase {} — {}/{}", details.applied.len(), details.phase, details.org, details.repo);
+    let subject = format!("[Ignite] \u{26a0} {} guideline override(s) at Phase {} — {}/{}", details.applied.len(), details.phase, strip_crlf(details.org), strip_crlf(details.repo));
     let actor_display = escape_html_mail(details.actor.name.unwrap_or(details.actor.email));
     let html = format!(
         "\n    <div style=\"font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;color:#334155;\">\n      <h2 style=\"color:#b45309;\">A developer overrode flagged guideline check(s)</h2>\n      <p><strong>Target:</strong> {}/{}<br/>\n         <strong>Job:</strong> {}<br/>\n         <strong>Phase:</strong> {} — {phase_title}<br/>\n         <strong>Overridden by:</strong> {actor_display} ({})<br/>\n         <strong>Blocking findings bypassed:</strong> {error_count} of {}</p>\n      <table style=\"border-collapse:collapse;width:100%;font-size:13px;\">\n        <tr style=\"background:#f1f5f9;\">\n          <th style=\"padding:6px 12px;text-align:left;\">Severity</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Category</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Location</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Finding</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Justification</th>\n        </tr>\n        {rows}\n      </table>\n      <p style=\"color:#94a3b8;font-size:12px;margin-top:24px;\">Sent by Ignite — this override is recorded in the project's audit log.</p>\n    </div>",
         escape_html_mail(details.org),
         escape_html_mail(details.repo),
-        details.job_id,
+        escape_html_mail(details.job_id),
         details.phase,
         escape_html_mail(details.actor.email),
         details.applied.len(),

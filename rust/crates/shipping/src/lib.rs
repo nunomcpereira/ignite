@@ -42,7 +42,7 @@ pub struct ShipResult {
 }
 
 static VALIDATION_422_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)HTTP 422").unwrap());
-static HTTP_404_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"404").unwrap());
+static HTTP_404_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bHTTP\s+404\b").unwrap());
 
 async fn git(runner: &ToolRunner, args: &[String], cwd: &str, gh_token: &str) -> Result<ignite_tool_runner::ToolOutput, ignite_tool_runner::ToolError> {
     let env = HashMap::from([("GH_TOKEN".to_string(), gh_token.to_string())]);
@@ -132,23 +132,31 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
         Err(_) => log("⚠ Could not enable auto-merge — the PR will need a manual merge once checks pass."),
     }
 
+    // GitHub itself defaults a freshly `auto_init`'d repo to "main", but an
+    // org can configure a different default-branch name for new repos
+    // (`master`, `trunk`, ...) — querying the repo's actual default branch
+    // here (rather than assuming "main" everywhere below) is the only way
+    // this doesn't just fail outright against such an org.
+    let default_branch = github_api.default_branch(&full_name, gh_token).await.unwrap_or_else(|_| "main".to_string());
+
     log(&format!("$ git remote add origin \"{remote_url}\""));
     git(runner, &s(&["remote", "add", "origin", &remote_url]), &root_str, gh_token).await?;
 
     // Repo initialization is asynchronous — and org rulesets with required
-    // workflows can block the creation of main entirely. Wait briefly.
-    log("$ git fetch origin main");
+    // workflows can block the creation of the default branch entirely.
+    // Wait briefly.
+    log(&format!("$ git fetch origin {default_branch}"));
     let mut main_exists = false;
     for attempt in 1..=8 {
         let mut args = git_cred.clone();
-        args.extend(s(&["fetch", "origin", "main"]));
+        args.extend(s(&["fetch", "origin", &default_branch]));
         match git(runner, &args, &root_str, gh_token).await {
             Ok(_) => {
                 main_exists = true;
                 break;
             }
             Err(_) => {
-                log(&format!("main ref not ready yet (attempt {attempt}/8) — retrying in 3s..."));
+                log(&format!("{default_branch} ref not ready yet (attempt {attempt}/8) — retrying in 3s..."));
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
@@ -157,9 +165,9 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
     if main_exists {
         // Replay our commit on top of GitHub's init commit; on conflicts
         // (e.g. the project ships its own README.md) our version wins.
-        log("$ git rebase -X theirs origin/main");
+        log(&format!("$ git rebase -X theirs origin/{default_branch}"));
         let mut args = git_id.clone();
-        args.extend(s(&["rebase", "-X", "theirs", "origin/main"]));
+        args.extend(s(&["rebase", "-X", "theirs", &format!("origin/{default_branch}")]));
         git(runner, &args, &root_str, gh_token).await?;
     }
 
@@ -171,36 +179,38 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
     let sha = git(runner, &s(&["rev-parse", "HEAD"]), &root_str, gh_token).await?.stdout.trim().to_string();
 
     if !main_exists {
-        // Try to create main directly from the compliant commit (works in
-        // orgs/accounts without a required-workflow ruleset on main).
-        log("$ gh api POST git/refs (create main from onboarding commit)");
-        let ref_fields = HashMap::from([("ref".to_string(), json!("refs/heads/main")), ("sha".to_string(), json!(sha))]);
+        // Try to create the default branch directly from the compliant
+        // commit (works in orgs/accounts without a required-workflow
+        // ruleset on it).
+        log(&format!("$ gh api POST git/refs (create {default_branch} from onboarding commit)"));
+        let ref_fields = HashMap::from([("ref".to_string(), json!(format!("refs/heads/{default_branch}"))), ("sha".to_string(), json!(sha))]);
         if github_api.gh_api_write("POST", &format!("repos/{full_name}/git/refs"), &ref_fields, gh_token).await.is_ok() {
-            log("✓ main created directly — no ruleset restriction on this repo.");
-            let default_branch_fields = HashMap::from([("default_branch".to_string(), json!("main"))]);
+            log(&format!("✓ {default_branch} created directly — no ruleset restriction on this repo."));
+            let default_branch_fields = HashMap::from([("default_branch".to_string(), json!(default_branch))]);
             match github_api.gh_api_write("PATCH", &format!("repos/{full_name}"), &default_branch_fields, gh_token).await {
-                Ok(_) => log("✓ Default branch set to main."),
-                Err(_) => log("⚠ Could not set main as the default branch — adjust in repo settings."),
+                Ok(_) => log(&format!("✓ Default branch set to {default_branch}.")),
+                Err(_) => log(&format!("⚠ Could not set {default_branch} as the default branch — adjust in repo settings.")),
             }
-            log("✓ Code is live on main.");
+            log(&format!("✓ Code is live on {default_branch}."));
             return Ok(ShipResult { repo_url: format!("https://github.com/{full_name}"), pr_url: None });
         }
-        // Deadlock: the ruleset blocks ALL creation of main (even GitHub's
-        // auto-init), but the required workflow can only run on a PR whose
-        // base is main. No client-side flow can satisfy it.
+        // Deadlock: the ruleset blocks ALL creation of the default branch
+        // (even GitHub's auto-init), but the required workflow can only
+        // run on a PR whose base is that branch. No client-side flow can
+        // satisfy it.
         let bootstrap_default_fields = HashMap::from([("default_branch".to_string(), json!(onboard_branch))]);
         let _ = github_api.gh_api_write("PATCH", &format!("repos/{full_name}"), &bootstrap_default_fields, gh_token).await;
-        log("⚠ The org ruleset blocks creating \"main\" in new repos (bootstrap deadlock: the required workflow can only run on a PR, and a PR needs main to exist).");
+        log(&format!("⚠ The org ruleset blocks creating \"{default_branch}\" in new repos (bootstrap deadlock: the required workflow can only run on a PR, and a PR needs {default_branch} to exist)."));
         log(&format!("✓ Code shipped to \"{onboard_branch}\", now the repository's default branch."));
-        log(&format!("⚠ Once an org admin adds a ruleset bypass so main can be bootstrapped, open a PR from \"{onboard_branch}\" into main."));
+        log(&format!("⚠ Once an org admin adds a ruleset bypass so {default_branch} can be bootstrapped, open a PR from \"{onboard_branch}\" into {default_branch}."));
         return Ok(ShipResult { repo_url: format!("https://github.com/{full_name}/tree/{onboard_branch}"), pr_url: None });
     }
 
-    log("$ gh pr create --base main");
+    log(&format!("$ gh pr create --base {default_branch}"));
     let pr = github_api
         .gh_create_pr(
             &full_name,
-            "main",
+            &default_branch,
             &onboard_branch,
             "chore: initial compliant code drop via onboarding gatekeeper",
             "Automated onboarding by Ignite. All local gates passed: structure audit, secret scan, AI governance, LLM deep-scan, and the org governance workflows executed locally via act.",
@@ -232,8 +242,14 @@ pub struct ArchivedPayload {
 pub async fn archive_phase6_payload(root: &Path, project_id: Option<i64>, runner: &ToolRunner, store: &DbStore, mut log: impl FnMut(&str)) -> Option<ArchivedPayload> {
     let project_id = project_id?;
 
-    let tmp_name = format!("ignite-phase6-payload-{}.zip", uuid::Uuid::new_v4());
-    let tmp_zip = std::env::temp_dir().join(&tmp_name);
+    let tmp_file = match tempfile::Builder::new().prefix("ignite-phase6-payload-").suffix(".zip").tempfile() {
+        Ok(f) => f,
+        Err(e) => {
+            log(&format!("⚠ Could not archive phase 6 push payload: {e}"));
+            return None;
+        }
+    };
+    let tmp_zip = tmp_file.path().to_path_buf();
     let root_str = root.to_string_lossy().into_owned();
 
     // Snapshot the exact tracked tree that phase 6 is attempting to push.
@@ -260,7 +276,7 @@ pub async fn archive_phase6_payload(root: &Path, project_id: Option<i64>, runner
         }
     };
 
-    let _ = std::fs::remove_file(&tmp_zip);
+    drop(tmp_file);
     outcome
 }
 

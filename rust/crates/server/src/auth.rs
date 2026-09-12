@@ -230,6 +230,9 @@ struct RegisterBody {
 }
 
 async fn auth_register(State(state): State<Arc<AppState>>, axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>, Json(body): Json<RegisterBody>) -> Response {
+    if state.config.auth.mode != "standalone" || !state.config.auth.allow_self_registration {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Self-registration is disabled." }))).into_response();
+    }
     let ip = addr.ip().to_string();
     if !ignite_auth::register_limiter().check(&ip) {
         return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "Too many registration attempts. Try again later." }))).into_response();

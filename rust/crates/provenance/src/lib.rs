@@ -47,6 +47,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// (YYYY-MM-DDTHH:MM:SS.sssZ), hand-rolled from a Unix timestamp rather
 /// than pulling in a datetime crate for one formatted string.
 fn iso8601_now() -> String {
+    // `unwrap_or_default()` clamps a pre-epoch system clock to `Duration::ZERO`
+    // (1970-01-01T00:00:00.000Z) rather than propagating a negative offset —
+    // `secs`/`doe` below are only ever derived from a non-negative duration,
+    // so the Hinnant day-count math can't underflow into a garbage `u64`.
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs() as i64;
     let millis = now.subsec_millis();

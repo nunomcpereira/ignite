@@ -64,7 +64,11 @@ async fn approve(Path((project_id, override_id)): Path<(i64, i64)>, State(state)
     match state.db.approve_override(project_id, override_id, &user.email) {
         Ok((project_id, issue_id)) => {
             state.db.set_issue_status(project_id, &issue_id, "overridden");
-            state.emit_audit_event(ignite_audit_log::AuditEvent::new("override.approved_by_reviewer", "info", format!("critical override for issue {issue_id} approved")).actor(user.email.clone()).metadata(json!({ "issueId": issue_id, "overrideId": override_id, "projectId": project_id })));
+            let mut event = ignite_audit_log::AuditEvent::new("override.approved_by_reviewer", "info", format!("critical override for issue {issue_id} approved")).actor(user.email.clone()).metadata(json!({ "issueId": issue_id, "overrideId": override_id, "projectId": project_id }));
+            if let Some(project) = state.db.get_project(project_id) {
+                event = event.repo(&project.org, &project.repo);
+            }
+            state.emit_audit_event(event);
             Json(json!({ "ok": true, "issueId": issue_id })).into_response()
         }
         Err(e) => err(status_for_override_error(&e), e),
@@ -77,7 +81,11 @@ async fn reject(Path((project_id, override_id)): Path<(i64, i64)>, State(state):
     }
     match state.db.reject_override(project_id, override_id, &user.email) {
         Ok((project_id, issue_id)) => {
-            state.emit_audit_event(ignite_audit_log::AuditEvent::new("override.rejected_by_reviewer", "warning", format!("critical override for issue {issue_id} rejected")).actor(user.email.clone()).metadata(json!({ "issueId": issue_id, "overrideId": override_id, "projectId": project_id })));
+            let mut event = ignite_audit_log::AuditEvent::new("override.rejected_by_reviewer", "warning", format!("critical override for issue {issue_id} rejected")).actor(user.email.clone()).metadata(json!({ "issueId": issue_id, "overrideId": override_id, "projectId": project_id }));
+            if let Some(project) = state.db.get_project(project_id) {
+                event = event.repo(&project.org, &project.repo);
+            }
+            state.emit_audit_event(event);
             Json(json!({ "ok": true, "issueId": issue_id })).into_response()
         }
         Err(e) => err(status_for_override_error(&e), e),

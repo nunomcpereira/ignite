@@ -55,7 +55,7 @@ fn parse_date_param(raw: Option<&str>) -> Result<Option<chrono::NaiveDate>, Stri
     }
 }
 
-async fn audit_pack(State(state): State<Arc<AppState>>, Query(query): Query<AuditPackQuery>) -> Response {
+async fn audit_pack(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Query(query): Query<AuditPackQuery>) -> Response {
     let to_date = match parse_date_param(query.to.as_deref()) {
         Ok(d) => d.unwrap_or_else(|| chrono::Utc::now().date_naive()),
         Err(e) => return err(StatusCode::BAD_REQUEST, e),
@@ -135,10 +135,29 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    /// A valid `Authorization: Bearer ignite_<key>` header for a freshly
+    /// created local user in `state`'s db — `audit_pack` now requires
+    /// `RequireAuth`.
+    fn auth_header(state: &AppState) -> String {
+        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash");
+        let raw_key = ignite_auth::generate_api_key();
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
+        format!("Bearer {raw_key}")
+    }
+
     #[tokio::test]
-    async fn audit_pack_defaults_to_a_90_day_window_when_no_dates_given() {
+    async fn audit_pack_requires_auth() {
         let app = router().with_state(test_state());
         let res = app.oneshot(Request::get("/api/compliance/audit-pack").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn audit_pack_defaults_to_a_90_day_window_when_no_dates_given() {
+        let state = test_state();
+        let auth = auth_header(&state);
+        let app = router().with_state(state);
+        let res = app.oneshot(Request::get("/api/compliance/audit-pack").header("Authorization", auth).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let json = body_json(res).await;
         let from = chrono::NaiveDate::parse_from_str(json["period"]["from"].as_str().unwrap(), "%Y-%m-%d").unwrap();
@@ -150,15 +169,19 @@ mod tests {
 
     #[tokio::test]
     async fn audit_pack_rejects_malformed_date() {
-        let app = router().with_state(test_state());
-        let res = app.oneshot(Request::get("/api/compliance/audit-pack?from=not-a-date").body(Body::empty()).unwrap()).await.unwrap();
+        let state = test_state();
+        let auth = auth_header(&state);
+        let app = router().with_state(state);
+        let res = app.oneshot(Request::get("/api/compliance/audit-pack?from=not-a-date").header("Authorization", auth).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn audit_pack_rejects_from_after_to() {
-        let app = router().with_state(test_state());
-        let res = app.oneshot(Request::get("/api/compliance/audit-pack?from=2026-06-01&to=2026-01-01").body(Body::empty()).unwrap()).await.unwrap();
+        let state = test_state();
+        let auth = auth_header(&state);
+        let app = router().with_state(state);
+        let res = app.oneshot(Request::get("/api/compliance/audit-pack?from=2026-06-01&to=2026-01-01").header("Authorization", auth).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -195,8 +218,9 @@ mod tests {
         let from = (today - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
         let to = (today + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
 
+        let auth = auth_header(&state);
         let app = router().with_state(state);
-        let res = app.oneshot(Request::get(format!("/api/compliance/audit-pack?from={from}&to={to}")).body(Body::empty()).unwrap()).await.unwrap();
+        let res = app.oneshot(Request::get(format!("/api/compliance/audit-pack?from={from}&to={to}")).header("Authorization", auth).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let json = body_json(res).await;
         assert_eq!(json["overrides"]["total"], 1);

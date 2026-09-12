@@ -13,8 +13,8 @@ use rand_core::{OsRng, RngCore};
 use regex::Regex;
 use scrypt::Params;
 use sha2::{Digest, Sha256};
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const SESSION_COOKIE: &str = "ignite_sid";
@@ -158,6 +158,8 @@ struct RateLimitEntry {
 /// belongs in the eventual axum server crate, not this logic crate; the
 /// lazy sweep here bounds the same unbounded-growth failure mode (a flood
 /// against an endpoint that never succeeds) without needing one.
+const STALE_ENTRY_PRUNE_THRESHOLD: usize = 10_000;
+
 pub struct RateLimiter {
     hits: Mutex<HashMap<String, RateLimitEntry>>,
     window: Duration,
@@ -171,8 +173,17 @@ impl RateLimiter {
 
     pub fn check(&self, key: &str) -> bool {
         let now = Instant::now();
-        let mut hits = self.hits.lock().unwrap();
-        hits.retain(|_, v| v.reset_at > now);
+        let mut hits = self.hits.lock();
+        // A full `retain` scan on every single call is fine at normal
+        // scale, but an attacker flooding with randomized keys (distinct
+        // IPs/headers per request) grows this map without bound and makes
+        // every subsequent call scan an ever-larger table while holding
+        // the lock — pruning only once the map has actually grown past a
+        // reasonable size keeps the common case O(1)-ish without ever
+        // letting the map grow unboundedly either.
+        if hits.len() > STALE_ENTRY_PRUNE_THRESHOLD {
+            hits.retain(|_, v| v.reset_at > now);
+        }
         let entry = hits.entry(key.to_string()).or_insert_with(|| RateLimitEntry { count: 0, reset_at: now + self.window });
         if entry.reset_at <= now {
             entry.count = 0;
@@ -183,7 +194,7 @@ impl RateLimiter {
     }
 
     pub fn reset(&self, key: &str) {
-        self.hits.lock().unwrap().remove(key);
+        self.hits.lock().remove(key);
     }
 }
 

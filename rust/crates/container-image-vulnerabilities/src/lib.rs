@@ -11,7 +11,7 @@ use ignite_fs_utils::{is_dockerfile_name, walk_files};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
 pub struct ContainerImageVulnerabilitiesConfig {
@@ -142,6 +142,34 @@ impl Drop for TagCleanupGuard {
     }
 }
 
+/// Deletes its report file on drop unless [`Self::defuse`]d — same
+/// cancellation-safety rationale as `TagCleanupGuard` above: if the scan
+/// future is cancelled (e.g. a phase timeout) mid-scan, the `remove_file`
+/// call at the end of the loop body is never reached and the report is
+/// otherwise orphaned in the system temp dir.
+struct ReportFileGuard {
+    path: PathBuf,
+    active: bool,
+}
+
+impl ReportFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, active: true }
+    }
+
+    fn defuse(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for ReportFileGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn unique_suffix() -> String {
     format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0))
 }
@@ -181,11 +209,12 @@ pub async fn check_container_image_vulnerabilities(root: &Path, runner: &ToolRun
         let tag = format!("ignite-trivyscan-{}:latest", unique_suffix());
         let mut cleanup_guard = TagCleanupGuard::new(tag.clone());
         let report_path = std::env::temp_dir().join(format!("ignite-trivy-image-{}.json", unique_suffix()));
+        let mut report_guard = ReportFileGuard::new(report_path.clone());
 
         let build_result = runner
             .run_tool_streaming(
                 "docker",
-                &["build".to_string(), "-f".to_string(), dockerfile.to_string_lossy().into_owned(), "-t".to_string(), tag.clone(), build_context.to_string_lossy().into_owned()],
+                &["build".to_string(), "--network".to_string(), "none".to_string(), "-f".to_string(), dockerfile.to_string_lossy().into_owned(), "-t".to_string(), tag.clone(), build_context.to_string_lossy().into_owned()],
                 &root.to_string_lossy(),
                 |_line| {},
                 &HashMap::new(),
@@ -245,6 +274,7 @@ pub async fn check_container_image_vulnerabilities(root: &Path, runner: &ToolRun
         }
 
         let _ = tokio::fs::remove_file(&report_path).await;
+        report_guard.defuse();
         if built {
             let _ = runner.run_tool("docker", &["rmi".to_string(), "-f".to_string(), tag], &root.to_string_lossy(), RunToolOptions::default()).await;
             cleanup_guard.defuse();

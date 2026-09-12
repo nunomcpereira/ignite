@@ -99,6 +99,10 @@ pub struct SemanticSastResult {
     pub engine: &'static str,
 }
 
+fn analysis_failed_finding(message: String) -> SemanticSastFinding {
+    SemanticSastFinding { file: "".to_string(), line: 1, kind: "semantic-sast-analysis-failed".to_string(), tool: "semgrep", severity: "error", message, code: None, cwe: None, owasp: None }
+}
+
 pub struct SemanticSastConfig {
     pub enabled: bool,
     pub semgrep_config: String,
@@ -134,16 +138,30 @@ pub async fn check_semantic_sast(root: &Path, runner: &ToolRunner, config: &Sema
     // pattern-matches vendored/generated bundles.
     for dir in skip_dirs() {
         args.push("--exclude".to_string());
-        args.push(dir.to_string());
+        // Semgrep's `--exclude` takes a glob, not a bare directory name —
+        // a bare name only ever matched a root-level directory, leaving
+        // nested vendor/generated trees (`packages/app/node_modules`,
+        // `vendor/bundle`) unexcluded and scanned as if they were project
+        // source.
+        args.push(format!("**/{dir}/**"));
     }
     args.extend(["--json".to_string(), "--quiet".to_string(), "--metrics".to_string(), "off".to_string(), root.to_string_lossy().into_owned()]);
 
+    // A genuine execution/parse failure (timeout, bad ruleset, OOM crash,
+    // corrupt JSON output) must not silently read as "scan ran clean, zero
+    // findings" — a caller inspecting `findings` alone can't tell that
+    // apart from an actually-clean repo, letting a broken/aborted SAST run
+    // pass the security gate. `analysis_failed_finding` below turns that
+    // into a real Error-severity finding instead, so it blocks the gate
+    // (like every other check's execution-failure signal, e.g. CodeQL's
+    // `codeql-analysis-failed`) until a human either fixes the scan or
+    // explicitly overrides it.
     let output = match runner
         .run_tool("semgrep", &args, &root.to_string_lossy(), RunToolOptions { allowed_exit_codes: vec![0, 1], env, timeout_ms: Some(config.timeout_ms) })
         .await
     {
         Ok(o) => o,
-        Err(_) => return SemanticSastResult { findings: vec![], engine: "failed" },
+        Err(e) => return SemanticSastResult { findings: vec![analysis_failed_finding(format!("semgrep failed to run: {e}"))], engine: "failed" },
     };
 
     let data: serde_json::Value = if output.stdout.trim().is_empty() {
@@ -151,7 +169,7 @@ pub async fn check_semantic_sast(root: &Path, runner: &ToolRunner, config: &Sema
     } else {
         match serde_json::from_str(&output.stdout) {
             Ok(v) => v,
-            Err(_) => return SemanticSastResult { findings: vec![], engine: "failed" },
+            Err(e) => return SemanticSastResult { findings: vec![analysis_failed_finding(format!("semgrep produced unparseable output: {e}"))], engine: "failed" },
         }
     };
     let results = data.get("results").and_then(|r| r.as_array()).cloned().unwrap_or_default();

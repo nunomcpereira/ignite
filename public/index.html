@@ -3744,7 +3744,9 @@
           <span class="font-semibold text-emerald-600">${counts.green} open source</span>
           <span class="font-semibold text-amber-600">${counts.warning} copyleft</span>
           <span class="font-semibold text-rose-600">${counts.red} commercial/risk</span>
-        </div>`;
+          ${allDeps.length > 0 ? '<button id="studioDepsValidateAiBtn" class="ml-auto text-[11px] font-semibold px-2 py-1 rounded border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100">✨ Validate with AI</button>' : ''}
+        </div>
+        <div id="studioDepsAiReport" class="hidden mb-4"></div>`;
 
       if (allDeps.length === 0) {
         $('studioCodeWrap').innerHTML = `<div class="p-4">${projectLicenseHtml}${summaryHtml}<p class="text-slate-400 text-sm">No dependency manifests (package.json / Cargo.toml / requirements.txt / go.mod / pom.xml) with declared dependencies were found.</p></div>`;
@@ -3767,6 +3769,40 @@
         </table>`).join('');
 
       $('studioCodeWrap').innerHTML = `<div class="p-4">${projectLicenseHtml}${summaryHtml}${tablesHtml}</div>`;
+
+      const validateBtn = $('studioDepsValidateAiBtn');
+      if (validateBtn) validateBtn.addEventListener('click', () => validateDependenciesWithAi(allDeps, validateBtn));
+    }
+
+    /* Sends the already-rendered dependency list to the configured LLM
+       (via /api/dependencies/validate-ai) to sanity-check the scanner's
+       own license/tier classifications — surfaces the AI's plain-text
+       report inline, right under the summary row. */
+    async function validateDependenciesWithAi(allDeps, btn) {
+      const reportEl = $('studioDepsAiReport');
+      const originalLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Validating…';
+      reportEl.classList.remove('hidden');
+      reportEl.innerHTML = '<p class="text-xs text-slate-400 p-2">Asking the AI to review these dependency classifications…</p>';
+      try {
+        const payload = { dependencies: allDeps.map((d) => ({ name: d.name, version: d.version || d.versionRange, licenses: d.licenses, tier: d.tier, reason: d.reason })) };
+        const res = await fetch('/api/dependencies/validate-ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const text = await res.text();
+        let data;
+        try { data = text ? JSON.parse(text) : {}; } catch { data = {}; }
+        if (!res.ok) throw new Error(data.error || `AI validation failed (HTTP ${res.status}).`);
+        if (!data.report) {
+          reportEl.innerHTML = `<p class="text-xs text-amber-600 p-2 border border-amber-200 bg-amber-50 rounded-lg">${escapeHtml(data.reason || 'AI validation is unavailable.')}</p>`;
+        } else {
+          reportEl.innerHTML = `<div class="p-3 rounded-lg border border-indigo-200 bg-indigo-50 text-xs text-slate-700 whitespace-pre-wrap">${escapeHtml(data.report)}</div>`;
+        }
+      } catch (e) {
+        reportEl.innerHTML = `<p class="text-xs text-rose-600 p-2 border border-rose-200 bg-rose-50 rounded-lg">${escapeHtml(e.message)}</p>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
     }
 
     /* ---------------- SBOM / LOC metrics / Posture report views ---------

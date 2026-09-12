@@ -5,7 +5,21 @@
 
 use crate::store::DbStore;
 use crate::types::*;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// `touch_api_key_last_used` runs on every single request authenticated
+/// with an API key — under moderate concurrency that's an exclusive
+/// SQLite write transaction per request, serializing traffic behind one
+/// row update. `last_used_at` only needs to be accurate to within a few
+/// minutes for its actual purpose (an operator eyeballing "is this key
+/// still in use"), so a real write is skipped whenever a recent one
+/// already landed for the same key.
+static LAST_TOUCHED: Lazy<Mutex<HashMap<i64, Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+const TOUCH_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
 
 impl DbStore {
     // ---------------- API keys ----------------
@@ -34,8 +48,19 @@ impl DbStore {
     }
 
     pub fn touch_api_key_last_used(&self, id: i64) {
+        {
+            let mut last_touched = LAST_TOUCHED.lock();
+            if let Some(at) = last_touched.get(&id) {
+                if at.elapsed() < TOUCH_DEBOUNCE {
+                    return;
+                }
+            }
+            last_touched.insert(id, Instant::now());
+        }
         let conn = self.conn.lock();
-        conn.execute("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?", params![id]).unwrap();
+        if let Err(e) = conn.execute("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?", params![id]) {
+            tracing::error!("touch_api_key_last_used failed for key {id}: {e}");
+        }
     }
 
     pub fn list_api_keys_for_user(&self, user_id: i64) -> Vec<ApiKeySummary> {

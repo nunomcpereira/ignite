@@ -134,7 +134,7 @@ pub fn parse_gitleaks_allowlist(text: &str) -> GitleaksAllowlist {
     static TABLE_HEADER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[allowlist\]\s*(#.*)?$").unwrap());
     static NEXT_TABLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[").unwrap());
     static ITEM_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"'''([\s\S]*?)'''|"""([\s\S]*?)"""|'([^'\n]*)'|"([^"\n]*)""#).unwrap());
+        Lazy::new(|| Regex::new(r#"'''([\s\S]*?)'''|"""([\s\S]*?)"""|'([^'\n]*)'|"((?:[^"\\\n]|\\.)*)""#).unwrap());
 
     let lines: Vec<&str> = text.split('\n').collect();
     let Some(start_idx) = lines.iter().position(|l| TABLE_HEADER_RE.is_match(l.trim())) else {
@@ -664,7 +664,7 @@ pub fn test_pattern_against_sample(regex_str: &str, sample: &str) -> Result<Vec<
 /// A rule id gitleaks accepts: lowercased, non-alphanumerics collapsed to
 /// a single `-`, trimmed of leading/trailing `-` — falls back to
 /// `"custom-pattern"` if that leaves nothing (an all-symbols name).
-fn gitleaks_rule_id(name: &str) -> String {
+pub fn gitleaks_rule_id(name: &str) -> String {
     let mut id = String::new();
     let mut last_was_dash = false;
     for ch in name.to_lowercase().chars() {
@@ -952,14 +952,13 @@ id = "generic-api-key"
     }
 
     #[test]
-    fn parse_gitleaks_allowlist_truncates_early_on_a_bracket_inside_a_quoted_pattern() {
-        // Cross-checked against the real parseGitleaksAllowlist with this
-        // exact fixture: it returns the same single truncated item, not 2 —
-        // both implementations stop at the first `]`, which here is the
-        // character class's own closing bracket, not the array's.
+    fn parse_gitleaks_allowlist_does_not_truncate_on_a_bracket_inside_a_quoted_pattern() {
+        // A quoted regex item containing its own `]` (a character class)
+        // must not be mistaken for the array's closing bracket — both
+        // entries here should be extracted, not just the first.
         let toml = "[allowlist]\nregexes = [\n  '''example-key-[0-9]+''',\n  \"another-pattern\",\n]\n";
         let allowlist = parse_gitleaks_allowlist(toml);
-        assert_eq!(allowlist.regexes.len(), 1);
+        assert_eq!(allowlist.regexes.len(), 2);
     }
 
     #[test]

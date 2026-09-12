@@ -15,7 +15,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-static FINDING_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(.+?): global import '([^']+)' FOUND$").unwrap());
+static FINDING_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(.+?): (?:global|dangerous) import '([^']+)' FOUND$").unwrap());
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelArtifactFinding {
@@ -76,7 +76,10 @@ fn discover_model_artifacts(root: &Path, extensions: &HashSet<String>) -> std::i
 
 /// picklescan prints one line per dangerous import:
 ///   <path>[:<archive-member>]: global import '<module> <name>' FOUND
-/// No JSON output mode exists, so this parses the plain-text lines directly.
+/// Current picklescan versions instead say "dangerous import" — both
+/// wordings are matched, since either is possible depending on the
+/// installed version. No JSON output mode exists, so this parses the
+/// plain-text lines directly.
 fn parse_picklescan_output(root: &Path, stdout: &str) -> Vec<ModelArtifactFinding> {
     let mut findings = Vec::new();
     for line in stdout.split('\n') {
@@ -233,12 +236,7 @@ mod tests {
 
         let result = check_model_artifact_security(root, &runner_with_picklescan(), &ModelArtifactSecurityConfig::default()).await.unwrap();
         assert_eq!(result.engine, "picklescan");
-        // Faithful-port note: the JS FINDING_LINE_RE (ported verbatim above)
-        // matches picklescan's older "global import '...' FOUND" wording.
-        // Current picklescan versions emit "dangerous import '...' FOUND"
-        // instead, so this legitimately parses zero findings here — a
-        // version-drift quirk in the original JS (which has no real-binary
-        // test of its own to have caught it), not a Rust port bug.
+        assert!(!result.findings.is_empty(), "expected picklescan to flag the malicious pickle's os.system import");
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 }

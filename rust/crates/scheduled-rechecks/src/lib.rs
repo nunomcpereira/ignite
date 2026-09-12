@@ -44,12 +44,20 @@ pub struct ScheduledFailureEmail {
     pub html: String,
 }
 
+/// Strips CR/LF before interpolating into an email subject/header —
+/// unescaped newlines in an org/repo name would let it inject extra SMTP
+/// headers into the message.
+fn strip_crlf(s: &str) -> String {
+    s.replace(['\r', '\n'], "")
+}
+
 pub fn build_scheduled_check_failure_email(org: &str, repo: &str, error: &str) -> ScheduledFailureEmail {
+    let (org, repo) = (strip_crlf(org), strip_crlf(repo));
     let subject = format!("[Ignite] \u{274c} Scheduled re-check failed — {org}/{repo}");
     let html = format!(
         "\n    <div style=\"font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:0 auto;color:#334155;\">\n      <h2 style=\"color:#e11d48;\">Ignite scheduled re-check failed</h2>\n      <p><strong>Repository:</strong> {}/{} (default branch)<br/>\n         <strong>Error:</strong> {}</p>\n      <p style=\"color:#94a3b8;font-size:12px;margin-top:24px;\">Sent by Ignite to this repository's CODEOWNERS contact(s) — update CODEOWNERS to change who receives this.</p>\n    </div>",
-        escape_html_mail(org),
-        escape_html_mail(repo),
+        escape_html_mail(&org),
+        escape_html_mail(&repo),
         escape_html_mail(error),
     );
     ScheduledFailureEmail { subject, html }

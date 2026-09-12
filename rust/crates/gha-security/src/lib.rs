@@ -120,20 +120,25 @@ fn location_point(loc: &serde_json::Value, key: &str) -> Option<(usize, usize)> 
 /// Primary location's 0-indexed column span, rather than reusing zizmor's
 /// own `feature` text — which for a Primary location is often the entire
 /// multi-line enclosing block, not the specific expression.
+/// `start`/`end` columns come from Zizmor (tree-sitter) as *byte* offsets,
+/// not char offsets — slicing the line as a raw `&str` (not a `Vec<char>`
+/// indexed by those byte values) is required so a line containing
+/// multi-byte characters doesn't silently extract the wrong substring or
+/// panic on an out-of-bounds char index. `str::get` also fails safe
+/// (`None`, never a panic) if a byte offset lands mid-character.
 fn extract_span(content: &str, start: (usize, usize), end: (usize, usize)) -> Option<String> {
     if start.0 != end.0 {
         return None;
     }
     let line = content.lines().nth(start.0)?;
-    let chars: Vec<char> = line.chars().collect();
-    if start.1 > end.1 || end.1 > chars.len() {
+    if start.1 > end.1 || end.1 > line.len() {
         return None;
     }
-    let span: String = chars[start.1..end.1].iter().collect();
+    let span = line.get(start.1..end.1)?;
     if span.is_empty() {
         None
     } else {
-        Some(span)
+        Some(span.to_string())
     }
 }
 

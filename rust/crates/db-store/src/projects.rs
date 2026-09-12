@@ -71,7 +71,7 @@ impl DbStore {
     pub fn get_latest_project_for_org_repo(&self, org: &str, repo: &str) -> Option<(i64, String)> {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT id, job_id FROM projects WHERE org = ? AND repo = ? ORDER BY id DESC LIMIT 1",
+            "SELECT id, job_id FROM projects WHERE org = ? AND repo = ? AND status IS NOT NULL ORDER BY id DESC LIMIT 1",
             params![org, repo],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

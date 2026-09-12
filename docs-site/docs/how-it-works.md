@@ -78,7 +78,16 @@ output, each recomputed live against the still-staged project:
 
 **📦 Dependencies** — every manifest dependency's real license, resolved via
 ORT (or the built-in parser + deps.dev fallback) and classified
-green/amber/red, grouped by manifest file.
+green/amber/red, grouped by manifest file. A **✨ Validate with AI** button
+next to the engine summary sends the resolved list (name, version, license,
+tier, reason) to the configured LLM to sanity-check the automated
+classification — useful for catching a scanner-side gap (an SPDX identifier
+the built-in classifier doesn't recognize yet, reported as commercial/risk
+even though it's a well-known permissive license) rather than a real
+licensing problem. The AI is asked to flag only entries it's actually
+confident are misclassified, not to re-grade every dependency; it reports
+back a short plain-text summary plus any flagged package, inline under the
+summary row.
 
 ![Studio - Dependency license compliance](/img/screenshots/04-studio-dependencies.png)
 

@@ -629,6 +629,15 @@ fn urlencoding_decode(s: &str) -> Result<String, ()> {
 /// file can't compile on its own — it needs a qlpack.yml declaring the
 /// language's standard library as a dependency) and shells out to
 /// `codeql query run` + `codeql bqrs decode`.
+/// CodeQL's own supported analysis languages — the only values that can
+/// legitimately appear as `codeql/{language}-all` in a generated
+/// `qlpack.yml`. `language` reaches `run_custom_codeql_query` from the
+/// Studio ad-hoc-query HTTP body with no other validation than
+/// non-emptiness, so without this allowlist a caller could inject
+/// newlines/YAML into the generated pack manifest that `codeql pack
+/// install` would then fetch/execute.
+const SUPPORTED_CODEQL_LANGUAGES: &[&str] = &["javascript", "python", "go", "java", "cpp", "csharp", "ruby", "swift"];
+
 pub async fn run_custom_codeql_query(
     root: &Path,
     db_dir: &Path,
@@ -638,6 +647,9 @@ pub async fn run_custom_codeql_query(
     timeout_ms: u64,
     mut log: impl FnMut(&str),
 ) -> Result<QueryResult, CodeqlError> {
+    if !SUPPORTED_CODEQL_LANGUAGES.contains(&language) {
+        return Err(CodeqlError::Message(format!("Unsupported CodeQL language \"{language}\" (supported: {}).", SUPPORTED_CODEQL_LANGUAGES.join(", "))));
+    }
     if !tokio::fs::metadata(db_dir).await.is_ok() {
         return Err(CodeqlError::Message(format!("No CodeQL database found for \"{language}\" — click \"Run CodeQL\" first to build one.")));
     }

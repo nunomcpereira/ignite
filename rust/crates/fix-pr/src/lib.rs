@@ -608,7 +608,44 @@ pub async fn generate_fix_diff_local(runner: &ToolRunner, root: &Path, candidate
     Ok(LocalFixDiff { diff, patch, files_changed })
 }
 
-pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, job_id: &str, candidates: &[FixCandidate], token: &str) -> FixPrOutcome {
+/// Maps one of `validate-all`'s returned issue JSON objects (the shape
+/// `ignite_override_engine::Issue` serializes as — `id`/`category`/
+/// `severity`/`file`/`line`/`summary`/`snippet`, all camelCase) back into
+/// a [`FixIssueInput`] the LLM suggest-fix pass can consume, for the
+/// remediation retry below. `None` for anything without a `file`/`line`
+/// (a project-wide finding) — the per-line LLM fix pass has nothing to
+/// anchor a replacement to, same restriction `routes/fix_pr.rs`'s
+/// `preview` already applies to the first pass.
+fn issue_input_from_gate_value(v: &serde_json::Value) -> Option<FixIssueInput> {
+    Some(FixIssueInput {
+        issue_id: v.get("id").and_then(|x| x.as_str())?.to_string(),
+        category: v.get("category").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        severity: v.get("severity").and_then(|x| x.as_str()).unwrap_or("error").to_string(),
+        file: v.get("file").and_then(|x| x.as_str())?.to_string(),
+        line: v.get("line").and_then(|x| x.as_i64())?,
+        summary: v.get("summary").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        snippet: v.get("snippet").cloned(),
+    })
+}
+
+fn gate_failure_reason(gate: &ignite_pipeline_gate::GateResult) -> String {
+    match &gate.error {
+        Some(e) => format!("Ignite's own gate scan could not be completed ({e}) — refusing to open a PR that hasn't been verified clean"),
+        None => format!("Ignite's own gate scan still finds {} blocking issue(s) after an AI remediation retry — refusing to open a PR that's still flagged", gate.blocking_issues.len()),
+    }
+}
+
+/// Same as [`open_fix_pr`]'s previous signature, plus `http`/`llm_config`/
+/// `server_base`: before anything gets committed/pushed, this now runs
+/// Ignite's own gate scan (`ignite-pipeline-gate`) against the edited
+/// clone. A gate failure gets one remediation attempt — the blocking
+/// issues the gate found are fed back through the same LLM suggest-fix
+/// pass `generate_fix_candidates` already uses, applied on top of the
+/// first pass's edits, and rescanned once. Still unclean after that:
+/// nothing is pushed and no PR is opened — it is not acceptable for
+/// Ignite to propose a PR its own gate would still reject.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: &reqwest::Client, llm_config: &LlmClientConfig, server_base: &str, full_name: &str, base_branch: &str, job_id: &str, candidates: &[FixCandidate], token: &str) -> FixPrOutcome {
     let branch = branch_name_for_job(job_id);
     if candidates.is_empty() {
         return FixPrOutcome { branch, files_changed: vec![], already_open: false, pr_url: None, error: Some("no candidates to apply".to_string()) };
@@ -630,7 +667,7 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, full_n
         _ => {}
     }
 
-    let files_changed = match apply_candidates_to_files(&clone_dir, candidates) {
+    let mut files_changed = match apply_candidates_to_files(&clone_dir, candidates) {
         Ok(f) => f,
         Err(e) => return FixPrOutcome { branch, files_changed: vec![], already_open: false, pr_url: None, error: Some(format!("failed to apply fixes: {e}")) },
     };
@@ -640,6 +677,37 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, full_n
 
     if let Err(e) = runner.run_tool("git", &["checkout".to_string(), "-B".to_string(), branch.clone(), base_branch.to_string()], &clone_dir_str, RunToolOptions::default()).await {
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("git checkout -B: {e}")) };
+    }
+
+    // Pre-flight gate: refuse to propose a PR Ignite's own scan would
+    // still reject. One remediation attempt (LLM re-fix on the blocking
+    // issues, applied on top of the first pass) before abandoning.
+    let (gate_org, gate_repo) = full_name.split_once('/').unwrap_or((full_name, ""));
+    let mut gate_result = ignite_pipeline_gate::scan_checkout(http, server_base, gate_org, gate_repo, &clone_dir_str).await;
+    if !gate_result.clean {
+        let remediation_inputs: Vec<FixIssueInput> = gate_result.blocking_issues.iter().filter_map(issue_input_from_gate_value).collect();
+        let mut remediated = false;
+        if !remediation_inputs.is_empty() {
+            let remediation_candidates = generate_fix_candidates(http, llm_config, &remediation_inputs, |_| {}).await;
+            if !remediation_candidates.is_empty() {
+                if let Ok(more_files) = apply_candidates_to_files(&clone_dir, &remediation_candidates) {
+                    if !more_files.is_empty() {
+                        for f in more_files {
+                            if !files_changed.contains(&f) {
+                                files_changed.push(f);
+                            }
+                        }
+                        files_changed.sort();
+                        let retry_gate = ignite_pipeline_gate::scan_checkout(http, server_base, gate_org, gate_repo, &clone_dir_str).await;
+                        remediated = retry_gate.clean;
+                        gate_result = retry_gate;
+                    }
+                }
+            }
+        }
+        if !remediated {
+            return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(gate_failure_reason(&gate_result)) };
+        }
     }
 
     let mut add_args = vec!["add".to_string()];
@@ -665,6 +733,56 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, full_n
         Ok(pr) => FixPrOutcome { branch, files_changed, already_open: false, pr_url: Some(pr.url), error: None },
         Err(e) => FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("branch pushed but PR creation failed: {e}")) },
     }
+}
+
+/// Filters `candidates` down to the issue ids that stay non-blocking
+/// after Ignite's own gate scan — GHAS Copilot-Autofix-parity inline PR
+/// suggestions (`routes/github_pr_status.rs`) are advisory
+/// ```suggestion``` comments a human clicks to apply, not a PR Ignite
+/// opens itself, but the same rule still applies: never suggest an edit
+/// Ignite's own gate would still flag. Clones `branch`, applies every
+/// candidate onto it, gate-scans once, and — for whatever's still
+/// blocking — tries one LLM remediation pass before giving up on just
+/// those issues (everything else in the batch is still suggested).
+/// Fails closed to an empty set (suggest nothing) on any clone/apply
+/// failure — never falls back to "assume clean".
+#[allow(clippy::too_many_arguments)]
+pub async fn gate_clean_issue_ids(github_api: &GithubApi<'_>, http: &reqwest::Client, llm_config: &LlmClientConfig, server_base: &str, full_name: &str, branch: &str, candidates: &[FixCandidate], token: &str) -> std::collections::HashSet<String> {
+    let all_ids: std::collections::HashSet<String> = candidates.iter().map(|c| c.issue_id.clone()).collect();
+
+    let staging = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(_) => return std::collections::HashSet::new(),
+    };
+    let clone_dir = staging.path().join("clone");
+    let clone_dir_str = clone_dir.to_string_lossy().to_string();
+    if github_api.gh_clone_repo_branch(full_name, branch, &clone_dir_str, token).await.is_err() {
+        return std::collections::HashSet::new();
+    }
+    if apply_candidates_to_files(&clone_dir, candidates).is_err() {
+        return std::collections::HashSet::new();
+    }
+
+    let (org, repo) = full_name.split_once('/').unwrap_or((full_name, ""));
+    let gate = ignite_pipeline_gate::scan_checkout(http, server_base, org, repo, &clone_dir_str).await;
+    if gate.clean {
+        return all_ids;
+    }
+
+    let remediation_inputs: Vec<FixIssueInput> = gate.blocking_issues.iter().filter_map(issue_input_from_gate_value).collect();
+    let mut final_gate = gate;
+    if !remediation_inputs.is_empty() {
+        let remediation_candidates = generate_fix_candidates(http, llm_config, &remediation_inputs, |_| {}).await;
+        if !remediation_candidates.is_empty() && apply_candidates_to_files(&clone_dir, &remediation_candidates).is_ok() {
+            final_gate = ignite_pipeline_gate::scan_checkout(http, server_base, org, repo, &clone_dir_str).await;
+        }
+    }
+
+    if final_gate.clean {
+        return all_ids;
+    }
+    let still_blocking: std::collections::HashSet<String> = final_gate.blocking_issues.iter().filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(str::to_string)).collect();
+    all_ids.into_iter().filter(|id| !still_blocking.contains(id)).collect()
 }
 
 /// Marker embedded in the body of every inline PR suggestion comment

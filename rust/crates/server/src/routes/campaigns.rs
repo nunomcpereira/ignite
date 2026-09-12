@@ -25,8 +25,11 @@ async fn create_campaign(State(state): State<Arc<AppState>>, crate::auth::Requir
     let category = body.get("category").and_then(|v| v.as_str());
     let min_score = body.get("minScore").and_then(|v| v.as_i64());
     let target_date = body.get("targetDate").and_then(|v| v.as_str());
-    let created_by = body.get("createdBy").and_then(|v| v.as_str());
-    let id = state.db.create_campaign(title, description, category, min_score, target_date, created_by);
+    // Attribution comes from the authenticated caller, never a
+    // client-supplied `createdBy` in the body — otherwise any
+    // authenticated user could attribute a campaign to someone else in
+    // audit/compliance reports.
+    let id = state.db.create_campaign(title, description, category, min_score, target_date, Some(&_user.email));
     match state.db.get_campaign(id) {
         Some(campaign) => (StatusCode::CREATED, Json(campaign)).into_response(),
         None => Json(json!({ "ok": true, "id": id })).into_response(),

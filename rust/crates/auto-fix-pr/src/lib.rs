@@ -121,6 +121,14 @@ pub fn is_simple_range(range: &str) -> bool {
     if range.is_empty() {
         return false;
     }
+    // An upper-bound constraint (`<1.0.0`, `<=1.0.0`) can never be safely
+    // bumped by prefix-preserving rewrite: `rewrite_range` would turn
+    // `<1.0.0` into `<1.2.0` for a fix at `1.2.0`, which both still
+    // permits every vulnerable version below the old bound *and*
+    // excludes the fixed version itself. Left for a human.
+    if range.trim_start().starts_with('<') {
+        return false;
+    }
     let rest: String = range.chars().skip_while(|c| RANGE_PREFIX_CHARS.contains(c)).collect();
     if rest.is_empty() || rest.contains(['x', 'X', '*']) {
         return false;
@@ -625,15 +633,64 @@ async fn regenerate_lockfile(runner: &ToolRunner, clone_dir: &str, candidate: &F
     }
 }
 
+/// Everything `apply_fix`/`apply_fix_group` need to run the pre-flight
+/// gate (`ignite-pipeline-gate`) against an edited checkout before it's
+/// ever pushed, plus the pieces needed to attempt one remediation retry
+/// when the gate finds something: `deps_client` re-resolves a newer
+/// candidate version the same way `discover_routine_update_candidates`
+/// already does.
+pub struct GateContext<'a> {
+    pub http: &'a reqwest::Client,
+    pub server_base: &'a str,
+    pub deps_client: &'a DepsDevClient,
+}
+
+/// A human-readable reason for abandoning a fix after the gate (and one
+/// remediation attempt) both still found something wrong.
+fn gate_failure_reason(gate: &ignite_pipeline_gate::GateResult) -> String {
+    match &gate.error {
+        Some(e) => format!("Ignite's own gate scan could not be completed ({e}) — refusing to propose a PR that hasn't been verified clean"),
+        None => format!("Ignite's own gate scan still finds {} blocking issue(s) on the fixed branch — refusing to propose it", gate.blocking_issues.len()),
+    }
+}
+
+/// One remediation attempt for a `FixKind::Vulnerability` candidate whose
+/// first-choice fixed version still left the gate unclean: re-resolves
+/// the dependency's latest available stable version (same lookup
+/// `discover_routine_update_candidates` uses) and returns it only if
+/// it's actually newer than what was already tried and doesn't cross a
+/// semver major from the originally resolved/installed version — the
+/// same "never auto-apply a major bump" rule this crate applies
+/// everywhere else.
+async fn next_remediation_version(deps_client: &DepsDevClient, candidate: &FixCandidate) -> Option<String> {
+    let base_name = Path::new(&candidate.manifest_file).file_name()?.to_str()?;
+    let spec = ignite_studio_manifests::find_manifest_spec(base_name)?;
+    let versions = deps_client.fetch_version_list(spec.system, &candidate.dep_name).await?;
+    let latest = latest_stable_version(&versions)?;
+    if latest == candidate.fixed_version {
+        return None; // nothing newer to try
+    }
+    let baseline = candidate.resolved_version.as_deref().unwrap_or(&candidate.current_range);
+    if is_major_bump(baseline, &latest) {
+        return None; // still never auto-applied
+    }
+    Some(latest)
+}
+
 /// Applies one fix candidate against an already-cloned `clone_dir`
 /// (checked out at `base_branch`): creates/resets a deterministic branch
-/// off `base_branch`, edits the one manifest line, commits, and — only
-/// when `apply` is true — pushes and opens a PR. Leaves `clone_dir`
-/// checked out on `base_branch` again afterward so the caller can process
-/// the next candidate against a clean base.
+/// off `base_branch`, edits the one manifest line, regenerates the
+/// lockfile, and — only when `apply` is true — runs Ignite's own gate
+/// scan against the result before pushing/opening a PR. A gate failure
+/// on a `Vulnerability` candidate gets one remediation attempt (retrying
+/// at the dependency's latest available version); anything still unclean
+/// after that is abandoned rather than pushed. Leaves `clone_dir` checked
+/// out on `base_branch` again afterward so the caller can process the
+/// next candidate against a clean base.
 #[allow(clippy::too_many_arguments)]
-pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, clone_dir: &str, candidate: &FixCandidate, token: &str, apply: bool) -> FixOutcome {
-    let branch = branch_name_for(candidate);
+pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, clone_dir: &str, candidate: &FixCandidate, token: &str, apply: bool, gate: &GateContext<'_>) -> FixOutcome {
+    let mut candidate = candidate.clone();
+    let branch = branch_name_for(&candidate);
     let candidate_summary = candidate.summary.clone();
 
     if candidate.major_bump {
@@ -664,12 +721,43 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
         }
     }
 
-    if let Err(e) = std::fs::write(&manifest_path, new_content) {
+    if let Err(e) = std::fs::write(&manifest_path, &new_content) {
         let _ = runner.run_tool("git", &["checkout".to_string(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await;
         return FixOutcome { candidate_summary, branch, applied: false, skipped_reason: None, pr_url: None, error: Some(format!("failed to write {}: {e}", candidate.manifest_file)) };
     }
 
-    let (lockfile_path, lockfile_warning) = regenerate_lockfile(runner, clone_dir, candidate).await;
+    let (mut lockfile_path, mut lockfile_warning) = regenerate_lockfile(runner, clone_dir, &candidate).await;
+
+    // Pre-flight gate: refuse to propose a PR Ignite's own scan would
+    // still reject. One remediation attempt for a vulnerability fix
+    // (retry at the dependency's latest available version); anything
+    // still unclean after that is abandoned rather than pushed.
+    let (gate_org, gate_repo) = full_name.split_once('/').unwrap_or((full_name, ""));
+    let mut gate_result = ignite_pipeline_gate::scan_checkout(gate.http, gate.server_base, gate_org, gate_repo, clone_dir).await;
+    if !gate_result.clean {
+        let mut remediated = false;
+        if candidate.kind == FixKind::Vulnerability {
+            if let Some(next_version) = next_remediation_version(gate.deps_client, &candidate).await {
+                if let Some(remediated_content) = apply_fix_to_content(&content, candidate.dep_line, &candidate.current_range, &next_version) {
+                    if std::fs::write(&manifest_path, &remediated_content).is_ok() {
+                        candidate.fixed_version = next_version;
+                        let (retry_lockfile_path, retry_lockfile_warning) = regenerate_lockfile(runner, clone_dir, &candidate).await;
+                        lockfile_path = retry_lockfile_path;
+                        lockfile_warning = retry_lockfile_warning;
+                        let retry_gate = ignite_pipeline_gate::scan_checkout(gate.http, gate.server_base, gate_org, gate_repo, clone_dir).await;
+                        remediated = retry_gate.clean;
+                        gate_result = retry_gate;
+                    }
+                }
+            }
+        }
+        if !remediated {
+            let reason = gate_failure_reason(&gate_result);
+            let error = gate_result.error.clone();
+            let _ = runner.run_tool("git", &["checkout".to_string(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await;
+            return FixOutcome { candidate_summary, branch, applied: false, skipped_reason: Some(reason), pr_url: None, error };
+        }
+    }
 
     let mut add_args = vec!["add".to_string(), candidate.manifest_file.clone()];
     if let Some(lockfile_path) = &lockfile_path {
@@ -697,9 +785,11 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
     // Same `http.extraheader` convention `GithubApi::gh_clone_repo_branch`'s
     // token-only fallback uses — a one-off override for this invocation
     // only, never written into the clone's own `.git/config` (unlike
-    // embedding the token in the remote URL, which would be).
+    // embedding the token in the remote URL, which would be) — passed via
+    // env (`GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n`), not a `-c` CLI
+    // argument, so the token never appears in `git`'s own argv.
     let push_result = runner
-        .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "push".to_string(), "origin".to_string(), format!("HEAD:refs/heads/{branch}")], clone_dir, RunToolOptions::default())
+        .run_tool("git", &["push".to_string(), "origin".to_string(), format!("HEAD:refs/heads/{branch}")], clone_dir, RunToolOptions { env: ignite_github_api::git_extraheader_token_env(token), ..Default::default() })
         .await;
     // Always return to base_branch before reporting, so the caller can
     // process the next candidate regardless of how this one ended.
@@ -714,7 +804,7 @@ pub async fn apply_fix(runner: &ToolRunner, github_api: &GithubApi<'_>, full_nam
         (None, Some(reason)) => Some(Err(reason.as_str())),
         (None, None) => None,
     };
-    match github_api.gh_create_pr(full_name, base_branch, &branch, &pr_title_for(candidate), &pr_body_for(candidate, lockfile_status), token).await {
+    match github_api.gh_create_pr(full_name, base_branch, &branch, &pr_title_for(&candidate), &pr_body_for(&candidate, lockfile_status), token).await {
         Ok(pr) => FixOutcome { candidate_summary, branch, applied: true, skipped_reason: None, pr_url: Some(pr.url), error: None },
         Err(e) => FixOutcome { candidate_summary, branch, applied: true, skipped_reason: None, pr_url: None, error: Some(format!("branch pushed but PR creation failed: {e}")) },
     }
@@ -761,7 +851,7 @@ impl GroupFixOutcome {
 /// grouping never turns one member's stale-line skip into a whole-group
 /// failure as long as at least one other member still applies.
 #[allow(clippy::too_many_arguments)]
-pub async fn apply_fix_group(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, clone_dir: &str, group: &[FixCandidate], token: &str, apply: bool) -> GroupFixOutcome {
+pub async fn apply_fix_group(runner: &ToolRunner, github_api: &GithubApi<'_>, full_name: &str, base_branch: &str, clone_dir: &str, group: &[FixCandidate], token: &str, apply: bool, gate: &GateContext<'_>) -> GroupFixOutcome {
     let (usable, major_bump_skips): (Vec<&FixCandidate>, Vec<&FixCandidate>) = group.iter().partition(|c| !c.major_bump);
 
     if usable.is_empty() {
@@ -777,7 +867,7 @@ pub async fn apply_fix_group(runner: &ToolRunner, github_api: &GithubApi<'_>, fu
     }
 
     if usable.len() == 1 {
-        let outcome = apply_fix(runner, github_api, full_name, base_branch, clone_dir, usable[0], token, apply).await;
+        let outcome = apply_fix(runner, github_api, full_name, base_branch, clone_dir, usable[0], token, apply, gate).await;
         return GroupFixOutcome::from_single(outcome, &major_bump_skips);
     }
 
@@ -824,7 +914,6 @@ pub async fn apply_fix_group(runner: &ToolRunner, github_api: &GithubApi<'_>, fu
     }
 
     if applicable.is_empty() {
-        member_summaries.extend(owned.iter().map(|c| c.summary.clone()));
         return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: Some("no member's manifest line still matched what was scanned".to_string()), pr_url: None, error: None, member_summaries };
     }
 
@@ -870,6 +959,21 @@ pub async fn apply_fix_group(runner: &ToolRunner, github_api: &GithubApi<'_>, fu
         }
     }
 
+    // Pre-flight gate on the whole group's edits before anything gets
+    // committed/pushed — same posture as `apply_fix`. No per-member
+    // remediation retry here (a group can span several manifests; picking
+    // which member's version to re-resolve isn't well-defined) — a group
+    // the gate still rejects is abandoned in full rather than partially
+    // pushed.
+    let (gate_org, gate_repo) = full_name.split_once('/').unwrap_or((full_name, ""));
+    let group_gate = ignite_pipeline_gate::scan_checkout(gate.http, gate.server_base, gate_org, gate_repo, clone_dir).await;
+    if !group_gate.clean {
+        let reason = gate_failure_reason(&group_gate);
+        let error = group_gate.error.clone();
+        let _ = runner.run_tool("git", &["checkout".to_string(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await;
+        return GroupFixOutcome { group_summary, branch, applied: false, skipped_reason: Some(reason), pr_url: None, error, member_summaries };
+    }
+
     let prefix = match kind {
         FixKind::Vulnerability => format!("fix({ecosystem}): bump {} dependencies (grouped)", applicable.len()),
         FixKind::RoutineUpdate => format!("chore({ecosystem}): bump {} dependencies (grouped)", applicable.len()),
@@ -891,7 +995,7 @@ pub async fn apply_fix_group(runner: &ToolRunner, github_api: &GithubApi<'_>, fu
     }
 
     let push_result = runner
-        .run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "push".to_string(), "origin".to_string(), format!("HEAD:refs/heads/{branch}")], clone_dir, RunToolOptions::default())
+        .run_tool("git", &["push".to_string(), "origin".to_string(), format!("HEAD:refs/heads/{branch}")], clone_dir, RunToolOptions { env: ignite_github_api::git_extraheader_token_env(token), ..Default::default() })
         .await;
     let _ = runner.run_tool("git", &["checkout".to_string(), base_branch.to_string()], clone_dir, RunToolOptions::default()).await;
 
@@ -1267,7 +1371,10 @@ mod tests {
         c.current_range = "^4.17.15".to_string();
         let runner = ToolRunner::new(std::collections::HashMap::new());
         let github_api = GithubApi::new(&runner);
-        let outcome = apply_fix_group(&runner, &github_api, "acme/widgets", "main", &dir.path().to_string_lossy(), &[c], "token", false).await;
+        let http = reqwest::Client::new();
+        let deps_client = DepsDevClient::new();
+        let gate = GateContext { http: &http, server_base: "http://127.0.0.1:1", deps_client: &deps_client };
+        let outcome = apply_fix_group(&runner, &github_api, "acme/widgets", "main", &dir.path().to_string_lossy(), &[c], "token", false, &gate).await;
         assert!(!outcome.applied);
         assert_eq!(outcome.skipped_reason.as_deref(), Some("dry-run — pass --apply to open this PR"));
         assert_eq!(outcome.member_summaries.len(), 1);
@@ -1283,7 +1390,10 @@ mod tests {
         b.major_bump = true;
         let runner = ToolRunner::new(std::collections::HashMap::new());
         let github_api = GithubApi::new(&runner);
-        let outcome = apply_fix_group(&runner, &github_api, "acme/widgets", "main", &dir.path().to_string_lossy(), &[a, b], "token", false).await;
+        let http = reqwest::Client::new();
+        let deps_client = DepsDevClient::new();
+        let gate = GateContext { http: &http, server_base: "http://127.0.0.1:1", deps_client: &deps_client };
+        let outcome = apply_fix_group(&runner, &github_api, "acme/widgets", "main", &dir.path().to_string_lossy(), &[a, b], "token", false, &gate).await;
         assert!(!outcome.applied);
         assert!(outcome.skipped_reason.unwrap().contains("semver major"));
         assert_eq!(outcome.member_summaries.len(), 2);

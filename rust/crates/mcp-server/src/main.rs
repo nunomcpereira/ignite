@@ -32,6 +32,34 @@ fn ignite_api_key() -> Option<String> {
     std::env::var("IGNITE_API_KEY").ok()
 }
 
+/// Set once, before `axum::serve` starts accepting connections in
+/// `run_http()` — never touched in stdio mode. Stdio is a local child
+/// process an editor/agent spawns on the same machine (the same trust
+/// boundary as running the CLI directly), so it needs no additional
+/// gating; the HTTP transport instead accepts connections from anywhere
+/// on the network by default (see `mcp_http_bind_host`'s own doc comment),
+/// so a mutating/gate-overriding tool call arriving over it must prove it
+/// holds the same `IGNITE_API_KEY` this MCP process itself uses to talk to
+/// the Ignite server.
+static HTTP_TRANSPORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Constant-time-ish comparison isn't the point here (both sides come from
+/// process env/JSON-RPC params, not a length-revealing timing side
+/// channel worth defending against in this threat model) — this just
+/// centralizes the "does the caller's key match the configured one" check
+/// used by every mutating tool below.
+fn authorized_for_mutation(supplied: Option<&str>) -> bool {
+    if !HTTP_TRANSPORT.load(std::sync::atomic::Ordering::Relaxed) {
+        return true; // stdio: trusted local caller, no gating
+    }
+    match (ignite_api_key(), supplied) {
+        (Some(configured), Some(supplied)) => !configured.is_empty() && configured == supplied,
+        _ => false,
+    }
+}
+
+const MUTATION_AUTH_ERROR: &str = "This action modifies repository state or overrides compliance gates and requires an IGNITE_API_KEY.";
+
 fn text_result(text: String, is_error: bool) -> CallToolResult {
     if is_error {
         CallToolResult::error(vec![ContentBlock::text(text)])
@@ -163,6 +191,8 @@ struct OnboardProjectRequest {
     overrides: Option<Vec<OverrideEntry>>,
     /// Required if overrides are submitted and the Ignite server has no logged-in session.
     actor: Option<Actor>,
+    /// Required when this server is reachable over the network (MCP_TRANSPORT=http) and dryRun is not true — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection.
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -175,6 +205,8 @@ struct ResolveReviewDecisionRequest {
     overrides: Option<Vec<OverrideEntry>>,
     /// Required if overrides are submitted and the Ignite server has no logged-in session or API key.
     actor: Option<Actor>,
+    /// Required when this server is reachable over the network (MCP_TRANSPORT=http) — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection.
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -185,6 +217,8 @@ struct EffectivateProjectRequest {
     overrides: Option<Vec<OverrideEntry>>,
     /// Required if overrides are submitted and the Ignite server has no logged-in session or API key.
     actor: Option<Actor>,
+    /// Required when this server is reachable over the network (MCP_TRANSPORT=http) — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection.
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -199,6 +233,8 @@ struct ApplyFixPrRequest {
     job_id: String,
     /// The candidate list from preview_fix_pr's response, copied verbatim (trim it to whichever fixes you want included) — each entry must keep its exact original shape (issueId, file, startLine, endLine, original, replacement, etc.), so re-embed the JSON objects as returned rather than reconstructing them.
     candidates: Vec<Value>,
+    /// Required when this server is reachable over the network (MCP_TRANSPORT=http) — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection.
+    api_key: Option<String>,
 }
 
 #[tool_router]
@@ -288,6 +324,12 @@ impl IgniteMcp {
         description = "Run all Ignite onboarding checks against a local project directory, and — if every check passes — provision a private GitHub repo and push the code. Set dryRun=true to run every check without pushing. Requires a running Ignite server with `gh` authenticated."
     )]
     async fn onboard_project(&self, Parameters(req): Parameters<OnboardProjectRequest>) -> Result<CallToolResult, McpError> {
+        // Dry runs (checks-only, no provisioning/push) stay frictionless
+        // even over the network — only a real onboard actually mutates
+        // anything.
+        if !req.dry_run.unwrap_or(false) && !authorized_for_mutation(req.api_key.as_deref()) {
+            return Ok(text_result(MUTATION_AUTH_ERROR.to_string(), true));
+        }
         self.proxy_to_ignite(
             "/api/pipeline/onboard",
             serde_json::json!({
@@ -310,6 +352,9 @@ impl IgniteMcp {
         description = "Continue or stop a pipeline run that paused waiting for review — a run started via the browser-driven interactive endpoint that hit an overridable issue. Not needed for onboard_project calls. Requires a running Ignite server."
     )]
     async fn resolve_review_decision(&self, Parameters(req): Parameters<ResolveReviewDecisionRequest>) -> Result<CallToolResult, McpError> {
+        if !authorized_for_mutation(req.api_key.as_deref()) {
+            return Ok(text_result(MUTATION_AUTH_ERROR.to_string(), true));
+        }
         let endpoint = format!("/api/pipeline/{}/review-decision", urlencoding::encode(&req.job_id));
         self.proxy_to_ignite(&endpoint, serde_json::json!({ "proceed": req.proceed, "overrides": overrides_to_json(&req.overrides), "actor": req.actor })).await
     }
@@ -318,6 +363,9 @@ impl IgniteMcp {
         description = "Provision + push the exact snapshot already validated by a prior onboard_project(dryRun: true) call, without re-running phases 1-5. Requires a running Ignite server with `gh` authenticated, and the caller's GitHub account connected."
     )]
     async fn effectivate_project(&self, Parameters(req): Parameters<EffectivateProjectRequest>) -> Result<CallToolResult, McpError> {
+        if !authorized_for_mutation(req.api_key.as_deref()) {
+            return Ok(text_result(MUTATION_AUTH_ERROR.to_string(), true));
+        }
         let endpoint = format!("/api/projects/{}/effectivate", req.project_id);
         self.proxy_to_ignite(&endpoint, serde_json::json!({ "overrides": overrides_to_json(&req.overrides), "actor": req.actor })).await
     }
@@ -334,6 +382,9 @@ impl IgniteMcp {
         description = "Open one pull request applying the given fix candidates from a prior preview_fix_pr call — clones the repo's already-provisioned default branch, applies every candidate, pushes a branch, and opens a real PR. Only pass candidates that have actually been reviewed and approved; this is not reversible from here (a human can still close/reject the PR on GitHub). Requires a running Ignite server with `gh` authenticated and the target repo already on GitHub."
     )]
     async fn apply_fix_pr(&self, Parameters(req): Parameters<ApplyFixPrRequest>) -> Result<CallToolResult, McpError> {
+        if !authorized_for_mutation(req.api_key.as_deref()) {
+            return Ok(text_result(MUTATION_AUTH_ERROR.to_string(), true));
+        }
         let endpoint = format!("/api/pipeline/{}/fix-pr/apply", urlencoding::encode(&req.job_id));
         self.proxy_to_ignite(&endpoint, serde_json::json!({ "candidates": req.candidates })).await
     }
@@ -405,6 +456,7 @@ fn mcp_http_bind_host() -> &'static str {
 }
 
 async fn run_http() -> anyhow::Result<()> {
+    HTTP_TRANSPORT.store(true, std::sync::atomic::Ordering::Relaxed);
     let port = mcp_http_port();
     let session_manager = std::sync::Arc::new(
         rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
@@ -579,5 +631,135 @@ mod http_transport_tests {
         } else {
             serde_json::from_str(&text).unwrap()
         }
+    }
+
+    /// `authorized_for_mutation`'s own gating logic — the HTTP-vs-stdio
+    /// switch and the actual key comparison — independent of the
+    /// heavier full-server tests below.
+    #[test]
+    fn stdio_transport_never_gates_mutation() {
+        HTTP_TRANSPORT.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(authorized_for_mutation(None), "a local stdio caller must never need an api_key");
+    }
+
+    #[test]
+    fn http_transport_rejects_missing_or_wrong_key() {
+        std::env::set_var("IGNITE_API_KEY", "test-secret-key");
+        HTTP_TRANSPORT.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(!authorized_for_mutation(None), "no key supplied must be rejected");
+        assert!(!authorized_for_mutation(Some("wrong-key")), "a mismatched key must be rejected");
+        assert!(authorized_for_mutation(Some("test-secret-key")), "the exact configured key must be accepted");
+        HTTP_TRANSPORT.store(false, std::sync::atomic::Ordering::Relaxed);
+        std::env::remove_var("IGNITE_API_KEY");
+    }
+
+    #[test]
+    fn http_transport_rejects_every_key_when_server_has_none_configured() {
+        std::env::remove_var("IGNITE_API_KEY");
+        HTTP_TRANSPORT.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(!authorized_for_mutation(Some("anything")), "no server-side key configured means nothing can be a valid key");
+        HTTP_TRANSPORT.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Real end-to-end regression test for BUG-046: a mutating tool
+    /// (`resolve_review_decision`) called over the HTTP transport with no
+    /// `api_key` must be rejected by the tool handler itself — never
+    /// proxied to the Ignite server — while a read-only tool
+    /// (`list_guidelines`) keeps working with no key at all, matching the
+    /// "frictionless for advisory/read-only tools" requirement.
+    #[tokio::test]
+    async fn http_transport_blocks_unauthenticated_mutating_tool_call() {
+        std::env::set_var("IGNITE_API_KEY", "regression-test-key");
+        HTTP_TRANSPORT.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let session_manager = std::sync::Arc::new(
+            rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
+        );
+        let service = rmcp::transport::streamable_http_server::tower::StreamableHttpService::new(
+            || Ok(IgniteMcp::new()),
+            session_manager,
+            Default::default(),
+        );
+        let app = axum::Router::new().route_service("/mcp", AxumStreamableHttp(service));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/mcp");
+        let client = reqwest::Client::new();
+
+        let init_resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-client", "version": "0.0.1"}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        let session_id = init_resp.headers().get("mcp-session-id").unwrap().to_str().unwrap().to_string();
+        let _ = parse_sse_or_json(init_resp).await;
+
+        client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &session_id)
+            .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .send()
+            .await
+            .unwrap();
+
+        // No api_key supplied: must be rejected without ever reaching out
+        // to an Ignite server (there isn't one running for this test).
+        let call_resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &session_id)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "resolve_review_decision", "arguments": {"jobId": "abc", "proceed": true}}
+            }))
+            .send()
+            .await
+            .unwrap();
+        let call_body: Value = parse_sse_or_json(call_resp).await;
+        let text = call_body["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("requires an IGNITE_API_KEY"), "expected the mutation-auth rejection, got: {text}");
+        assert_eq!(call_body["result"]["isError"], json!(true));
+
+        // Read-only tool still works over the same session with no key.
+        let list_resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &session_id)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "list_guidelines", "arguments": {}}
+            }))
+            .send()
+            .await
+            .unwrap();
+        let list_body: Value = parse_sse_or_json(list_resp).await;
+        assert_ne!(list_body["result"]["isError"], json!(true), "read-only tools must stay frictionless with no api_key");
+
+        HTTP_TRANSPORT.store(false, std::sync::atomic::Ordering::Relaxed);
+        std::env::remove_var("IGNITE_API_KEY");
     }
 }

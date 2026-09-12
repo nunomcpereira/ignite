@@ -215,7 +215,10 @@ async fn github_callback(State(state): State<Arc<AppState>>, headers: axum::http
         };
         let name = gh_user.name.filter(|n| !n.is_empty()).unwrap_or_else(|| login.clone());
         let external_id = gh_user.id.map(|i| i.to_string()).unwrap_or_default();
-        let user = state.db.upsert_github_user(&email, Some(&name), &external_id);
+        let user = match state.db.upsert_github_user(&email, Some(&name), &external_id) {
+            Ok(u) => u,
+            Err(e) => return error_page(axum::http::StatusCode::CONFLICT, &e),
+        };
         state.db.upsert_github_connection(user.id, &login, &access_token, token_data.scope.as_deref());
         issue_session_redirect(&state.db, user.id, "/")
     } else {

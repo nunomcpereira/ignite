@@ -102,23 +102,31 @@ impl DbStore {
     /// `AVG`/`MIN`/`MAX` already ignore `NULL`s.
     pub fn mttr_by_severity_in_range(&self, from: &str, to: &str) -> Vec<MttrBucket> {
         let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT o.severity, COUNT(*),
-                        AVG(julianday(o.created_at) - julianday(f.first_detected_at)),
-                        MIN(julianday(o.created_at) - julianday(f.first_detected_at)),
-                        MAX(julianday(o.created_at) - julianday(f.first_detected_at))
-                 FROM overrides o
-                 INNER JOIN projects p ON p.id = o.project_id
-                 LEFT JOIN issue_first_seen f ON f.org = p.org AND f.repo = p.repo AND f.issue_id = o.issue_id
-                 WHERE o.created_at BETWEEN ?1 AND ?2 AND o.status = 'approved'
-                 GROUP BY o.severity
-                 ORDER BY o.severity",
-            )
-            .unwrap();
-        stmt.query_map(params![from, to], |row| Ok(MttrBucket { severity: row.get(0)?, override_count: row.get(1)?, avg_days_to_override: row.get(2)?, min_days_to_override: row.get(3)?, max_days_to_override: row.get(4)? }))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect()
+        // `MAX(0, ...)` on each per-row duration, not just the aggregate —
+        // a pre-seeded override or a system clock adjustment can leave
+        // `created_at` earlier than `first_detected_at`, which without
+        // clamping produces a negative "days to override" that then drags
+        // AVG/MIN into negative, nonsensical MTTR values.
+        let Ok(mut stmt) = conn.prepare_cached(
+            "SELECT o.severity, COUNT(*),
+                    AVG(MAX(0, julianday(o.created_at) - julianday(f.first_detected_at))),
+                    MIN(MAX(0, julianday(o.created_at) - julianday(f.first_detected_at))),
+                    MAX(MAX(0, julianday(o.created_at) - julianday(f.first_detected_at)))
+             FROM overrides o
+             INNER JOIN projects p ON p.id = o.project_id
+             LEFT JOIN issue_first_seen f ON f.org = p.org AND f.repo = p.repo AND f.issue_id = o.issue_id
+             WHERE o.created_at BETWEEN ?1 AND ?2 AND o.status = 'approved'
+             GROUP BY o.severity
+             ORDER BY o.severity",
+        ) else {
+            return vec![];
+        };
+        let rows: Vec<MttrBucket> = match stmt.query_map(params![from, to], |row| {
+            Ok(MttrBucket { severity: row.get(0)?, override_count: row.get(1)?, avg_days_to_override: row.get(2)?, min_days_to_override: row.get(3)?, max_days_to_override: row.get(4)? })
+        }) {
+            Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+            Err(_) => vec![],
+        };
+        rows
     }
 }

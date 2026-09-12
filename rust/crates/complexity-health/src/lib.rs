@@ -64,12 +64,19 @@ fn count_decisions(line: &str, is_rust: bool) -> usize {
 /// simple (no real tokenizer): handles `'...'`, `"..."`, `` `...` `` with
 /// backslash-escaping, which covers the overwhelming majority of real
 /// source lines without needing full per-language lexing.
-fn strip_string_literals(line: &str) -> String {
+///
+/// `in_string` carries the open-quote state (if any) across calls, so a
+/// template literal/backtick string spanning multiple lines is tracked
+/// correctly instead of resetting to "not in a string" at every newline —
+/// the middle line of a multi-line string was previously parsed as active
+/// code (falsely inflating brace depth/decisions), and code after the
+/// closing quote on a later line was erroneously stripped as if it were
+/// still inside the string.
+fn strip_string_literals(line: &str, in_string: &mut Option<char>) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
-    let mut in_string: Option<char> = None;
     while let Some(c) = chars.next() {
-        match in_string {
+        match *in_string {
             Some(q) => {
                 if c == '\\' {
                     out.push(' ');
@@ -80,7 +87,7 @@ fn strip_string_literals(line: &str) -> String {
                     continue;
                 }
                 if c == q {
-                    in_string = None;
+                    *in_string = None;
                     out.push(c);
                 } else {
                     out.push(' ');
@@ -88,7 +95,7 @@ fn strip_string_literals(line: &str) -> String {
             }
             None => {
                 if c == '\'' || c == '"' || c == '`' {
-                    in_string = Some(c);
+                    *in_string = Some(c);
                 }
                 out.push(c);
             }
@@ -110,8 +117,9 @@ pub fn cyclomatic_and_cognitive_for(content: &str, is_rust: bool) -> CyclomaticA
     let mut cyclomatic: i64 = 1;
     let mut cognitive: i64 = 0;
     let mut depth: i64 = 0;
+    let mut in_string: Option<char> = None;
     for raw_line in content.split(['\n']).flat_map(|l| l.strip_suffix('\r').or(Some(l))) {
-        let line = strip_string_literals(raw_line);
+        let line = strip_string_literals(raw_line, &mut in_string);
         let decisions = count_decisions(&line, is_rust) as i64;
         cyclomatic += decisions;
         cognitive += decisions * (1 + depth);

@@ -304,7 +304,38 @@ layout: default
 layout: default
 ---
 
-<div class="eyebrow mono">— 05 · Enterprise Readiness</div>
+<div class="eyebrow mono">— 05 · What's New</div>
+<h1>From one-time gate to ongoing governance platform</h1>
+<p class="lede">This cycle's additions move Ignite beyond a pass/fail checkpoint at onboarding time, toward continuous, organization-wide visibility — with AI doing more of the verification work automatically.</p>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--teal) 20%, transparent);color:var(--teal);">🎯</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Security campaigns</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Org-wide, named burndown tracking — target a category of risk across every onboarded repo, set a deadline, and watch a live progress bar as it's resolved. Turns "we should fix our X" into a trackable initiative with board-visible progress.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--indigo) 20%, transparent);color:var(--indigo);">✨</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">AI-assisted dependency validation</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">One click in Ignite Studio sends the resolved dependency list to the configured LLM to sanity-check the license/compliance classification — catching a scanner-side misread before it reaches a human reviewer as a false alarm.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--purple) 20%, transparent);color:var(--purple);">🔗</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Live GitHub webhook sync</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Ignite's view of a repo now stays current between scans — a human dismissing an alert or bypassing push-protection directly in GitHub is reflected instantly, and a newly created repo is enrolled and protected automatically, with no manual step.</div></div>
+</div>
+<div class="card" style="margin-top:12px;border-color:color-mix(in srgb, var(--teal) 40%, var(--border));"><div style="font-weight:700;font-size:13px;">📋 Compliance audit packs</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">One export bundles overrides-by-severity, mean-time-to-resolution, and live SLA-breach status for any date range — ready-made evidence for a SOC 2, ISO 27001, or board review, generated on demand rather than assembled by hand.</div></div>
+
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">08 · CONFIDENTIAL</span></div>
+
+---
+layout: default
+---
+
+<div class="eyebrow mono">— 05 · What's New (cont.)</div>
+<h1>Closing the remaining GHAS-parity gaps</h1>
+<p class="lede">Three more additions round out the gap analysis from this deck's engine-comparison section — each one a specific capability GitHub Advanced Security customers would otherwise lose.</p>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--amber) 20%, transparent);color:var(--amber);">🔑</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Active secret verification</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">A flagged secret is optionally checked read-only against its own provider (GitHub, AWS, GCP, Slack, Stripe, OpenAI, and more) to tell a still-live credential apart from a dead one — off by default, since probing a live token is an operator's explicit call.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--blue) 20%, transparent);color:var(--blue);">🧭</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Dependency reachability</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">A known-vulnerable dependency finding is now annotated with whether the flagged package — or, for Go, the exact vulnerable function — is actually used in source, so triage can prioritize real exposure over an unused transitive entry.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--purple) 20%, transparent);color:var(--purple);">📝</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">PR dependency review comment</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Every pull request gets a single, self-updating comment summarizing what dependencies were added, removed, or version/license-changed — the same at-a-glance review GitHub's own dependency-review action provides.</div></div>
+</div>
+
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">09 · CONFIDENTIAL</span></div>
+
+---
+layout: default
+---
+
+<div class="eyebrow mono">— 07 · Enterprise Readiness</div>
 <h1>Deploys as your own product, in your team's language</h1>
 <p class="lede">The onboarding console isn't a third-party vendor tool bolted onto the workflow — every customer-facing surface is themeable and localized out of the box, so it sits inside your organization's tooling as if you built it.</p>
 <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">
@@ -313,13 +344,13 @@ layout: default
 </div>
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🧩 Config, not a fork</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Both brand and language are runtime configuration — a customer deployment never diverges from upstream source, so every future Ignite release still applies cleanly on top.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">08 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">10 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
 ---
 
-<div class="eyebrow mono">— 06 · Summary &amp; Recommendation</div>
+<div class="eyebrow mono">— 08 · Summary &amp; Recommendation</div>
 <h1>Best-in-class tooling, applied consistently, with a paper trail</h1>
 <p class="lede">No engine in this stack is an unproven internal script — each is either the recognized leader in its category, or a purpose-built Ignite control for a risk class those vendors don't yet cover. The value isn't any single scanner; it's that all of them run <b style="color:var(--text);">every time, on every project, with no exceptions that aren't logged.</b></p>
 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
@@ -332,4 +363,4 @@ layout: default
   <div class="mono" style="font-size:9.5px;letter-spacing:.14em;color:var(--faint);white-space:nowrap;">END OF BRIEFING</div>
 </div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">09 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">11 · CONFIDENTIAL</span></div>

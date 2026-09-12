@@ -4,7 +4,6 @@
 //! falling back to `resolve_server_github_token()` (GH_TOKEN/GITHUB_TOKEN
 //! env) for unattended CI callers with no session.
 
-use crate::auth::RequireAuth;
 use crate::routes::job_issues::{lookup_job_issues, lookup_job_owner_repo};
 use crate::state::AppState;
 use axum::extract::{Path, State};
@@ -13,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use ignite_db_store::IssueRow;
-use ignite_fix_pr::FixIssueInput;
+use ignite_fix_pr::{FixCandidate, FixIssueInput};
 use ignite_github_api::GithubApi;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -96,7 +95,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
     let owner = body.get("owner").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
@@ -254,6 +253,22 @@ async fn github_check(State(state): State<Arc<AppState>>, RequireAuth(_user): Re
                 let http = reqwest::Client::new();
                 if ignite_llm_client::llm_available(&http, &state.llm_config).await {
                     let candidates = ignite_fix_pr::generate_fix_candidates(&http, &state.llm_config, &fixable, |_| {}).await;
+                    // Pre-flight gate: never suggest an edit Ignite's own
+                    // scan would still flag. `resolved_ref` is a
+                    // `refs/heads/<branch>` — clone by the bare branch
+                    // name; the fallback `refs/heads/<sha>` form (no real
+                    // branch resolved) can't be cloned, so gating
+                    // conservatively suggests nothing rather than assume
+                    // clean.
+                    let clean_ids = match resolved_ref.strip_prefix("refs/heads/") {
+                        Some(branch) if branch != sha.as_str() => {
+                            let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
+                            let server_base = format!("http://127.0.0.1:{port}");
+                            ignite_fix_pr::gate_clean_issue_ids(&api, &http, &state.llm_config, &server_base, &full_name, branch, &candidates, &gh_token).await
+                        }
+                        _ => std::collections::HashSet::new(),
+                    };
+                    let candidates: Vec<FixCandidate> = candidates.into_iter().filter(|c| clean_ids.contains(&c.issue_id)).collect();
                     let suggestions = ignite_fix_pr::build_pr_suggestions(&candidates);
                     if !suggestions.is_empty() {
                         match api.gh_list_pr_review_comments(&full_name, pr as u64, &gh_token).await {

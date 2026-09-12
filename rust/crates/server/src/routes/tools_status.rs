@@ -14,10 +14,30 @@ use axum::http::{header, StatusCode};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
+
+// Both endpoints spawn 19 concurrent subprocesses on every single call —
+// unauthenticated and with no rate limiting, so a caller hitting either
+// repeatedly can exhaust OS process limits / saturate CPU. Tooling
+// presence/version on a given host essentially never changes minute to
+// minute, so the result is cached with a short TTL instead.
+static TOOLS_STATUS_CACHE: Lazy<Mutex<Option<(Instant, Value)>>> = Lazy::new(|| Mutex::new(None));
+const TOOLS_STATUS_TTL: Duration = Duration::from_secs(10 * 60);
+
+fn cached_tools_status() -> Option<Value> {
+    let cache = TOOLS_STATUS_CACHE.lock();
+    cache.as_ref().filter(|(at, _)| at.elapsed() < TOOLS_STATUS_TTL).map(|(_, v)| v.clone())
+}
+
+fn store_tools_status_cache(value: Value) {
+    *TOOLS_STATUS_CACHE.lock() = Some((Instant::now(), value));
+}
 
 fn bool_probe(ok: bool) -> Value {
     json!({ "ok": ok })
@@ -28,11 +48,23 @@ fn with_enabled(mut v: Value, enabled: bool) -> Value {
     v
 }
 
+/// A tooling-probe struct should always serialize (plain data, no NaN
+/// floats, no non-string map keys) — but a probe response is external
+/// tool output flowing through these structs, and this endpoint is
+/// unauthenticated, so a bad serialize must degrade to a reported failure
+/// rather than `.unwrap()`-panicking the request/stream.
+fn probe_to_value(v: &impl serde::Serialize) -> Value {
+    serde_json::to_value(v).unwrap_or_else(|e| json!({ "ok": false, "error": format!("probe result failed to serialize: {e}") }))
+}
+
 /// Every probe run concurrently, each result annotated with its configured
 /// enabled flag. jscpd/trivyImage read the live config (both default off,
 /// see config.json); the rest are always-on or have no disable toggle in
 /// the JS original either.
 async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
+    if let Some(cached) = cached_tools_status() {
+        return Json(cached);
+    }
     let r = &state.runner;
     let (ort, licensee, gitleaks, trivy, trivy_image, checkov, hadolint, syft, cosign, semgrep, bearer, jscpd, gocloc, spectral, guarddog, codeql, picklescan, oasdiff, zizmor) = tokio::join!(
         ignite_dependency_license_scan::ort_tooling(r),
@@ -56,27 +88,29 @@ async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
         ignite_gha_security::zizmor_tooling(r),
     );
 
-    Json(json!({
+    let result = json!({
         "ort": with_enabled(bool_probe(ort), true),
         "licensee": with_enabled(bool_probe(licensee), true),
         "gitleaks": with_enabled(bool_probe(gitleaks), true),
         "trivy": with_enabled(bool_probe(trivy), true),
-        "trivyImage": with_enabled(serde_json::to_value(&trivy_image).unwrap(), state.config.security.trivy_image.enabled),
+        "trivyImage": with_enabled(probe_to_value(&trivy_image), state.config.security.trivy_image.enabled),
         "checkov": with_enabled(bool_probe(checkov), true),
         "hadolint": with_enabled(bool_probe(hadolint), true),
-        "syft": with_enabled(serde_json::to_value(&syft).unwrap(), true),
+        "syft": with_enabled(probe_to_value(&syft), true),
         "cosign": with_enabled(bool_probe(cosign), true),
-        "semgrep": with_enabled(serde_json::to_value(&semgrep).unwrap(), true),
+        "semgrep": with_enabled(probe_to_value(&semgrep), true),
         "bearer": with_enabled(bool_probe(bearer), true),
         "jscpd": with_enabled(bool_probe(jscpd), state.config.metrics.jscpd.enabled),
         "gocloc": with_enabled(bool_probe(gocloc), true),
         "spectral": with_enabled(bool_probe(spectral), true),
-        "guarddog": with_enabled(serde_json::to_value(&guarddog).unwrap(), true),
-        "codeql": with_enabled(serde_json::to_value(&codeql).unwrap(), true),
+        "guarddog": with_enabled(probe_to_value(&guarddog), true),
+        "codeql": with_enabled(probe_to_value(&codeql), true),
         "picklescan": with_enabled(bool_probe(picklescan), true),
-        "oasdiff": with_enabled(serde_json::to_value(&oasdiff).unwrap(), true),
+        "oasdiff": with_enabled(probe_to_value(&oasdiff), true),
         "zizmor": with_enabled(bool_probe(zizmor), state.config.security.zizmor.enabled),
-    }))
+    });
+    store_tools_status_cache(result.clone());
+    Json(result)
 }
 
 /// Total probe count both endpoints report against — kept as one constant
@@ -86,10 +120,26 @@ const TOOL_COUNT: usize = 19;
 
 async fn tools_status_stream(State(state): State<Arc<AppState>>) -> Response {
     let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    tokio::spawn(run_tools_status_stream(state, out_tx));
+    if let Some(cached) = cached_tools_status() {
+        tokio::spawn(replay_cached_tools_status_stream(cached, out_tx));
+    } else {
+        tokio::spawn(run_tools_status_stream(state, out_tx));
+    }
     let stream = UnboundedReceiverStream::new(out_rx).map(Ok::<String, std::io::Error>);
     let body = Body::from_stream(stream);
     Response::builder().status(StatusCode::OK).header(header::CONTENT_TYPE, "application/x-ndjson").body(body).unwrap()
+}
+
+/// Replays a cached `tools_status` result as the same `progress`/`done`
+/// NDJSON shape `run_tools_status_stream` produces from a live probe run,
+/// so a fresh-cache hit is indistinguishable to the client from a real run
+/// that happened to already be done.
+async fn replay_cached_tools_status_stream(cached: Value, out_tx: tokio::sync::mpsc::UnboundedSender<String>) {
+    let Some(map) = cached.as_object() else { return };
+    for (done, key) in map.keys().enumerate() {
+        let _ = out_tx.send(format!("{}\n", json!({ "type": "progress", "tool": key, "done": done + 1, "total": TOOL_COUNT })));
+    }
+    let _ = out_tx.send(format!("{}\n", json!({ "type": "done", "status": cached })));
 }
 
 /// Each probe is spawned into its own task (not `tokio::join!`, which only
@@ -133,7 +183,7 @@ async fn run_tools_status_stream(state: Arc<AppState>, out_tx: tokio::sync::mpsc
     {
         let s = state.clone();
         let enabled = state.config.security.trivy_image.enabled;
-        spawn_probe!("trivyImage", async move { with_enabled(serde_json::to_value(ignite_container_image_vulnerabilities::trivy_image_tooling(&s.runner).await).unwrap(), enabled) });
+        spawn_probe!("trivyImage", async move { with_enabled(probe_to_value(&ignite_container_image_vulnerabilities::trivy_image_tooling(&s.runner).await), enabled) });
     }
     {
         let s = state.clone();
@@ -145,7 +195,7 @@ async fn run_tools_status_stream(state: Arc<AppState>, out_tx: tokio::sync::mpsc
     }
     {
         let s = state.clone();
-        spawn_probe!("syft", async move { with_enabled(serde_json::to_value(ignite_sbom::syft_tooling(&s.runner).await).unwrap(), true) });
+        spawn_probe!("syft", async move { with_enabled(probe_to_value(&ignite_sbom::syft_tooling(&s.runner).await), true) });
     }
     {
         let s = state.clone();
@@ -153,7 +203,7 @@ async fn run_tools_status_stream(state: Arc<AppState>, out_tx: tokio::sync::mpsc
     }
     {
         let s = state.clone();
-        spawn_probe!("semgrep", async move { with_enabled(serde_json::to_value(ignite_semantic_sast::semgrep_tooling(&s.runner).await).unwrap(), true) });
+        spawn_probe!("semgrep", async move { with_enabled(probe_to_value(&ignite_semantic_sast::semgrep_tooling(&s.runner).await), true) });
     }
     {
         let s = state.clone();
@@ -174,11 +224,11 @@ async fn run_tools_status_stream(state: Arc<AppState>, out_tx: tokio::sync::mpsc
     }
     {
         let s = state.clone();
-        spawn_probe!("guarddog", async move { with_enabled(serde_json::to_value(ignite_malicious_dependencies::guarddog_tooling(&s.runner).await).unwrap(), true) });
+        spawn_probe!("guarddog", async move { with_enabled(probe_to_value(&ignite_malicious_dependencies::guarddog_tooling(&s.runner).await), true) });
     }
     {
         let s = state.clone();
-        spawn_probe!("codeql", async move { with_enabled(serde_json::to_value(ignite_codeql_cross_file::codeql_tooling(&s.runner).await).unwrap(), true) });
+        spawn_probe!("codeql", async move { with_enabled(probe_to_value(&ignite_codeql_cross_file::codeql_tooling(&s.runner).await), true) });
     }
     {
         let s = state.clone();
@@ -186,7 +236,7 @@ async fn run_tools_status_stream(state: Arc<AppState>, out_tx: tokio::sync::mpsc
     }
     {
         let s = state.clone();
-        spawn_probe!("oasdiff", async move { with_enabled(serde_json::to_value(ignite_api_schema_drift::oasdiff_tooling(&s.runner).await).unwrap(), true) });
+        spawn_probe!("oasdiff", async move { with_enabled(probe_to_value(&ignite_api_schema_drift::oasdiff_tooling(&s.runner).await), true) });
     }
     {
         let s = state.clone();
@@ -202,7 +252,9 @@ async fn run_tools_status_stream(state: Arc<AppState>, out_tx: tokio::sync::mpsc
         merged.insert(key.to_string(), value);
         let _ = out_tx.send(format!("{}\n", json!({ "type": "progress", "tool": key, "done": done, "total": TOOL_COUNT })));
     }
-    let _ = out_tx.send(format!("{}\n", json!({ "type": "done", "status": Value::Object(merged) })));
+    let status = Value::Object(merged);
+    store_tools_status_cache(status.clone());
+    let _ = out_tx.send(format!("{}\n", json!({ "type": "done", "status": status })));
 }
 
 pub fn router() -> Router<Arc<AppState>> {

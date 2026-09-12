@@ -35,6 +35,34 @@ async fn loopback_only(ConnectInfo(addr): ConnectInfo<SocketAddr>, req: axum::ex
     next.run(req).await
 }
 
+/// `loopback_only` alone checks the TCP peer address, which is always
+/// 127.0.0.1 for a request originating from the browser's *own* page
+/// scripts too — a malicious website a developer merely has open in a tab
+/// can still issue a same-machine cross-origin `fetch()` to this API and
+/// have the browser actually send it. This complements that check by also
+/// rejecting any request carrying a browser-set `Origin` header that isn't
+/// itself loopback (a request with no `Origin` header at all — curl, a
+/// CLI, same-origin navigation — is unaffected; only a cross-origin
+/// browser request sets one).
+fn is_loopback_origin(origin: &str) -> bool {
+    let Ok(url) = url::Url::parse(origin) else { return false };
+    match url.host() {
+        Some(url::Host::Ipv4(v4)) => v4.is_loopback(),
+        Some(url::Host::Ipv6(v6)) => v6.is_loopback(),
+        Some(url::Host::Domain(d)) => d == "localhost",
+        None => false,
+    }
+}
+
+async fn same_origin_only(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if let Some(origin) = req.headers().get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if !is_loopback_origin(origin) {
+            return (StatusCode::FORBIDDEN, Json(json!({ "error": "Cross-origin requests to this API are not allowed." }))).into_response();
+        }
+    }
+    next.run(req).await
+}
+
 async fn health() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
@@ -98,6 +126,7 @@ fn build_router() -> Router {
         .route("/guidelines/:id", get(get_guideline))
         .route("/check", post(check))
         .route("/check-project", post(check_project))
+        .layer(axum::middleware::from_fn(same_origin_only))
         .layer(axum::middleware::from_fn(loopback_only))
 }
 

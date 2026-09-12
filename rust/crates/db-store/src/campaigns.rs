@@ -36,18 +36,26 @@ impl DbStore {
                 params![category, min_score],
                 |row| row.get(0),
             )
-            .unwrap();
-        conn.execute(
+            .unwrap_or(0);
+        if let Err(e) = conn.execute(
             "INSERT INTO campaigns (title, description, category, min_score, target_date, initial_open_count, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![title, description, category, min_score, target_date, initial_open_count, created_by],
-        )
-        .unwrap();
+        ) {
+            tracing::error!("create_campaign failed for \"{title}\": {e}");
+            return 0;
+        }
         conn.last_insert_rowid()
     }
 
     pub fn close_campaign(&self, id: i64) -> bool {
         let conn = self.conn.lock();
-        conn.execute("UPDATE campaigns SET closed_at = datetime('now') WHERE id = ? AND closed_at IS NULL", params![id]).unwrap() > 0
+        match conn.execute("UPDATE campaigns SET closed_at = datetime('now') WHERE id = ? AND closed_at IS NULL", params![id]) {
+            Ok(n) => n > 0,
+            Err(e) => {
+                tracing::error!("close_campaign failed for {id}: {e}");
+                false
+            }
+        }
     }
 
     fn matching_open_count(conn: &rusqlite::Connection, category: &Option<String>, min_score: Option<i64>) -> i64 {
@@ -60,7 +68,7 @@ impl DbStore {
             params![category, min_score],
             |row| row.get(0),
         )
-        .unwrap()
+        .unwrap_or(0)
     }
 
     pub fn list_campaigns(&self) -> Vec<CampaignRow> {
@@ -77,27 +85,26 @@ impl DbStore {
             created_at: String,
             closed_at: Option<String>,
         }
-        let mut stmt = conn
-            .prepare_cached("SELECT id, title, description, category, min_score, target_date, initial_open_count, created_by, created_at, closed_at FROM campaigns ORDER BY created_at DESC")
-            .unwrap();
-        let rows: Vec<Raw> = stmt
-            .query_map([], |row| {
-                Ok(Raw {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    description: row.get(2)?,
-                    category: row.get(3)?,
-                    min_score: row.get(4)?,
-                    target_date: row.get(5)?,
-                    initial_open_count: row.get(6)?,
-                    created_by: row.get(7)?,
-                    created_at: row.get(8)?,
-                    closed_at: row.get(9)?,
-                })
+        let Ok(mut stmt) = conn.prepare_cached("SELECT id, title, description, category, min_score, target_date, initial_open_count, created_by, created_at, closed_at FROM campaigns ORDER BY created_at DESC") else {
+            return vec![];
+        };
+        let rows: Vec<Raw> = match stmt.query_map([], |row| {
+            Ok(Raw {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                description: row.get(2)?,
+                category: row.get(3)?,
+                min_score: row.get(4)?,
+                target_date: row.get(5)?,
+                initial_open_count: row.get(6)?,
+                created_by: row.get(7)?,
+                created_at: row.get(8)?,
+                closed_at: row.get(9)?,
             })
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
+        }) {
+            Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+            Err(_) => vec![],
+        };
 
         rows.into_iter()
             .map(|r| {

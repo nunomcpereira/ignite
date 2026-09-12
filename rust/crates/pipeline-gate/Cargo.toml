@@ -1,0 +1,11 @@
+[package]
+name = "ignite-pipeline-gate"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

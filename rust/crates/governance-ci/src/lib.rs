@@ -211,16 +211,20 @@ pub async fn run_actions_locally(root: &Path, wf_file: &Path, runner: &ToolRunne
         log("⚠ No GitHub token available (gh not installed/authenticated, and GH_TOKEN/GITHUB_TOKEN not set) — remote reusable workflows may fail to resolve.");
     }
 
-    let mut args = vec![config.act_event.clone(), "-W".to_string(), wf_path_for_act.to_string_lossy().into_owned(), "-P".to_string(), "ubuntu-latest=catthehacker/ubuntu:act-latest".to_string(), "--rm".to_string()];
-    if !resolved.is_empty() {
-        args.push("-s".to_string());
-        args.push(format!("GITHUB_TOKEN={resolved}"));
-    }
+    let args = vec![config.act_event.clone(), "-W".to_string(), wf_path_for_act.to_string_lossy().into_owned(), "-P".to_string(), "ubuntu-latest=catthehacker/ubuntu:act-latest".to_string(), "--rm".to_string()];
 
     log(&format!("$ act {} -W {} -P ubuntu-latest=catthehacker/ubuntu:act-latest --rm", config.act_event, wf_path_for_act.strip_prefix(root).unwrap_or(&wf_path_for_act).display()));
     log("(first run downloads runner/tool images — may take a few minutes)");
 
-    let env = std::collections::HashMap::new();
+    // Never pass the token as a `-s GITHUB_TOKEN=...` CLI argument — on a
+    // multi-user host it would be visible to any process that can read
+    // `/proc/<pid>/cmdline` (Linux) or `ps aux` (macOS), and this token
+    // can carry org-admin scope. `act` already auto-detects `GITHUB_TOKEN`
+    // from its own process environment when `-s GITHUB_TOKEN` isn't given.
+    let mut env = std::collections::HashMap::new();
+    if !resolved.is_empty() {
+        env.insert("GITHUB_TOKEN".to_string(), resolved.clone());
+    }
     let run_result = runner.run_tool_streaming("act", &args, &root_str, |line| log(&line.chars().take(400).collect::<String>()), &env, config.act_timeout_min * 60_000).await;
 
     // Do not leak localized governance workflows into phase 6 shipping.

@@ -139,8 +139,15 @@ pub async fn check_api_schema_drift(root: &Path, runner: &ToolRunner, config: &A
     ));
     tokio::fs::create_dir_all(&tmp_dir).await?;
 
+    let result = diff_rel_files(root, runner, &diff_base, &rel_files, &tmp_dir).await;
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    let findings = result?;
+    Ok(ApiSchemaDriftResult { findings, engine: "oasdiff" })
+}
+
+async fn diff_rel_files(root: &Path, runner: &ToolRunner, diff_base: &str, rel_files: &[String], tmp_dir: &Path) -> std::io::Result<Vec<ApiSchemaDriftFinding>> {
     let mut findings = Vec::new();
-    for rel_file in &rel_files {
+    for rel_file in rel_files {
         let base_content = match runner.run_tool("git", &["show".to_string(), format!("{}:{}", diff_base, rel_file)], &root.to_string_lossy(), RunToolOptions::default()).await {
             Ok(o) => o.stdout,
             Err(_) => continue, // file didn't exist at diffBase — a new spec, nothing to diff yet
@@ -177,9 +184,7 @@ pub async fn check_api_schema_drift(root: &Path, runner: &ToolRunner, config: &A
             });
         }
     }
-
-    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-    Ok(ApiSchemaDriftResult { findings, engine: "oasdiff" })
+    Ok(findings)
 }
 
 #[cfg(test)]

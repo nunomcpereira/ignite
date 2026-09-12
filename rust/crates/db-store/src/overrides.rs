@@ -21,7 +21,7 @@ impl DbStore {
 
     pub fn add_override(&self, args: AddOverrideArgs) {
         let conn = self.conn.lock();
-        conn.execute(
+        if let Err(e) = conn.execute(
             "INSERT INTO overrides
               (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')",
@@ -30,8 +30,13 @@ impl DbStore {
                 args.summary, args.file, args.line, args.justification, args.actor_email, args.actor_name,
                 args.email_sent as i64,
             ],
-        )
-        .unwrap();
+        ) {
+            // A transient DB error (lock contention, disk full) must not
+            // panic and take the whole server process down with it — the
+            // caller already has no way to observe failure here (this
+            // returns `()`), so the best available signal is a log line.
+            tracing::error!("add_override failed for issue {}: {e}", args.issue_id);
+        }
     }
 
     /// Same shape as [`Self::add_override`], but the row starts life
@@ -42,9 +47,13 @@ impl DbStore {
     /// *different* user calls [`Self::approve_override`]. Returns the new
     /// row's id, so the caller can surface it for a future approve/reject
     /// call.
+    /// Returns the new row's id, or `0` (never a real SQLite rowid — those
+    /// start at 1) if the insert itself failed, e.g. transient DB lock
+    /// contention or a disk error — the caller should treat `0` as
+    /// "nothing was recorded" rather than a valid id to look up.
     pub fn add_pending_override(&self, args: AddOverrideArgs) -> i64 {
         let conn = self.conn.lock();
-        conn.execute(
+        let result = conn.execute(
             "INSERT INTO overrides
               (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
@@ -53,9 +62,14 @@ impl DbStore {
                 args.summary, args.file, args.line, args.justification, args.actor_email, args.actor_name,
                 args.email_sent as i64,
             ],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
+        );
+        match result {
+            Ok(_) => conn.last_insert_rowid(),
+            Err(e) => {
+                tracing::error!("add_pending_override failed for issue {}: {e}", args.issue_id);
+                0
+            }
+        }
     }
 
     /// True when `issue_id` already has an `'approved'` override on this
@@ -116,7 +130,7 @@ impl DbStore {
             })
         })
         .unwrap()
-        .map(|r| r.unwrap())
+        .filter_map(|r| r.ok())
         .collect()
     }
 
@@ -199,7 +213,7 @@ impl DbStore {
             })
         })
         .unwrap()
-        .map(|r| r.unwrap())
+        .filter_map(|r| r.ok())
         .collect()
     }
 

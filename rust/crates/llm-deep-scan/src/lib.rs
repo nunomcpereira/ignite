@@ -147,6 +147,21 @@ fn is_sourced_from_env_or_config(line_text: &str, file_text: &str) -> bool {
 /// when Ignite's LLM deep-scan is scanning *itself*.
 const IGNITE_OWN_SOURCE_FILES: &[&str] = &["server.js", "lib/tool-runner.js", "lib/fs-utils.js"];
 
+// `validate_llm_finding` runs once per finding, often dozens/hundreds per
+// scan — these are compiled once here rather than with `Regex::new(...)`
+// inline in that hot path.
+static SMTP_CREDENTIAL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)(pass|password)\s*[:=]\s*['"]([^'"\s]{4,})['"]"#).unwrap());
+static STARTTLS_PORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#""port"\s*:\s*587"#).unwrap());
+static COMMAND_SANITIZER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(").unwrap());
+static FOLDER_UPLOAD_GUARD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sanitizeUploadRelativePath\(|Blocked path-traversal entry in folder upload").unwrap());
+static REQUEST_INPUT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\breq\.(body|query|params|headers)\b|\brequest\.(body|query|params|headers)\b").unwrap());
+static ENV_CONFIG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"process\.env\.\w+|CONFIG\.\w+|config\.\w+").unwrap());
+static AUTH_BEARER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)Authorization['"]?\s*:\s*`?Bearer(?:\s|$)"#).unwrap());
+static ENV_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)process\.env\.\w*(KEY|TOKEN|SECRET)\w*").unwrap());
+static CONSOLE_LEAK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)console\.(log|error|warn)\([^)]*\b(key|token|authorization|bearer)\b").unwrap());
+static RES_LEAK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)res\.(json|send)\([^)]*\b(key|token|authorization|bearer)\b").unwrap());
+static URL_EMBEDDED_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)http://[^\s'"]*\$\{?\w*(KEY|TOKEN)"#).unwrap());
+
 /// Re-validates one raw LLM finding against the actual source text,
 /// filtering the model's own false positives / re-deriving severity where
 /// the model doesn't reliably follow the prompt's classification rules.
@@ -165,14 +180,14 @@ pub async fn validate_llm_finding(
 
     if finding.category == "security" {
         if issue.contains("smtp password") || issue.contains("hardcoded smtp") {
-            let has_non_empty_credential = Regex::new(r#"(?i)(pass|password)\s*[:=]\s*['"]([^'"\s]{4,})['"]"#).unwrap().is_match(&file_text);
+            let has_non_empty_credential = SMTP_CREDENTIAL_RE.is_match(&file_text);
             if !has_non_empty_credential {
                 log(&format!("⚠ Ignored false-positive LLM finding: {}:{} (no non-empty SMTP credential literal).", finding.file, finding.line));
                 return None;
             }
         }
         if issue.contains("secure") && issue.contains("smtp") && line_text.contains("\"secure\": false") {
-            let has_starttls_submission = Regex::new(r#""port"\s*:\s*587"#).unwrap().is_match(&file_text);
+            let has_starttls_submission = STARTTLS_PORT_RE.is_match(&file_text);
             if has_starttls_submission {
                 log(&format!("⚠ Ignored false-positive LLM finding: {}:{} (STARTTLS on port 587 is allowed).", finding.file, finding.line));
                 return None;
@@ -183,7 +198,7 @@ pub async fn validate_llm_finding(
 
         if (issue.contains("command injection") || issue.contains("user-supplied command") || issue.contains("child_process")) && IGNITE_OWN_SOURCE_FILES.contains(&finding.file.as_str()) {
             let has_command_allowlist = all_files_text.contains("const ALLOWED_COMMANDS = Object.freeze(new Set(['git', 'gh', 'act', 'docker', 'gitleaks', 'licensee', 'ort', 'trivy', 'checkov', 'hadolint', 'syft', 'cosign', 'semgrep', 'bearer', 'jscpd', 'gocloc', 'spectral', 'guarddog']));");
-            let has_strict_sanitizers = Regex::new(r"sanitizeCommand\(|sanitizeCliArgs\(|sanitizeCwd\(|sanitizeEnv\(").unwrap().is_match(&all_files_text);
+            let has_strict_sanitizers = COMMAND_SANITIZER_RE.is_match(&all_files_text);
             if has_command_allowlist && has_strict_sanitizers {
                 log(&format!("⚠ Ignored false-positive LLM finding: {}:{} (child_process calls are constrained to fixed allowlisted tools).", finding.file, finding.line));
                 return None;
@@ -192,7 +207,7 @@ pub async fn validate_llm_finding(
 
         if (issue.contains("path traversal") || issue.contains("zip extraction") || issue.contains("folder upload")) && IGNITE_OWN_SOURCE_FILES.contains(&finding.file.as_str()) {
             let has_zip_guard = all_files_text.contains("target !== destDir && !target.startsWith(destDir + path.sep)");
-            let has_folder_guard = Regex::new(r"sanitizeUploadRelativePath\(|Blocked path-traversal entry in folder upload").unwrap().is_match(&all_files_text);
+            let has_folder_guard = FOLDER_UPLOAD_GUARD_RE.is_match(&all_files_text);
             if has_zip_guard && has_folder_guard {
                 log(&format!("⚠ Ignored false-positive LLM finding: {}:{} (path traversal guards already enforce staging-root confinement).", finding.file, finding.line));
                 return None;
@@ -205,10 +220,8 @@ pub async fn validate_llm_finding(
             let start = line_idx.saturating_sub(3);
             let end = (line_idx + 2).min(lines.len());
             let near_line = if start < end { lines[start..end].join("\n") } else { String::new() };
-            let req_input_re = Regex::new(r"\breq\.(body|query|params|headers)\b|\brequest\.(body|query|params|headers)\b").unwrap();
-            let references_request_input = req_input_re.is_match(&near_line) || req_input_re.is_match(&file_text);
-            let env_config_re = Regex::new(r"process\.env\.\w+|CONFIG\.\w+|config\.\w+").unwrap();
-            let references_env_or_config = env_config_re.is_match(&near_line) || is_sourced_from_env_or_config(&line_text, &file_text);
+            let references_request_input = REQUEST_INPUT_RE.is_match(&near_line) || REQUEST_INPUT_RE.is_match(&file_text);
+            let references_env_or_config = ENV_CONFIG_RE.is_match(&near_line) || is_sourced_from_env_or_config(&line_text, &file_text);
             if !references_request_input && references_env_or_config {
                 finding.level = "warning".to_string();
                 finding.issue = format!("{} (downgraded: URL is sourced from a server-side .env/config value, not request-time user input, so this isn't directly exploitable — admin-controlled config, review at your discretion.)", finding.issue);
@@ -222,12 +235,8 @@ pub async fn validate_llm_finding(
             let start = line_idx.saturating_sub(3);
             let end = (line_idx + 4).min(lines.len());
             let context = if start < end { lines[start..end].join("\n") } else { String::new() };
-            let auth_bearer_re = Regex::new(r#"(?i)Authorization['"]?\s*:\s*`?Bearer[\s$]"#).unwrap();
-            let env_key_re = Regex::new(r"(?i)process\.env\.\w*(KEY|TOKEN|SECRET)\w*").unwrap();
-            let built_from_env_var = auth_bearer_re.is_match(&context) && (env_key_re.is_match(&context) || is_sourced_from_env_or_config(&line_text, &file_text));
-            let actually_leaked = Regex::new(r"(?i)console\.(log|error|warn)\([^)]*\b(key|token|authorization|bearer)\b").unwrap().is_match(&context)
-                || Regex::new(r"(?i)res\.(json|send)\([^)]*\b(key|token|authorization|bearer)\b").unwrap().is_match(&context)
-                || Regex::new(r#"(?i)http://[^\s'"]*\$\{?\w*(KEY|TOKEN)"#).unwrap().is_match(&context);
+            let built_from_env_var = AUTH_BEARER_RE.is_match(&context) && (ENV_KEY_RE.is_match(&context) || is_sourced_from_env_or_config(&line_text, &file_text));
+            let actually_leaked = CONSOLE_LEAK_RE.is_match(&context) || RES_LEAK_RE.is_match(&context) || URL_EMBEDDED_KEY_RE.is_match(&context);
             if built_from_env_var && !actually_leaked {
                 log(&format!("⚠ Ignored false-positive LLM finding: {}:{} (API key sent via standard Authorization header from an env var, not logged/echoed/URL-embedded).", finding.file, finding.line));
                 return None;

@@ -87,7 +87,13 @@ fn emit_audit_event_blocking(db: &ignite_db_store::DbStore, result: &MintResult)
     db.record_audit_event("api_key.created", "warning", &format!("headless API key created for {}", result.user_email), Some(&result.operator), None, None, Some(&serde_json::json!({ "apiKeyId": result.api_key_id }).to_string()));
 
     let config_dir = env::var("IGNITE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
-    let Ok(config) = ignite_config::load_config(&config_dir) else { return };
+    let config = match ignite_config::load_config(&config_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: could not load config from {} ({e}) — SIEM audit-log dispatch for this key creation was skipped. Set IGNITE_CONFIG_DIR or run from the config directory.", config_dir.display());
+            return;
+        }
+    };
     if !config.audit_log.enabled || config.audit_log.sinks.is_empty() {
         return;
     }

@@ -130,6 +130,11 @@ async fn main() {
     // Mirrors server.js: `process.env.PORT || CONFIG.port`.
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config_port);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("failed to bind port");
+    // Always visible regardless of RUST_LOG (tracing::info! is silent
+    // unless a filter enabling it is set) — an operator starting the
+    // server needs to see the port immediately, not only when they
+    // happen to have verbose logging configured.
+    eprintln!("Ignite (Rust) listening on http://0.0.0.0:{port}");
     tracing::info!("Ignite (Rust) listening on http://0.0.0.0:{port}");
     axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.expect("server error");
 }

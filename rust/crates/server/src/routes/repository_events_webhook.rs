@@ -123,7 +123,11 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
         let runner = state.runner.clone();
         let org = org.clone();
         let repo = repo.clone();
-        let port = state.config.port;
+        // Same `PORT`-env-overrides-`config.json` precedence `main.rs`
+        // actually binds with — `state.config.port` alone is wrong in any
+        // deployment (containerized or otherwise) that sets `PORT` to bind
+        // a different port than the static config value.
+        let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
         tokio::spawn(async move {
             let http = reqwest::Client::new();
             let server_base = format!("http://127.0.0.1:{port}");

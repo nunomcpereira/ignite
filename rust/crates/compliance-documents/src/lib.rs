@@ -22,7 +22,12 @@ static PATTERNS: Lazy<BTreeMap<&'static str, Regex>> = Lazy::new(|| {
     [
         ("risk-management-system", r"(?i)risk[-_ ]?management([-_ ]?system)?|\brms\b"),
         ("technical-documentation", r"(?i)annex[-_ ]?iv|technical[-_ ]?documentation|tech[-_ ]?docs?"),
-        ("fria", r"(?i)\bfria\b|fundamental[-_ ]?rights[-_ ]?impact"),
+        // `\bfria\b` alone matched any file/directory merely containing
+        // that substring (e.g. incidental Spanish text, a `fria_notes.txt`
+        // scratch file) — narrowed to a doc-shaped filename (an optional
+        // report/doc/assessment suffix before a real document extension)
+        // to actually mean the FRIA deliverable, not just the word.
+        ("fria", r"(?i)\bfria[-_ ]?(?:report|doc|assessment)?\.(?:md|pdf|docx?|txt)$|fundamental[-_ ]?rights[-_ ]?impact"),
         ("training-data-summary", r"(?i)training[-_ ]?data[-_ ]?summary|dataset[-_ ]?summary|model[-_ ]?card"),
         ("post-market-monitoring", r"(?i)post[-_ ]?market[-_ ]?monitoring|\bpmms\b"),
     ]
@@ -62,9 +67,11 @@ pub fn check_compliance_documents(root: &Path, enabled: bool) -> std::io::Result
         let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let rel = relative_to_root(root, &file.to_string_lossy()).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
         for &category in DOCUMENT_CATEGORIES {
-            let pattern = &PATTERNS[category];
+            let Some(pattern) = PATTERNS.get(category) else { continue };
             if pattern.is_match(&base) || pattern.is_match(&rel) {
-                documents.get_mut(category).unwrap().matches.push(DocumentMatch { file: rel.clone() });
+                if let Some(report) = documents.get_mut(category) {
+                    report.matches.push(DocumentMatch { file: rel.clone() });
+                }
             }
         }
     }

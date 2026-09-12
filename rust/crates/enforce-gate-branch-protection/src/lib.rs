@@ -196,7 +196,10 @@ pub async fn apply_plan(runner: &ToolRunner, plan: &PlannedCall) -> Result<(), E
     let tmp = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     std::fs::write(tmp.path(), serde_json::to_vec(&plan.body).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let args = vec!["api".to_string(), "-X".to_string(), "PUT".to_string(), format!("repos/{}/branches/{}/protection", plan.full_name, plan.default_branch), "--input".to_string(), tmp.path().to_string_lossy().to_string()];
-    let env: HashMap<String, String> = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).map(|t| HashMap::from([("GH_TOKEN".to_string(), t)])).unwrap_or_default();
+    let token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).map_err(|_| {
+        EnforceGateError::from("No GH_TOKEN or GITHUB_TOKEN set in environment — refusing to call the GitHub API unauthenticated".to_string())
+    })?;
+    let env: HashMap<String, String> = HashMap::from([("GH_TOKEN".to_string(), token)]);
     runner.run_tool("gh", &args, &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await.map_err(|e| format!("Failed to apply protection to {}: {e}", plan.full_name))?;
     Ok(())
 }

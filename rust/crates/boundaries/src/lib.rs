@@ -85,7 +85,19 @@ pub fn glob_to_regex(glob: &str) -> Regex {
         }
     }
     out.push('$');
-    Regex::new(&out).unwrap()
+    // Every regex metacharacter this function itself emits is either a
+    // deliberately-constructed group (`.*`, `([^/]*)`, `(?:a|b)`) or was
+    // escaped via the branch above/`escape_glob_literal`, so this should
+    // never actually fail to compile — but an operator-supplied zone glob
+    // is still untrusted-enough input that a scan shouldn't panic on a
+    // pattern this function didn't anticipate; degrade to "never matches"
+    // instead (an unmatched zone just gets no boundary enforcement, the
+    // same outcome as a zone with no pattern match today).
+    // `$.` can never match: `$` anchors to end-of-haystack, and `.` then
+    // requires one more character to exist past that position. Valid,
+    // supported syntax in the `regex` crate (unlike a lookaround-based
+    // "never matches" pattern, which it doesn't support at all).
+    Regex::new(&out).unwrap_or_else(|_| Regex::new(r"$.").unwrap())
 }
 
 fn escape_glob_literal(s: &str) -> String {

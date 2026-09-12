@@ -320,13 +320,23 @@ pub fn check_dead_code(root: &Path, config: &DeadCodeConfig) -> std::io::Result<
                     }
                 }
             }
-            let whole_source: String = graph.values().map(|n| n.content.as_str()).collect::<Vec<_>>().join("\n");
             let scripts_json = pkg.get("scripts").cloned().unwrap_or(serde_json::json!({})).to_string();
 
             for dep in &all_deps {
                 let escaped = DEP_ESCAPE_SPECIAL.replace_all(dep, r"\$0");
-                let used_re = Regex::new(&format!(r#"(?:from|require\()\s*['"]{escaped}(?:/[^'"]*)?['"]"#)).unwrap();
-                if used_re.is_match(&whole_source) {
+                // `from`/`require(` (the original two forms) plus bare
+                // side-effect imports (`import 'dotenv/config'`) and
+                // dynamic `import('pkg')` — both previously unmatched,
+                // which flagged real runtime dependencies pulled in only
+                // that way as unused.
+                let used_re = Regex::new(&format!(r#"(?:\bfrom\s*|\brequire\(\s*|\bimport\s*\(\s*|\bimport\s+)['"]{escaped}(?:/[^'"]*)?['"]"#)).unwrap();
+                // Searched per-file (short-circuiting on the first match)
+                // rather than joining every file's content into one
+                // contiguous string first — on a large codebase, holding a
+                // second copy of the entire source tree in memory just to
+                // run this search was a real footprint problem the
+                // per-file scan avoids entirely.
+                if graph.values().any(|n| used_re.is_match(&n.content)) {
                     continue;
                 }
                 if scripts_json.contains(dep.as_str()) {

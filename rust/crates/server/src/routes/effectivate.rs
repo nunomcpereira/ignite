@@ -59,16 +59,6 @@ fn issue_row_to_issue(r: &IssueRow) -> Issue {
     }
 }
 
-fn resolve_actor_from_body(body: &Value) -> Option<(String, String)> {
-    let actor = body.get("actor")?;
-    let email = actor.get("email").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
-    if !ignite_auth::is_valid_email(&email) {
-        return None;
-    }
-    let name = actor.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(&email).to_string();
-    Some((email, name))
-}
-
 fn issues_json(rows: &[IssueRow]) -> Vec<Value> {
     rows.iter()
         .map(|r| {
@@ -80,7 +70,7 @@ fn issues_json(rows: &[IssueRow]) -> Vec<Value> {
         .collect()
 }
 
-async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let phase_meta = super::phase_meta::resolve_phase_meta(&state.config);
     let phase6_title = super::phase_meta::phase_title(&phase_meta, 6);
     let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
@@ -130,14 +120,21 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     let applied: Vec<(&Issue, String)> = result.applied.iter().map(|(i, j)| (*i, j.clone())).collect();
     let mut actor: Option<(String, String)> = None;
     if !applied.is_empty() {
-        actor = resolve_actor_from_body(&body);
-        if actor.is_none() {
+        // Audit-trail attribution must come from the caller's own
+        // authenticated session, never a client-supplied `actor` object in
+        // the request body — otherwise anyone who can reach this endpoint
+        // (which only requires *some* resolvable GitHub token, including
+        // the server's own ambient `GH_TOKEN` fallback for unattended
+        // callers) could submit overrides attributed to an arbitrary
+        // email, spoofing identity in the audit trail.
+        let Some(u) = &user else {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "Log in, or provide actor {email,name}, to submit overrides.", "needsReview": true, "issues": issues_json(&issue_rows) })),
+                Json(json!({ "error": "Log in to submit overrides.", "needsReview": true, "issues": issues_json(&issue_rows) })),
             )
                 .into_response();
-        }
+        };
+        actor = Some((u.email.clone(), u.name.clone().unwrap_or_else(|| u.email.clone())));
     }
 
     // Dual-custody: a critical-severity (score >= CRITICAL_SCORE_THRESHOLD)

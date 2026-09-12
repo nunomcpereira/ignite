@@ -251,27 +251,39 @@ pub async fn check_feature_posture(root: &Path, runner: &ToolRunner, config: &Fe
         )
         .await;
 
-    if let Ok(output) = run_result {
-        if let Ok(data) = serde_json::from_str::<serde_json::Value>(if output.stdout.trim().is_empty() { "{}" } else { &output.stdout }) {
-            let results = data.get("results").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-            let mut seen = HashSet::new();
-            for r in results {
-                let category = r.get("extra").and_then(|e| e.get("metadata")).and_then(|m| m.get("category")).and_then(|c| c.as_str());
-                let Some(category) = category.and_then(|c| category_set.get(c)).copied() else { continue };
-                let tier_str = r.get("extra").and_then(|e| e.get("metadata")).and_then(|m| m.get("tier")).and_then(|t| t.as_str()).unwrap_or("");
-                let tier: &'static str = if tier_str == "strong" { "strong" } else { "weak" };
-                let raw_path = r.get("path").and_then(|p| p.as_str()).unwrap_or("");
-                let rel_file = relative_to_root(root, raw_path).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-                let line = r.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_i64()).unwrap_or(1).max(1) as usize;
-                let key = format!("{category}:{rel_file}:{line}:{tier}");
-                if !seen.insert(key) {
-                    continue;
-                }
-                let message = r.get("extra").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or(category).to_string();
-                let content = std::fs::read_to_string(root.join(&rel_file)).ok();
-                let code = content.as_deref().and_then(|c| build_snippet(c, line, SnippetOptions::default()));
-                posture.get_mut(category).unwrap().matches.push(PostureMatch { file: rel_file, line, tier, tool: "semgrep", message, code });
+    // A Semgrep execution failure (bad ruleset, timeout, crash) is
+    // distinct from "Semgrep isn't installed/enabled" above — but
+    // silently falling through to an all-MISSING `posture` here would
+    // mark every security safeguard as absent with no indication the
+    // scan itself never actually ran, rather than genuinely finding
+    // nothing. Fall back to the regex-based scan (same as the
+    // tooling-unavailable case) instead, so a real execution failure
+    // still yields a best-effort result rather than a misleadingly clean
+    // "MISSING everything".
+    let Ok(output) = run_result else {
+        let posture = check_feature_posture_fallback(root, config.max_scan_file_bytes)?;
+        return Ok(FeaturePostureResult { engine: "fallback", posture });
+    };
+
+    if let Ok(data) = serde_json::from_str::<serde_json::Value>(if output.stdout.trim().is_empty() { "{}" } else { &output.stdout }) {
+        let results = data.get("results").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+        let mut seen = HashSet::new();
+        for r in results {
+            let category = r.get("extra").and_then(|e| e.get("metadata")).and_then(|m| m.get("category")).and_then(|c| c.as_str());
+            let Some(category) = category.and_then(|c| category_set.get(c)).copied() else { continue };
+            let tier_str = r.get("extra").and_then(|e| e.get("metadata")).and_then(|m| m.get("tier")).and_then(|t| t.as_str()).unwrap_or("");
+            let tier: &'static str = if tier_str == "strong" { "strong" } else { "weak" };
+            let raw_path = r.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            let rel_file = relative_to_root(root, raw_path).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+            let line = r.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_i64()).unwrap_or(1).max(1) as usize;
+            let key = format!("{category}:{rel_file}:{line}:{tier}");
+            if !seen.insert(key) {
+                continue;
             }
+            let message = r.get("extra").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or(category).to_string();
+            let content = std::fs::read_to_string(root.join(&rel_file)).ok();
+            let code = content.as_deref().and_then(|c| build_snippet(c, line, SnippetOptions::default()));
+            posture.get_mut(category).unwrap().matches.push(PostureMatch { file: rel_file, line, tier, tool: "semgrep", message, code });
         }
     }
 

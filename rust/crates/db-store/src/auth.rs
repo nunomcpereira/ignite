@@ -20,36 +20,50 @@ impl DbStore {
         conn.last_insert_rowid()
     }
 
-    pub fn upsert_oidc_user(&self, email: &str, name: Option<&str>, external_id: &str) -> User {
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO users (email, name, provider, external_id) VALUES (?, ?, 'oidc', ?)
-             ON CONFLICT(provider, external_id) DO UPDATE SET email = excluded.email, name = excluded.name",
-            params![email, name, external_id],
-        )
-        .unwrap();
-        conn.query_row(
-            "SELECT id, email, name, provider, created_at FROM users WHERE provider = 'oidc' AND external_id = ?",
-            params![external_id],
-            Self::user_from_row,
-        )
-        .unwrap()
+    pub fn upsert_oidc_user(&self, email: &str, name: Option<&str>, external_id: &str) -> Result<User, String> {
+        Self::upsert_external_user(&self.conn.lock(), "oidc", email, name, external_id)
     }
 
-    pub fn upsert_github_user(&self, email: &str, name: Option<&str>, external_id: &str) -> User {
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO users (email, name, provider, external_id) VALUES (?, ?, 'github', ?)
+    pub fn upsert_github_user(&self, email: &str, name: Option<&str>, external_id: &str) -> Result<User, String> {
+        Self::upsert_external_user(&self.conn.lock(), "github", email, name, external_id)
+    }
+
+    /// Shared by [`Self::upsert_oidc_user`]/[`Self::upsert_github_user`].
+    /// `users.email` has a global `UNIQUE` constraint (independent of the
+    /// `(provider, external_id)` conflict target this upsert otherwise
+    /// keys off), so an IdP account whose email matches an *existing*
+    /// user under a different provider/external_id — e.g. someone
+    /// registered locally with the same email before ever signing in via
+    /// SSO — can't be inserted via the plain `ON CONFLICT(provider,
+    /// external_id)` clause: SQLite raises its own `UNIQUE constraint
+    /// failed: users.email` instead of matching that conflict target,
+    /// which used to reach an `.unwrap()` and crash the server mid-login.
+    /// Surfaced as a descriptive error instead of silently linking a
+    /// different provider onto an existing account (an email collision
+    /// alone isn't proof of common ownership, and a local password
+    /// account taking on OIDC/GitHub identity implicitly would be a
+    /// judgment call for a human to make, not something a login attempt
+    /// should decide unattended).
+    fn upsert_external_user(conn: &rusqlite::Connection, provider: &str, email: &str, name: Option<&str>, external_id: &str) -> Result<User, String> {
+        let insert_result = conn.execute(
+            "INSERT INTO users (email, name, provider, external_id) VALUES (?, ?, ?, ?)
              ON CONFLICT(provider, external_id) DO UPDATE SET email = excluded.email, name = excluded.name",
-            params![email, name, external_id],
-        )
-        .unwrap();
-        conn.query_row(
-            "SELECT id, email, name, provider, created_at FROM users WHERE provider = 'github' AND external_id = ?",
-            params![external_id],
-            Self::user_from_row,
-        )
-        .unwrap()
+            params![email, name, provider, external_id],
+        );
+        if let Err(e) = insert_result {
+            let existing = conn
+                .query_row("SELECT id, email, name, provider, created_at FROM users WHERE email = ?", params![email], Self::user_from_row)
+                .optional()
+                .map_err(|e2| e2.to_string())?;
+            return match existing {
+                Some(other) if other.provider != provider => Err(format!(
+                    "An account with email \"{email}\" already exists under the \"{}\" provider. Sign in with that provider, or contact an administrator to link accounts.",
+                    other.provider
+                )),
+                _ => Err(e.to_string()),
+            };
+        }
+        conn.query_row("SELECT id, email, name, provider, created_at FROM users WHERE provider = ? AND external_id = ?", params![provider, external_id], Self::user_from_row).map_err(|e| e.to_string())
     }
 
     fn user_from_row(row: &rusqlite::Row) -> rusqlite::Result<User> {

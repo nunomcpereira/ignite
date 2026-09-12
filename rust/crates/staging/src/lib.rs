@@ -157,8 +157,9 @@ pub fn stage_directory_upload(files: &[UploadFile], dest_dir: &Path) -> Result<S
         // Cross-device rename would fail in Node too (EXDEV) — fall back
         // to copy+remove, same as the JS original.
         if fs::rename(&f.temp_path, &normalized).is_err() {
-            fs::copy(&f.temp_path, &normalized)?;
+            let copy_result = fs::copy(&f.temp_path, &normalized);
             let _ = fs::remove_file(&f.temp_path);
+            copy_result?;
         }
     }
     Ok(StageResult { file_count: files.len() as u64, total_bytes })

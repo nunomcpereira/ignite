@@ -25,7 +25,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "ok": false, "error": message.into() }))).into_response()
 }
 
-async fn list_patterns(State(state): State<Arc<AppState>>) -> Response {
+async fn list_patterns(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
     Json(state.db.list_custom_secret_patterns()).into_response()
 }
 
@@ -43,8 +43,11 @@ async fn create_pattern(State(state): State<Arc<AppState>>, crate::auth::Require
     if let Err(e) = ignite_secrets::test_pattern_against_sample(regex, "") {
         return err(StatusCode::BAD_REQUEST, e.to_string());
     }
-    let created_by = body.get("createdBy").and_then(|v| v.as_str());
-    let id = state.db.create_custom_secret_pattern(name, regex, created_by);
+    // Attribution comes from the authenticated caller, never a
+    // client-supplied `createdBy` in the body — otherwise any
+    // authenticated user could forge a pattern's audit trail to point at
+    // someone else.
+    let id = state.db.create_custom_secret_pattern(name, regex, Some(&_user.email));
     match state.db.get_custom_secret_pattern(id) {
         Some(row) => (StatusCode::CREATED, Json(row)).into_response(),
         None => Json(json!({ "ok": true, "id": id })).into_response(),
@@ -140,8 +143,9 @@ async fn sweep_pattern(State(state): State<Arc<AppState>>, crate::auth::RequireA
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write sweep config: {e}"));
     }
 
+    let expected_rule_id = ignite_secrets::gitleaks_rule_id(&pattern.name);
     let raw_findings = ignite_secrets::run_gitleaks_history_scan(&clone_dir, &state.runner, Some(&config_path)).await;
-    let findings: Vec<SweepFinding> = raw_findings.into_iter().map(|f| SweepFinding { file: f.file, line: f.line, kind: f.kind }).collect();
+    let findings: Vec<SweepFinding> = raw_findings.into_iter().filter(|f| f.kind == expected_rule_id).map(|f| SweepFinding { file: f.file, line: f.line, kind: f.kind }).collect();
 
     Json(json!({ "ok": true, "patternId": id, "patternName": pattern.name, "repo": full_name, "findingCount": findings.len(), "findings": findings })).into_response()
 }

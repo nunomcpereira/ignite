@@ -27,6 +27,72 @@ pub fn expected_rust_module_name(cargo_package_name: &str) -> String {
 
 static RUST_PATH_PREFIX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)::").unwrap());
 
+/// Best-effort comment/string stripper — not a real Rust lexer (doesn't
+/// handle raw strings `r#"..."#`, byte strings, or nested block comments),
+/// but removes the common case of a commented-out `foo::bar(...)` call or
+/// a `// see https://...::...` doc link falsely registering `foo` as used.
+/// Leaves a same-length placeholder (spaces, with newlines preserved)
+/// rather than deleting the span, so this never shifts any position a
+/// caller might otherwise report against.
+fn strip_comments_and_strings(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut chars = content.char_indices().peekable();
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some((_, ch)) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+                out.push('\n');
+            } else {
+                out.push(' ');
+            }
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && chars.peek().is_some_and(|(_, n)| *n == '/') {
+                chars.next();
+                in_block_comment = false;
+                out.push_str("  ");
+            } else {
+                out.push(if ch == '\n' { '\n' } else { ' ' });
+            }
+            continue;
+        }
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            out.push(if ch == '\n' { '\n' } else { ' ' });
+            continue;
+        }
+        match ch {
+            '/' if chars.peek().is_some_and(|(_, n)| *n == '/') => {
+                chars.next();
+                in_line_comment = true;
+                out.push_str("  ");
+            }
+            '/' if chars.peek().is_some_and(|(_, n)| *n == '*') => {
+                chars.next();
+                in_block_comment = true;
+                out.push_str("  ");
+            }
+            '"' => {
+                in_string = true;
+                out.push(' ');
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Every distinct identifier that appears immediately before `::`
 /// anywhere in the project's `.rs` source. Deliberately broader than
 /// "external crate names actually used" — the same `Foo::` shape also
@@ -46,6 +112,7 @@ pub fn collect_used_rust_crates(root: &Path) -> HashSet<String> {
     let Ok(files) = ignite_fs_utils::walk_files(root) else { return used };
     for file in files.into_iter().filter(|f| f.extension().is_some_and(|e| e == "rs")) {
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
+        let content = strip_comments_and_strings(&content);
         for cap in RUST_PATH_PREFIX_RE.captures_iter(&content) {
             used.insert(cap[1].to_string());
         }

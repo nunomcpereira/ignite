@@ -132,29 +132,42 @@ async fn push_protection_webhook(State(state): State<Arc<AppState>>, headers: He
         return axum::Json(json!({ "ok": true, "ignored": "not_a_bypass" })).into_response();
     };
 
-    state.emit_audit_event(
-        ignite_audit_log::AuditEvent::new("push_protection.bypassed", "critical", format!("Push-protection bypassed on {org}/{repo}: {}", info.secret_type))
-            .repo(&org, &repo)
-            .metadata(json!({ "secretType": info.secret_type, "bypassedBy": info.bypassed_by, "reason": info.reason, "comment": info.comment, "alertUrl": info.alert_url })),
-    );
+    let mut event = ignite_audit_log::AuditEvent::new("push_protection.bypassed", "critical", format!("Push-protection bypassed on {org}/{repo}: {}", info.secret_type))
+        .repo(&org, &repo)
+        .metadata(json!({ "secretType": info.secret_type, "bypassedBy": info.bypassed_by, "reason": info.reason, "comment": info.comment, "alertUrl": info.alert_url }));
+    if let Some(by) = &info.bypassed_by {
+        event = event.actor(by);
+    }
+    state.emit_audit_event(event);
 
-    let mut issue_filed = false;
+    let mut issue_queued = false;
     if state.config.security.push_protection.auto_file_issue {
         let token = ignite_github_api::resolve_server_github_token();
         if token.is_empty() {
             tracing::warn!("push-protection bypass on {org}/{repo}: autoFileIssue is on but no GH_TOKEN/GITHUB_TOKEN is configured — skipping issue creation.");
         } else {
-            let api = ignite_github_api::GithubApi::new(&state.runner);
-            let title = format!("Push-protection bypass: {} in {org}/{repo}", info.secret_type);
-            let body = issue_body_for(&info, &org, &repo);
-            match api.gh_create_issue(&format!("{org}/{repo}"), &title, &body, &token).await {
-                Ok(()) => issue_filed = true,
-                Err(e) => tracing::warn!("Failed to file push-protection bypass issue for {org}/{repo}: {e}"),
-            }
+            issue_queued = true;
+            // Dispatched off the webhook request lifecycle: GitHub retries
+            // a delivery that doesn't respond within its own webhook
+            // timeout, and waiting here on a `gh_create_issue` call that's
+            // slow (GitHub API latency/rate limiting) would previously
+            // risk exactly that — turning one bypass into several
+            // duplicate issues from repeated redeliveries.
+            let runner = state.runner.clone();
+            let org = org.clone();
+            let repo = repo.clone();
+            tokio::spawn(async move {
+                let api = ignite_github_api::GithubApi::new(&runner);
+                let title = format!("Push-protection bypass: {} in {org}/{repo}", info.secret_type);
+                let body = issue_body_for(&info, &org, &repo);
+                if let Err(e) = api.gh_create_issue(&format!("{org}/{repo}"), &title, &body, &token).await {
+                    tracing::warn!("Failed to file push-protection bypass issue for {org}/{repo}: {e}");
+                }
+            });
         }
     }
 
-    axum::Json(json!({ "ok": true, "bypassed": true, "issueFiled": issue_filed })).into_response()
+    axum::Json(json!({ "ok": true, "bypassed": true, "issueFiled": issue_queued })).into_response()
 }
 
 pub fn router() -> Router<Arc<AppState>> {

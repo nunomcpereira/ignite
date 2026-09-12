@@ -137,7 +137,9 @@ pub async fn check_malicious_dependencies(root: &Path, runner: &ToolRunner, conf
             let Ok(report) = serde_json::from_str::<serde_json::Value>(&output.stdout) else { continue };
             let verdicts = guarddog_verdicts_from_report(&report);
             if let (Some(version), Some(store)) = (tooling.version.as_deref(), store) {
-                store.save_manifest_scan_cache("guarddog", spec.ecosystem, &content_hash, version, &serde_json::to_value(&verdicts).unwrap());
+                if let Ok(cached) = serde_json::to_value(&verdicts) {
+                    store.save_manifest_scan_cache("guarddog", spec.ecosystem, &content_hash, version, &cached);
+                }
             }
             verdicts
         };

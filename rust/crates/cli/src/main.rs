@@ -129,12 +129,13 @@ async fn main() {
     let project_path = std::fs::canonicalize(args.project_path.clone().unwrap_or_else(|| ".".to_string())).unwrap_or_else(|_| std::path::PathBuf::from(args.project_path.unwrap_or_else(|| ".".to_string())));
 
     let mut body = serde_json::json!({ "projectPath": project_path.to_string_lossy() });
-    let obj = body.as_object_mut().unwrap();
-    if let Some(changed) = &args.changed_files {
-        obj.insert("changedFiles".to_string(), serde_json::json!(changed));
-    }
-    if args.fast {
-        obj.insert("fast".to_string(), serde_json::json!(true));
+    if let Some(obj) = body.as_object_mut() {
+        if let Some(changed) = &args.changed_files {
+            obj.insert("changedFiles".to_string(), serde_json::json!(changed));
+        }
+        if args.fast {
+            obj.insert("fast".to_string(), serde_json::json!(true));
+        }
     }
 
     let client = reqwest::Client::new();

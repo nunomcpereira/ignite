@@ -11,7 +11,9 @@ use serde::Serialize;
 use std::path::Path;
 
 static FROM_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+?)(?:\s+AS\s+\S+)?\s*$").unwrap());
-static USER_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*USER\s+\S+").unwrap());
+// `USER root`/`USER 0`/`USER 0:0` don't actually drop privileges — never
+// treat them as satisfying "a non-root USER was set".
+static USER_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*USER\s+(?!root\b|0\b|0:0\b)\S+").unwrap());
 static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r":([^@\s]+)$").unwrap());
 
 pub struct IacSecurityConfig {

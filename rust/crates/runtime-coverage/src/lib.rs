@@ -22,8 +22,8 @@ fn normalize_istanbul(data: &Value, project_root: Option<&str>) -> HashMap<Strin
     let Some(obj) = data.as_object() else { return out };
     for (abs_or_rel, file_cov) in obj {
         let rel_path = match project_root {
-            Some(root) if abs_or_rel.starts_with(root) => abs_or_rel[root.len()..].trim_start_matches(['/', '\\']).to_string(),
-            _ => abs_or_rel.clone(),
+            Some(root) if abs_or_rel.starts_with(root) => abs_or_rel[root.len()..].trim_start_matches(['/', '\\']).replace('\\', "/"),
+            _ => abs_or_rel.replace('\\', "/"),
         };
         let hits: Vec<i64> = file_cov.get("s").and_then(|s| s.as_object()).map(|s| s.values().map(|v| v.as_i64().unwrap_or(0)).collect()).unwrap_or_default();
         let hit_count: i64 = hits.iter().sum();

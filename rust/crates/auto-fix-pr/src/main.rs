@@ -26,7 +26,7 @@
 //! Pass `--apply` to actually push branches and open PRs.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use ignite_auto_fix_pr::{apply_fix_group, discover_fix_candidates, discover_routine_update_candidates, group_candidates, GroupBy};
+use ignite_auto_fix_pr::{apply_fix_group, discover_fix_candidates, discover_routine_update_candidates, group_candidates, GateContext, GroupBy};
 use ignite_deps_dev_client::DepsDevClient;
 use ignite_github_api::{parse_org_repo, resolve_server_github_token, GithubApi};
 use ignite_tool_runner::ToolRunner;
@@ -88,6 +88,11 @@ async fn main() {
     let github_api = GithubApi::new(&runner);
     let deps_client = DepsDevClient::new();
     let http = reqwest::Client::new();
+    // Same env var / default `scheduled-rescan` already uses — the
+    // running Ignite server this tool's pre-flight gate scans against
+    // before proposing any PR.
+    let server_base = std::env::var("IGNITE_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:51337".to_string());
+    let gate = GateContext { http: &http, server_base: &server_base, deps_client: &deps_client };
 
     let mut had_error = false;
 
@@ -131,7 +136,7 @@ async fn main() {
 
         let groups = group_candidates(candidates, parsed.group_by);
         for group in &groups {
-            let outcome = apply_fix_group(&runner, &github_api, &full_name, &base_branch, &clone_dir.to_string_lossy(), group, &token, parsed.apply).await;
+            let outcome = apply_fix_group(&runner, &github_api, &full_name, &base_branch, &clone_dir.to_string_lossy(), group, &token, parsed.apply, &gate).await;
             for member in &outcome.member_summaries {
                 println!("    - {member}");
             }

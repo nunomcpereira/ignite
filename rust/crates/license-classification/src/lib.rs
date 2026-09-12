@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 /// obligations.
 pub static LICENSE_TIER_GREEN: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "MIT", "MIT-0", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BSD-3-Clause-Clear", "ISC", "0BSD", "Unlicense", "Zlib", "Python-2.0", "PostgreSQL", "CC0-1.0", "WTFPL", "BlueOak-1.0.0",
+        "MIT", "MIT-0", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BSD-3-Clause-Clear", "ISC", "0BSD", "Unlicense", "Zlib", "Python-2.0", "PSF-2.0", "PostgreSQL", "CC0-1.0", "WTFPL", "BlueOak-1.0.0",
         "BSD-4-Clause", "X11", "Artistic-2.0", "OFL-1.1", "OFL-1.0",
     ]
     .into_iter()
@@ -168,6 +168,17 @@ mod tests {
     fn classifies_green_licenses() {
         let c = classify_license_tier(&["MIT".to_string()]);
         assert_eq!(c.tier, LicenseTier::Green);
+    }
+
+    /// PSF-2.0 (Python Software Foundation License 2.0) is a well-known,
+    /// OSI-approved permissive license used by real dependencies (e.g.
+    /// `typing_extensions`) — missing from `LICENSE_TIER_GREEN` meant it
+    /// fell through to "Unrecognized license" and was misreported as
+    /// COMMERCIAL/RISK.
+    #[test]
+    fn classifies_psf_2_0_as_green() {
+        let c = classify_license_tier(&["PSF-2.0".to_string()]);
+        assert_eq!(c.tier, LicenseTier::Green, "reason: {}", c.reason);
     }
 
     #[test]

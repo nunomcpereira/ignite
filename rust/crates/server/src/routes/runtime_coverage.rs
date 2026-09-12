@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-async fn ingest(State(state): State<Arc<AppState>>, Path((org, repo)): Path<(String, String)>, Query(query): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
+async fn ingest(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>, Query(query): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
     if !body.is_object() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "Request body must be a JSON coverage report." }))).into_response();
     }
@@ -26,13 +26,13 @@ async fn ingest(State(state): State<Arc<AppState>>, Path((org, repo)): Path<(Str
     Json(json!({ "ok": true, "org": org, "repo": repo, "format": format, "filesIngested": file_count })).into_response()
 }
 
-async fn get_coverage(State(state): State<Arc<AppState>>, Path((org, repo)): Path<(String, String)>) -> Response {
+async fn get_coverage(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>) -> Response {
     let map = state.db.get_runtime_coverage_map(&org, &repo);
     let files: serde_json::Map<String, Value> = map.into_iter().map(|(k, v)| (k, json!({ "hitCount": v.hit_count, "coveredPct": v.covered_pct }))).collect();
     Json(json!({ "ok": true, "org": org, "repo": repo, "files": files })).into_response()
 }
 
-async fn delete_coverage(State(state): State<Arc<AppState>>, Path((org, repo)): Path<(String, String)>) -> Response {
+async fn delete_coverage(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>) -> Response {
     let removed = state.db.clear_runtime_coverage(&org, &repo);
     Json(json!({ "ok": true, "org": org, "repo": repo, "removed": removed })).into_response()
 }

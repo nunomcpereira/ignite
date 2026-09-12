@@ -17,7 +17,10 @@ impl DbStore {
 
     pub fn create_custom_secret_pattern(&self, name: &str, regex: &str, created_by: Option<&str>) -> i64 {
         let conn = self.conn.lock();
-        conn.execute("INSERT INTO custom_secret_patterns (name, regex, created_by) VALUES (?, ?, ?)", params![name, regex, created_by]).unwrap();
+        if let Err(e) = conn.execute("INSERT INTO custom_secret_patterns (name, regex, created_by) VALUES (?, ?, ?)", params![name, regex, created_by]) {
+            tracing::error!("create_custom_secret_pattern failed for \"{name}\": {e}");
+            return 0;
+        }
         conn.last_insert_rowid()
     }
 
@@ -30,10 +33,18 @@ impl DbStore {
         conn.query_row("SELECT id, name, regex, enabled, created_by, created_at FROM custom_secret_patterns WHERE id = ?", params![id], Self::row_from).ok()
     }
 
+    fn list_custom_secret_patterns_by_query(conn: &rusqlite::Connection, sql: &str) -> Vec<CustomSecretPatternRow> {
+        let Ok(mut stmt) = conn.prepare_cached(sql) else { return vec![] };
+        let rows: Vec<CustomSecretPatternRow> = match stmt.query_map([], Self::row_from) {
+            Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+            Err(_) => vec![],
+        };
+        rows
+    }
+
     pub fn list_custom_secret_patterns(&self) -> Vec<CustomSecretPatternRow> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached("SELECT id, name, regex, enabled, created_by, created_at FROM custom_secret_patterns ORDER BY created_at DESC").unwrap();
-        stmt.query_map([], Self::row_from).unwrap().map(|r| r.unwrap()).collect()
+        Self::list_custom_secret_patterns_by_query(&conn, "SELECT id, name, regex, enabled, created_by, created_at FROM custom_secret_patterns ORDER BY created_at DESC")
     }
 
     /// Just the `enabled` ones — what a live scan (working-tree or
@@ -42,18 +53,17 @@ impl DbStore {
     /// history) but never runs against real code until re-enabled.
     pub fn list_enabled_custom_secret_patterns(&self) -> Vec<CustomSecretPatternRow> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached("SELECT id, name, regex, enabled, created_by, created_at FROM custom_secret_patterns WHERE enabled = 1 ORDER BY created_at DESC").unwrap();
-        stmt.query_map([], Self::row_from).unwrap().map(|r| r.unwrap()).collect()
+        Self::list_custom_secret_patterns_by_query(&conn, "SELECT id, name, regex, enabled, created_by, created_at FROM custom_secret_patterns WHERE enabled = 1 ORDER BY created_at DESC")
     }
 
     pub fn set_custom_secret_pattern_enabled(&self, id: i64, enabled: bool) -> bool {
         let conn = self.conn.lock();
-        conn.execute("UPDATE custom_secret_patterns SET enabled = ? WHERE id = ?", params![enabled as i64, id]).unwrap() > 0
+        conn.execute("UPDATE custom_secret_patterns SET enabled = ? WHERE id = ?", params![enabled as i64, id]).unwrap_or(0) > 0
     }
 
     pub fn delete_custom_secret_pattern(&self, id: i64) -> bool {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM custom_secret_patterns WHERE id = ?", params![id]).unwrap() > 0
+        conn.execute("DELETE FROM custom_secret_patterns WHERE id = ?", params![id]).unwrap_or(0) > 0
     }
 }
 

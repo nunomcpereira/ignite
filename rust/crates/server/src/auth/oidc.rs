@@ -198,7 +198,10 @@ async fn oidc_callback(State(state): State<Arc<AppState>>, Query(q): Query<Callb
     let sub = claims.get("sub").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let name = claims.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| email.clone());
 
-    let user = state.db.upsert_oidc_user(&email, Some(&name), &sub);
+    let user = match state.db.upsert_oidc_user(&email, Some(&name), &sub) {
+        Ok(u) => u,
+        Err(e) => return error_page(axum::http::StatusCode::CONFLICT, &e),
+    };
     issue_session_redirect(&state.db, user.id, "/")
 }
 

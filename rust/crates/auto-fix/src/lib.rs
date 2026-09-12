@@ -136,8 +136,12 @@ fn char_byte_idx(s: &str, char_idx: usize) -> usize {
     s.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(s.len())
 }
 
+fn resolve_target(root: &Path, file: &str) -> std::io::Result<PathBuf> {
+    ignite_staging::resolve_within_root(root, file).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))
+}
+
 fn apply_governance_fix(root: &Path, file: &str, line_no: Option<usize>) -> std::io::Result<(bool, bool)> {
-    let abs = root.join(file);
+    let abs = resolve_target(root, file)?;
     let content = std::fs::read_to_string(&abs)?;
     let uses_crlf = content.contains("\r\n");
     let mut lines: Vec<String> = content.split(['\n']).map(|l| l.trim_end_matches('\r').to_string()).collect();
@@ -172,7 +176,7 @@ fn apply_governance_fix(root: &Path, file: &str, line_no: Option<usize>) -> std:
 }
 
 fn apply_delete_file(root: &Path, file: &str) -> std::io::Result<()> {
-    std::fs::remove_file(root.join(file))
+    std::fs::remove_file(resolve_target(root, file)?)
 }
 
 fn apply_remove_dependency(root: &Path, dependency: &str) -> std::io::Result<bool> {
@@ -194,7 +198,7 @@ fn apply_remove_dependency(root: &Path, dependency: &str) -> std::io::Result<boo
 }
 
 fn apply_narrow_export(root: &Path, file: &str, name: Option<&str>) -> std::io::Result<bool> {
-    let abs = root.join(file);
+    let abs = resolve_target(root, file)?;
     let content = std::fs::read_to_string(&abs)?;
     let Some(name) = name else { return Ok(false) };
     // A file can have several `export { ... }` blocks — stopping at the

@@ -114,8 +114,9 @@ pub fn stage_existing_project(source_dir: &Path, dest_dir: &Path, mut log: impl 
 
     let source_git_dir = source_dir.join(".git");
     if source_git_dir.is_dir() {
-        if let Err(e) = copy_dir_recursive(&source_git_dir, &dest_dir.join(".git")) {
-            log(&format!("⚠ Could not copy .git history into the staging dir (non-blocking, incremental PII scanning will fall back to a full scan): {}", e));
+        match copy_dir_recursive(&source_git_dir, &dest_dir.join(".git"), &mut total_bytes, MAX_EXTRACTED_BYTES) {
+            Ok(()) => {}
+            Err(e) => log(&format!("⚠ Could not copy .git history into the staging dir (non-blocking, incremental PII scanning will fall back to a full scan): {}", e)),
         }
     }
 
@@ -141,7 +142,11 @@ fn path_clean(p: &Path) -> std::path::PathBuf {
     out
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+// `total_bytes`/`max_bytes` track the same running total `stage_existing_project`
+// already enforces against its scanned project files — a large `.git` history
+// (bloated `.git/objects`) previously had no size tracking at all here, so it
+// could exceed `MAX_EXTRACTED_BYTES` unchecked and exhaust disk space.
+fn copy_dir_recursive(src: &Path, dst: &Path, total_bytes: &mut u64, max_bytes: u64) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -151,8 +156,13 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
         let target = dst.join(entry.file_name());
         if file_type.is_dir() {
-            copy_dir_recursive(&entry.path(), &target)?;
+            copy_dir_recursive(&entry.path(), &target, total_bytes, max_bytes)?;
         } else {
+            let file_size = entry.metadata()?.len();
+            *total_bytes += file_size;
+            if *total_bytes > max_bytes {
+                return Err(std::io::Error::other("Project exceeds maximum staged size. Aborting validation."));
+            }
             std::fs::copy(entry.path(), &target)?;
         }
     }
