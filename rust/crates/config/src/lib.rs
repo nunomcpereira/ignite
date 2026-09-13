@@ -830,6 +830,21 @@ pub struct SecurityConfig {
     pub secret_scanning: SecretScanningConfig,
     pub repository_events: RepositoryEventsConfig,
     pub override_approval: OverrideApprovalConfig,
+    /// `POST /api/pipeline/validate-all` requires an authenticated caller
+    /// (session or API key) by default — the endpoint runs a full pipeline
+    /// scan and, when the request body carries `overrides`, records
+    /// override/audit-log entries attributed to whatever email is in that
+    /// body, so an anonymous caller could otherwise spend resources and
+    /// forge attributed overrides. Set this to `true` only for a headless
+    /// deployment that can't complete the one-time login needed to mint an
+    /// API key (e.g. an offline/air-gapped CI runner with no path to the
+    /// GitHub OAuth flow `auth.mode: "github"` requires) — actor
+    /// attribution still falls back to the request body's own `actor`
+    /// field in that case (see `resolve_actor`), it just isn't backed by a
+    /// verified login. Every other route this session added `RequireAuth`
+    /// to is unaffected; this flag is scoped to this one endpoint only.
+    #[serde(default)]
+    pub allow_unauthenticated_validate_all: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1210,6 +1225,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("REPOSITORY_EVENTS_APPLY_ORG_RULESET") { merged.security.repository_events.apply_org_ruleset = v; }
     if let Some(v) = env_bool("REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN") { merged.security.repository_events.trigger_baseline_scan = v; }
     if let Some(v) = env_bool("OVERRIDE_APPROVAL_ENABLED") { merged.security.override_approval.enabled = v; }
+    if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_VALIDATE_ALL") { merged.security.allow_unauthenticated_validate_all = v; }
     if let Some(v) = env_csv("OVERRIDE_APPROVAL_APPROVER_EMAILS") { merged.security.override_approval.approver_emails = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }

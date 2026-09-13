@@ -700,7 +700,10 @@ fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Op
     crate::phase4_config::from_config(&state.config, org, repo, project_id, fast, igniteignore_git_check_root)
 }
 
-async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    if user.is_none() && !state.config.security.allow_unauthenticated_validate_all {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response();
+    }
     match run_validate_all(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err((v, _)) => (StatusCode::BAD_REQUEST, Json(v)).into_response(),
@@ -810,5 +813,26 @@ mod phase_gating_tests {
 
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
         assert!(issues.iter().any(|i| i["category"] == "secret"), "expected a secrets finding with phase 4 enabled: {issues:?}");
+    }
+
+    #[tokio::test]
+    async fn validate_all_rejects_an_unauthenticated_caller_by_default() {
+        let dir = secret_fixture_dir();
+        let (state, _db_dir) = build_state(ignite_config::Config::default());
+        let base = spawn_test_server(state).await;
+        let client = reqwest::Client::new();
+        let res = client.post(format!("{base}/api/pipeline/validate-all")).json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false })).send().await.unwrap();
+        assert_eq!(res.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn validate_all_allows_an_unauthenticated_caller_when_explicitly_configured() {
+        let dir = secret_fixture_dir();
+        let cfg = ignite_config::Config { security: ignite_config::SecurityConfig { allow_unauthenticated_validate_all: true, ..Default::default() }, ..Default::default() };
+        let (state, _db_dir) = build_state(cfg);
+        let base = spawn_test_server(state).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+        let res = client.post(format!("{base}/api/pipeline/validate-all")).json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false })).send().await.unwrap();
+        assert_ne!(res.status(), 401, "unauthenticated validate-all must not be rejected once explicitly allowed");
     }
 }

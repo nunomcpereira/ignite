@@ -82,124 +82,124 @@ ID: secret::rust/crates/server/src/routes/custom_secret_patterns.rs::207
 # Code: let req = Request::post("/api/secret-patterns/test").header("content-type", "application/json").body(Body::from(r#"{"regex":"sk_live_[a-z0-9]+","sample":"key: sk_live_abc123"}"#)).unwrap();
 Acknowledge: Fabricated Stripe-format sample string used as request-body input to the custom-secret-pattern playground's own unit test (test_pattern_route_reports_matches_without_persisting_anything) - the whole point of this endpoint is to test a regex against sample text, so a plausible-looking fake match is expected input, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/custom_secret_patterns.rs::193 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/custom_secret_patterns.rs::203 - pure line-number drift, flagged code unchanged)
 
-ID: secret::rust/crates/config/src/lib.rs::1307
-# Issue #11
-# [ERROR] secret - Hardcoded api_key
-#   rust/crates/config/src/lib.rs:1307
-# Code: cfg.llm.openai.api_key = "sk-live-supersecret".to_string();
-Acknowledge: Fabricated OpenAI-format API key literal used only to verify Config's new redacting Debug impl (debug_redacts_secret_fields_but_keeps_non_secret_fields_visible) actually hides secret fields from {:?} output - not a real credential. (auto-carried-forward from secret::rust/crates/config/src/lib.rs::1290 - pure line-number drift, flagged code unchanged)
-
-ID: secret::rust/crates/config/src/lib.rs::1308
-# Issue #12
-# [ERROR] secret - Hardcoded secret
-#   rust/crates/config/src/lib.rs:1308
-# Code: cfg.github.oauth.client_secret = "oauth-secret-value".to_string();
-Acknowledge: Same test as the entry above - a fabricated OAuth client secret literal used only to verify the redacting Debug impl, not a real credential. (auto-carried-forward from secret::rust/crates/config/src/lib.rs::1291 - pure line-number drift, flagged code unchanged)
-
 ID: secret::rust/crates/secrets/src/lib.rs::778
-# Issue #13
+# Issue #11
 # [ERROR] secret - Hardcoded api_key
 #   rust/crates/secrets/src/lib.rs:778
 # Code: fs::write(root.join("config.js"), "const api_key = 'sk-proj-abcdefghijklmnop';\n").unwrap();
 Acknowledge: Fake API key literal used as test input for run_gitleaks_history_scan_no_ops_without_a_git_directory (verifies the history scan is a no-op with no .git directory) - not a real credential, same fixture literal already acknowledged elsewhere in this file for the same reason. (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::579 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::694 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::710 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::726 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::757 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/secrets/src/lib.rs::882
-# Issue #14
+# Issue #12
 # [ERROR] secret - Hardcoded connection-string credential
 #   rust/crates/secrets/src/lib.rs:882
 # Code: "DATABASE_URL = \"postgresql://testuser:not-a-real-pw@x@example.com:5432/testdb\"\n",
 Acknowledge: Test-fixture connection string for flags_a_password_embedded_in_a_connection_string - example.com is IANA/RFC 2606-reserved for documentation and the password is labeled a placeholder outright in the surrounding comment, not a real credential. (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::683 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::798 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::814 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::830 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::861 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::759
-# Issue #15
+# Issue #13
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:759
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Fake AWS access key literal used as a fixture file inside a review-gate integration test (uploaded as a zip so the secret scanner flags a real blocking finding to pause the run for review), not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1397 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1401 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::676 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::711 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::712 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::731 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::823
-# Issue #16
+# Issue #14
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:823
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entry above, reused in a second review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1453 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1457 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::732 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::773 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::774 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::793 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::975
-# Issue #17
+# Issue #15
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:975
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entries above, reused in a third review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1523 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1527 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::802 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::854 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::855 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::875 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/pii-dataflow/src/lib.rs::393
-# Issue #18
+# Issue #16
 # [ERROR] secret - Hardcoded apikey
 #   rust/crates/pii-dataflow/src/lib.rs:393
 # Code: let line = r#"const apiKey = "AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe";"#;
 Acknowledge: Fake Firebase public web API key literal used as test input to verify is_firebase_public_api_key_finding correctly excludes this shape only for the "hard-coded secret" finding title, not for other titles - not a real credential. (auto-carried-forward from secret::rust/crates/pii-dataflow/src/lib.rs::354 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/pii-dataflow/src/lib.rs::377 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/secrets/src/lib.rs::1010
-# Issue #19
+# Issue #17
 # [ERROR] secret - Hardcoded stripe-access-token
 #   rust/crates/secrets/src/lib.rs:1010
 # Code: let matches = test_pattern_against_sample(r"sk_live_[a-zA-Z0-9]{16,}", "key one: sk_live_abcdef0123456789, key two: sk_live_zzzzzz9999999999").unwrap();
 Acknowledge: Fabricated Stripe-format sample text (test_pattern_against_sample_finds_all_matches) verifying the custom-secret-pattern regex tester finds every match in a sample, not a real credential - same fixture literal flagged again at the two assert_eq! lines immediately below for the same reason. (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::927 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::943 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::959 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::990 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::989 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/secrets/src/lib.rs::1012
-# Issue #20
+# Issue #18
 # [ERROR] secret - Hardcoded stripe-access-token
 #   rust/crates/secrets/src/lib.rs:1012
 # Code: assert_eq!(matches[0].matched_text, "sk_live_abcdef0123456789");
 Acknowledge: Same fabricated Stripe-format fixture literal as the entry above, asserted as the expected match text in the same test - not a real credential. (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::929 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::945 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::961 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::992 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::991 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/secrets/src/lib.rs::1013
-# Issue #21
+# Issue #19
 # [ERROR] secret - Hardcoded stripe-access-token
 #   rust/crates/secrets/src/lib.rs:1013
 # Code: assert_eq!(matches[1].matched_text, "sk_live_zzzzzz9999999999");
 Acknowledge: Same fabricated Stripe-format fixture literal as the two entries above, asserted as the expected second match in the same regex-tester unit test — not a real credential. (auto-carried-forward from secret::rust/crates/secrets/src/lib.rs::992 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1062
-# Issue #22
+# Issue #20
 # [ERROR] secret - Hardcoded gcp-api-key
 #   rust/crates/phase4-orchestrator/src/lib.rs:1062
 # Code: fs::write(root.join("config.js"), format!("export const environment = {{ firebase: {{ apiKey: '{}' }} }};\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
 Acknowledge: Fake GCP/Firebase web API key literal used as test input to verify the built-in secret scanner (SECRET_RE) doesn't false-positive on a `firebase: { apiKey: ... }` nested property shape, not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::868 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::875 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::881 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::942 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::974 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1010 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1011 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1138
-# Issue #23
+# Issue #21
 # [ERROR] secret - Hardcoded gcp-api-key
 #   rust/crates/phase4-orchestrator/src/lib.rs:1138
 # Code: fs::write(root.join("config.js"), format!("export const apiKey = '{}';\n", "AIzaSyDGX6-TCqxyZv3m1avbP8-hZxD2-Zb6bXk")).unwrap();
 Acknowledge: Fake GCP/Firebase web API key literal, same fixture value as the other AIzaSy... entry above, written to a scratch test repo to verify gitleaks-based secret detection - not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::976 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1008 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1078 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1086 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1087 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1181
-# Issue #24
+# Issue #22
 # [ERROR] secret - Hardcoded github-pat
 #   rust/crates/phase4-orchestrator/src/lib.rs:1181
 # Code: fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
 Acknowledge: Fake GitHub PAT literal (high-entropy but never issued) used to verify gitleaks flags it as github-pat and that the off-by-default secret_verification path never appends a VERIFIED LIVE marker - not a real credential, never sent anywhere but api.github.com's own 401 rejection path in the sibling test below. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1019 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1051 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1121 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1129 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1130 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1216
-# Issue #25
+# Issue #23
 # [ERROR] secret - Hardcoded github-pat
 #   rust/crates/phase4-orchestrator/src/lib.rs:1216
 # Code: fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
 Acknowledge: Same fake GitHub PAT fixture as the entry above, used in secret_verification_when_enabled_never_flags_a_fake_token_as_verified_live to confirm a live GitHub API 401 for this token is correctly reported as not-live - not a real credential. (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1054 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1086 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1156 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1164 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/phase4-orchestrator/src/lib.rs::1165 - pure line-number drift, flagged code unchanged)
 
 ID: codeql-sast::public/index.html::1063::js/xss-through-dom
-# Issue #26
+# Issue #24
 # [ERROR] codeql-sast - DOM text is reinterpreted as HTML without escaping meta-characters.
 #   public/index.html:1063
 # Code: document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n-html')); });
 Acknowledge: Narrowed replacement for the previously-acknowledged finding at the old [data-i18n] innerHTML call (now textContent - see the applyStaticTranslations doc comment above it). Only elements explicitly opted in via data-i18n-html still use innerHTML, for the handful of translation keys whose copy deliberately carries inline markup (bold spans in upload.dropSubtitle, a line break in footer.note, etc). t()'s only inputs remain (1) the fixed attribute-name string 'data-i18n-html' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. No untrusted data reaches this call. (auto-carried-forward from codeql-sast::public/index.html::781::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::813::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::821::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::822::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::842::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::841::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::967::js/xss-through-dom - pure line-number drift, flagged code unchanged) (auto-carried-forward from codeql-sast::public/index.html::1055::js/xss-through-dom - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/secrets/src/lib.rs::57
-# Issue #27
+# Issue #25
 # [ERROR] secret - Hardcoded connection-string credential
 #   rust/crates/secrets/src/lib.rs:57
 # Code: // (`"postgres://usr:pwd@host1/db"; "redis://admin:secret@host2"`) doesn't
 Acknowledge: Doc-comment example illustrating URI_CREDENTIAL_RE's greedy-match boundary behavior across two adjacent connection strings on one line - not a real credential, and not even executable code (a `//` comment).
+
+ID: secret::rust/crates/config/src/lib.rs::1323
+# Issue #26
+# [ERROR] secret - Hardcoded api_key
+#   rust/crates/config/src/lib.rs:1323
+# Code: cfg.llm.openai.api_key = "sk-live-supersecret".to_string();
+Acknowledge: Fabricated OpenAI-format API key literal used only to verify Config's new redacting Debug impl (debug_redacts_secret_fields_but_keeps_non_secret_fields_visible) actually hides secret fields from {:?} output - not a real credential. (auto-carried-forward from secret::rust/crates/config/src/lib.rs::1290 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/config/src/lib.rs::1307 - pure line-number drift, flagged code unchanged)
+
+ID: secret::rust/crates/config/src/lib.rs::1324
+# Issue #27
+# [ERROR] secret - Hardcoded secret
+#   rust/crates/config/src/lib.rs:1324
+# Code: cfg.github.oauth.client_secret = "oauth-secret-value".to_string();
+Acknowledge: Same test as the entry above - a fabricated OAuth client secret literal used only to verify the redacting Debug impl, not a real credential. (auto-carried-forward from secret::rust/crates/config/src/lib.rs::1291 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/config/src/lib.rs::1308 - pure line-number drift, flagged code unchanged)
 
 ID: iac-security::Dockerfile::1::629a3996
 # Issue #28
@@ -1188,14 +1188,14 @@ ID: dependency-vulnerability::rust/crates/server/Cargo.toml::60::jsonwebtoken::G
 # Code: jsonwebtoken = "9"
 Acknowledge: 
 
-ID: code-duplication::../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/2ab709e5-5203-49f8-b616-b262a2117d00-api-validation/CLAUDE.md:markdown::72
+ID: code-duplication::../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/3270ebfd-c632-4993-8133-eea4c5518c46-api-validation/CLAUDE.md:markdown::72
 # Issue #169
-# [WARNING] code-duplication - 24-line duplicate block, also found in ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/2ab709e5-5203-49f8-b616-b262a2117d00-api-validation/CLAUDE.md:markdown:72-95.
-#   ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/2ab709e5-5203-49f8-b616-b262a2117d00-api-validation/CLAUDE.md:markdown:72
+# [WARNING] code-duplication - 24-line duplicate block, also found in ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/3270ebfd-c632-4993-8133-eea4c5518c46-api-validation/CLAUDE.md:markdown:72-95.
+#   ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/3270ebfd-c632-4993-8133-eea4c5518c46-api-validation/CLAUDE.md:markdown:72
 Acknowledge: 
 
-ID: code-duplication::../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/2ab709e5-5203-49f8-b616-b262a2117d00-api-validation/README.md:markdown::110
+ID: code-duplication::../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/3270ebfd-c632-4993-8133-eea4c5518c46-api-validation/README.md:markdown::110
 # Issue #170
-# [WARNING] code-duplication - 28-line duplicate block, also found in ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/2ab709e5-5203-49f8-b616-b262a2117d00-api-validation/README.md:markdown:427-502.
-#   ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/2ab709e5-5203-49f8-b616-b262a2117d00-api-validation/README.md:markdown:110
+# [WARNING] code-duplication - 28-line duplicate block, also found in ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/3270ebfd-c632-4993-8133-eea4c5518c46-api-validation/README.md:markdown:427-502.
+#   ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/3270ebfd-c632-4993-8133-eea4c5518c46-api-validation/README.md:markdown:110
 Acknowledge: 
