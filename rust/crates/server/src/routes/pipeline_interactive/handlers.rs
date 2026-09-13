@@ -5,7 +5,7 @@
 use super::run::run_interactive_pipeline;
 use super::*;
 
-async fn pipeline(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, multipart: Multipart) -> Response {
+async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, multipart: Multipart) -> Response {
     let upload = match parse_multipart(multipart).await {
         Ok(u) => u,
         Err((status, body)) => return (status, axum::Json(body)).into_response(),
@@ -18,8 +18,9 @@ async fn pipeline(State(state): State<Arc<AppState>>, headers: axum::http::Heade
     let log = Arc::new(EventLog { state: state.clone(), meta: super::super::phase_meta::resolve_phase_meta(&state.config), tx, record: Mutex::new(HashMap::new()), project_id: Mutex::new(None), job_id: job_id.clone() });
 
     let job_id_task = job_id.clone();
+    let owner_email = user.email.clone();
     tokio::spawn(async move {
-        run_interactive_pipeline(state, upload, log, job_id_task, session_gh_token).await;
+        run_interactive_pipeline(state, upload, log, job_id_task, session_gh_token, owner_email).await;
     });
 
     let stream = UnboundedReceiverStream::new(rx).map(Ok::<String, std::io::Error>);
@@ -37,52 +38,34 @@ async fn pipeline(State(state): State<Arc<AppState>>, headers: axum::http::Heade
 /// the review gate. Thin enough to live here rather than waiting on the
 /// full routes/review_gate.js port (studio.js's file-browsing endpoints,
 /// which share that file, are the parts still not ported).
-async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, axum::Json(body): axum::Json<Value>) -> Response {
+async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, axum::Json(body): axum::Json<Value>) -> Response {
     let proceed = body.get("proceed").and_then(|v| v.as_bool()).unwrap_or(false);
     let overrides: Vec<SubmittedOverride> = body
         .get("overrides")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(|o| SubmittedOverride { 
-            issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), 
+        .map(|a| a.iter().map(|o| SubmittedOverride {
+            issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }).collect())
         .unwrap_or_default();
-    // Actually overriding a blocking finding needs a real identity for the
-    // audit trail — that identity must come from the authenticated
-    // session, never from a client-supplied {email, name} in the body,
-    // which anyone can spoof to attribute a dual-custody override to
-    // someone else. A bare decline (`proceed: false`, no overrides) or a
-    // continue with nothing left to justify has nothing to attribute, so
-    // those still go through unauthenticated — this is also the request
-    // Esc/✕ on the review modal sends (as a decline), and a session that
-    // expired during a long-paused review must still be able to close
-    // that modal.
-    if !overrides.is_empty() && user.is_none() {
-        return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Log in to submit overrides — an anonymous or client-supplied actor identity is not accepted for the audit trail." }))).into_response();
+    // Every decision now requires a real authenticated session — an
+    // unauthenticated `{"proceed": false}` or `{"proceed": true}` used to
+    // go through unchecked (only submitting overrides required auth),
+    // which let anyone who could guess/observe a job id abort or
+    // force-proceed a run they had no relationship to at all. Identity
+    // for the audit trail always comes from the session, never a
+    // client-supplied {email, name}, which anyone could spoof.
+    let actor = Actor { email: user.email.clone(), name: user.name.clone().unwrap_or_else(|| user.email.clone()) };
+    // `ReviewGate::resolve` additionally verifies `user.email` matches
+    // whoever started this run (`ReviewGate::wait`'s `owner_email`) — a
+    // second layer beyond "must be logged in", since without it any
+    // authenticated user could still decide any other user's paused run.
+    match state.review_gate.resolve(&job_id, &user.email, ReviewDecisionInput { proceed, overrides, actor }) {
+        crate::review_gate::ResolveOutcome::Resolved => (StatusCode::OK, axum::Json(json!({ "ok": true }))).into_response(),
+        crate::review_gate::ResolveOutcome::NotFound => (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response(),
+        crate::review_gate::ResolveOutcome::Forbidden => (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "This run was started by a different user." }))).into_response(),
     }
-    let actor = match user {
-        Some(user) => Actor { email: user.email.clone(), name: user.name.clone().unwrap_or(user.email) },
-        // Reached only when `overrides` is empty (guaranteed above) — a
-        // body-supplied actor here is display/logging convenience only,
-        // never attributed to a security-relevant override.
-        None => body
-            .get("actor")
-            .and_then(|a| {
-                let email = a.get("email").and_then(|v| v.as_str())?.trim();
-                if email.is_empty() {
-                    return None;
-                }
-                let name = a.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(email);
-                Some(Actor { email: email.to_string(), name: name.to_string() })
-            })
-            .unwrap_or_default(),
-    };
-    let resolved = state.review_gate.resolve(&job_id, ReviewDecisionInput { proceed, overrides, actor });
-    if !resolved {
-        return (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response();
-    }
-    (StatusCode::OK, axum::Json(json!({ "ok": true }))).into_response()
 }
 
 pub fn router() -> Router<Arc<AppState>> {

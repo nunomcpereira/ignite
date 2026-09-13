@@ -492,7 +492,17 @@ pub fn apply_candidates_to_files(root: &Path, candidates: &[FixCandidate]) -> st
             Ok(p) => p,
             Err(_) => continue,
         };
-        let original_content = std::fs::read_to_string(&path)?;
+        // A single missing/git-ignored/binary file among a batch of many
+        // must not abort every other file's fixes — log and move on to
+        // the next file instead of propagating the error out of the
+        // whole function via `?`.
+        let original_content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("apply_candidates_to_files: skipping {file} ({e})");
+                continue;
+            }
+        };
         let mut content = original_content.clone();
         let mut any_applied = false;
         for c in file_candidates {
@@ -722,7 +732,13 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("git commit: {e}")) };
     }
 
-    let push_result = runner.run_tool("git", &["-c".to_string(), format!("http.extraheader=AUTHORIZATION: bearer {token}"), "push".to_string(), "origin".to_string(), format!("HEAD:refs/heads/{branch}")], &clone_dir_str, RunToolOptions::default()).await;
+    // Token goes through the env (GIT_CONFIG_COUNT/_KEY_n/_VALUE_n, same
+    // as auto-fix-pr's push path), not a `-c` CLI argument — a `-c`
+    // argument is visible to every local user via `ps aux`/
+    // `/proc/<pid>/cmdline`.
+    let push_result = runner
+        .run_tool("git", &["push".to_string(), "origin".to_string(), format!("HEAD:refs/heads/{branch}")], &clone_dir_str, RunToolOptions { env: ignite_github_api::git_extraheader_token_env(token), ..Default::default() })
+        .await;
     if let Err(e) = push_result {
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("git push: {e}")) };
     }

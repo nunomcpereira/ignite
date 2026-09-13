@@ -95,12 +95,25 @@ impl DbStore {
 
     // ---------------- manifest-level tool-result cache ----------------
 
+    /// A manifest is keyed by its manifest-text content hash, not by the
+    /// exact resolved dependency versions — a range-versioned manifest
+    /// (`^4.18.0`) scanned once, when only benign versions existed, would
+    /// otherwise cache an empty findings list *forever*. If that same
+    /// package is later hijacked (a malicious version published under
+    /// the same range), every future scan would hit this permanently
+    /// stale cache entry and report zero findings, blind to the
+    /// supply-chain compromise. A 24h TTL bounds that blind spot instead
+    /// of eliminating the caching entirely.
+    const MANIFEST_SCAN_CACHE_TTL_HOURS: i64 = 24;
+
     pub fn get_manifest_scan_cache(&self, tool: &str, ecosystem: &str, content_hash: &str, tool_version: &str) -> Option<serde_json::Value> {
         let conn = self.conn.lock();
         let json: Option<String> = conn
             .query_row(
-                "SELECT findings_json FROM manifest_scan_cache WHERE tool = ? AND ecosystem = ? AND content_hash = ? AND tool_version = ?",
-                params![tool, ecosystem, content_hash, tool_version],
+                "SELECT findings_json FROM manifest_scan_cache
+                 WHERE tool = ? AND ecosystem = ? AND content_hash = ? AND tool_version = ?
+                   AND (julianday('now') - julianday(updated_at)) * 24 < ?",
+                params![tool, ecosystem, content_hash, tool_version, Self::MANIFEST_SCAN_CACHE_TTL_HOURS],
                 |row| row.get(0),
             )
             .optional()

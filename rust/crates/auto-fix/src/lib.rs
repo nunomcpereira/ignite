@@ -22,7 +22,19 @@ static AI_INVOKE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([A-Za-z_$][\w.]*
 // context of each `export { ... }` match.
 static EXPORT_LIST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bexport\s*\{([^}]*)\}").unwrap());
 static TRAILING_FROM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*from").unwrap());
-static AS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+as\s+\w+$").unwrap());
+/// Captures the exported (right-hand) identifier of an aliased export
+/// entry (`foo as bar` -> `bar`) — the name a dead-code finding actually
+/// flags, since that's the symbol visible to importers (as opposed to the
+/// *local* identifier `foo`, which is what `foo as bar` is
+/// stored/declared as internally, not what it's called from outside).
+static AS_ALIAS_EXPORTED_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\S+\s+as\s+(\w+)$").unwrap());
+
+/// The name importers actually see for one entry in an `export { ... }`
+/// list — the alias (`bar` in `foo as bar`) when present, otherwise the
+/// entry itself (a plain `foo` export is visible under its own name).
+fn exported_name_of(entry: &str) -> &str {
+    AS_ALIAS_EXPORTED_NAME_RE.captures(entry).and_then(|c| c.get(1)).map(|m| m.as_str()).unwrap_or(entry)
+}
 
 // LangGraph's own documented default recursion_limit — making it explicit
 // changes nothing about runtime behavior, it only turns an implicit
@@ -56,7 +68,7 @@ pub fn compute_auto_fix_plan(findings: &[FindingInput]) -> AutoFixPlan {
             "unused-file" => actions.push(FixAction::DeleteFile { file: f.file.clone(), detail: format!("Delete {} — unreferenced from any detected entry point.", f.file) }),
             "unused-dependency" => {
                 if let Some(dep) = f.message.as_deref().and_then(|m| DEP_NAME_RE.captures(m)).map(|c| c[1].to_string()) {
-                    actions.push(FixAction::RemoveDependency { file: "package.json".to_string(), dependency: dep.clone(), detail: format!("Remove \"{dep}\" from package.json dependencies/devDependencies.") });
+                    actions.push(FixAction::RemoveDependency { file: f.file.clone(), dependency: dep.clone(), detail: format!("Remove \"{dep}\" from {}'s dependencies/devDependencies.", f.file) });
                 }
             }
             "unused-export" => {
@@ -179,8 +191,8 @@ fn apply_delete_file(root: &Path, file: &str) -> std::io::Result<()> {
     std::fs::remove_file(resolve_target(root, file)?)
 }
 
-fn apply_remove_dependency(root: &Path, dependency: &str) -> std::io::Result<bool> {
-    let pkg_path = root.join("package.json");
+fn apply_remove_dependency(root: &Path, file: &str, dependency: &str) -> std::io::Result<bool> {
+    let pkg_path = resolve_target(root, file)?;
     let content = std::fs::read_to_string(&pkg_path)?;
     let mut pkg: serde_json::Value = serde_json::from_str(&content)?;
     let mut removed = false;
@@ -213,7 +225,7 @@ fn apply_narrow_export(root: &Path, file: &str, name: Option<&str>) -> std::io::
         }
         let list = &m[1];
         let names: Vec<&str> = list.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-        let kept: Vec<&str> = names.iter().copied().filter(|n| AS_ALIAS_RE.replace(n, "").trim() != name).collect();
+        let kept: Vec<&str> = names.iter().copied().filter(|n| exported_name_of(n) != name).collect();
         if kept.len() == names.len() {
             continue; // name wasn't in this export list — check the next one
         }
@@ -236,7 +248,7 @@ pub fn apply_auto_fix_plan(plan: AutoFixPlan, root: &Path, dry_run: bool) -> (bo
     for action in plan.actions {
         let outcome = match &action {
             FixAction::DeleteFile { file, .. } => apply_delete_file(&root, file).map(|_| (true, false)),
-            FixAction::RemoveDependency { dependency, .. } => apply_remove_dependency(&root, dependency).map(|removed| (removed, false)),
+            FixAction::RemoveDependency { file, dependency, .. } => apply_remove_dependency(&root, file, dependency).map(|removed| (removed, false)),
             FixAction::NarrowExportListOrManual { file, name, .. } => apply_narrow_export(&root, file, name.as_deref()).map(|applied| (applied, !applied)),
             FixAction::AddRecursionLimitOrManual { file, line, .. } => apply_governance_fix(&root, file, *line),
         };

@@ -44,6 +44,14 @@ pub fn parse_package_json_deps(content: &str) -> Vec<ManifestDep> {
 static CARGO_SECTION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[.*\]$").unwrap());
 static CARGO_DEPS_SECTION_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\[(dependencies|dev-dependencies|build-dependencies|workspace\.dependencies|target\..+\.(?:dependencies|dev-dependencies|build-dependencies))\]$").unwrap());
+// Cargo also allows declaring one dependency as its own TOML table
+// (`[dependencies.serde]` followed by `version = "1.0"` on subsequent
+// lines) instead of the inline `serde = "1.0"` form `CARGO_DEPS_SECTION_RE`
+// covers — same section prefixes, plus a `.<crate-name>` suffix capturing
+// which dependency the table's key/value lines belong to.
+static CARGO_DEPS_TABLE_SECTION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\[(?:dependencies|dev-dependencies|build-dependencies|workspace\.dependencies|target\..+\.(?:dependencies|dev-dependencies|build-dependencies))\.([A-Za-z0-9_-]+)\]$").unwrap()
+});
 static CARGO_WORKSPACE_DEPS_SECTION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[workspace\.dependencies\]$").unwrap());
 static CARGO_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Za-z0-9_-]+)\s*=\s*(.+)$").unwrap());
 static CARGO_VERSION_KV_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"version\s*=\s*"([^"]+)""#).unwrap());
@@ -53,10 +61,42 @@ static CARGO_WORKSPACE_TRUE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"workspac
 fn parse_cargo_toml_section_lines(content: &str, in_section: impl Fn(&str) -> bool) -> Vec<ManifestDep> {
     let mut deps = Vec::new();
     let mut in_deps = false;
+    // Name of the dependency whose own `[dependencies.<name>]` table is
+    // currently being read, if any — its `version = "..."` key can be on
+    // any of the following lines, not necessarily the first one.
+    let mut current_table_dep: Option<String> = None;
+    let finish_table_dep = |deps: &mut Vec<ManifestDep>, name: Option<String>, version: Option<String>| {
+        if let Some(name) = name {
+            deps.push(ManifestDep { name, version_range: version.unwrap_or_else(|| "*".to_string()) });
+        }
+    };
     for raw_line in content.split('\n') {
         let line = raw_line.trim();
         if CARGO_SECTION_RE.is_match(line) {
+            // Leaving whatever table-style dependency was open (a bare
+            // section header with no `version =` line, e.g. a git/path
+            // dependency) — record it with a wildcard range rather than
+            // silently dropping it.
+            finish_table_dep(&mut deps, current_table_dep.take(), None);
+            if let Some(table_dep) = CARGO_DEPS_TABLE_SECTION_RE.captures(line) {
+                if in_section(&format!("[{}]", table_dep_section_prefix(line))) {
+                    current_table_dep = Some(table_dep[1].to_string());
+                }
+                in_deps = false;
+                continue;
+            }
             in_deps = in_section(line);
+            continue;
+        }
+        if let Some(dep_name) = &current_table_dep {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(v) = CARGO_VERSION_KV_RE.captures(line) {
+                let name = dep_name.clone();
+                deps.push(ManifestDep { name, version_range: v[1].to_string() });
+                current_table_dep = None;
+            }
             continue;
         }
         if !in_deps || line.is_empty() || line.starts_with('#') {
@@ -67,7 +107,18 @@ fn parse_cargo_toml_section_lines(content: &str, in_section: impl Fn(&str) -> bo
         let version = CARGO_VERSION_KV_RE.captures(rest).or_else(|| CARGO_VERSION_BARE_RE.captures(rest)).map(|c| c[1].to_string()).unwrap_or_else(|| rest.trim().to_string());
         deps.push(ManifestDep { name: m[1].to_string(), version_range: version });
     }
+    finish_table_dep(&mut deps, current_table_dep.take(), None);
     deps
+}
+
+/// Strips the trailing `.<crate-name>` off a `[dependencies.serde]`-style
+/// header so the resulting `[dependencies]`-shaped string can be tested
+/// against the same `in_section` predicate callers already pass for the
+/// inline-table form — keeps `parse_cargo_toml_deps`'s workspace-vs-plain
+/// section selection logic in one place instead of duplicating it here.
+fn table_dep_section_prefix(line: &str) -> String {
+    let inner = line.trim_start_matches('[').trim_end_matches(']');
+    inner.rsplit_once('.').map(|(prefix, _)| prefix.to_string()).unwrap_or_else(|| inner.to_string())
 }
 
 pub fn parse_cargo_toml_deps(content: &str) -> Vec<ManifestDep> {

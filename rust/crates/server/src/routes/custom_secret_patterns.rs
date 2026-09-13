@@ -194,7 +194,7 @@ mod tests {
     /// freshly created local user in `state`'s db — the mutating
     /// endpoints in this file now require `RequireAuth`.
     fn auth_header(state: &AppState) -> String {
-        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash");
+        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash").unwrap();
         let raw_key = ignite_auth::generate_api_key();
         state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
         format!("Bearer {raw_key}")
@@ -233,7 +233,7 @@ mod tests {
         let created = body_json(create_res).await;
         let id = created["id"].as_i64().unwrap();
 
-        let list_res = app.clone().oneshot(Request::get("/api/secret-patterns").body(Body::empty()).unwrap()).await.unwrap();
+        let list_res = app.clone().oneshot(Request::get("/api/secret-patterns").header("authorization", &auth).body(Body::empty()).unwrap()).await.unwrap();
         let list = body_json(list_res).await;
         assert_eq!(list.as_array().unwrap().len(), 1);
 

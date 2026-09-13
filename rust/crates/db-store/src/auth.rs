@@ -10,14 +10,17 @@ use rusqlite::{params, OptionalExtension};
 impl DbStore {
     // ---------------- auth: users + sessions ----------------
 
-    pub fn create_local_user(&self, email: &str, name: Option<&str>, password_hash: &str) -> i64 {
+    /// Returns `Err` (rather than panicking) on a unique-constraint
+    /// violation — `email` is checked for an existing account before
+    /// this is called, but that check-then-insert isn't atomic, so a
+    /// second concurrent registration with the same email can still race
+    /// past it and hit this insert. An `.unwrap()` here used to panic on
+    /// that race, poisoning the shared connection mutex for every other
+    /// request in flight.
+    pub fn create_local_user(&self, email: &str, name: Option<&str>, password_hash: &str) -> rusqlite::Result<i64> {
         let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO users (email, name, provider, password_hash) VALUES (?, ?, 'local', ?)",
-            params![email, name, password_hash],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
+        conn.execute("INSERT INTO users (email, name, provider, password_hash) VALUES (?, ?, 'local', ?)", params![email, name, password_hash])?;
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn upsert_oidc_user(&self, email: &str, name: Option<&str>, external_id: &str) -> Result<User, String> {

@@ -256,9 +256,17 @@ pub async fn check_pii_data_flow(root: &Path, runner: &ToolRunner, config: &PiiD
         "--disable-version-check".to_string(),
         "--exit-code".to_string(),
         "0".to_string(),
-        "--skip-path".to_string(),
-        skip_dirs().iter().copied().collect::<Vec<_>>().join(","),
     ];
+    // Bearer's `--skip-path` is a Cobra `StringArray` flag, not a
+    // comma-separated list — passing one joined `"a,b,c"` value makes
+    // Bearer look for a literal directory named exactly that, skipping
+    // nothing real and scanning every excluded directory anyway (node_modules,
+    // vendor, ...), which caused scan timeouts and dependency-noise
+    // false positives. Each directory needs its own `--skip-path` flag.
+    for dir in skip_dirs() {
+        args.push("--skip-path".to_string());
+        args.push(dir.to_string());
+    }
     if diff_base.is_some() {
         args.push("--diff".to_string());
     }
@@ -302,7 +310,15 @@ pub async fn check_pii_data_flow(root: &Path, runner: &ToolRunner, config: &PiiD
             let forced_warning = BEARER_FORCE_WARNING_TITLES.iter().any(|re| re.is_match(&title))
                 || (is_likely_test_or_fixture_path(&rel_file) && HARD_CODED_SECRET_TITLE_RE.is_match(&title))
                 || (DEV_SERVER_FILE_RE.is_match(&rel_file) && INSECURE_HTTP_TITLE_RE.is_match(&title));
-            let cwe_id = e.get("cwe_ids").and_then(|c| c.as_array()).and_then(|a| a.first()).and_then(|v| v.as_i64());
+            // Bearer emits `cwe_ids` entries as strings (`"CWE-209"` or
+            // bare `"209"`), never as JSON numbers — `.as_i64()` alone
+            // returned `None` for every real finding, silently erasing
+            // every CWE classification Bearer ever reported.
+            let cwe_id = e.get("cwe_ids").and_then(|c| c.as_array()).and_then(|a| a.first()).and_then(|v| match v {
+                serde_json::Value::Number(n) => n.as_i64(),
+                serde_json::Value::String(s) => s.trim_start_matches("CWE-").trim_start_matches("cwe-").parse::<i64>().ok(),
+                _ => None,
+            });
             findings.push(PiiDataFlowFinding {
                 file: rel_file,
                 line,

@@ -15,7 +15,42 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-static FROM_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+?)(?:\s+AS\s+(\S+))?\s*$").unwrap());
+// `(?:\s*#.*)?\s*$` tolerates a trailing inline comment — without it, a
+// `FROM node:20 AS builder # compile frontend` line simply never matched
+// at all, silently skipping that base image's provenance check entirely.
+static FROM_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+?)(?:\s+AS\s+(\S+))?(?:\s*#.*)?\s*$").unwrap());
+static ARG_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\S+)\s*(?:#.*)?$").unwrap());
+static ARG_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?").unwrap());
+
+/// Substitutes every `${VAR}`/`$VAR` reference in `image` using the
+/// preceding `ARG VAR=default` values seen earlier in the same
+/// Dockerfile — a base image is frequently parameterized this way
+/// (`ARG BASE_IMAGE=node:20` then `FROM ${BASE_IMAGE}`), and the literal
+/// unsubstituted string is not a real image reference cosign can verify
+/// against (it fails with an invalid-reference error, reported back as a
+/// false "unsigned-base-image" finding for a string that was never a real
+/// image name at all). Returns `None` when a reference can't be resolved
+/// (e.g. the ARG has no default, set only via `--build-arg`) — the caller
+/// skips that occurrence rather than verifying a string that still
+/// contains a literal `${...}`.
+fn substitute_arg_refs(image: &str, arg_defaults: &HashMap<String, String>) -> Option<String> {
+    if !image.contains('$') {
+        return Some(image.to_string());
+    }
+    let mut unresolved = false;
+    let substituted = ARG_REF_RE.replace_all(image, |caps: &regex::Captures| match arg_defaults.get(&caps[1]) {
+        Some(v) => v.clone(),
+        None => {
+            unresolved = true;
+            caps[0].to_string()
+        }
+    });
+    if unresolved {
+        None
+    } else {
+        Some(substituted.into_owned())
+    }
+}
 
 pub struct ImageProvenanceConfig {
     pub enabled: bool,
@@ -79,10 +114,15 @@ pub fn discover_base_images(root: &Path) -> std::io::Result<Vec<BaseImageOccurre
         let content = String::from_utf8_lossy(&buffer);
         let rel = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
         let mut stage_names: HashSet<String> = HashSet::new();
+        let mut arg_defaults: HashMap<String, String> = HashMap::new();
         for (i, line) in content.split('\n').enumerate() {
             let line = line.strip_suffix('\r').unwrap_or(line);
+            if let Some(a) = ARG_LINE_RE.captures(line) {
+                arg_defaults.insert(a[1].to_string(), a[2].to_string());
+                continue;
+            }
             let Some(m) = FROM_LINE_RE.captures(line) else { continue };
-            let image = m.get(1).map(|x| x.as_str().to_string()).unwrap_or_default();
+            let Some(image) = m.get(1).map(|x| x.as_str().to_string()).and_then(|image| substitute_arg_refs(&image, &arg_defaults)) else { continue };
             if let Some(stage) = m.get(2) {
                 stage_names.insert(stage.as_str().to_lowercase());
             }

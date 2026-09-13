@@ -15,7 +15,17 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-static FINDING_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(.+?): (?:global|dangerous) import '([^']+)' FOUND$").unwrap());
+// `(?:\s*\([A-Z]+\))?$` tolerates a trailing severity label modern
+// picklescan releases append (`FOUND (CRITICAL)`) — this used to be
+// anchored to `FOUND$` exactly, silently dropping every finding on any
+// picklescan version new enough to add that suffix.
+static FINDING_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(.+?): (?:global|dangerous) import '([^']+)' FOUND(?:\s*\([A-Z]+\))?$").unwrap());
+// Python's `rich` library (picklescan's own output formatter) emits ANSI
+// SGR escape sequences for terminal styling even when stdout is captured
+// non-interactively — stripped before line matching, or those bytes sit
+// between "FOUND" and end-of-line and break the anchor above regardless
+// of the severity-suffix fix.
+static ANSI_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelArtifactFinding {
@@ -83,7 +93,8 @@ fn discover_model_artifacts(root: &Path, extensions: &HashSet<String>) -> std::i
 fn parse_picklescan_output(root: &Path, stdout: &str) -> Vec<ModelArtifactFinding> {
     let mut findings = Vec::new();
     for line in stdout.split('\n') {
-        let Some(m) = FINDING_LINE_RE.captures(line.trim()) else { continue };
+        let cleaned = ANSI_ESCAPE_RE.replace_all(line.trim(), "");
+        let Some(m) = FINDING_LINE_RE.captures(cleaned.trim()) else { continue };
         let location = &m[1];
         let global_import = &m[2];
         // A Windows drive letter prefix (`C:\path\...`) has its own `:`

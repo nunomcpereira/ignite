@@ -64,7 +64,15 @@ pub fn parse_requirements_txt(content: &str) -> Vec<ManifestDependency> {
         // would happily capture "git" or "https" as if it were the
         // package name and hand it to the registry lookup as a bogus
         // query.
-        if NON_REGISTRY_VERSION_RE.is_match(line) || line.contains("://") {
+        // A relative local path (`./local_package`, `../vendor/thing`) is
+        // neither caught by `NON_REGISTRY_VERSION_RE` (no `file:`/`git+`
+        // prefix) nor the `://` check above — left unhandled, the
+        // general name/rest regex below split `./pkg` into a bogus
+        // package name `"."` and a version range `"/pkg"`, then queried
+        // the real PyPI for a package literally named `.`, always 404ing
+        // and raising a false hallucination finding for a perfectly
+        // normal local dependency.
+        if NON_REGISTRY_VERSION_RE.is_match(line) || line.contains("://") || line.starts_with("./") || line.starts_with("../") || line.contains('/') {
             continue;
         }
         if let Some(caps) = REQUIREMENTS_LINE_RE.captures(line) {
@@ -190,15 +198,24 @@ impl<C: RegistryChecker> PackageHallucinationChecker<C> {
 
     async fn exists_on_registry(&self, ecosystem: &str, name: &str) -> Option<bool> {
         let key = format!("{ecosystem}:{name}");
-        if let Some(cached) = self.cache.lock().get(&key) {
-            return *cached;
+        // Only a definitive `Some(true)`/`Some(false)` is cached — a
+        // `None` (registry timeout, 429 rate limit, any other transient
+        // failure) used to be cached indefinitely too, which meant one
+        // bad network blip during a scan permanently disabled the
+        // hallucination check for that exact package name for the rest
+        // of the process's lifetime (every later lookup hit the cached
+        // `None` and never touched the registry again).
+        if let Some(Some(cached)) = self.cache.lock().get(&key) {
+            return Some(*cached);
         }
         let result = self.checker.exists(ecosystem, name).await;
-        let mut cache = self.cache.lock();
-        if cache.len() >= MAX_CACHE_ENTRIES {
-            cache.clear();
+        if let Some(value) = result {
+            let mut cache = self.cache.lock();
+            if cache.len() >= MAX_CACHE_ENTRIES {
+                cache.clear();
+            }
+            cache.insert(key, Some(value));
         }
-        cache.insert(key, result);
         result
     }
 

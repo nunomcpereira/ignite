@@ -29,6 +29,8 @@ pub enum StagingError {
     FolderUploadPathTraversal(String),
     #[error("Archive contains an invalid entry path.")]
     InvalidArchiveEntry,
+    #[error("Archive contains duplicate entries for the same path: {0}")]
+    DuplicateArchiveEntry(String),
     #[error("Archive exceeds maximum extracted size (possible zip bomb). Aborting.")]
     ZipBomb,
     #[error("Folder upload exceeds maximum staged size. Aborting.")]
@@ -174,6 +176,15 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<StageResult, Stag
     let mut archive = zip::ZipArchive::new(file)?;
     let mut total_bytes = 0u64;
     let mut file_count = 0u64;
+    // A later archive member writing to the same resolved path as an
+    // earlier one would otherwise silently truncate/replace it
+    // (`fs::File::create` always overwrites) — the compliance scanner
+    // would then inspect a different source tree than the one the
+    // archive's file listing actually implies, with no error or trace of
+    // the earlier content ever having existed. Tracked by resolved target
+    // path (not raw archive entry name), since two differently-spelled
+    // entries can still collide on a case-insensitive filesystem.
+    let mut written_paths: HashSet<std::path::PathBuf> = HashSet::new();
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
@@ -187,6 +198,10 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<StageResult, Stag
         }
 
         let target = resolve_within_root(dest_dir, &entry_path)?;
+        if !written_paths.insert(target.clone()) {
+            let _ = fs::remove_dir_all(dest_dir);
+            return Err(StagingError::DuplicateArchiveEntry(entry_path));
+        }
 
         // Skip symlink entries (unix mode's file-type bits, S_IFLNK).
         if let Some(mode) = entry.unix_mode() {
@@ -198,6 +213,7 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<StageResult, Stag
         // Fast-path pre-check on the archive's own declared size (forgeable
         // metadata) — the enforced cap is the streamed total below.
         if total_bytes.saturating_add(entry.size()) > MAX_EXTRACTED_BYTES {
+            let _ = fs::remove_dir_all(dest_dir);
             return Err(StagingError::ZipBomb);
         }
 
@@ -219,7 +235,13 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<StageResult, Stag
             total_bytes = total_bytes.saturating_add(n as u64);
             if total_bytes > MAX_EXTRACTED_BYTES {
                 drop(sink);
-                let _ = fs::remove_file(&target);
+                // Every file extracted so far in this archive (up to
+                // MAX_EXTRACTED_BYTES, i.e. up to 4GB) was previously left
+                // behind on disk — only the one file being streamed when
+                // the cap tripped was cleaned up. Removing the whole
+                // staging directory (not just this one file) matches the
+                // fast-path check above, which already does the same.
+                let _ = fs::remove_dir_all(dest_dir);
                 return Err(StagingError::ZipBomb);
             }
             std::io::Write::write_all(&mut sink, &buf[..n])?;

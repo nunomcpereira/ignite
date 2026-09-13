@@ -226,10 +226,76 @@ struct RustFnSpan {
     body_end: usize,
 }
 
+/// Skips past a string literal, char literal, or comment starting at `i`
+/// (assumed to be `"`, `'`, or `/`), returning the byte index right after
+/// it. Byte-level UTF-8 continuation bytes never collide with these
+/// ASCII delimiters, so scanning raw bytes is safe even for non-ASCII
+/// string/comment content. A bare `'` that doesn't plausibly close as a
+/// char literal within a couple of bytes (a Rust lifetime like `'a`, not
+/// `'a'`) is left alone — always returns an index strictly greater than
+/// `i`, so the caller always makes forward progress.
+fn skip_non_code(bytes: &[u8], i: usize) -> usize {
+    match bytes[i] {
+        b'"' => {
+            let mut j = i + 1;
+            while j < bytes.len() {
+                if bytes[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                if bytes[j] == b'"' {
+                    return j + 1;
+                }
+                j += 1;
+            }
+            bytes.len()
+        }
+        b'\'' => {
+            if bytes.get(i + 1) == Some(&b'\\') {
+                // Escaped char literal (`'\n'`, `'\\''`) or a unicode
+                // escape (`'\u{1F600}'`, which itself contains braces
+                // that must never be counted) — find the next unescaped
+                // closing quote rather than assuming a fixed width.
+                let mut j = i + 2;
+                while j < bytes.len() {
+                    if bytes[j] == b'\'' {
+                        return j + 1;
+                    }
+                    j += 1;
+                }
+                bytes.len()
+            } else if bytes.get(i + 1).is_some_and(|b| *b != b'\'') && bytes.get(i + 2) == Some(&b'\'') {
+                i + 3 // plain single-char literal, e.g. `'{'`
+            } else {
+                i + 1 // not a char literal — a lifetime or bare apostrophe
+            }
+        }
+        b'/' if bytes.get(i + 1) == Some(&b'/') => bytes[i..].iter().position(|&b| b == b'\n').map(|rel| i + rel).unwrap_or(bytes.len()),
+        b'/' if bytes.get(i + 1) == Some(&b'*') => {
+            let mut j = i + 2;
+            while j + 1 < bytes.len() {
+                if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                    return j + 2;
+                }
+                j += 1;
+            }
+            bytes.len()
+        }
+        _ => i + 1,
+    }
+}
+
 fn balanced_close(bytes: &[u8], open_pos: usize, open: u8, close: u8) -> Option<usize> {
     let mut depth = 0i32;
     let mut i = open_pos;
     while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' | b'/' => {
+                i = skip_non_code(bytes, i);
+                continue;
+            }
+            _ => {}
+        }
         if bytes[i] == open {
             depth += 1;
         } else if bytes[i] == close {

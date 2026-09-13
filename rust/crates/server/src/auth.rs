@@ -255,7 +255,13 @@ async fn auth_register(State(state): State<Arc<AppState>>, axum::extract::Connec
     }
     let pw_hash = ignite_auth::hash_password(&pw);
     let name_opt = if name.is_empty() { None } else { Some(name.as_str()) };
-    let user_id = state.db.create_local_user(&email, name_opt, &pw_hash);
+    let user_id = match state.db.create_local_user(&email, name_opt, &pw_hash) {
+        Ok(id) => id,
+        // A concurrent registration with the same email won the race
+        // between the `get_user_by_email` check above and this insert —
+        // report it the same way the pre-check does, instead of panicking.
+        Err(_) => return (StatusCode::CONFLICT, Json(json!({ "error": "An account with this email already exists." }))).into_response(),
+    };
     issue_session_response(&state.db, user_id, json!({ "user": { "id": user_id, "email": email, "name": name_opt } }), StatusCode::CREATED)
 }
 

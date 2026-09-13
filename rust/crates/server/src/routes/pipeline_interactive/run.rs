@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, log: Arc<EventLog>, job_id: String, session_gh_token: String) {
+pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: ParsedUpload, log: Arc<EventLog>, job_id: String, session_gh_token: String, owner_email: String) {
     let org = upload.org.clone();
     let repo = upload.repo.clone();
     let is_gxp = super::super::phase_meta::phase_enabled(&log.meta, 2) && upload.gxp_requested;
@@ -74,14 +74,22 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     log.log(1, "Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.");
                 }
                 let scan_location = if let Some((_, fname, _)) = &upload.archive { format!("Archive: {fname}") } else { format!("Folder upload: {} file(s)", upload.dir_file_count_and_bytes.0) };
-                let pid = state.db.create_project(&job_id, &org, &repo, is_gxp, "ui", Some(&scan_location));
-                project_id = Some(pid);
-                log.set_project_id(pid);
-                if let Some(live) = state.running_runs.lock().get_mut(&job_id) {
-                    live.project_id = Some(pid);
+                match state.db.create_project(&job_id, &org, &repo, is_gxp, "ui", Some(&scan_location)) {
+                    Ok(pid) => {
+                        project_id = Some(pid);
+                        log.set_project_id(pid);
+                        if let Some(live) = state.running_runs.lock().get_mut(&job_id) {
+                            live.project_id = Some(pid);
+                        }
+                        log.status(1, "success", None);
+                        phase1_ok = true;
+                    }
+                    Err(e) => {
+                        let msg = format!("Failed to create project record: {e}");
+                        log.log(1, &format!("✗ {msg}"));
+                        log.status(1, "failed", Some(json!({ "error": msg })));
+                    }
                 }
-                log.status(1, "success", None);
-                phase1_ok = true;
             }
             Err(msg) => {
                 log.log(1, &format!("✗ {msg}"));
@@ -457,7 +465,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             let error_count = all_issues.iter().filter(|i| i.severity == Severity::Error).count();
             log.log(6, &format!("⚠ {} issue(s) accumulated across the run ({error_count} blocking) — waiting for final review before provisioning/push.", all_issues.len()));
 
-            let rx = state.review_gate.wait(&job_id);
+            let rx = state.review_gate.wait(&job_id, &owner_email);
             if let Some(live) = state.running_runs.lock().get_mut(&job_id) {
                 live.review_active = true;
             }

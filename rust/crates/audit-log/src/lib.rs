@@ -163,17 +163,53 @@ fn build_request(sink: &AuditSink, event: &AuditEvent) -> (Vec<(&'static str, St
 /// failure (network error, non-2xx) is logged via `tracing::warn!` and
 /// otherwise swallowed — never propagated, per this crate's own
 /// fire-and-forget contract.
+/// A sink that hangs (never dropping the connection, never sending a
+/// response) or is simply unreachable behind a firewall previously left
+/// `req.send()` waiting forever — for the server's own fire-and-forget
+/// `tokio::spawn` caller that's merely wasted background work, but
+/// `create-api-key`'s blocking equivalent awaits this same dispatch
+/// inline, so an operator's one-shot CLI command would simply never
+/// return.
+const SINK_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A transient failure (429 rate limit, 5xx, or a network-level send
+/// error) gets a couple of short-backoff retries before being logged and
+/// dropped — a real SIEM outage lasting longer than that still loses the
+/// event (this crate has no durable queue/storage to persist it for a
+/// later flush, which would need its own DB-backed retry worker), but a
+/// blip no longer drops an event it didn't have to.
+const SINK_MAX_ATTEMPTS: u32 = 3;
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
 pub async fn dispatch(http: &reqwest::Client, sinks: &[AuditSink], event: &AuditEvent) {
     let sends = sinks.iter().map(|sink| async move {
         let (headers, body, content_type) = build_request(sink, event);
-        let mut req = http.post(&sink.url).header("Content-Type", content_type).body(body);
-        for (name, value) in headers {
-            req = req.header(name, value);
-        }
-        match req.send().await {
-            Ok(res) if res.status().is_success() => {}
-            Ok(res) => tracing::warn!(url = %sink.url, status = %res.status(), event_type = %event.event_type, "audit-log sink returned non-2xx"),
-            Err(e) => tracing::warn!(url = %sink.url, error = %e, event_type = %event.event_type, "audit-log sink request failed"),
+        for attempt in 1..=SINK_MAX_ATTEMPTS {
+            let mut req = http.post(&sink.url).header("Content-Type", content_type).body(body.clone()).timeout(SINK_REQUEST_TIMEOUT);
+            for (name, value) in &headers {
+                req = req.header(*name, value);
+            }
+            match req.send().await {
+                Ok(res) if res.status().is_success() => return,
+                Ok(res) if is_retryable_status(res.status()) && attempt < SINK_MAX_ATTEMPTS => {
+                    tracing::warn!(url = %sink.url, status = %res.status(), attempt, event_type = %event.event_type, "audit-log sink returned a retryable status, retrying");
+                }
+                Ok(res) => {
+                    tracing::warn!(url = %sink.url, status = %res.status(), attempt, event_type = %event.event_type, "audit-log sink returned non-2xx, giving up");
+                    return;
+                }
+                Err(e) if attempt < SINK_MAX_ATTEMPTS => {
+                    tracing::warn!(url = %sink.url, error = %e, attempt, event_type = %event.event_type, "audit-log sink request failed, retrying");
+                }
+                Err(e) => {
+                    tracing::warn!(url = %sink.url, error = %e, attempt, event_type = %event.event_type, "audit-log sink request failed, giving up");
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200 * 2u64.pow(attempt - 1))).await;
         }
     });
     futures::future::join_all(sends).await;

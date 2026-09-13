@@ -163,8 +163,15 @@ static AWS_SESSION_TOKEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)aws_se
 // from OpenAI's bare `sk-...` — both start with `sk-`, but the provider
 // is already disambiguated by `provider_for_kind` before either regex
 // ever runs, so there's no cross-provider ambiguity in practice.
-static ANTHROPIC_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bsk-ant-[A-Za-z0-9_-]{20,250}\b").unwrap());
-static OPENAI_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,250}\b").unwrap());
+// `=` is included in the character class (and `\b` dropped at the tail,
+// which would otherwise still cut the match short right before a `=`
+// padding character since `=` is non-word) — modern OpenAI project keys
+// and Anthropic tokens frequently end with base64 `=`/`==` padding, and
+// truncating it here sends a mangled, genuinely-invalid token to the
+// verification endpoint, which then gets misreported as `Revoked` even
+// when the real key is still live.
+static ANTHROPIC_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bsk-ant-[A-Za-z0-9_=-]{20,250}").unwrap());
+static OPENAI_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_=-]{20,250}").unwrap());
 static NPM_TOKEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bnpm_[A-Za-z0-9]{36,}\b").unwrap());
 // Datadog API keys have no distinctive prefix (a bare 32-char lowercase
 // hex string) — safe to extract this loosely only because
@@ -288,11 +295,20 @@ async fn verify_slack_token(http: &reqwest::Client, value: &str, timeout: Durati
     // fields, not the status code), so the body must be parsed.
     let resp = http.post("https://slack.com/api/auth.test").bearer_auth(value).timeout(timeout).send().await;
     let Ok(resp) = resp else { return VerificationOutcome::Unknown };
+    // A rate limit (429) or a transient server error (5xx) is not the
+    // token's fault — Slack still answers with HTTP 200 and
+    // `{"ok": false, "error": "ratelimited"}` for the former, which would
+    // otherwise fall straight into the `Some(false) => Revoked` arm below
+    // and misreport a live token as dead during a bulk scan.
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS || resp.status().is_server_error() {
+        return VerificationOutcome::Unknown;
+    }
     match resp.json::<serde_json::Value>().await {
-        Ok(body) => match body.get("ok").and_then(|v| v.as_bool()) {
-            Some(true) => VerificationOutcome::Live,
-            Some(false) => VerificationOutcome::Revoked,
-            None => VerificationOutcome::Unknown,
+        Ok(body) => match (body.get("ok").and_then(|v| v.as_bool()), body.get("error").and_then(|v| v.as_str())) {
+            (Some(true), _) => VerificationOutcome::Live,
+            (Some(false), Some(err)) if matches!(err, "ratelimited" | "internal_error" | "service_unavailable" | "fatal_error") => VerificationOutcome::Unknown,
+            (Some(false), _) => VerificationOutcome::Revoked,
+            (None, _) => VerificationOutcome::Unknown,
         },
         Err(_) => VerificationOutcome::Unknown,
     }

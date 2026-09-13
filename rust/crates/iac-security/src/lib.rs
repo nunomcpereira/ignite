@@ -13,8 +13,21 @@ use std::path::Path;
 static FROM_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+?)(?:\s+AS\s+\S+)?\s*$").unwrap());
 // `USER root`/`USER 0`/`USER 0:0` don't actually drop privileges — never
 // treat them as satisfying "a non-root USER was set".
-static USER_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*USER\s+(?!root\b|0\b|0:0\b)\S+").unwrap());
-static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r":([^@\s]+)$").unwrap());
+// The plain `regex` crate has no look-around support at all — a negative
+// lookahead here (`(?!root\b|0\b|0:0\b)`) is a syntax error, not just an
+// unmatched pattern, so this panicked unconditionally the moment this
+// `Lazy` was first evaluated. Captures the `USER` argument instead and
+// checks it against root/0/0:0 in code (`is_non_root_user_line` below).
+static USER_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*USER\s+(\S+)").unwrap());
+
+fn is_non_root_user_line(line: &str) -> bool {
+    USER_LINE_RE.captures(line).and_then(|c| c.get(1)).is_some_and(|arg| !matches!(arg.as_str().to_ascii_lowercase().as_str(), "root" | "0" | "0:0"))
+}
+// `/` excluded from the tag class — a private registry with a port
+// number (`FROM localhost:5000/my-image`) otherwise has its
+// `:5000/my-image` host:port swallowed into the "tag" capture, which is
+// then neither `None` nor `"latest"` and wrongly reads as pinned.
+static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r":([^/@\s]+)$").unwrap());
 
 pub struct IacSecurityConfig {
     pub trivy_enabled: bool,
@@ -291,7 +304,11 @@ pub fn check_iac_security_fallback(root: &Path) -> std::io::Result<Vec<IacFindin
                 let image = m.get(1).map(|x| x.as_str()).unwrap_or("");
                 let has_digest = image.contains("@sha256:");
                 let tag = TAG_RE.captures(image).and_then(|c| c.get(1)).map(|m| m.as_str());
-                let is_unpinned = !has_digest && (tag.is_none() || tag == Some("latest"));
+                // `scratch` is Docker's own special empty base image, not
+                // a real registry tag to pin — there is no digest to pin
+                // it to, and no supply-chain risk from an "unpinned"
+                // reference to it.
+                let is_unpinned = image != "scratch" && !has_digest && (tag.is_none() || tag == Some("latest"));
                 if is_unpinned {
                     findings.push(IacFinding {
                         file: rel.clone(),
@@ -304,7 +321,7 @@ pub fn check_iac_security_fallback(root: &Path) -> std::io::Result<Vec<IacFindin
                     });
                 }
             }
-            if USER_LINE_RE.is_match(line) {
+            if is_non_root_user_line(line) {
                 has_user = true;
             }
         }

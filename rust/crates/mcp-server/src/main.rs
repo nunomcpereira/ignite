@@ -266,6 +266,51 @@ impl IgniteMcp {
         Ok(text_result(serde_json::to_string_pretty(&result).unwrap_or_default(), is_error))
     }
 
+    /// Same "POST kicks off, GET .../status reports progress" pattern the
+    /// browser frontend already polls for a fix-PR preview job — the
+    /// initial POST returns immediately with `done: false` and empty
+    /// `candidates` while the server computes fixes in the background
+    /// (each finding needs its own LLM call). Returning that immediate
+    /// response straight to an MCP caller (as `proxy_to_ignite` would)
+    /// always reports zero candidates; this polls `GET .../preview/status`
+    /// until `done: true` (or a generous timeout) before handing back the
+    /// real result.
+    async fn proxy_to_ignite_and_poll(&self, start_endpoint: &str, status_endpoint: &str) -> Result<CallToolResult, McpError> {
+        // The initial response is never returned to the caller — it's
+        // always `done: false` with no candidates yet, and the polled
+        // status response below is the freshest/authoritative one.
+        let _started = self.proxy_to_ignite(start_endpoint, serde_json::json!({})).await?;
+        let base_url = ignite_base_url();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let mut req = self.http.get(format!("{base_url}{status_endpoint}")).header("X-Ignite-Client", "mcp");
+            if let Some(key) = ignite_api_key() {
+                req = req.header("Authorization", format!("Bearer {key}"));
+            }
+            let response = match req.send().await {
+                Ok(r) => r,
+                Err(e) => return Ok(text_result(format!("Could not reach Ignite server at {base_url}: {e}."), true)),
+            };
+            let status = response.status();
+            let Some(result): Option<Value> = response.json().await.ok() else {
+                return Ok(text_result(format!("Ignite server returned a non-JSON response (HTTP {status}) from {status_endpoint}."), true));
+            };
+            if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                // A real error from the status endpoint (e.g. "no such
+                // job") — surface it rather than looping forever.
+                let is_error = true;
+                return Ok(text_result(serde_json::to_string_pretty(&result).unwrap_or_default(), is_error));
+            }
+            if result.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                return Ok(text_result(serde_json::to_string_pretty(&result).unwrap_or_default(), false));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(text_result("Timed out waiting for the fix-PR preview job to finish (120s). Call preview_fix_pr again to check its current status.".to_string(), true));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    }
+
     #[tool(description = "List the company AI/security validation guidelines, optionally filtered by category or severity.")]
     async fn list_guidelines(&self, Parameters(req): Parameters<ListGuidelinesRequest>) -> Result<CallToolResult, McpError> {
         let severity = match req.severity.as_deref() {
@@ -295,8 +340,18 @@ impl IgniteMcp {
 
     #[tool(description = "Walk a project directory on disk and check every source file against the automated guidelines.")]
     async fn check_project(&self, Parameters(req): Parameters<CheckProjectRequest>) -> Result<CallToolResult, McpError> {
-        let root = std::path::Path::new(&req.project_path);
-        match ignite_guidelines::checks::check_project(root) {
+        // In `MCP_TRANSPORT=http` mode this tool is reachable from the
+        // network with no auth/CORS/path confinement of its own —
+        // `sanitize_absolute_project_path` (the same check every
+        // server-side path-accepting route already applies) at minimum
+        // rejects control-character injection and requires a real
+        // absolute path, rather than handing whatever string a remote
+        // caller sent straight to a directory walk + file reads.
+        let root = match ignite_tool_runner::sanitize_absolute_project_path(&req.project_path) {
+            Ok(p) => p,
+            Err(e) => return Ok(text_result(format!("Invalid project_path: {e}"), true)),
+        };
+        match ignite_guidelines::checks::check_project(&root) {
             Ok(result) => {
                 let summary = format!("Scanned {} file(s). {} violation(s) found.", result.scanned, result.violations.len());
                 let is_error = result.violations.iter().any(|v| v.severity == Severity::Error);
@@ -325,9 +380,15 @@ impl IgniteMcp {
     )]
     async fn onboard_project(&self, Parameters(req): Parameters<OnboardProjectRequest>) -> Result<CallToolResult, McpError> {
         // Dry runs (checks-only, no provisioning/push) stay frictionless
-        // even over the network — only a real onboard actually mutates
-        // anything.
-        if !req.dry_run.unwrap_or(false) && !authorized_for_mutation(req.api_key.as_deref()) {
+        // even over the network — but only when they're genuinely
+        // read-only. `dryRun: true` on the server still persists any
+        // submitted overrides to ignite.db, flips issue states, and
+        // writes audit-log entries (only the provision/push step is
+        // actually skipped) — so a dry run carrying overrides needs the
+        // same mutation authorization a real onboard does; it's the
+        // overrides that mutate state, not dry_run's own value.
+        let has_overrides = req.overrides.as_ref().is_some_and(|o| !o.is_empty());
+        if (!req.dry_run.unwrap_or(false) || has_overrides) && !authorized_for_mutation(req.api_key.as_deref()) {
             return Ok(text_result(MUTATION_AUTH_ERROR.to_string(), true));
         }
         self.proxy_to_ignite(
@@ -374,8 +435,10 @@ impl IgniteMcp {
         description = "Preview LLM-proposed fixes for every open finding from a prior scan job — no git/GitHub involved yet, just candidate diffs to review. Pass the returned candidates (trimmed to whichever you accept) to apply_fix_pr to actually open a PR. Requires a running Ignite server."
     )]
     async fn preview_fix_pr(&self, Parameters(req): Parameters<PreviewFixPrRequest>) -> Result<CallToolResult, McpError> {
-        let endpoint = format!("/api/pipeline/{}/fix-pr/preview", urlencoding::encode(&req.job_id));
-        self.proxy_to_ignite(&endpoint, serde_json::json!({})).await
+        let job_id = urlencoding::encode(&req.job_id);
+        let start_endpoint = format!("/api/pipeline/{job_id}/fix-pr/preview");
+        let status_endpoint = format!("/api/pipeline/{job_id}/fix-pr/preview/status");
+        self.proxy_to_ignite_and_poll(&start_endpoint, &status_endpoint).await
     }
 
     #[tool(
@@ -466,7 +529,34 @@ async fn run_http() -> anyhow::Result<()> {
         session_manager,
         Default::default(),
     );
-    let app = axum::Router::new().route_service("/mcp", AxumStreamableHttp(service));
+    let mut app = axum::Router::new().route_service("/mcp", AxumStreamableHttp(service));
+    // Every per-tool mutation already checks its own `apiKey` param
+    // (`authorized_for_mutation`), but that check runs *inside* a tool
+    // call — MCP's own `tools/list` (served automatically by `rmcp`'s
+    // `#[tool_handler]` before any of our tool bodies ever run) has no
+    // gate at all in HTTP mode, which binds every interface by design
+    // (see `mcp_http_bind_host`'s own doc comment). An unauthenticated
+    // network caller could otherwise enumerate every tool name/
+    // description/schema and learn exactly which mutating operations
+    // exist before ever presenting a credential. Gated on `IGNITE_API_KEY`
+    // being set at all — an operator who hasn't minted one is assumed to
+    // be running this locally/behind their own network boundary, same as
+    // every other env-var-gated default in this codebase.
+    if let Ok(key) = std::env::var("IGNITE_API_KEY") {
+        if !key.is_empty() {
+            app = app.layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let key = key.clone();
+                async move {
+                    let authorized = req.headers().get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(|v| v == format!("Bearer {key}")).unwrap_or(false);
+                    if authorized {
+                        next.run(req).await
+                    } else {
+                        axum::http::Response::builder().status(axum::http::StatusCode::UNAUTHORIZED).body(axum::body::Body::empty()).unwrap()
+                    }
+                }
+            }));
+        }
+    }
     // mcp-server.js's `app.listen(port, ...)` (no host argument) binds all
     // interfaces by default, same as any bare Express `listen(port)` call —
     // unlike guidelines-api.js, which deliberately binds 127.0.0.1 and adds
@@ -731,7 +821,7 @@ mod http_transport_tests {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {"name": "resolve_review_decision", "arguments": {"jobId": "abc", "proceed": true}}
+                "params": {"name": "resolve_review_decision", "arguments": {"job_id": "abc", "proceed": true}}
             }))
             .send()
             .await

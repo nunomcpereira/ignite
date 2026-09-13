@@ -114,25 +114,34 @@ fn job_status_from_db(state: &AppState, job_id: &str) -> Response {
     Json(json!({ "ok": true, "running": false, "project": details.project, "steps": details.steps })).into_response()
 }
 
-async fn delete_project(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
+async fn delete_project(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
-    if !state.db.project_exists(id) {
+    let Some(project) = state.db.get_project(id) else {
         return err(StatusCode::NOT_FOUND, "Project not found.");
-    }
+    };
     if let Some(retained_dir) = state.db.get_retained_source(id) {
         let _ = std::fs::remove_dir_all(retained_dir);
     }
     let _ = std::fs::remove_dir_all(codeql_db_root().join(id.to_string()));
     state.db.delete_project_by_id(id);
+    // No per-project ownership model exists in this codebase (a single
+    // Ignite deployment is one org's shared instance, not multi-tenant
+    // SaaS — see auth.rs's own note that no role/permission tiers exist
+    // at all) — every authenticated user already has equal standing to
+    // delete any project. What was missing is attribution: unlike nearly
+    // every other mutating action here, this destructive, irreversible
+    // delete previously left no audit trail of who did it at all.
+    state.emit_audit_event(ignite_audit_log::AuditEvent::new("project.deleted", "warning", format!("project {id} ({}/{}) deleted", project.org, project.repo)).actor(user.email).repo(&project.org, &project.repo).metadata(json!({ "projectId": id })));
     Json(json!({ "ok": true })).into_response()
 }
 
-async fn delete_all_projects(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
+async fn delete_all_projects(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth) -> Response {
     for source in state.db.list_retained_sources() {
         let _ = std::fs::remove_dir_all(source.dir_path);
     }
     let _ = std::fs::remove_dir_all(codeql_db_root());
     state.db.delete_all_projects();
+    state.emit_audit_event(ignite_audit_log::AuditEvent::new("project.deleted_all", "critical", "every project's history was deleted".to_string()).actor(user.email));
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -153,11 +162,24 @@ async fn set_schedule(State(state): State<Arc<AppState>>, crate::auth::RequireAu
     Json(json!({ "ok": true, "enabled": enabled, "interval": if enabled { Some(interval) } else { None }, "nextRunAt": next_run_at })).into_response()
 }
 
-async fn get_document(State(state): State<Arc<AppState>>, Path(id_raw): Path<String>) -> Response {
+/// A "link" document's URL is only ever redirected to when it's plainly
+/// an ordinary web URL — rejects any other scheme (`javascript:`,
+/// `data:`, `file:`, a schemeless value that could be reinterpreted, ...)
+/// rather than blindly trusting whatever was stored, which is what made
+/// this an open-redirect (and potentially worse) vector in the first
+/// place.
+fn is_safe_redirect_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+async fn get_document(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid document id.") };
     let Some(doc) = state.db.get_document(id) else { return err(StatusCode::NOT_FOUND, "Document not found.") };
     if doc.kind == "link" {
-        return Redirect::to(doc.url.as_deref().unwrap_or("/")).into_response();
+        return match doc.url.as_deref() {
+            Some(url) if is_safe_redirect_url(url) => Redirect::to(url).into_response(),
+            _ => err(StatusCode::BAD_REQUEST, "This document's link is not a valid http(s) URL."),
+        };
     }
     let mime = doc.mime.unwrap_or_else(|| "application/octet-stream".to_string());
     let filename = urlencoding::encode(&doc.name);
@@ -215,7 +237,7 @@ mod tests {
     async fn job_status_reports_running_true_with_steps_for_a_live_job() {
         let (base, state) = spawn_test_server().await;
         let job_id = "live-job".to_string();
-        let project_id = state.db.create_project(&job_id, "acme", "widgets", false, "ui", None);
+        let project_id = state.db.create_project(&job_id, "acme", "widgets", false, "ui", None).unwrap();
         state.db.upsert_step(project_id, 3, "Extraction", "running", "line 1");
         state.running_runs.lock().insert(
             job_id.clone(),
@@ -233,7 +255,7 @@ mod tests {
     async fn job_status_reports_running_false_for_a_finished_job() {
         let (base, state) = spawn_test_server().await;
         let job_id = "finished-job".to_string();
-        let project_id = state.db.create_project(&job_id, "acme", "widgets", false, "ui", None);
+        let project_id = state.db.create_project(&job_id, "acme", "widgets", false, "ui", None).unwrap();
         state.db.upsert_step(project_id, 3, "Extraction", "success", "done");
         state.db.finish_project("success", None, None, None, project_id);
 

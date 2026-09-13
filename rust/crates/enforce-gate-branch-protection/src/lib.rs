@@ -286,6 +286,23 @@ pub fn detect_ruleset_drift(existing: &Value, desired: &Value) -> Vec<String> {
         drift.push(format!("enforcement is {existing_enforcement:?}, expected {desired_enforcement:?}"));
     }
 
+    // Previously unchecked: an admin narrowing `target` away from
+    // `"branch"`, or editing `conditions` to exclude repos/branches the
+    // policy requires covered, silently reported zero drift even though
+    // the ruleset no longer actually protects what it's supposed to.
+    let existing_target = existing.get("target").and_then(|v| v.as_str()).unwrap_or("");
+    if existing_target != "branch" {
+        drift.push(format!("target is {existing_target:?}, expected \"branch\""));
+    }
+    let ref_name_includes = |v: &Value, needle: &str| v.get("conditions").and_then(|c| c.get("ref_name")).and_then(|r| r.get("include")).and_then(|i| i.as_array()).is_some_and(|a| a.iter().any(|x| x.as_str() == Some(needle)));
+    if !ref_name_includes(existing, "~DEFAULT_BRANCH") {
+        drift.push("conditions.ref_name.include no longer targets \"~DEFAULT_BRANCH\"".to_string());
+    }
+    let repo_name_includes = |v: &Value, needle: &str| v.get("conditions").and_then(|c| c.get("repository_name")).and_then(|r| r.get("include")).and_then(|i| i.as_array()).is_some_and(|a| a.iter().any(|x| x.as_str() == Some(needle)));
+    if !repo_name_includes(existing, "~ALL") {
+        drift.push("conditions.repository_name.include no longer targets \"~ALL\" (some repositories may have been excluded)".to_string());
+    }
+
     let existing_bypass_count = existing.get("bypass_actors").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     if existing_bypass_count > 0 {
         drift.push(format!("bypass_actors is non-empty ({existing_bypass_count} actor(s)) — the policy requires nobody bypass this ruleset"));
@@ -300,8 +317,26 @@ pub fn detect_ruleset_drift(existing: &Value, desired: &Value) -> Vec<String> {
     if !has_rule_type("non_fast_forward") {
         drift.push("missing rule \"non_fast_forward\" — force-pushes are no longer blocked".to_string());
     }
-    if !has_rule_type("pull_request") {
-        drift.push("missing rule \"pull_request\" — a reviewed PR is no longer required before merging".to_string());
+    let pull_request_rule = existing_rules.iter().find(|r| r.get("type").and_then(|v| v.as_str()) == Some("pull_request"));
+    match pull_request_rule {
+        None => drift.push("missing rule \"pull_request\" — a reviewed PR is no longer required before merging".to_string()),
+        Some(rule) => {
+            // Present-but-weakened is just as much a real gap as
+            // missing entirely — the rule *type* being there previously
+            // satisfied this check even if an admin had, say, dropped
+            // `required_approving_review_count` to 0 or turned off
+            // `dismiss_stale_reviews_on_push`, both of which let a PR
+            // merge with effectively no enforced review.
+            let params = rule.get("parameters");
+            let review_count = params.and_then(|p| p.get("required_approving_review_count")).and_then(|v| v.as_i64()).unwrap_or(0);
+            if review_count < 1 {
+                drift.push(format!("\"pull_request\" rule's required_approving_review_count is {review_count}, expected at least 1"));
+            }
+            let dismiss_stale = params.and_then(|p| p.get("dismiss_stale_reviews_on_push")).and_then(|v| v.as_bool()).unwrap_or(false);
+            if !dismiss_stale {
+                drift.push("\"pull_request\" rule no longer dismisses stale reviews on push".to_string());
+            }
+        }
     }
 
     let status_check_rule = existing_rules.iter().find(|r| r.get("type").and_then(|v| v.as_str()) == Some("required_status_checks"));

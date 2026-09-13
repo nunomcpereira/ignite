@@ -205,7 +205,15 @@
     // below, so branding never depends on that script's init order.
     document.getElementById('brandLogo').innerHTML = window.IGNITE_BRAND.logoSvg;
     document.getElementById('brandName').textContent = window.IGNITE_BRAND.name;
-    document.getElementById('helpBtn').href = window.IGNITE_BRAND.supportUrl;
+    // branding.config.js is trusted, committed source (same trust level as
+    // config.json), but a typo'd or copy-pasted-wrong supportUrl (e.g. a
+    // stray `javascript:` scheme) shouldn't silently become a clickable
+    // link either way — only ever wire it up when it's plainly an ordinary
+    // http(s) URL.
+    const supportUrl = window.IGNITE_BRAND.supportUrl;
+    if (typeof supportUrl === 'string' && /^https?:\/\//i.test(supportUrl)) {
+      document.getElementById('helpBtn').href = supportUrl;
+    }
   </script>
 
   <!-- Lateral icon rail — Dashboard is this single-page app's only "screen"
@@ -7261,7 +7269,7 @@
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25v-3a1.5 1.5 0 011.5-1.5h3m10.5 4.5v-3a1.5 1.5 0 00-1.5-1.5h-3m0 15h3a1.5 1.5 0 001.5-1.5v-3m-15 0v3a1.5 1.5 0 001.5 1.5h3"/></svg>
           ${t('history.loadIntoMainView')}
         </button>
-        ${p.repo_url ? `<a href="${escapeHtml(p.repo_url)}" target="_blank" rel="noopener" class="block text-[11px] font-mono text-brand-600 hover:text-brand-800 underline underline-offset-2 truncate mb-2">${escapeHtml(p.repo_url)}</a>` : ''}
+        ${p.repo_url && /^https?:\/\//i.test(p.repo_url) ? `<a href="${escapeAttr(p.repo_url)}" target="_blank" rel="noopener" class="block text-[11px] font-mono text-brand-600 hover:text-brand-800 underline underline-offset-2 truncate mb-2">${escapeHtml(p.repo_url)}</a>` : ''}
         ${p.scan_location ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="${escapeAttr(p.scan_location)}"><span class="font-semibold text-slate-400">${t('history.scannedFrom')}</span> <span class="font-mono">${escapeHtml(p.scan_location)}</span></p>` : ''}
         ${p.source_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="Reproduce this exact scan once its retained source ages out: git checkout ${escapeAttr(p.source_commit_sha)} in the original repo"><span class="font-semibold text-slate-400">${t('history.sourceCommit')}</span> <span class="font-mono">${escapeHtml(p.source_commit_sha)}</span></p>` : ''}
         ${p.shipped_commit_sha ? `<p class="text-[11px] text-slate-500 mb-2 truncate" title="The commit pushed to GitHub for this run"><span class="font-semibold text-slate-400">${t('history.shippedCommit')}</span> <span class="font-mono">${escapeHtml(p.shipped_commit_sha)}</span></p>` : ''}

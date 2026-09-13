@@ -46,9 +46,18 @@ pub fn extract_go_affected_imports(osv_record: &serde_json::Value) -> Vec<Affect
     out
 }
 
-static GO_IMPORT_SINGLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?m)^\s*import\s+(?:([\w.]+)\s+)?"([^"]+)"\s*$"#).unwrap());
+// `(?://.*)?$` tolerates an inline trailing `// comment` after the
+// import path — without it, an otherwise perfectly valid import line
+// like `"github.com/foo/bar" // pinned for X` was silently dropped
+// entirely, along with every symbol reachability check that needed it.
+static GO_IMPORT_SINGLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?m)^\s*import\s+(?:([\w.]+)\s+)?"([^"]+)"\s*(?://.*)?$"#).unwrap());
 static GO_IMPORT_BLOCK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)\bimport\s*\(([^)]*)\)").unwrap());
-static GO_IMPORT_BLOCK_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?m)^\s*(?:([\w.]+)\s+)?"([^"]+)"\s*$"#).unwrap());
+static GO_IMPORT_BLOCK_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?m)^\s*(?:([\w.]+)\s+)?"([^"]+)"\s*(?://.*)?$"#).unwrap());
+/// A Go module major-version suffix (`/v2`, `/v5`, ...) per Go's own
+/// module-path convention — never part of the package's actual default
+/// import name, which is always the *next* path segment in
+/// (`github.com/go-git/go-git/v5` imports as `git`, not `v5`).
+static GO_MAJOR_VERSION_SEGMENT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^v[0-9]+$").unwrap());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GoImportAlias {
@@ -77,7 +86,10 @@ fn parse_go_imports(content: &str) -> Vec<(GoImportAlias, String)> {
             Some("_") => GoImportAlias::Blank,
             Some(".") => GoImportAlias::Dot,
             Some(a) => GoImportAlias::Named(a.to_string()),
-            None => GoImportAlias::Named(path.rsplit('/').next().unwrap_or(path).to_string()),
+            None => {
+                let default_name = path.split('/').filter(|seg| !GO_MAJOR_VERSION_SEGMENT_RE.is_match(seg)).next_back().unwrap_or(path);
+                GoImportAlias::Named(default_name.to_string())
+            }
         }
     }
 

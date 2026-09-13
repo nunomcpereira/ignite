@@ -172,7 +172,7 @@ mod tests {
         config.security.override_approval.enabled = true;
         config.security.override_approval.approver_emails = vec!["approver@acme.example".to_string()];
         let state = state_with_config(config);
-        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             project_id,
             &[ignite_db_store::IssueInput { id: "secret::a.js::1".into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(10), summary: "hardcoded key".into(), file: Some("a.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
@@ -185,7 +185,7 @@ mod tests {
         let issues = state.db.get_project_issues(project_id);
         assert_eq!(issues[0].status, "overridden");
 
-        let other_project = state.db.create_project("job-2", "acme", "gadgets", false, "ui", None);
+        let other_project = state.db.create_project("job-2", "acme", "gadgets", false, "ui", None).unwrap();
         let resp2 = approve(Path((other_project, override_id)), State(state.clone()), RequireAuth(user("approver@acme.example"))).await;
         assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
     }

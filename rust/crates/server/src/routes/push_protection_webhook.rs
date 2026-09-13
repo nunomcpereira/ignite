@@ -109,6 +109,10 @@ async fn push_protection_webhook(State(state): State<Arc<AppState>>, headers: He
     if !verify_webhook_signature(secret, &body, signature) {
         return err(StatusCode::UNAUTHORIZED, "Signature verification failed.".to_string());
     }
+    let delivery_id = headers.get("x-github-delivery").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ignite_github_api::record_delivery_once(delivery_id) {
+        return (StatusCode::OK, axum::Json(json!({ "ok": true, "ignored": "duplicate_delivery" }))).into_response();
+    }
 
     let payload: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,

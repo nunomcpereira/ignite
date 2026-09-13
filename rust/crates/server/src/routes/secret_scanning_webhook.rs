@@ -84,6 +84,10 @@ async fn secret_scanning_webhook(State(state): State<Arc<AppState>>, headers: He
     if !verify_webhook_signature(secret, &body, signature) {
         return err(StatusCode::UNAUTHORIZED, "Signature verification failed.".to_string());
     }
+    let delivery_id = headers.get("x-github-delivery").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ignite_github_api::record_delivery_once(delivery_id) {
+        return axum::Json(json!({ "ok": true, "ignored": "duplicate_delivery" })).into_response();
+    }
 
     let payload: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -155,7 +159,7 @@ async fn secret_scanning_webhook(State(state): State<Arc<AppState>>, headers: He
             Some(c) if !c.is_empty() => format!("Resolved on GitHub ({resolution}): {c}"),
             _ => format!("Resolved on GitHub: {resolution}"),
         };
-        state.db.add_override(ignite_db_store::AddOverrideArgs {
+        let override_args = ignite_db_store::AddOverrideArgs {
             project_id,
             job_id: &job_id,
             phase: issue.phase.unwrap_or(4),
@@ -169,13 +173,30 @@ async fn secret_scanning_webhook(State(state): State<Arc<AppState>>, headers: He
             actor_email: GITHUB_DISMISSAL_ACTOR_EMAIL,
             actor_name: resolved_by,
             email_sent: false,
-        });
-        state.db.set_issue_status(project_id, &issue_id, "overridden");
-        state.emit_audit_event(
-            ignite_audit_log::AuditEvent::new("secret_scanning_alert.resolved_on_github", "info", format!("{secret_type} finding {}: resolved on GitHub ({resolution})", issue.summary))
-                .repo(&org, &repo)
-                .metadata(json!({ "issueId": issue_id, "resolution": resolution })),
-        );
+        };
+        // Dual-custody: same enforcement as code_scanning_webhook.rs's
+        // dismissal handler — a critical-severity finding resolved via a
+        // GitHub secret-scanning alert dismissal is still a human override
+        // decision, and must not bypass the second-reviewer approval every
+        // other override entry point enforces just because it arrived
+        // through this webhook instead of Ignite's own UI/API.
+        let is_critical = state.config.security.override_approval.enabled && ignite_override_engine::is_critical_score(issue.score.unwrap_or(0) as i32);
+        if is_critical {
+            state.db.add_pending_override(override_args);
+            state.emit_audit_event(
+                ignite_audit_log::AuditEvent::new("secret_scanning_alert.resolved_on_github", "info", format!("{secret_type} finding {}: resolved on GitHub ({resolution}) — critical, held pending a second reviewer's approval", issue.summary))
+                    .repo(&org, &repo)
+                    .metadata(json!({ "issueId": issue_id, "resolution": resolution, "pendingApproval": true })),
+            );
+        } else {
+            state.db.add_override(override_args);
+            state.db.set_issue_status(project_id, &issue_id, "overridden");
+            state.emit_audit_event(
+                ignite_audit_log::AuditEvent::new("secret_scanning_alert.resolved_on_github", "info", format!("{secret_type} finding {}: resolved on GitHub ({resolution})", issue.summary))
+                    .repo(&org, &repo)
+                    .metadata(json!({ "issueId": issue_id, "resolution": resolution })),
+            );
+        }
     } else {
         let removed = state.db.delete_github_dismissal_overrides(&org, &repo, &issue_id);
         if removed > 0 && !state.db.issue_has_override(project_id, &issue_id) {

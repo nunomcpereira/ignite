@@ -245,6 +245,15 @@ async fn parse_multipart_inner(mut multipart: Multipart, temp_paths_to_clean: &m
     }
 
     let rel_paths: Vec<String> = serde_json::from_str(&rel_paths_raw).unwrap_or_default();
+    // An empty `rel_paths` (the field wasn't sent at all) legitimately
+    // falls back to bare filenames below — but a *non-empty*, wrong-length
+    // list means the field was corrupted/truncated in transit, and
+    // silently zipping mismatched entries together via `.get(i)` flattens
+    // every nested folder path down to a bare filename at the root,
+    // breaking package resolution and scans with no visible error at all.
+    if !rel_paths.is_empty() && rel_paths.len() != dir_files.len() {
+        return Err((StatusCode::BAD_REQUEST, json!({ "error": format!("Folder upload path count ({}) does not match file count ({}).", rel_paths.len(), dir_files.len()) })));
+    }
     for (i, uf) in dir_files.iter_mut().enumerate() {
         uf.rel_path = rel_paths.get(i).cloned().unwrap_or_else(|| dir_file_names[i].clone());
     }
@@ -417,6 +426,18 @@ mod tests {
         (format!("http://{addr}"), app_state)
     }
 
+    /// `POST /api/pipeline` and `POST .../review-decision` both now
+    /// require `RequireAuth` (BUG-171/172) — mints a real headless API
+    /// key for a test user so these tests keep exercising the actual
+    /// authenticated flow instead of stubbing the extractor out.
+    const TEST_USER_EMAIL: &str = "tester@example.com";
+    fn auth_header(state: &AppState) -> String {
+        let user_id = state.db.create_local_user(TEST_USER_EMAIL, Some("Tester"), "unused-hash").unwrap();
+        let raw_key = ignite_auth::generate_api_key();
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
+        format!("Bearer {raw_key}")
+    }
+
     fn zip_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();
         {
@@ -447,11 +468,12 @@ mod tests {
         // phase 6). Here the user declines to proceed at the gate, which
         // is what actually surfaces the phase-1 problem to them.
         let (base, state) = spawn_test_server().await;
+        let auth = auth_header(&state);
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"console.log(1);"), ("package.json", b"{\"name\":\"fixture\"}")]);
         let form = Form::new().text("org", "-bad-").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 
-        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).header("authorization", &auth).multipart(form).send().await.unwrap() });
 
         // Bounded, not an unconditional `loop`: if the fixture's blocking
         // finding doesn't actually get flagged in this environment (e.g. a
@@ -473,9 +495,10 @@ mod tests {
         .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
         let resolved = state.review_gate.resolve(
             &job_id,
-            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
+            TEST_USER_EMAIL,
+            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
         );
-        assert!(resolved);
+        assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
 
         let res = handle.await.unwrap();
         assert_eq!(res.status(), 200);
@@ -558,6 +581,7 @@ mod tests {
         ignite_fs_utils::invalidate_walk_cache(src.path());
 
         let (base, state) = spawn_test_server().await;
+        let auth = auth_header(&state);
         // A real Phase 4 run against this fixture finishes in well under a
         // minute in isolation (~48s observed), but under `cargo test
         // --workspace`'s full concurrent load — every crate's test binary
@@ -581,7 +605,7 @@ mod tests {
         // it like the sibling tests above, rather than assuming a
         // straight-through `done` with no pause.
         let base_for_run = base.clone();
-        let handle = tokio::spawn(async move { client.post(format!("{base_for_run}/api/pipeline")).multipart(form).send().await.unwrap() });
+        let handle = tokio::spawn(async move { client.post(format!("{base_for_run}/api/pipeline")).header("authorization", &auth).multipart(form).send().await.unwrap() });
 
         let review_wait = tokio::time::timeout(std::time::Duration::from_secs(60), async {
             loop {
@@ -605,9 +629,10 @@ mod tests {
             let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string(), code: None }).collect();
             let resolved = state.review_gate.resolve(
                 &job_id,
-                ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
+                TEST_USER_EMAIL,
+                ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
             );
-            assert!(resolved);
+            assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
         }
 
         let res = handle.await.unwrap();
@@ -666,6 +691,7 @@ mod tests {
         // body over 2 MB — incompressible filler bytes, so zip deflate
         // can't shrink the wire size back under the old limit.
         let (base, state) = spawn_test_server().await;
+        let auth = auth_header(&state);
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let mut filler = vec![0u8; 3 * 1024 * 1024];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut filler);
@@ -673,7 +699,7 @@ mod tests {
         assert!(zip.len() > 2 * 1024 * 1024, "fixture must exceed the old 2MB default to actually exercise the override, got {} bytes", zip.len());
         let form = Form::new().text("org", "-bad-").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 
-        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).header("authorization", &auth).multipart(form).send().await.unwrap() });
 
         // Bounded, not an unconditional `loop`: if the fixture's blocking
         // finding doesn't actually get flagged in this environment (e.g. a
@@ -695,9 +721,10 @@ mod tests {
         .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
         let resolved = state.review_gate.resolve(
             &job_id,
-            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
+            TEST_USER_EMAIL,
+            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
         );
-        assert!(resolved);
+        assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
 
         let res = handle.await.unwrap();
         // A 413/400 here would mean the body-limit override didn't take —
@@ -721,6 +748,7 @@ mod tests {
     #[ignore]
     async fn dry_run_streams_job_and_review_events_then_pauses_at_gate() {
         let (base, state) = spawn_test_server().await;
+        let auth = auth_header(&state);
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         // A hardcoded secret in the fixture guarantees at least one Phase 4
         // finding, so this run is guaranteed to reach the review gate. No
@@ -731,7 +759,7 @@ mod tests {
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
 
-        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).header("authorization", &auth).multipart(form).send().await.unwrap() });
 
         // Poll running_runs until the job appears and is paused at review,
         // then resolve it — mirrors what routes/review_gate.js (not yet
@@ -763,9 +791,10 @@ mod tests {
         let overrides = open_issue_ids.into_iter().map(|issue_id| SubmittedOverride { issue_id, justification: "not relevant to this test".to_string(), code: None }).collect();
         let resolved = state.review_gate.resolve(
             &job_id,
-            ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: "tester@example.com".into(), name: "Tester".into() } },
+            TEST_USER_EMAIL,
+            ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
         );
-        assert!(resolved);
+        assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
 
         let res = handle.await.unwrap();
         assert_eq!(res.status(), 200);
@@ -789,6 +818,7 @@ mod tests {
     #[ignore]
     async fn repeat_scan_of_same_repo_carries_forward_a_previously_justified_finding() {
         let (base, state) = spawn_test_server().await;
+        let auth = auth_header(&state);
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 
@@ -796,7 +826,8 @@ mod tests {
         let form1 = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip.clone()).file_name("p.zip"));
         let client1 = client.clone();
         let base1 = base.clone();
-        let handle1 = tokio::spawn(async move { client1.post(format!("{base1}/api/pipeline")).multipart(form1).send().await.unwrap() });
+        let auth1 = auth.clone();
+        let handle1 = tokio::spawn(async move { client1.post(format!("{base1}/api/pipeline")).header("authorization", &auth1).multipart(form1).send().await.unwrap() });
         let job1 = wait_for_review_gate(&state, std::time::Duration::from_secs(180)).await;
         let (secret_issue_id, open_issue_ids) = {
             let running = state.running_runs.lock();
@@ -816,7 +847,10 @@ mod tests {
                 SubmittedOverride { issue_id, justification, code: None }
             })
             .collect();
-        assert!(state.review_gate.resolve(&job1, ReviewDecisionInput { proceed: true, overrides: overrides1, actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }));
+        assert_eq!(
+            state.review_gate.resolve(&job1, TEST_USER_EMAIL, ReviewDecisionInput { proceed: true, overrides: overrides1, actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }),
+            crate::review_gate::ResolveOutcome::Resolved
+        );
         let res1 = handle1.await.unwrap();
         assert_eq!(res1.status(), 200);
         let events1 = read_ndjson(res1).await;
@@ -826,10 +860,13 @@ mod tests {
         // overrides at all — the earlier justification must already have
         // been carried forward and applied before the gate even opened.
         let form2 = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
-        let handle2 = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form2).send().await.unwrap() });
+        let handle2 = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).header("authorization", &auth).multipart(form2).send().await.unwrap() });
         let job2 = wait_for_review_gate(&state, std::time::Duration::from_secs(180)).await;
         assert_ne!(job1, job2);
-        assert!(state.review_gate.resolve(&job2, ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }));
+        assert_eq!(
+            state.review_gate.resolve(&job2, TEST_USER_EMAIL, ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }),
+            crate::review_gate::ResolveOutcome::Resolved
+        );
         let res2 = handle2.await.unwrap();
         assert_eq!(res2.status(), 200);
         let events2 = read_ndjson(res2).await;
@@ -867,16 +904,25 @@ mod tests {
     /// fully unauthenticated (no bearer token, no `actor` in the body),
     /// driven through the real HTTP route (not `review_gate.resolve`
     /// directly, which would bypass the auth-requirement bug entirely).
+    ///
+    /// Previously this exercised the *opposite* expectation (a bare
+    /// decline with no overrides needed no auth at all) — that carve-out
+    /// was itself the bug (BUG-172): an unauthenticated caller who merely
+    /// guessed/observed a job id could abort or force-proceed a run they
+    /// had no relationship to. Every decision now requires a real
+    /// authenticated session that matches whoever started the run.
     #[tokio::test]
-    async fn review_decision_stop_with_no_overrides_needs_no_auth() {
+    async fn review_decision_without_auth_is_rejected() {
         let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         let (base, state) = spawn_test_server().await;
+        let auth = auth_header(&state);
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
         let base_for_decision = base.clone();
+        let auth_for_decision = auth.clone();
 
-        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).header("authorization", &auth).multipart(form).send().await.unwrap() });
 
         // Bounded, not an unconditional `loop`: if the fixture's blocking
         // finding doesn't actually get flagged in this environment (e.g. a
@@ -898,9 +944,16 @@ mod tests {
         .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
 
         // No bearer token at all — mirrors a session that expired while
-        // the pipeline sat paused for review.
+        // the pipeline sat paused for review. Must now be rejected, not
+        // silently accepted, even for a bare decline.
         let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
-        assert_eq!(decision_res.status(), 200, "a bare decline with no overrides must not require authentication");
+        assert_eq!(decision_res.status(), 401, "an unauthenticated decision — even a bare decline — must be rejected");
+
+        // Clean up with a real authenticated decline so the spawned
+        // upload request actually resolves instead of hanging at the
+        // review gate for the rest of this test's timeout.
+        let decision_res2 = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).header("authorization", &auth_for_decision).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
+        assert_eq!(decision_res2.status(), 200);
 
         let res = handle.await.unwrap();
         assert_eq!(res.status(), 200);
@@ -916,12 +969,14 @@ mod tests {
     async fn review_decision_with_overrides_still_requires_an_actor() {
         let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         let (base, state) = spawn_test_server().await;
+        let auth = auth_header(&state);
+        let auth_for_decision = auth.clone();
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
         let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
         let form = Form::new().text("org", "acme").text("repo", "widgets").text("dryRun", "true").part("archive", Part::bytes(zip).file_name("p.zip"));
         let base_for_decision = base.clone();
 
-        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).multipart(form).send().await.unwrap() });
+        let handle = tokio::spawn(async move { client.post(format!("{base}/api/pipeline")).header("authorization", &auth).multipart(form).send().await.unwrap() });
         let job_id = tokio::time::timeout(std::time::Duration::from_secs(180), async {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -946,8 +1001,9 @@ mod tests {
         assert_eq!(decision_res.status(), 401, "submitting an actual override with no session and no actor in the body must still be rejected");
 
         // Clean up: the pipeline is still paused at the review gate — stop
-        // it with a bare decline so the spawned upload request resolves.
-        let _ = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await;
+        // it with a real authenticated decline so the spawned upload
+        // request resolves instead of hanging.
+        let _ = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).header("authorization", &auth_for_decision).json(&json!({ "proceed": false, "overrides": [] })).send().await;
         let _ = handle.await;
     }
 }

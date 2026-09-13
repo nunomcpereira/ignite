@@ -192,7 +192,7 @@ impl DbStore {
             .prepare_cached(
                 "SELECT id, phase, issue_id, category, severity, summary, file, line, justification,
                         actor_email, actor_name, email_sent, created_at
-                 FROM overrides WHERE project_id = ? ORDER BY id",
+                 FROM overrides WHERE project_id = ? AND status = 'approved' ORDER BY id",
             )
             .unwrap();
         stmt.query_map(params![project_id], |row| {
@@ -275,6 +275,13 @@ impl DbStore {
     /// [`Self::delete_github_dismissal_overrides`] to decide whether a
     /// "reopened" webhook should flip the issue back to `open` or leave it
     /// `overridden` because a separate, real Ignite override still covers it.
+    /// Deliberately counts a `pending` row too, not just `approved` — this
+    /// backs the GitHub-dismissal "reopened" webhook's decision to flip an
+    /// issue back to `open`, and a pending override still means a human
+    /// is actively reviewing this finding; reopening it out from under
+    /// that review would be wrong. (`get_project_overrides_inner`, the
+    /// UI-facing list, is the one that should only ever show `approved`
+    /// rows — that's a different, display-facing question.)
     pub fn issue_has_override(&self, project_id: i64, issue_id: &str) -> bool {
         let conn = self.conn.lock();
         conn.query_row(

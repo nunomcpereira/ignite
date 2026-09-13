@@ -7,9 +7,53 @@
 //! the duplication worth resolving.
 
 use hmac::{Hmac, Mac};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use sha2::Sha256;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// GitHub's webhook HMAC scheme has no timestamp or nonce baked into the
+/// signature itself (unlike, e.g., Stripe's) — there's nothing to check a
+/// "signing window" against. What GitHub *does* provide is
+/// `X-GitHub-Delivery`, a UUID unique per delivery attempt (including
+/// GitHub's own automatic retries, which intentionally reuse the same id)
+/// — tracking seen ids here is what actually closes the real replay gap:
+/// an attacker capturing and re-POSTing a validly-signed payload shortly
+/// after the real event.
+static SEEN_DELIVERIES: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+const DELIVERY_DEDUP_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_TRACKED_DELIVERIES: usize = 10_000;
+
+/// `true` the first time `delivery_id` is seen (caller should process the
+/// webhook); `false` on every subsequent call with the same id within
+/// [`DELIVERY_DEDUP_WINDOW`] (caller should acknowledge and no-op, same as
+/// GitHub's own retry semantics already expect from a receiver).
+pub fn record_delivery_once(delivery_id: &str) -> bool {
+    if delivery_id.is_empty() {
+        // No `X-GitHub-Delivery` header at all (a hand-crafted request, or
+        // a test) — nothing to dedup against, so let it through; the HMAC
+        // check is still the real authentication boundary.
+        return true;
+    }
+    let mut seen = SEEN_DELIVERIES.lock();
+    seen.retain(|_, at| at.elapsed() < DELIVERY_DEDUP_WINDOW);
+    if seen.contains_key(delivery_id) {
+        return false;
+    }
+    if seen.len() >= MAX_TRACKED_DELIVERIES {
+        // Defensive cap so a flood of distinct delivery ids can't grow
+        // this map unboundedly — drop the oldest entries rather than the
+        // new one, since the new id is the one about to be inserted.
+        if let Some(oldest) = seen.iter().min_by_key(|(_, at)| **at).map(|(k, _)| k.clone()) {
+            seen.remove(&oldest);
+        }
+    }
+    seen.insert(delivery_id.to_string(), Instant::now());
+    true
+}
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !s.is_ascii() || !s.len().is_multiple_of(2) {

@@ -52,8 +52,13 @@ static SECRET_RE: Lazy<Regex> =
 // are greedy so a password that itself contains `@` (e.g.
 // `P@ssw0rd@host`) still resolves to the *last* `@` as the userinfo/host
 // boundary, matching how a real URI parser reads it.
+// The password group excludes `/`, `?`, `#` — the characters that end a
+// URL's authority component — so a line with two connection strings
+// (`"postgres://usr:pwd@host1/db"; "redis://admin:secret@host2"`) doesn't
+// have its greedy match span across both, swallowing the intervening
+// source text as part of one "password".
 static URI_CREDENTIAL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?i)[a-z][a-z0-9+.\-]*://([^\s'"/@]+):([^\s'"]{6,})@"#).unwrap());
+    Lazy::new(|| Regex::new(r#"(?i)[a-z][a-z0-9+.\-]*://([^\s'"/@]+):([^\s'"/?#]{6,})@"#).unwrap());
 
 static SECRET_SCAN_PATH_SKIP_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^(?:\.ignite-review\.md|(?:\.claude|\.github)/skills/.*\.md)$").unwrap());
@@ -706,6 +711,22 @@ pub fn gitleaks_rule_id(name: &str) -> String {
 /// gitleaks' stock defaults. Either way this only ever adds one `extend`
 /// hop — a custom pattern *adds* detection, it doesn't replace whichever
 /// baseline was already in effect.
+/// TOML's `'''...'''` literal string (no escaping needed — the whole
+/// point of using it for a regex, so `\d`/`\b`/etc. don't need doubling
+/// up) breaks if the content itself contains a `'''` run, which would
+/// terminate the string early and let the rest of the operator-supplied
+/// regex be interpreted as arbitrary TOML syntax. That case (regexes
+/// essentially never need three consecutive literal single quotes) falls
+/// back to a properly backslash-escaped basic `"..."` string instead of
+/// ever emitting unescaped attacker-controlled TOML.
+fn toml_regex_literal(regex: &str) -> String {
+    if !regex.contains("'''") {
+        return format!("'''{regex}'''");
+    }
+    let escaped = regex.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\t', "\\t").replace('\r', "\\r");
+    format!("\"{escaped}\"")
+}
+
 pub fn build_gitleaks_config_for_patterns(patterns: &[CustomSecretPattern], base_config_path: Option<&Path>) -> String {
     let mut toml = String::from("title = \"ignite-custom-secret-patterns\"\n\n[extend]\n");
     match base_config_path {
@@ -730,7 +751,7 @@ pub fn build_gitleaks_config_for_patterns(patterns: &[CustomSecretPattern], base
             id = format!("{id}-{n}");
         }
         let description = p.name.replace('\\', "\\\\").replace('"', "\\\"");
-        toml.push_str(&format!("[[rules]]\nid = \"{id}\"\ndescription = \"{description}\"\nregex = '''{}'''\n\n", p.regex));
+        toml.push_str(&format!("[[rules]]\nid = \"{id}\"\ndescription = \"{description}\"\nregex = {}\n\n", toml_regex_literal(&p.regex)));
     }
     toml
 }

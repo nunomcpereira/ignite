@@ -53,6 +53,17 @@ pub async fn scan_checkout(http: &Client, server_base: &str, org: &str, repo: &s
     let res = req.send().await;
 
     let body: Value = match res {
+        // A non-2xx status (401 with no/expired IGNITE_API_KEY, 500 on a
+        // server-side crash, ...) can still carry a JSON body — parsing
+        // it without first checking the status let an auth/server failure
+        // fall through to the same "clean scan" path as a real result,
+        // failing this gate open exactly when it's most important to fail
+        // closed.
+        Ok(r) if !r.status().is_success() => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            return GateResult { clean: false, error: Some(format!("validate-all returned {status}: {text}")), ..Default::default() };
+        }
         Ok(r) => match r.json().await {
             Ok(v) => v,
             Err(e) => return GateResult { clean: false, error: Some(format!("failed to parse validate-all response: {e}")), ..Default::default() },
@@ -61,7 +72,9 @@ pub async fn scan_checkout(http: &Client, server_base: &str, org: &str, repo: &s
     };
 
     let job_id = body.get("jobId").and_then(|v| v.as_str()).map(str::to_string);
-    let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+    // Default to `false` (fail closed), not `true` — an absent/malformed
+    // `ok` field must never be read as "the scan succeeded".
+    let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
     let issues = body.get("issues").and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     if !ok {

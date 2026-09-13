@@ -65,7 +65,13 @@ pub fn expected_python_import_name(pip_package_name: &str) -> String {
 // — `PY_IMPORT_RE`'s old capture group 1 only ever grabbed the first
 // identifier on the line, silently dropping every subsequent module in a
 // multi-import statement.
-static PY_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*import\s+([A-Za-z_][\w.,\s]*)").unwrap());
+// `[ \t]` (not `\s`) inside the capture group — `\s` matches `\n` too, so
+// the old `[\w.,\s]*` greedily consumed past the end of the `import` line
+// entirely, swallowing every subsequent line's content into one capture
+// (`split_whitespace()` in the caller then only ever saw the first token
+// of that giant blob, silently dropping every import after the first
+// line in a file).
+static PY_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^[ \t]*import\s+([A-Za-z_][\w., \t]*)").unwrap());
 static PY_FROM_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*from\s+([A-Za-z_][\w]*)").unwrap());
 
 /// Every distinct top-level module name imported (`import x`, `import

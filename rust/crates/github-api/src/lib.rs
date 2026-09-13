@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::sync::OnceCell;
 
 mod webhook_auth;
-pub use webhook_auth::verify_webhook_signature;
+pub use webhook_auth::{record_delivery_once, verify_webhook_signature};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubApiError {
@@ -209,6 +209,22 @@ impl<'a> GithubApi<'a> {
         // through the raw REST fallback instead, which serializes the
         // whole body correctly.
         let has_non_scalar = fields.values().any(|v| v.is_object() || v.is_array());
+        // A non-scalar payload used to always fall through to the raw
+        // REST fallback below, which requires an explicit `token` —
+        // `resolve_server_github_token()` returns "" for an operator who
+        // only ever ran `gh auth login` (no `GH_TOKEN`/`GITHUB_TOKEN` env
+        // var set), so every non-scalar write failed with 401 even though
+        // the `gh` CLI itself was fully authenticated. `gh api --input
+        // <file>` runs through the CLI's own stored session instead of
+        // needing a token passed in at all.
+        if has_non_scalar && self.is_gh_cli_available().await {
+            let mut tmp = tempfile::NamedTempFile::new()?;
+            std::io::Write::write_all(&mut tmp, &serde_json::to_vec(&Value::Object(fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()))?)?;
+            let args = vec!["api".to_string(), "-X".to_string(), method.to_string(), api_path.to_string(), "--input".to_string(), tmp.path().to_string_lossy().into_owned()];
+            let env = gh_token_env(token);
+            let out = self.runner.run_tool("gh", &args, &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
+            return Ok(if out.stdout.is_empty() { None } else { Some(serde_json::from_str(&out.stdout)?) });
+        }
         if !has_non_scalar && self.is_gh_cli_available().await {
             let mut args = vec!["api".to_string(), "-X".to_string(), method.to_string(), api_path.to_string()];
             for (k, v) in fields {
@@ -260,11 +276,28 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_create_pr(&self, full_name: &str, base: &str, head: &str, title: &str, body: &str, token: &str) -> Result<PrResult, GithubApiError> {
         if self.is_gh_cli_available().await {
+            // `--body` is a CLI argument, and `sanitize_cli_arg` rejects
+            // any argument containing a control character — including
+            // `\n`/`\r`, which every multiline PR description (the common
+            // case for an auto-fix/onboarding-generated body) contains.
+            // `--body-file` (same fix `gh_comment_on_pr` already uses)
+            // sidesteps that entirely by passing the body as file content
+            // instead of an argument.
+            let tmp_dir = tempfile::Builder::new().prefix("ignite-pr-body-").tempdir()?;
+            let tmp_file = tmp_dir.path().join("body.md");
+            std::fs::write(&tmp_file, body)?;
             let env = gh_token_env(token);
             let out = self
                 .runner
-                .run_tool("gh", &["pr".to_string(), "create".to_string(), "--repo".to_string(), full_name.to_string(), "--base".to_string(), base.to_string(), "--head".to_string(), head.to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() })
-                .await?;
+                .run_tool(
+                    "gh",
+                    &["pr".to_string(), "create".to_string(), "--repo".to_string(), full_name.to_string(), "--base".to_string(), base.to_string(), "--head".to_string(), head.to_string(), "--title".to_string(), title.to_string(), "--body-file".to_string(), tmp_file.to_string_lossy().into_owned()],
+                    &std::env::temp_dir().to_string_lossy(),
+                    RunToolOptions { env, ..Default::default() },
+                )
+                .await;
+            drop(tmp_dir);
+            let out = out?;
             let url = PR_URL_RE.find(&out.stdout).map(|m| m.as_str().to_string()).unwrap_or(out.stdout.clone());
             let number = PR_NUMBER_RE.captures(&url).and_then(|c| c[1].parse::<u64>().ok());
             return Ok(PrResult { url, number, node_id: None });
@@ -333,8 +366,19 @@ impl<'a> GithubApi<'a> {
 
     pub async fn gh_create_issue(&self, full_name: &str, title: &str, body: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
+            // Same `--body-file` fix as `gh_create_pr` above — `--body`
+            // as a CLI argument is rejected by `sanitize_cli_arg` for any
+            // multiline body.
+            let tmp_dir = tempfile::Builder::new().prefix("ignite-issue-body-").tempdir()?;
+            let tmp_file = tmp_dir.path().join("body.md");
+            std::fs::write(&tmp_file, body)?;
             let env = gh_token_env(token);
-            self.runner.run_tool("gh", &["issue".to_string(), "create".to_string(), "--repo".to_string(), full_name.to_string(), "--title".to_string(), title.to_string(), "--body".to_string(), body.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
+            let result = self
+                .runner
+                .run_tool("gh", &["issue".to_string(), "create".to_string(), "--repo".to_string(), full_name.to_string(), "--title".to_string(), title.to_string(), "--body-file".to_string(), tmp_file.to_string_lossy().into_owned()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() })
+                .await;
+            drop(tmp_dir);
+            result?;
             return Ok(());
         }
         self.github_api_request(token, "POST", &format!("/repos/{full_name}/issues"), Some(&serde_json::json!({ "title": title, "body": body })), None).await?;

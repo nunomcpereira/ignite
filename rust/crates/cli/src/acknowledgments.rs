@@ -174,15 +174,27 @@ fn insert_issue_number(block: &str, n: usize) -> String {
 ///   same id; first occurrence wins otherwise) and renumbered.
 pub fn regenerate(existing_text: &str, findings: &[Finding]) -> String {
     let mut existing = parse_blocks(existing_text);
-    let unresolved: Vec<&Finding> = findings.iter().filter(|f| f.status.as_deref() != Some("overridden")).collect();
 
     let mut new_blocks: Vec<String> = Vec::new();
-    for finding in &unresolved {
+    for finding in findings {
         if existing.iter().any(|e| e.id == finding.id) {
             continue;
         }
         let code = code_for_finding(finding.snippet.as_ref());
         let match_idx = code.as_ref().and_then(|code| existing.iter().position(|e| !e.superseded && !e.justification.is_empty() && e.category == finding.category && e.file.as_deref() == finding.file.as_deref() && e.code.as_deref() == Some(code.as_str())));
+        // An already-`overridden` finding (the backend fuzzy-matched it
+        // server-side, independent of this file) needs no action here —
+        // but if it also carries a NEW id (its flagged line drifted since
+        // the entry was written), it must still go through carry-forward
+        // matching below, or the existing entry gets silently dropped
+        // entirely: excluded here for having a new id, and excluded from
+        // the `current_ids` keep-list further down for the same reason,
+        // permanently losing the justification. Only skip when there's
+        // truly nothing to carry forward.
+        let is_overridden = finding.status.as_deref() == Some("overridden");
+        if is_overridden && match_idx.is_none() {
+            continue;
+        }
         let matched_entry = match_idx.map(|i| existing[i].clone());
         if let Some(i) = match_idx {
             existing[i].superseded = true;

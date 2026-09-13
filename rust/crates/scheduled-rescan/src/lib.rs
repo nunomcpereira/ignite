@@ -29,6 +29,23 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Attaches `Authorization: Bearer <IGNITE_API_KEY>` to a request builder
+/// when that env var is set — every call this crate makes against the
+/// Ignite server itself now requires authentication
+/// (`RequireAuth` on `validate-all`/`github-check`/`onboarded-repos`), so
+/// an unattended scheduled job needs a real headless API key (minted via
+/// `create-api-key`) the same way the CLI/pre-push hook already read
+/// `IGNITE_API_KEY` for this. Left unauthenticated (and therefore
+/// rejected with 401) when the env var isn't set, rather than silently
+/// no-op'ing — that failure is surfaced by the caller's own status-code
+/// handling.
+pub fn with_ignite_api_key(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match std::env::var("IGNITE_API_KEY") {
+        Ok(key) if !key.is_empty() => req.header("Authorization", format!("Bearer {key}")),
+        _ => req,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RescanTarget {
     pub org: String,
@@ -178,8 +195,7 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
         Err(e) => return RescanOutcome::failed(&target.org, &target.repo, format!("failed to resolve HEAD sha: {e}")),
     };
 
-    let validate_res = http
-        .post(format!("{server_base}/api/pipeline/validate-all"))
+    let validate_res = with_ignite_api_key(http.post(format!("{server_base}/api/pipeline/validate-all")))
         .json(&json!({ "org": target.org, "repo": target.repo, "projectPath": dest.to_string_lossy(), "runLocalCi": false }))
         .send()
         .await;
@@ -230,8 +246,7 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
     // this rescan is about to post.
     let auto_fix = run_auto_fix(runner, http, server_base, &full_name, &default_branch, &dest, gh_token, auto_fix_mode).await;
 
-    let check_res = http
-        .post(format!("{server_base}/api/pipeline/{job_id}/github-check"))
+    let check_res = with_ignite_api_key(http.post(format!("{server_base}/api/pipeline/{job_id}/github-check")))
         .json(&json!({ "owner": target.org, "repo": target.repo, "sha": sha }))
         .send()
         .await;
@@ -382,9 +397,9 @@ mod tests {
     fn dedupe_projects_reads_real_projects_from_a_live_db() {
         let dir = tempfile::tempdir().unwrap();
         let db = open_db(&dir.path().join("test.db").to_string_lossy()).unwrap();
-        db.create_project("job-1", "acme", "widgets", false, "api", None);
-        db.create_project("job-2", "acme", "widgets", false, "api", None);
-        db.create_project("job-3", "acme", "gadgets", false, "api", None);
+        db.create_project("job-1", "acme", "widgets", false, "api", None).unwrap();
+        db.create_project("job-2", "acme", "widgets", false, "api", None).unwrap();
+        db.create_project("job-3", "acme", "gadgets", false, "api", None).unwrap();
 
         let targets = dedupe_projects(&db.list_projects());
         assert_eq!(targets.len(), 2);

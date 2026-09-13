@@ -14,8 +14,10 @@ async fn save_baseline(State(state): State<Arc<AppState>>, crate::auth::RequireA
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "Request body must include issueIds: string[] — typically the `issues[].id` list from a prior validate-all response." }))).into_response();
     };
     let issue_ids: Vec<String> = issue_ids.iter().map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).collect();
-    let saved = state.db.save_baseline(&org, &repo, &issue_ids);
-    Json(json!({ "ok": true, "org": org, "repo": repo, "savedCount": saved })).into_response()
+    match state.db.save_baseline(&org, &repo, &issue_ids) {
+        Ok(saved) => Json(json!({ "ok": true, "org": org, "repo": repo, "savedCount": saved })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed to save baseline: {e}") }))).into_response(),
+    }
 }
 
 async fn get_baseline(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>) -> Response {

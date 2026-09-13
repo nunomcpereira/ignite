@@ -10,15 +10,19 @@ use std::collections::HashSet;
 impl DbStore {
     // ---------------- baseline/diff adoption mode ----------------
 
-    pub fn save_baseline(&self, org: &str, repo: &str, issue_ids: &[String]) -> usize {
+    /// `Err` (transient lock contention, disk write error, busy timeout)
+    /// propagates to the caller instead of panicking — this used to
+    /// `.unwrap()` every step, which crashed the whole Axum worker thread
+    /// handling the request on any transient database failure.
+    pub fn save_baseline(&self, org: &str, repo: &str, issue_ids: &[String]) -> rusqlite::Result<usize> {
         let mut conn = self.conn.lock();
-        let tx = conn.transaction().unwrap();
-        tx.execute("DELETE FROM issue_baselines WHERE org = ? AND repo = ?", params![org, repo]).unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM issue_baselines WHERE org = ? AND repo = ?", params![org, repo])?;
         for id in issue_ids {
-            tx.execute("INSERT OR IGNORE INTO issue_baselines (org, repo, issue_id) VALUES (?, ?, ?)", params![org, repo, id]).unwrap();
+            tx.execute("INSERT OR IGNORE INTO issue_baselines (org, repo, issue_id) VALUES (?, ?, ?)", params![org, repo, id])?;
         }
-        tx.commit().unwrap();
-        issue_ids.len()
+        tx.commit()?;
+        Ok(issue_ids.len())
     }
 
     pub fn clear_baseline(&self, org: &str, repo: &str) -> usize {

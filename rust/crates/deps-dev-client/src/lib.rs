@@ -350,12 +350,25 @@ pub async fn resolve_best_published_version(client: &DepsDevClient, system: &str
 /// as "any published version at or above the floor is acceptable".
 pub fn satisfies_version_range(version: &str, raw_range: &str) -> bool {
     let Some(v) = parse_semver(version) else { return true };
-    let Some(bev) = best_effort_version(raw_range) else { return true };
+    let range = raw_range.trim();
+    let Some(bev) = best_effort_version(range) else { return true };
     let Some(floor) = parse_semver(&bev) else { return true };
+    // `<`/`<=` are upper-bound operators — the extracted number is a
+    // ceiling, not a floor. The generic "reject anything below this
+    // value" check a few lines down assumes the extracted number is a
+    // *minimum*, which is backwards for these two operators: it rejected
+    // every genuinely valid low version (`1.0.0` against `<2.0.0`) and
+    // accepted everything else, including versions the range explicitly
+    // excludes (`3.0.0` against `<2.0.0`) — the exact inverse of correct.
+    if let Some(_rest) = range.strip_prefix("<=") {
+        return compare_semver(v, floor) != std::cmp::Ordering::Greater;
+    }
+    if range.starts_with('<') {
+        return compare_semver(v, floor) == std::cmp::Ordering::Less;
+    }
     if compare_semver(v, floor) == std::cmp::Ordering::Less {
         return false;
     }
-    let range = raw_range.trim();
     if let Some(_stripped) = range.strip_prefix('^') {
         if floor.0 > 0 {
             return v.0 == floor.0;

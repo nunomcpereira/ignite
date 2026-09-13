@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn score_exactly_at_critical_threshold_uses_the_critical_window_not_high() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-sla", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-sla", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(project_id, &[issue("secret::app.js::1", ignite_override_engine::CRITICAL_SCORE_THRESHOLD as i64)], &HashSet::new());
         // 10 days old: past the critical window (critical_days=7) but
         // within the high window (high_days=30) — only breaches if this
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn score_just_below_critical_threshold_uses_the_high_window() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-sla-2", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-sla-2", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(project_id, &[issue("secret::app.js::2", (ignite_override_engine::CRITICAL_SCORE_THRESHOLD - 1) as i64)], &HashSet::new());
         // Same 10-day age as above, but score 8 (< threshold): must NOT
         // breach yet since 10 days hasn't crossed the high window (30).

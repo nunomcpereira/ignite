@@ -110,7 +110,9 @@ impl AppState {
     /// (nothing spawned) when no sinks are configured.
     pub fn emit_audit_event(&self, event: ignite_audit_log::AuditEvent) {
         let metadata_json = if event.metadata.is_null() { None } else { Some(event.metadata.to_string()) };
-        self.db.record_audit_event(&event.event_type, &event.severity, &event.summary, event.actor.as_deref(), event.org.as_deref(), event.repo.as_deref(), metadata_json.as_deref());
+        if let Err(e) = self.db.record_audit_event(&event.event_type, &event.severity, &event.summary, event.actor.as_deref(), event.org.as_deref(), event.repo.as_deref(), metadata_json.as_deref()) {
+            tracing::error!("record_audit_event failed for {}: {e}", event.event_type);
+        }
 
         if !self.config.audit_log.enabled || self.config.audit_log.sinks.is_empty() {
             return;

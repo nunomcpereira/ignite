@@ -169,7 +169,14 @@ pub async fn run_project_unit_tests(root: &Path, runner: &ToolRunner, mut log: i
         // `/work` first gives the test command (install steps, build
         // artifacts — `npm install`, `cargo test`'s `target/`, etc.) a
         // real writable workspace that's discarded with the container.
-        let args = vec!["run".to_string(), "--rm".to_string(), "-v".to_string(), format!("{root_str}:/repo:ro"), "-w".to_string(), "/work".to_string(), m.image.clone(), "sh".to_string(), "-c".to_string(), format!("cp -a /repo /work && {}", m.command)];
+        // `-w /work` creates `/work` before the container command runs,
+        // so `cp -a /repo /work` copies `/repo` *into* the already-
+        // existing `/work`, producing `/work/repo` — leaving `/work`
+        // itself (the actual working directory `m.command` runs in)
+        // empty, and every test command failing on missing
+        // files/manifests. `/repo/.` (contents, not the directory itself)
+        // copies straight into `/work`.
+        let args = vec!["run".to_string(), "--rm".to_string(), "-v".to_string(), format!("{root_str}:/repo:ro"), "-w".to_string(), "/work".to_string(), m.image.clone(), "sh".to_string(), "-c".to_string(), format!("cp -a /repo/. /work && {}", m.command)];
         let env = std::collections::HashMap::new();
         runner.run_tool_streaming("docker", &args, &std::env::temp_dir().to_string_lossy(), |line| log(&line.chars().take(400).collect::<String>()), &env, 10 * 60_000).await.map_err(|e| UnitTestError::TestsFailed(m.language, e.to_string()))?;
         log(&format!("✓ {} unit tests passed.", m.language));

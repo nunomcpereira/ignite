@@ -299,7 +299,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         logger.log(1, &format!("Target metadata: {org}/{repo}"));
         logger.log(1, &format!("GxP-regulated process: {}", if is_gxp { "YES" } else { "no" }));
         let source = if body.get("_client_is_mcp").and_then(|v| v.as_bool()).unwrap_or(false) { "mcp" } else { "api" };
-        project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy()));
+        project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy())).map_err(|e| PipelineError::new(1, format!("Failed to create project record: {e}")))?;
         logger.set_project_id(project_id);
         logger.status(1, "success", None);
 
@@ -609,7 +609,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 
             if baseline_mode.as_deref() == Some("save") {
                 let ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
-                state.db.save_baseline(&org, &repo, &ids);
+                if let Err(e) = state.db.save_baseline(&org, &repo, &ids) {
+                    tracing::error!("save_baseline failed for {org}/{repo}: {e}");
+                }
             }
 
             let mut response = json!({
@@ -698,7 +700,7 @@ fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Op
     crate::phase4_config::from_config(&state.config, org, repo, project_id, fast, igniteignore_git_check_root)
 }
 
-async fn validate_all(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     match run_validate_all(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err((v, _)) => (StatusCode::BAD_REQUEST, Json(v)).into_response(),
@@ -763,10 +765,14 @@ mod phase_gating_tests {
         let dir = secret_fixture_dir();
         let cfg = ignite_config::Config { phases: vec![json!({ "id": 4, "enabled": false })], ..Default::default() };
         let (state, _db_dir) = build_state(cfg);
+        let user_id = state.db.create_local_user("tester@example.com", None, "unused-hash").unwrap();
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
         let base = spawn_test_server(state).await;
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
         let res = client
             .post(format!("{base}/api/pipeline/validate-all"))
+            .bearer_auth(token)
             .json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false }))
             .send()
             .await
@@ -786,10 +792,14 @@ mod phase_gating_tests {
         let dir = secret_fixture_dir();
         let cfg = ignite_config::Config::default();
         let (state, _db_dir) = build_state(cfg);
+        let user_id = state.db.create_local_user("tester@example.com", None, "unused-hash").unwrap();
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
         let base = spawn_test_server(state).await;
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
         let res = client
             .post(format!("{base}/api/pipeline/validate-all"))
+            .bearer_auth(token)
             .json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false }))
             .send()
             .await

@@ -133,6 +133,7 @@ pub struct RunDetails {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Predicate {
     pub build_definition: BuildDefinition,
     pub run_details: RunDetails,
@@ -143,6 +144,13 @@ pub struct Provenance {
     #[serde(rename = "_type")]
     pub type_: &'static str,
     pub subject: Vec<ProvenanceSubject>,
+    // in-toto Statement v1 requires the envelope's own field literally
+    // named `predicateType` (not snake_case) — an unrenamed
+    // `predicate_type` produced JSON that verification tools
+    // (slsa-verifier, Witness) reject outright as not conforming to the
+    // schema, silently making every generated attestation useless to
+    // exactly the tools meant to consume it.
+    #[serde(rename = "predicateType")]
     pub predicate_type: &'static str,
     pub predicate: Predicate,
     pub note: &'static str,

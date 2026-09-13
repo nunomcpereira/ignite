@@ -148,6 +148,28 @@ pub async fn run_actions_locally(root: &Path, wf_file: &Path, runner: &ToolRunne
     let local_workflow_dir = local_github_dir.join("workflows");
     let had_github_dir = local_github_dir.exists();
     let had_local_workflow_dir = local_workflow_dir.exists();
+
+    // act needs the workspace to be a git repo for ref/branch metadata.
+    // Bearer (checkPiiDataFlow, Phase 4, on by default) may already have
+    // initialized and committed this same root — reuse that instead of
+    // re-running init/add/commit unconditionally. This must run *before*
+    // the temporary governance workflow files are copied in below: doing
+    // it after meant `git add .` picked up the just-injected workflow
+    // files too, permanently committing them into the repo's real git
+    // history — the on-disk cleanup at the end of this function only
+    // removes them from the working tree, not from `HEAD`.
+    let already_repo = root.join(".git").exists();
+    let root_str_for_init = root.to_string_lossy().into_owned();
+    if already_repo {
+        log("Reusing repository initialized during Phase 4 (Bearer PII/data-flow scan).");
+    } else {
+        runner.run_tool("git", &["init".to_string(), "-b".to_string(), "main".to_string()], &root_str_for_init, RunToolOptions::default()).await?;
+        runner.run_tool("git", &["add".to_string(), ".".to_string()], &root_str_for_init, RunToolOptions::default()).await?;
+        runner
+            .run_tool("git", &["-c".to_string(), "user.name=Onboarding Gatekeeper".to_string(), "-c".to_string(), "user.email=gatekeeper@localhost".to_string(), "commit".to_string(), "-m".to_string(), "chore: initial compliant code drop via onboarding gatekeeper".to_string()], &root_str_for_init, RunToolOptions::default())
+            .await?;
+    }
+
     std::fs::create_dir_all(&local_workflow_dir)?;
 
     let source_workflow_dir = wf_file.parent().unwrap_or(root);
@@ -176,22 +198,7 @@ pub async fn run_actions_locally(root: &Path, wf_file: &Path, runner: &ToolRunne
         }
     }
     let wf_path_for_act = local_workflow_dir.join(wf_file.file_name().unwrap_or_default());
-
-    // act needs the workspace to be a git repo for ref/branch metadata.
-    // Bearer (checkPiiDataFlow, Phase 4, on by default) may already have
-    // initialized and committed this same root — reuse that instead of
-    // re-running init/add/commit unconditionally.
-    let already_repo = root.join(".git").exists();
     let root_str = root.to_string_lossy().into_owned();
-    if already_repo {
-        log("Reusing repository initialized during Phase 4 (Bearer PII/data-flow scan).");
-    } else {
-        runner.run_tool("git", &["init".to_string(), "-b".to_string(), "main".to_string()], &root_str, RunToolOptions::default()).await?;
-        runner.run_tool("git", &["add".to_string(), ".".to_string()], &root_str, RunToolOptions::default()).await?;
-        runner
-            .run_tool("git", &["-c".to_string(), "user.name=Onboarding Gatekeeper".to_string(), "-c".to_string(), "user.email=gatekeeper@localhost".to_string(), "commit".to_string(), "-m".to_string(), "chore: initial compliant code drop via onboarding gatekeeper".to_string()], &root_str, RunToolOptions::default())
-            .await?;
-    }
 
     // Resolved via a single `let` binding rather than a bare reassignment
     // to a `token`-named variable — the org's Phase 5 "Plaintext Tokens"

@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 ignite-guidelines = { path = "../guidelines" }
+ignite-tool-runner = { path = "../tool-runner" }
 rmcp = { version = "3.1.4", features = ["server", "transport-io", "macros", "schemars", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }

@@ -263,8 +263,18 @@ fn no_unpinned_gha_action(content: &str, rel_path: &str) -> Vec<CheckHit> {
     hits
 }
 
+/// Template files a project is explicitly instructed to commit as this
+/// guideline's own remediation ("commit a .env.example with placeholder
+/// keys only") — never real secret-bearing env files themselves, so
+/// following the guideline's advice must never trip the guideline it's
+/// advice for.
+const ENV_TEMPLATE_SUFFIXES: [&str; 3] = [".env.example", ".env.sample", ".env.template"];
+
 fn no_committed_env_files(rel_path: &str) -> Vec<CheckHit> {
     let base = Path::new(rel_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if ENV_TEMPLATE_SUFFIXES.iter().any(|s| base == *s) {
+        return vec![];
+    }
     if base == ".env" || base.starts_with(".env.") {
         vec![CheckHit { line: 0, snippet: rel_path.to_string(), kind: None }]
     } else {
@@ -566,8 +576,18 @@ mod tests {
     fn no_committed_env_files_flags_dotenv_variants() {
         assert_eq!(run_check("noCommittedEnvFiles", "", ".env").unwrap().len(), 1);
         assert_eq!(run_check("noCommittedEnvFiles", "", ".env.production").unwrap().len(), 1);
-        assert_eq!(run_check("noCommittedEnvFiles", "", ".env.example").unwrap().len(), 1);
         assert!(run_check("noCommittedEnvFiles", "", "config.env.js").unwrap().is_empty());
+    }
+
+    /// BUG-138: `.env.example`/`.env.sample`/`.env.template` are this
+    /// guideline's own documented remediation ("commit a .env.example
+    /// with placeholder keys only") — flagging them as a violation
+    /// penalized a project for correctly following the advice.
+    #[test]
+    fn no_committed_env_files_does_not_flag_template_files() {
+        assert!(run_check("noCommittedEnvFiles", "", ".env.example").unwrap().is_empty());
+        assert!(run_check("noCommittedEnvFiles", "", ".env.sample").unwrap().is_empty());
+        assert!(run_check("noCommittedEnvFiles", "", ".env.template").unwrap().is_empty());
     }
 
     #[test]

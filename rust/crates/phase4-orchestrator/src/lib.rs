@@ -235,6 +235,25 @@ pub async fn run_phase4_checks(
         // same collision-free-across-concurrent-jobs guarantee for free
         // without scanning the config file itself as part of the working
         // tree (it lives next to `root`, not inside it).
+        // RAII: the file is removed when `_custom_config_guard` drops at
+        // the end of this block's scope, regardless of *how* the scope
+        // ends — an early error return, a panic unwinding through here,
+        // or the enclosing future being cancelled/timed-out mid-`.await`
+        // (which runs local destructors but never reaches code sitting
+        // after the `.await` point). The previous explicit
+        // `std::fs::remove_file` call at the bottom of this block only
+        // ever ran on the normal-completion path, leaking a file
+        // containing operator-authored secret-detection regexes on disk
+        // in every other case.
+        struct TempFileGuard(Option<std::path::PathBuf>);
+        impl Drop for TempFileGuard {
+            fn drop(&mut self) {
+                if let Some(path) = self.0.take() {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        let mut _custom_config_guard = TempFileGuard(None);
         let custom_config_path: Option<std::path::PathBuf> = if custom_patterns.is_empty() {
             None
         } else {
@@ -242,7 +261,10 @@ pub async fn run_phase4_checks(
             let file_name = format!("ignite-gitleaks-custom-{}.toml", root.file_name().and_then(|n| n.to_str()).unwrap_or("job"));
             let path = root.parent().unwrap_or(root).join(file_name);
             match std::fs::write(&path, &toml) {
-                Ok(()) => Some(path),
+                Ok(()) => {
+                    _custom_config_guard.0 = Some(path.clone());
+                    Some(path)
+                }
                 Err(e) => {
                     log(&format!("⚠ failed to write custom secret pattern config ({e}) — scanning with the base gitleaks config only"));
                     None
@@ -263,10 +285,8 @@ pub async fn run_phase4_checks(
             let history_added = ignite_secrets::merge_gitleaks_history_findings(&secrets_result.findings, &history_raw, &gitignore_patterns, &config.secrets.known_public_key_patterns);
             secrets_result.findings.extend(history_added);
         }
-
-        if let Some(path) = custom_config_path {
-            let _ = std::fs::remove_file(&path);
-        }
+        // Cleanup now happens via `_custom_config_guard`'s `Drop` at the
+        // end of this scope, not here.
     }
     let ms_secrets = __t_secrets.elapsed().as_millis() as u64;
     task_timings.push(("secrets", ms_secrets));
@@ -339,7 +359,11 @@ pub async fn run_phase4_checks(
         // FAST_MODE_TASKS = secrets, governance, semanticSast, fileEncapsulation
         log("→ semanticSast starting...");
         let __t = std::time::Instant::now();
-        let semantic_sast_result = ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast).await;
+        // Same timeout guard normal (non-fast) mode already wraps this
+        // call in below — without it, a hung Semgrep process stalled the
+        // entire fast-mode scan indefinitely, defeating the point of
+        // "fast" mode existing at all.
+        let semantic_sast_result = with_timeout_or("semanticSast", log, ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast), || ignite_semantic_sast::SemanticSastResult { findings: vec![], engine: "error" }).await;
         let ms = __t.elapsed().as_millis() as u64;
         task_timings.push(("semanticSast", ms));
         log(&format!("✓ semanticSast done ({} finding(s), {ms}ms)", semantic_sast_result.findings.len()));
@@ -353,7 +377,10 @@ pub async fn run_phase4_checks(
         };
         log("→ fileEncapsulation starting...");
         let __t = std::time::Instant::now();
-        let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation)?;
+        let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation).unwrap_or_else(|e| {
+            log(&format!("✗ fileEncapsulation failed: {e}"));
+            ignite_file_encapsulation::FileEncapsulationResult { findings: vec![], engine: "error" }
+        });
         let ms = __t.elapsed().as_millis() as u64;
         task_timings.push(("fileEncapsulation", ms));
         log(&format!("✓ fileEncapsulation done ({} finding(s), {ms}ms)", file_encapsulation_result.findings.len()));
@@ -727,7 +754,16 @@ pub async fn run_phase4_checks(
 
     log("→ fileEncapsulation starting...");
     let __t = std::time::Instant::now();
-    let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation)?;
+    // Every sequential check below used `?`, which aborted the *entire*
+    // orchestrator — discarding every already-completed concurrent scan
+    // result (CodeQL, Semgrep, gitleaks, IaC, ...) — on a single transient
+    // I/O error from one of these six lightweight built-in checks (a
+    // locked file, a dangling symlink). Each now degrades to an empty,
+    // `engine: "error"`-tagged result and keeps going instead.
+    let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation).unwrap_or_else(|e| {
+        log(&format!("✗ fileEncapsulation failed: {e}"));
+        ignite_file_encapsulation::FileEncapsulationResult { findings: vec![], engine: "error" }
+    });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("fileEncapsulation", ms));
     log(&format!("✓ fileEncapsulation done ({} finding(s), {ms}ms)", file_encapsulation_result.findings.len()));
@@ -767,7 +803,10 @@ pub async fn run_phase4_checks(
 
     log("→ euAiActDocuments starting...");
     let __t = std::time::Instant::now();
-    let ai_act_docs_result = ignite_compliance_documents::check_compliance_documents(root, config.eu_ai_act_documents_enabled)?;
+    let ai_act_docs_result = ignite_compliance_documents::check_compliance_documents(root, config.eu_ai_act_documents_enabled).unwrap_or_else(|e| {
+        log(&format!("✗ euAiActDocuments failed: {e}"));
+        ignite_compliance_documents::ComplianceDocumentsResult { engine: "error", documents: Default::default() }
+    });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("euAiActDocuments", ms));
     log(&format!("✓ euAiActDocuments done ({ms}ms)"));
@@ -781,7 +820,10 @@ pub async fn run_phase4_checks(
 
     log("→ deadCode starting...");
     let __t = std::time::Instant::now();
-    let dead_code_result = ignite_dead_code::check_dead_code(root, &config.dead_code)?;
+    let dead_code_result = ignite_dead_code::check_dead_code(root, &config.dead_code).unwrap_or_else(|e| {
+        log(&format!("✗ deadCode failed: {e}"));
+        ignite_dead_code::DeadCodeResult { findings: vec![], engine: "error", scanned: 0, reached: 0, entries: 0 }
+    });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("deadCode", ms));
     log(&format!("✓ deadCode done ({} finding(s), {ms}ms)", dead_code_result.findings.len()));
@@ -795,7 +837,10 @@ pub async fn run_phase4_checks(
     let repo = config.repo.clone();
     log("→ health starting...");
     let __t = std::time::Instant::now();
-    let health_result = ignite_complexity_health::check_complexity_health(root, &config.complexity_health, &churn, |rel_path| store.get_runtime_coverage_for_file(&org, &repo, rel_path).and_then(|r| r.covered_pct))?;
+    let health_result = ignite_complexity_health::check_complexity_health(root, &config.complexity_health, &churn, |rel_path| store.get_runtime_coverage_for_file(&org, &repo, rel_path).and_then(|r| r.covered_pct)).unwrap_or_else(|e| {
+        log(&format!("✗ health failed: {e}"));
+        ignite_complexity_health::ComplexityHealthResult { findings: vec![], engine: "error", metrics: None }
+    });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("health", ms));
     log(&format!("✓ health done ({} finding(s), {ms}ms)", health_result.findings.len()));
@@ -806,7 +851,10 @@ pub async fn run_phase4_checks(
 
     log("→ cssDeadCode starting...");
     let __t = std::time::Instant::now();
-    let css_dead_code_result = ignite_css_dead_code::check_css_dead_code(root, &config.css_dead_code)?;
+    let css_dead_code_result = ignite_css_dead_code::check_css_dead_code(root, &config.css_dead_code).unwrap_or_else(|e| {
+        log(&format!("✗ cssDeadCode failed: {e}"));
+        ignite_css_dead_code::CssDeadCodeResult { findings: vec![], engine: "error", scanned: None }
+    });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("cssDeadCode", ms));
     log(&format!("✓ cssDeadCode done ({} finding(s), {ms}ms)", css_dead_code_result.findings.len()));
@@ -817,7 +865,10 @@ pub async fn run_phase4_checks(
 
     log("→ boundaries starting...");
     let __t = std::time::Instant::now();
-    let boundaries_result = ignite_boundaries::check_boundaries(root, &config.boundaries)?;
+    let boundaries_result = ignite_boundaries::check_boundaries(root, &config.boundaries).unwrap_or_else(|e| {
+        log(&format!("✗ boundaries failed: {e}"));
+        ignite_boundaries::BoundariesResult { findings: vec![], engine: "error", zone_count: None }
+    });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("boundaries", ms));
     log(&format!("✓ boundaries done ({} finding(s), {ms}ms)", boundaries_result.findings.len()));

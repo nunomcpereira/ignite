@@ -761,15 +761,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/pipeline/:job_id/studio/loc-metrics", get(loc_metrics))
         .route("/api/pipeline/:job_id/studio/posture", get(posture))
         .route("/api/pipeline/:job_id/studio/provenance", get(provenance))
-        // Ad-hoc CodeQL query: reads whichever database `/studio/codeql`
-        // already built and returns rows, same as every other read-only
-        // report route above — its own doc comment already says "Purely
-        // exploratory — results aren't persisted as issues or cached", so
-        // it can't change what a run will push.
-        .route(
-            "/api/pipeline/:job_id/studio/codeql/query",
-            axum::routing::post(codeql_query).delete(codeql_query_cancel),
-        )
         .route("/api/pipeline/:job_id/studio/codeql/languages", get(codeql_languages))
         // Call graph viewer — read-only, same posture as the ad-hoc CodeQL
         // query above (reads an already-built database for non-Rust
@@ -785,18 +776,26 @@ pub fn router() -> Router<Arc<AppState>> {
 /// closes in `main.rs`'s `require_auth_middleware` wiring: an
 /// unauthenticated caller reaching any of these could tamper with a run
 /// before Phase 6 pushes it, or trigger unbounded CodeQL execution.
-/// Read-only routes in `router()` above (including `/studio/file` GET and
-/// the ad-hoc `/studio/codeql/query`) stay unauthenticated by deliberate
-/// choice — a caller must still be running/have run a local
-/// simulation/scan to reach them at all, and gating "check the results of
-/// the scan I just ran" behind login is a worse local-dev/simulation
-/// experience for no real security gain; only state-changing actions move
-/// here.
+/// Read-only routes in `router()` above (`/studio/file` GET and
+/// `/studio/codeql/languages`) stay unauthenticated by deliberate choice —
+/// a caller must still be running/have run a local simulation/scan to
+/// reach them at all, and gating "check the results of the scan I just
+/// ran" behind login is a worse local-dev/simulation experience for no
+/// real security gain; only state-changing (or expensive-to-run) actions
+/// move here.
+///
+/// The ad-hoc CodeQL query endpoint moved here even though it's read-only
+/// in the "doesn't change what a run pushes" sense — an anonymous caller
+/// could still flood it with up to 20,000-character queries, each
+/// triggering real CodeQL package installation/compilation/execution
+/// against any `job_id`, which is a CPU/memory/disk exhaustion vector
+/// regardless of whether the results themselves are persisted.
 pub fn mutating_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/pipeline/:job_id/studio/file", axum::routing::put(put_file))
         .route("/api/pipeline/:job_id/studio/rescan", axum::routing::post(rescan))
         .route("/api/pipeline/:job_id/studio/codeql", axum::routing::post(codeql_run))
+        .route("/api/pipeline/:job_id/studio/codeql/query", axum::routing::post(codeql_query).delete(codeql_query_cancel))
 }
 
 #[cfg(test)]
@@ -811,7 +810,7 @@ mod tests {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         let job_id = "studio-test-job".to_string();
-        let project_id = db.create_project(&job_id, "acme", "widgets", false, "api", None);
+        let project_id = db.create_project(&job_id, "acme", "widgets", false, "api", None).unwrap();
 
         let app_state = Arc::new(AppState {
             runner: state::default_runner(),

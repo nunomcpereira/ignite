@@ -100,7 +100,7 @@ async fn main() {
     // one call. A repo can breach its SLA without this run finding any new
     // issue (the finding just aged past its deadline), so this is checked
     // independently of the per-target loop above.
-    match http.get(format!("{server_base}/api/onboarded-repos")).send().await {
+    match ignite_scheduled_rescan::with_ignite_api_key(http.get(format!("{server_base}/api/onboarded-repos"))).send().await {
         Ok(res) if res.status().is_success() => match res.json::<Vec<serde_json::Value>>().await {
             Ok(summaries) => {
                 let breaches = find_sla_breaches(&summaries);
@@ -113,8 +113,18 @@ async fn main() {
             }
             Err(e) => eprintln!("SLA check: failed to parse onboarded-repos response: {e}"),
         },
-        Ok(res) => eprintln!("SLA check: onboarded-repos returned {}", res.status()),
-        Err(e) => eprintln!("SLA check: onboarded-repos request failed: {e}"),
+        // A non-success status (401 without IGNITE_API_KEY configured,
+        // included) must fail the sweep, not just log a line no one's
+        // watching — this check exists specifically to catch SLA breaches
+        // unattended.
+        Ok(res) => {
+            eprintln!("SLA check: onboarded-repos returned {}", res.status());
+            had_error = true;
+        }
+        Err(e) => {
+            eprintln!("SLA check: onboarded-repos request failed: {e}");
+            had_error = true;
+        }
     }
 
     if had_error {

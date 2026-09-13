@@ -42,7 +42,25 @@ async fn is_git_repo(runner: &ToolRunner, root: &str) -> bool {
 /// bypassing code review of the ignore rules themselves. `git cat-file -e
 /// HEAD:<path>` checks the committed tree directly instead.
 async fn is_tracked_by_git(runner: &ToolRunner, root: &str, rel_file: &str) -> bool {
-    runner.run_tool("git", &["cat-file".to_string(), "-e".to_string(), format!("HEAD:{rel_file}")], root, RunToolOptions::default()).await.is_ok()
+    // `git cat-file -e HEAD:<path>` fails whenever `HEAD` doesn't resolve
+    // at all — not just "this file isn't committed", but also a brand-new
+    // repository before its very first commit (an "unborn" HEAD). Without
+    // this fallback, every new project onboarding for the first time with
+    // a real, deliberately-staged `.igniteignore` was blocked, since
+    // there's no `HEAD:` tree to check yet no matter what's staged. `git
+    // ls-files --error-unmatch` checks the index directly instead, which
+    // is exactly what "about to be committed" means before a first
+    // commit exists — the doc comment above's staged-vs-committed
+    // distinction only matters once real git history exists to compare
+    // against.
+    if runner.run_tool("git", &["cat-file".to_string(), "-e".to_string(), format!("HEAD:{rel_file}")], root, RunToolOptions::default()).await.is_ok() {
+        return true;
+    }
+    let has_head = runner.run_tool("git", &["rev-parse".to_string(), "--verify".to_string(), "HEAD".to_string()], root, RunToolOptions::default()).await.is_ok();
+    if has_head {
+        return false; // real history exists and the file simply isn't in it
+    }
+    runner.run_tool("git", &["ls-files".to_string(), "--error-unmatch".to_string(), rel_file.to_string()], root, RunToolOptions::default()).await.is_ok()
 }
 
 /// `content_root` is where `.igniteignore` itself is read from (the

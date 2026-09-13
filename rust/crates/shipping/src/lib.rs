@@ -249,7 +249,14 @@ pub async fn archive_phase6_payload(root: &Path, project_id: Option<i64>, runner
             return None;
         }
     };
-    let tmp_zip = tmp_file.path().to_path_buf();
+    // `into_temp_path()` closes the write handle `NamedTempFile` holds
+    // open while keeping the file itself on disk (still auto-removed on
+    // drop, just via `TempPath` instead) — `git archive -o <path>` opens
+    // its own handle to write the zip, which fails with a sharing
+    // violation on Windows (and any filesystem enforcing mandatory
+    // locking) while this process still holds one too.
+    let tmp_file = tmp_file.into_temp_path();
+    let tmp_zip = tmp_file.to_path_buf();
     let root_str = root.to_string_lossy().into_owned();
 
     // Snapshot the exact tracked tree that phase 6 is attempting to push.

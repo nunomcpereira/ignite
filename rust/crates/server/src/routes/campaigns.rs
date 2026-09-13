@@ -29,7 +29,10 @@ async fn create_campaign(State(state): State<Arc<AppState>>, crate::auth::Requir
     // client-supplied `createdBy` in the body — otherwise any
     // authenticated user could attribute a campaign to someone else in
     // audit/compliance reports.
-    let id = state.db.create_campaign(title, description, category, min_score, target_date, Some(&_user.email));
+    let id = match state.db.create_campaign(title, description, category, min_score, target_date, Some(&_user.email)) {
+        Ok(id) => id,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed to create campaign: {e}") }))).into_response(),
+    };
     match state.db.get_campaign(id) {
         Some(campaign) => (StatusCode::CREATED, Json(campaign)).into_response(),
         None => Json(json!({ "ok": true, "id": id })).into_response(),

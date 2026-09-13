@@ -65,10 +65,31 @@ static LICENSE_ALIASES: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
 
 static ALIAS_STRIP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[\s.\-_]").unwrap());
 
+/// Case-insensitive membership check against a tier set, returning the
+/// set's own canonically-cased entry (`"MIT"`, not whatever case the
+/// input happened to use) when found — the tier sets themselves
+/// (`LICENSE_TIER_GREEN`/`_WARNING`/`_RED`) store exact-case SPDX ids
+/// (`"MIT"`, `"ISC"`, `"Apache-2.0"`), and a package manifest/registry
+/// reporting a technically-correct but differently-cased spelling
+/// (`"mit"`, `"MIT License"` after alias-stripping to `"mit"`) previously
+/// fell through every exact-match `.contains()` check and was
+/// misclassified as an unrecognized/red license.
+fn find_case_insensitive<'a>(set: &'a HashSet<&'static str>, id: &str) -> Option<&'a &'static str> {
+    set.iter().find(|s| s.eq_ignore_ascii_case(id))
+}
+
 pub fn normalize_license_id(raw: &str) -> String {
     let trimmed = raw.trim();
     let key = ALIAS_STRIP_RE.replace_all(&trimmed.to_lowercase(), "").into_owned();
-    LICENSE_ALIASES.get(key.as_str()).map(|s| s.to_string()).unwrap_or_else(|| trimmed.to_string())
+    if let Some(alias) = LICENSE_ALIASES.get(key.as_str()) {
+        return alias.to_string();
+    }
+    for set in [&*LICENSE_TIER_GREEN, &*LICENSE_TIER_WARNING, &*LICENSE_TIER_RED] {
+        if let Some(canonical) = find_case_insensitive(set, trimmed) {
+            return canonical.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 static COMMERCIAL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)commercial|proprietary").unwrap());

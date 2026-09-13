@@ -45,18 +45,24 @@ fn compute_hash(prev_hash: &str, event_type: &str, severity: &str, summary: &str
 impl DbStore {
     /// Persists one audit event, chaining it to the previous row's hash.
     /// Returns the inserted row id.
+    ///
+    /// This runs unconditionally on every scan completion, override, gate
+    /// resolution, and API-key creation — a `.unwrap()`-triggered panic
+    /// here on a transient I/O error (lock contention, disk quota) used
+    /// to crash the whole server process and poison the shared connection
+    /// mutex for every other in-flight request. `Err` now propagates so
+    /// the caller can log and continue instead.
     #[allow(clippy::too_many_arguments)]
-    pub fn record_audit_event(&self, event_type: &str, severity: &str, summary: &str, actor: Option<&str>, org: Option<&str>, repo: Option<&str>, metadata_json: Option<&str>) -> i64 {
+    pub fn record_audit_event(&self, event_type: &str, severity: &str, summary: &str, actor: Option<&str>, org: Option<&str>, repo: Option<&str>, metadata_json: Option<&str>) -> rusqlite::Result<i64> {
         let conn = self.conn.lock();
-        let prev_hash: String = conn.query_row("SELECT hash FROM audit_events ORDER BY id DESC LIMIT 1", [], |row| row.get(0)).optional().unwrap().unwrap_or_else(|| GENESIS_HASH.to_string());
-        let created_at: String = conn.query_row("SELECT datetime('now')", [], |row| row.get(0)).unwrap();
+        let prev_hash: String = conn.query_row("SELECT hash FROM audit_events ORDER BY id DESC LIMIT 1", [], |row| row.get(0)).optional()?.unwrap_or_else(|| GENESIS_HASH.to_string());
+        let created_at: String = conn.query_row("SELECT datetime('now')", [], |row| row.get(0))?;
         let hash = compute_hash(&prev_hash, event_type, severity, summary, actor, org, repo, metadata_json, &created_at);
         conn.execute(
             "INSERT INTO audit_events (event_type, severity, summary, actor, org, repo, metadata_json, created_at, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![event_type, severity, summary, actor, org, repo, metadata_json, created_at, prev_hash, hash],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
+        )?;
+        Ok(conn.last_insert_rowid())
     }
 
     /// Filtered/paginated read for `GET /api/audit-log`. Rows come back
@@ -138,7 +144,7 @@ mod tests {
     #[test]
     fn first_event_chains_from_genesis() {
         let db = test_db();
-        db.record_audit_event("scan.completed", "info", "clean scan", None, Some("acme"), Some("widgets"), None);
+        db.record_audit_event("scan.completed", "info", "clean scan", None, Some("acme"), Some("widgets"), None).unwrap();
         let events = db.list_audit_events(None, None, None, None, None, None, None, 10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].prev_hash, GENESIS_HASH);
@@ -148,8 +154,8 @@ mod tests {
     #[test]
     fn each_event_chains_to_the_previous_hash() {
         let db = test_db();
-        db.record_audit_event("scan.completed", "info", "first", None, None, None, None);
-        db.record_audit_event("scan.completed", "info", "second", None, None, None, None);
+        db.record_audit_event("scan.completed", "info", "first", None, None, None, None).unwrap();
+        db.record_audit_event("scan.completed", "info", "second", None, None, None, None).unwrap();
         let events = db.list_audit_events(None, None, None, None, None, None, None, 10);
         // newest-first
         assert_eq!(events[0].summary, "second");
@@ -160,8 +166,8 @@ mod tests {
     #[test]
     fn tampering_with_a_row_breaks_verification() {
         let db = test_db();
-        db.record_audit_event("scan.completed", "info", "first", None, None, None, None);
-        db.record_audit_event("scan.completed", "info", "second", None, None, None, None);
+        db.record_audit_event("scan.completed", "info", "first", None, None, None, None).unwrap();
+        db.record_audit_event("scan.completed", "info", "second", None, None, None, None).unwrap();
         {
             let conn = db.conn.lock();
             conn.execute("UPDATE audit_events SET summary = 'tampered' WHERE summary = 'first'", []).unwrap();
@@ -172,8 +178,8 @@ mod tests {
     #[test]
     fn filters_by_org_and_event_type() {
         let db = test_db();
-        db.record_audit_event("gate.push_rejected", "critical", "blocked", None, Some("acme"), Some("widgets"), None);
-        db.record_audit_event("scan.completed", "info", "clean", None, Some("other"), Some("thing"), None);
+        db.record_audit_event("gate.push_rejected", "critical", "blocked", None, Some("acme"), Some("widgets"), None).unwrap();
+        db.record_audit_event("scan.completed", "info", "clean", None, Some("other"), Some("thing"), None).unwrap();
         let filtered = db.list_audit_events(Some("acme"), None, Some("gate.push_rejected"), None, None, None, None, 10);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].summary, "blocked");

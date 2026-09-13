@@ -72,6 +72,10 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
     if !verify_webhook_signature(secret, &body, signature) {
         return err(StatusCode::UNAUTHORIZED, "Signature verification failed.".to_string());
     }
+    let delivery_id = headers.get("x-github-delivery").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ignite_github_api::record_delivery_once(delivery_id) {
+        return axum::Json(json!({ "ok": true, "ignored": "duplicate_delivery" })).into_response();
+    }
 
     let payload: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -97,7 +101,19 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
     // ahead of `finish_project`, which every existing reader (Onboarded
     // Repos, `get_latest_project_for_org_repo`) already tolerates.
     let job_id = format!("repo-event-{}", uuid::Uuid::new_v4());
-    let project_id = state.db.create_project(&job_id, &org, &repo, false, "repository-event", None);
+    let project_id = match state.db.create_project(&job_id, &org, &repo, false, "repository-event", None) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("repository-events webhook: failed to enroll {org}/{repo}: {e}");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to enroll {org}/{repo}: {e}"));
+        }
+    };
+    // This row is never a real scan run — `finish_project` is never
+    // called on it, so without this it permanently sits at the
+    // `create_project` default of `status = 'running'`, forever
+    // indistinguishable from an actually-in-progress (or crashed) scan in
+    // every dashboard/monitor that reads project status.
+    state.db.set_project_status(project_id, "enrolled");
     state.emit_audit_event(ignite_audit_log::AuditEvent::new("repository.enrolled", "info", format!("{org}/{repo}: auto-enrolled on GitHub \"{action}\" event")).repo(&org, &repo).metadata(json!({ "projectId": project_id, "action": action, "repoUrl": repo_url })));
 
     // 2. Optional: apply/update the org's ignite-gate Repository Ruleset —
@@ -128,9 +144,16 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
         // deployment (containerized or otherwise) that sets `PORT` to bind
         // a different port than the static config value.
         let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
+        // `IGNITE_BASE_URL` is the same env var every other in-process
+        // caller of this server already reads to reach itself (the CLI,
+        // mcp-server) — a deployment terminating TLS itself or sitting
+        // behind an HTTPS-only reverse proxy sets it to the real external
+        // scheme/host, since a hardcoded `http://127.0.0.1:{port}` can't
+        // possibly be reachable at all if the server isn't actually
+        // listening on plain HTTP on that loopback address.
+        let server_base = std::env::var("IGNITE_BASE_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"));
         tokio::spawn(async move {
             let http = reqwest::Client::new();
-            let server_base = format!("http://127.0.0.1:{port}");
             let gh_token = ignite_github_api::resolve_server_github_token();
             let target = RescanTarget { org: org.clone(), repo: repo.clone() };
             let outcome = rescan_one(&runner, &http, &server_base, &gh_token, &target, AutoFixMode::Off).await;

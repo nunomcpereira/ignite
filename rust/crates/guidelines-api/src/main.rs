@@ -103,7 +103,19 @@ async fn check_project(Json(body): Json<Value>) -> Response {
     let Some(project_path) = project_path.filter(|p| !p.is_empty()) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "\"projectPath\" (string, absolute path) is required." }))).into_response();
     };
-    let root = match std::fs::canonicalize(project_path) {
+    // Loopback-only doesn't mean untrusted-input-safe on its own — an
+    // operator misconfiguring `GUIDELINES_API_HOST` to something other
+    // than the default `127.0.0.1`, or any other local process/container
+    // sharing the same network namespace, could otherwise point this at
+    // an arbitrary host path (`/etc`, SSH keys, ...) and have its full
+    // file contents echoed back in the JSON response. Same baseline
+    // check (absolute path required, no control characters) every other
+    // path-accepting entry point in this codebase already applies.
+    let sanitized = match ignite_tool_runner::sanitize_absolute_project_path(project_path) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("Invalid projectPath: {e}") }))).into_response(),
+    };
+    let root = match std::fs::canonicalize(&sanitized) {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("Path does not exist: {project_path}") }))).into_response(),
     };

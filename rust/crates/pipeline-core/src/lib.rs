@@ -95,8 +95,18 @@ pub fn stage_existing_project(source_dir: &Path, dest_dir: &Path, mut log: impl 
     for file in walk_files(source_dir)? {
         let rel = file.strip_prefix(source_dir).unwrap_or(&file);
         let target = dest_dir.join(rel);
-        let target_resolved = path_clean(&target);
-        let dest_resolved = path_clean(dest_dir);
+        // `path_clean` is purely lexical (no filesystem access) — for a
+        // *relative* `dest_dir`, that means `target_resolved` can end up
+        // with leftover `../` components (or resolve to an empty path)
+        // that `Path::starts_with` treats specially: `some/path`.starts_with("")`
+        // is `true` in Rust, so a relative `dest_dir` let every
+        // `target_resolved` pass the containment check unconditionally,
+        // regardless of how many `../` segments `rel` actually contained.
+        // Resolving both to absolute paths first (join onto the current
+        // working directory when relative) before the lexical clean closes
+        // that gap.
+        let target_resolved = path_clean(&to_absolute(&target));
+        let dest_resolved = path_clean(&to_absolute(dest_dir));
         if target_resolved != dest_resolved && !target_resolved.starts_with(&dest_resolved) {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("Blocked path traversal while staging project file: {}", rel.display())));
         }
@@ -122,6 +132,19 @@ pub fn stage_existing_project(source_dir: &Path, dest_dir: &Path, mut log: impl 
 
     log(&format!("Staged existing project: {} files ({:.1} KB).", file_count, total_bytes as f64 / 1024.0));
     Ok(StageResult { file_count, total_bytes })
+}
+
+/// Prefixes a relative path with the current working directory so
+/// `path_clean`'s purely-lexical `../` handling has an actual absolute
+/// base to resolve against, rather than potentially collapsing to an
+/// empty (or `../`-prefixed) relative path that a containment check via
+/// `Path::starts_with` can't reliably evaluate.
+fn to_absolute(p: &Path) -> std::path::PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
+    }
 }
 
 fn path_clean(p: &Path) -> std::path::PathBuf {

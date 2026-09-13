@@ -30,6 +30,17 @@ use tokio_stream::StreamExt as _;
 static TOOLS_STATUS_CACHE: Lazy<Mutex<Option<(Instant, Value)>>> = Lazy::new(|| Mutex::new(None));
 const TOOLS_STATUS_TTL: Duration = Duration::from_secs(10 * 60);
 
+/// Single-flight guard: without it, N concurrent requests arriving right
+/// after the cache expires all see a miss and each spawn all 19 probe
+/// subprocesses independently (N=50 -> 950 concurrent processes,
+/// including JVM-heavy ORT/CodeQL) — a self-inflicted fork-bomb-shaped
+/// DoS from completely ordinary concurrent traffic, not anything
+/// adversarial. Holding this for the whole "check cache, maybe run
+/// probes, store cache" section serializes callers onto one real probe
+/// run per cache expiry; everyone else just waits and then reads the
+/// cache the first caller populated.
+static TOOLS_STATUS_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+
 fn cached_tools_status() -> Option<Value> {
     let cache = TOOLS_STATUS_CACHE.lock();
     cache.as_ref().filter(|(at, _)| at.elapsed() < TOOLS_STATUS_TTL).map(|(_, v)| v.clone())
@@ -61,7 +72,11 @@ fn probe_to_value(v: &impl serde::Serialize) -> Value {
 /// enabled flag. jscpd/trivyImage read the live config (both default off,
 /// see config.json); the rest are always-on or have no disable toggle in
 /// the JS original either.
-async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
+async fn tools_status(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Json<Value> {
+    if let Some(cached) = cached_tools_status() {
+        return Json(cached);
+    }
+    let _guard = TOOLS_STATUS_LOCK.lock().await;
     if let Some(cached) = cached_tools_status() {
         return Json(cached);
     }
@@ -118,12 +133,23 @@ async fn tools_status(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// never silently drift apart if a probe is ever added/removed.
 const TOOL_COUNT: usize = 19;
 
-async fn tools_status_stream(State(state): State<Arc<AppState>>) -> Response {
+async fn tools_status_stream(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
     let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     if let Some(cached) = cached_tools_status() {
         tokio::spawn(replay_cached_tools_status_stream(cached, out_tx));
     } else {
-        tokio::spawn(run_tools_status_stream(state, out_tx));
+        // Same single-flight guard as the plain JSON endpoint — acquired
+        // inside the spawned task (not here) so this handler itself
+        // returns immediately with the streaming response, same as
+        // before; only the actual probe run serializes.
+        tokio::spawn(async move {
+            let _guard = TOOLS_STATUS_LOCK.lock().await;
+            if let Some(cached) = cached_tools_status() {
+                replay_cached_tools_status_stream(cached, out_tx).await;
+            } else {
+                run_tools_status_stream(state, out_tx).await;
+            }
+        });
     }
     let stream = UnboundedReceiverStream::new(out_rx).map(Ok::<String, std::io::Error>);
     let body = Body::from_stream(stream);

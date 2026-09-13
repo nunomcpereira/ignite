@@ -55,51 +55,121 @@ fn count_decisions(line: &str, is_rust: bool) -> usize {
     count
 }
 
+/// Persistent state `strip_string_literals` carries across lines of one
+/// file — both the open-quote character (if inside a multi-line
+/// string/template literal) and whether a `/* ... */` block comment
+/// opened on an earlier line hasn't closed yet.
+#[derive(Default)]
+struct StripState {
+    in_string: Option<char>,
+    in_block_comment: bool,
+}
+
 /// Removes the *contents* of quoted string/template literals (replaced
 /// with spaces, preserving column positions and the surrounding quotes)
-/// before brace-depth/decision counting runs — a literal like `"foo("` or
-/// a `/[{(]/`-shaped regex previously left brace-depth tracking
-/// permanently drifted upward for the rest of the file, since a `{`/`(`
-/// inside a string was indistinguishable from a real one. Deliberately
-/// simple (no real tokenizer): handles `'...'`, `"..."`, `` `...` `` with
-/// backslash-escaping, which covers the overwhelming majority of real
-/// source lines without needing full per-language lexing.
+/// and of `//`/`/* */` comments, before brace-depth/decision counting
+/// runs — a literal like `"foo("` or a `/[{(]/`-shaped regex previously
+/// left brace-depth tracking permanently drifted upward for the rest of
+/// the file, since a `{`/`(` inside a string was indistinguishable from a
+/// real one. Deliberately simple (no real tokenizer): handles `'...'`,
+/// `"..."`, `` `...` `` with backslash-escaping, which covers the
+/// overwhelming majority of real source lines without needing full
+/// per-language lexing.
 ///
-/// `in_string` carries the open-quote state (if any) across calls, so a
-/// template literal/backtick string spanning multiple lines is tracked
-/// correctly instead of resetting to "not in a string" at every newline —
-/// the middle line of a multi-line string was previously parsed as active
-/// code (falsely inflating brace depth/decisions), and code after the
-/// closing quote on a later line was erroneously stripped as if it were
-/// still inside the string.
-fn strip_string_literals(line: &str, in_string: &mut Option<char>) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match *in_string {
-            Some(q) => {
-                if c == '\\' {
-                    out.push(' ');
-                    if chars.peek().is_some() {
-                        out.push(' ');
-                        chars.next();
-                    }
-                    continue;
-                }
-                if c == q {
-                    *in_string = None;
-                    out.push(c);
-                } else {
-                    out.push(' ');
-                }
+/// Comments are stripped in the same pass, before string-literal state
+/// can be affected by anything inside them — a stray apostrophe in an
+/// English contraction (`// don't`) or an unrelated quote character
+/// inside a comment no longer opens a string state that would otherwise
+/// persist across every following line until another quote happened to
+/// appear, silently zeroing out complexity/decision counts for the rest
+/// of the file.
+///
+/// A single quote is only treated as opening a string/char literal when
+/// it plausibly closes as one shortly after (`'a'`, `'\n'`, `'\\''`) —
+/// otherwise (`'a` with no closing quote, `'static`, a bare contraction)
+/// it's left as ordinary text. This is what actually distinguishes a real
+/// char literal from a Rust lifetime annotation (`&'a str`, `fn f<'a>()`)
+/// or an apostrophe in prose, without needing to know the source
+/// language.
+///
+/// State (open string quote, open block comment) carries across calls so
+/// a construct spanning multiple lines is tracked correctly instead of
+/// resetting at every newline — the middle line of a multi-line
+/// string/comment was previously parsed as active code (falsely
+/// inflating brace depth/decisions), and code after the closing
+/// quote/`*/` on a later line was erroneously stripped as if still inside
+/// it.
+fn strip_string_literals(line: &str, state: &mut StripState) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if state.in_block_comment {
+            if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                state.in_block_comment = false;
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+            } else {
+                out.push(' ');
+                i += 1;
             }
-            None => {
-                if c == '\'' || c == '"' || c == '`' {
-                    *in_string = Some(c);
-                }
-                out.push(c);
-            }
+            continue;
         }
+        if let Some(q) = state.in_string {
+            let c = chars[i];
+            if c == '\\' {
+                out.push(' ');
+                if i + 1 < chars.len() {
+                    out.push(' ');
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if c == q {
+                state.in_string = None;
+                out.push(c);
+            } else {
+                out.push(' ');
+            }
+            i += 1;
+            continue;
+        }
+        // Not in a string or block comment: check for comment starts
+        // before quote handling, so an apostrophe/quote inside a comment
+        // never reaches the string-state logic below.
+        if chars[i] == '/' && chars.get(i + 1) == Some(&'/') {
+            break; // rest of the line is a line comment
+        }
+        if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+            state.in_block_comment = true;
+            out.push(' ');
+            out.push(' ');
+            i += 2;
+            continue;
+        }
+        let c = chars[i];
+        if c == '"' || c == '`' {
+            state.in_string = Some(c);
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '\'' {
+            // Only a real char/string literal if it plausibly closes
+            // soon: `'x'` (one char) or `'\x'`/`'\xx'` (one escape).
+            let closes_as_char_literal = (chars.get(i + 1) == Some(&'\\') && chars.get(i + 3) == Some(&'\'')) || (chars.get(i + 1).is_some_and(|c| *c != '\'') && chars.get(i + 2) == Some(&'\''));
+            if closes_as_char_literal {
+                state.in_string = Some(c);
+            }
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        out.push(c);
+        i += 1;
     }
     out
 }
@@ -117,9 +187,9 @@ pub fn cyclomatic_and_cognitive_for(content: &str, is_rust: bool) -> CyclomaticA
     let mut cyclomatic: i64 = 1;
     let mut cognitive: i64 = 0;
     let mut depth: i64 = 0;
-    let mut in_string: Option<char> = None;
+    let mut strip_state = StripState::default();
     for raw_line in content.split(['\n']).flat_map(|l| l.strip_suffix('\r').or(Some(l))) {
-        let line = strip_string_literals(raw_line, &mut in_string);
+        let line = strip_string_literals(raw_line, &mut strip_state);
         let decisions = count_decisions(&line, is_rust) as i64;
         cyclomatic += decisions;
         cognitive += decisions * (1 + depth);

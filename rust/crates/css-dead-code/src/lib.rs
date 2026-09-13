@@ -44,7 +44,13 @@ static VUE_CLASS_BIND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:v-bind:cla
 // `classList.add/remove/toggle(...)` — extracts every quoted-string
 // argument's contents (each may itself be space-separated classes) rather
 // than trying to fully parse the call's actual JS argument expression.
-static CLASS_UTILITY_CALL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:clsx|classnames|cn|classList\.(?:add|remove|toggle))\(([^)]*)\)").unwrap());
+// Only matches the call's opening `(` — the argument list itself is
+// extracted separately via balanced-parenthesis scanning
+// (`extract_balanced_call_args` below), since `[^)]*` truncates at the
+// first `)`, which a nested call/expression inside the arguments
+// (`clsx(isMobile(req), "btn-primary")`) reaches long before the real
+// closing paren.
+static CLASS_UTILITY_CALL_START_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:clsx|classnames|cn|classList\.(?:add|remove|toggle))\(").unwrap());
 static QUOTED_STRING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#""([^"]*)"|'([^']*)'|`([^`]*)`"#).unwrap());
 static SKIP_PREFIX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(is-|has-|js-)").unwrap());
 
@@ -91,8 +97,9 @@ pub fn extract_used_classes(markup_content: &str) -> HashSet<String> {
             names.insert(cls.to_string());
         }
     }
-    for cap in CLASS_UTILITY_CALL_RE.captures_iter(markup_content) {
-        for qcap in QUOTED_STRING_RE.captures_iter(&cap[1]) {
+    for m in CLASS_UTILITY_CALL_START_RE.find_iter(markup_content) {
+        let args = extract_balanced_call_args(&markup_content[m.end()..]);
+        for qcap in QUOTED_STRING_RE.captures_iter(args) {
             let raw = qcap.get(1).or_else(|| qcap.get(2)).or_else(|| qcap.get(3)).map(|m| m.as_str()).unwrap_or("");
             for cls in raw.split_whitespace() {
                 names.insert(cls.to_string());
@@ -100,6 +107,45 @@ pub fn extract_used_classes(markup_content: &str) -> HashSet<String> {
         }
     }
     names
+}
+
+/// Given the text right after a call's opening `(` (already consumed),
+/// returns the slice up to its matching closing `)` — tracking nested
+/// parens and skipping over `)` characters inside a quoted string, so a
+/// nested call or an expression argument (`clsx(isMobile(req), "btn")`)
+/// doesn't truncate the argument list at the first `)` encountered.
+fn extract_balanced_call_args(rest: &str) -> &str {
+    let mut depth = 1i32;
+    let mut in_quote: Option<char> = None;
+    let mut escape_next = false;
+    for (i, c) in rest.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if let Some(q) = in_quote {
+            if c == '\\' {
+                escape_next = true;
+                continue;
+            }
+            if c == q {
+                in_quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => in_quote = Some(c),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    rest
 }
 
 #[derive(Debug, Clone, Serialize)]

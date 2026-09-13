@@ -80,10 +80,15 @@ pub fn build_failure_email(phase_titles: &BTreeMap<i64, String>, details: &Failu
         .map(|id| {
             let ph = details.record.get(id).unwrap_or(&empty);
             let color = phase_status_color(&ph.state);
-            let title = &phase_titles[id];
+            // Both a custom `phases` title override (`config.json`) and
+            // `ph.state` (set by whatever phase logic ran) are effectively
+            // operator/config-controlled text reaching an HTML email
+            // unescaped — a value containing markup could break the email
+            // layout or inject HTML in a webmail client that renders it.
+            let title = escape_html_mail(&phase_titles[id]);
+            let state = escape_html_mail(&ph.state);
             format!(
-                "<tr>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">Phase {id}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{title}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;color:{color};font-weight:600;text-transform:uppercase;\">{}</td>\n        </tr>",
-                ph.state
+                "<tr>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">Phase {id}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{title}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;color:{color};font-weight:600;text-transform:uppercase;\">{state}</td>\n        </tr>"
             )
         })
         .collect();
@@ -93,7 +98,7 @@ pub fn build_failure_email(phase_titles: &BTreeMap<i64, String>, details: &Failu
         .iter()
         .filter(|(_, ph)| ph.state == "failed" && !ph.logs.is_empty())
         .map(|(id, ph)| {
-            let title = phase_titles.get(id).map(String::as_str).unwrap_or("Unknown");
+            let title = escape_html_mail(phase_titles.get(id).map(String::as_str).unwrap_or("Unknown"));
             let logs = escape_html_mail(&truncate_logs(&ph.logs));
             format!(
                 "\n        <h3 style=\"margin:24px 0 8px;color:#0f172a;\">Phase {id} — {title} logs</h3>\n        <pre style=\"background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12px;line-height:1.6;overflow-x:auto;white-space:pre-wrap;\">{logs}</pre>"
@@ -101,7 +106,7 @@ pub fn build_failure_email(phase_titles: &BTreeMap<i64, String>, details: &Failu
         })
         .collect();
 
-    let failed_phase_title = phase_titles.get(&details.failed_phase).map(String::as_str).unwrap_or("Unknown");
+    let failed_phase_title = escape_html_mail(phase_titles.get(&details.failed_phase).map(String::as_str).unwrap_or("Unknown"));
     let subject = format!("[Ignite] \u{274c} Onboarding failed at Phase {} — {}/{}", details.failed_phase, strip_crlf(details.org), strip_crlf(details.repo));
     let insight_block = details
         .insight
@@ -170,7 +175,7 @@ pub fn build_override_email(phase_titles: &BTreeMap<i64, String>, details: &Over
         .collect();
 
     let error_count = details.applied.iter().filter(|a| a.issue.severity == "error").count();
-    let phase_title = phase_titles.get(&details.phase).map(String::as_str).unwrap_or("Unknown");
+    let phase_title = escape_html_mail(phase_titles.get(&details.phase).map(String::as_str).unwrap_or("Unknown"));
     let subject = format!("[Ignite] \u{26a0} {} guideline override(s) at Phase {} — {}/{}", details.applied.len(), details.phase, strip_crlf(details.org), strip_crlf(details.repo));
     let actor_display = escape_html_mail(details.actor.name.unwrap_or(details.actor.email));
     let html = format!(

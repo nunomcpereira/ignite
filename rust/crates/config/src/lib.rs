@@ -1071,6 +1071,23 @@ impl std::error::Error for LoadConfigError {}
 /// ignite-posture-rules.yaml/spectral-default-ruleset.yaml) — the caller
 /// passes the repo root.
 pub fn load_config(config_dir: &Path) -> Result<Config, LoadConfigError> {
+    // `IGNITE_CONFIG_DIR` reaches every caller (server, CLI, create-api-key,
+    // ...) as a raw, uncanonicalized path — a relative path (interpreted
+    // differently depending on the process's cwd at the moment it
+    // launched) or one containing `..`/symlink segments could resolve to a
+    // different directory than the operator intended, silently loading the
+    // wrong org's config.json. Canonicalizing here, the one choke point
+    // every caller already funnels through, closes that regardless of how
+    // each binary itself parsed the env var.
+    let config_dir_owned;
+    let config_dir = match std::fs::canonicalize(config_dir) {
+        Ok(canonical) if canonical.is_dir() => {
+            config_dir_owned = canonical;
+            config_dir_owned.as_path()
+        }
+        Ok(_) => return Err(LoadConfigError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("IGNITE_CONFIG_DIR ({}) is not a directory", config_dir.display())))),
+        Err(e) => return Err(LoadConfigError::Io(e)),
+    };
     // Faithful port of server.js's `require('dotenv').config()` — the Rust
     // server otherwise never reads `.env` at all (only real exported shell
     // env vars reach `apply_env_overrides` below), which silently strands
@@ -1441,7 +1458,13 @@ mod tests {
         env::set_var("IGNITE_CONFIG_PATH", dir.path().join("nonexistent.json"));
         let cfg = load_config(dir.path()).unwrap();
         assert!(cfg.compliance.posture.ruleset.ends_with("ignite-posture-rules.yaml"));
-        assert!(cfg.compliance.posture.ruleset.starts_with(dir.path().to_str().unwrap()));
+        // `load_config` now canonicalizes `config_dir` up front (BUG-191) —
+        // on macOS a `tempdir()` path is typically itself a symlink
+        // (`/var/...` -> `/private/var/...`), so the resolved ruleset path
+        // must be compared against the canonical form, not the original
+        // (possibly symlinked) `dir.path()`.
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        assert!(cfg.compliance.posture.ruleset.starts_with(canonical_dir.to_str().unwrap()));
         env::remove_var("IGNITE_CONFIG_PATH");
     }
 

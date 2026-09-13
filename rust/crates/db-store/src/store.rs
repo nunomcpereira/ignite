@@ -15,6 +15,14 @@ pub struct DbStore {
 impl DbStore {
     pub fn open(db_file: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(db_file)?;
+        // SQLite disables foreign-key enforcement by default on every new
+        // connection (a per-connection setting, not a database-file one —
+        // must be set here, not just once at schema-creation time).
+        // Without it, none of the schema's `ON DELETE CASCADE` clauses
+        // actually fire: deleting a project leaves its `pull_requests`/
+        // `dependency_scan_cache` rows (the latter holding large JSON
+        // blobs) orphaned instead of cascaded away.
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
         run_migrations(&conn)?;
         conn.execute_batch(BACKFILL_ONBOARDING_PRS_SQL)?;

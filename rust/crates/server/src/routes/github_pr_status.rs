@@ -95,7 +95,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn github_check(State(state): State<Arc<AppState>>, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn github_check(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
     let owner = body.get("owner").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();

@@ -8,6 +8,7 @@ name = "guidelines-api"
 path = "src/main.rs"
 
 [dependencies]
+ignite-tool-runner = { path = "../tool-runner" }
 ignite-guidelines = { path = "../guidelines" }
 axum = "0.7"
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread"] }

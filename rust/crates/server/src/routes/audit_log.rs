@@ -140,7 +140,7 @@ mod tests {
     /// freshly created local user in `state`'s db — both endpoints in
     /// this file now require `RequireAuth`.
     fn auth_header(state: &AppState) -> String {
-        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash");
+        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash").unwrap();
         let raw_key = ignite_auth::generate_api_key();
         state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
         format!("Bearer {raw_key}")
@@ -161,8 +161,8 @@ mod tests {
     async fn list_returns_recorded_events_filtered_by_org() {
         let state = test_state();
         let auth = auth_header(&state);
-        state.db.record_audit_event("gate.push_rejected", "critical", "blocked push", None, Some("acme"), Some("widgets"), None);
-        state.db.record_audit_event("scan.completed", "info", "clean scan", None, Some("other"), Some("thing"), None);
+        state.db.record_audit_event("gate.push_rejected", "critical", "blocked push", None, Some("acme"), Some("widgets"), None).unwrap();
+        state.db.record_audit_event("scan.completed", "info", "clean scan", None, Some("other"), Some("thing"), None).unwrap();
 
         let app = router().with_state(state);
         let res = app.oneshot(Request::get("/api/audit-log?org=acme").header("authorization", &auth).body(Body::empty()).unwrap()).await.unwrap();

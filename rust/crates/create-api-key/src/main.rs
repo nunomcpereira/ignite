@@ -84,7 +84,9 @@ pub fn attempt_owner_notification(result: &MintResult, label: Option<&str>) -> (
 /// Only the external sink dispatch below stays gated on
 /// `audit_log.enabled`/sinks being configured.
 fn emit_audit_event_blocking(db: &ignite_db_store::DbStore, result: &MintResult) {
-    db.record_audit_event("api_key.created", "warning", &format!("headless API key created for {}", result.user_email), Some(&result.operator), None, None, Some(&serde_json::json!({ "apiKeyId": result.api_key_id }).to_string()));
+    if let Err(e) = db.record_audit_event("api_key.created", "warning", &format!("headless API key created for {}", result.user_email), Some(&result.operator), None, None, Some(&serde_json::json!({ "apiKeyId": result.api_key_id }).to_string())) {
+        eprintln!("Warning: could not write local audit-trail record for this key creation ({e}).");
+    }
 
     let config_dir = env::var("IGNITE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
     let config = match ignite_config::load_config(&config_dir) {
@@ -183,7 +185,7 @@ mod tests {
     #[test]
     fn mint_succeeds_for_existing_user_and_key_authenticates() {
         let (db, _dir) = open_test_db();
-        db.create_local_user("real@example.com", Some("Real User"), "hashed-password");
+        db.create_local_user("real@example.com", Some("Real User"), "hashed-password").unwrap();
 
         let result = mint_api_key(&db, "real@example.com", Some("ci-bot"), "test-operator@host").unwrap();
         assert!(result.raw_key.starts_with("ignite_"));
@@ -208,7 +210,7 @@ mod tests {
     #[test]
     fn notification_is_honestly_reported_as_not_sent() {
         let (db, _dir) = open_test_db();
-        db.create_local_user("owner@example.com", None, "hashed-password");
+        db.create_local_user("owner@example.com", None, "hashed-password").unwrap();
         let result = mint_api_key(&db, "owner@example.com", None, "test-operator").unwrap();
         let (sent, reason) = attempt_owner_notification(&result, None);
         assert!(!sent);

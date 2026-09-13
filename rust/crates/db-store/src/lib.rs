@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn create_and_fetch_project_round_trips() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         let project = store.get_project(id).unwrap();
         assert_eq!(project.org, "acme");
         assert_eq!(project.repo, "widgets");
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn finish_project_updates_status_and_timestamps() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-2", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-2", "acme", "widgets", false, "ui", None).unwrap();
         store.finish_project("success", None, Some("https://github.com/acme/widgets"), None, id);
         let project = store.get_project(id).unwrap();
         assert_eq!(project.status, "success");
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn finish_project_with_pr_url_records_an_onboarding_pull_request() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-pr", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-pr", "acme", "widgets", false, "ui", None).unwrap();
         store.finish_project("success", None, Some("https://github.com/acme/widgets"), Some("https://github.com/acme/widgets/pull/1"), id);
 
         let summaries = store.list_onboarded_repo_summaries(7, 30, 90);
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn record_pull_request_adds_a_fix_pr_entry_alongside_onboarding() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-fix", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-fix", "acme", "widgets", false, "ui", None).unwrap();
         store.finish_project("success", None, Some("https://github.com/acme/widgets"), Some("https://github.com/acme/widgets/pull/1"), id);
         store.record_pull_request(id, "fix-pr", "https://github.com/acme/widgets/pull/2", Some("ignite/fix-issues/job-fix"), Some(3));
 
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn list_onboarded_repo_summaries_uses_latest_run_for_counts_but_full_history_for_acks_and_prs() {
         let (_dir, store) = open_test_db();
-        let old_id = store.create_project("job-old", "acme", "widgets", false, "ui", None);
+        let old_id = store.create_project("job-old", "acme", "widgets", false, "ui", None).unwrap();
         store.add_override(AddOverrideArgs {
             project_id: old_id,
             job_id: "job-old",
@@ -124,7 +124,7 @@ mod tests {
             email_sent: true,
         });
 
-        let new_id = store.create_project("job-new", "acme", "widgets", false, "ui", None);
+        let new_id = store.create_project("job-new", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(
             new_id,
             &[
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn set_project_commit_shas_coalesces_and_does_not_clobber() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-commit", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-commit", "acme", "widgets", false, "ui", None).unwrap();
         store.set_project_commit_shas(id, Some("abc123"), None);
         let project = store.get_project(id).unwrap();
         assert_eq!(project.source_commit_sha.as_deref(), Some("abc123"));
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn retain_project_source_defaults_full_and_updates_tier() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-retain", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-retain", "acme", "widgets", false, "ui", None).unwrap();
         store.retain_project_source(id, "/tmp/retained/1", "full");
         let rows = store.list_retained_sources();
         assert_eq!(rows.len(), 1);
@@ -176,7 +176,7 @@ mod tests {
     fn list_evictable_retained_sources_respects_keep_across_tiers() {
         let (_dir, store) = open_test_db();
         for i in 0..12 {
-            let id = store.create_project(&format!("job-evict-{i}"), "acme", "widgets", false, "ui", None);
+            let id = store.create_project(&format!("job-evict-{i}"), "acme", "widgets", false, "ui", None).unwrap();
             let tier = if i < 5 { "full" } else { "pruned" };
             store.retain_project_source(id, &format!("/tmp/retained/{i}"), tier);
         }
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn upsert_step_updates_in_place_on_conflict() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-3", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-3", "acme", "widgets", false, "ui", None).unwrap();
         store.upsert_step(id, 4, "Security Scan", "running", "log line 1");
         store.upsert_step(id, 4, "Security Scan", "success", "log line 1\nlog line 2");
         let details = store.get_project_details(id).unwrap();
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn delete_project_by_id_also_clears_file_scan_cache_for_its_repo() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-4", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-4", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_file_scan_cache(
             "acme",
             "widgets",
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn replace_project_issues_marks_overridden_status_and_round_trips_json_columns() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-5", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-5", "acme", "widgets", false, "ui", None).unwrap();
         let issues = vec![
             IssueInput {
                 id: "secret::a.js::3".into(),
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn get_project_issues_joins_in_the_latest_overrides_justification_and_actor() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-8", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-8", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(
             id,
             &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn baseline_round_trips_and_clears() {
         let (_dir, store) = open_test_db();
-        let saved = store.save_baseline("acme", "widgets", &["a".into(), "b".into()]);
+        let saved = store.save_baseline("acme", "widgets", &["a".into(), "b".into()]).unwrap();
         assert_eq!(saved, 2);
         let ids = store.get_baseline_issue_ids("acme", "widgets");
         assert_eq!(ids.len(), 2);
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn dependency_scan_cache_tracks_the_previous_scan_on_overwrite() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
 
         assert!(store.get_dependency_scan_cache(project_id).is_none());
         assert!(store.get_previous_dependency_scan_cache(project_id).is_none());
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn api_key_lifecycle_create_lookup_revoke() {
         let (_dir, store) = open_test_db();
-        let user_id = store.create_local_user("dev@example.com", Some("Dev"), "hash");
+        let user_id = store.create_local_user("dev@example.com", Some("Dev"), "hash").unwrap();
         let key_id = store.create_api_key(user_id, "sha256hash", Some("laptop"), Some("dev@example.com"), "cli");
         let identity = store.get_active_api_key_by_hash("sha256hash").unwrap();
         assert_eq!(identity.user_id, user_id);
@@ -409,8 +409,8 @@ mod tests {
     #[test]
     fn revoke_api_key_refuses_to_revoke_another_users_key() {
         let (_dir, store) = open_test_db();
-        let owner_id = store.create_local_user("owner@example.com", Some("Owner"), "hash");
-        let other_id = store.create_local_user("other@example.com", Some("Other"), "hash");
+        let owner_id = store.create_local_user("owner@example.com", Some("Owner"), "hash").unwrap();
+        let other_id = store.create_local_user("other@example.com", Some("Other"), "hash").unwrap();
         let key_id = store.create_api_key(owner_id, "sha256hash", Some("laptop"), Some("owner@example.com"), "cli");
         assert!(!store.revoke_api_key(key_id, other_id));
         assert!(store.get_active_api_key_by_hash("sha256hash").is_some());
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn abort_stale_running_projects_marks_running_as_aborted() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-6", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-6", "acme", "widgets", false, "ui", None).unwrap();
         store.upsert_step(id, 4, "Security Scan", "running", "in progress");
         store.abort_stale_running_projects();
         let project = store.get_project(id).unwrap();
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn get_carry_forward_overrides_matches_by_issue_id_across_repeat_scans_of_the_same_repo() {
         let (_dir, store) = open_test_db();
-        let old_id = store.create_project("job-old", "acme", "widgets", false, "ui", None);
+        let old_id = store.create_project("job-old", "acme", "widgets", false, "ui", None).unwrap();
         store.add_override(AddOverrideArgs {
             project_id: old_id,
             job_id: "job-old",
@@ -454,11 +454,11 @@ mod tests {
 
         // A second scan of a *different* repo must never see the first
         // repo's overrides.
-        let other_repo_id = store.create_project("job-other-repo", "acme", "gizmos", false, "ui", None);
+        let other_repo_id = store.create_project("job-other-repo", "acme", "gizmos", false, "ui", None).unwrap();
         let none_for_other_repo = store.get_carry_forward_overrides("acme", "gizmos", other_repo_id);
         assert!(none_for_other_repo.is_empty());
 
-        let new_id = store.create_project("job-new", "acme", "widgets", false, "ui", None);
+        let new_id = store.create_project("job-new", "acme", "widgets", false, "ui", None).unwrap();
         let carried = store.get_carry_forward_overrides("acme", "widgets", new_id);
         assert_eq!(carried.len(), 1);
         let row = &carried["license-compliance::requirements.txt::0::PyMuPDF"];
@@ -490,8 +490,8 @@ mod tests {
     fn get_latest_project_for_org_repo_returns_the_most_recently_created_project() {
         let (_dir, store) = open_test_db();
         assert!(store.get_latest_project_for_org_repo("acme", "widgets").is_none());
-        store.create_project("job-1", "acme", "widgets", false, "ui", None);
-        let (id2, job_id2) = (store.create_project("job-2", "acme", "widgets", false, "ui", None), "job-2".to_string());
+        store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
+        let (id2, job_id2) = (store.create_project("job-2", "acme", "widgets", false, "ui", None).unwrap(), "job-2".to_string());
         let (found_id, found_job_id) = store.get_latest_project_for_org_repo("acme", "widgets").unwrap();
         assert_eq!(found_id, id2);
         assert_eq!(found_job_id, job_id2);
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn github_dismissal_webhook_round_trip_marks_overridden_then_reopens_to_open() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(
             project_id,
             &[IssueInput { id: "secret::app.js::5".to_string(), phase: Some(4), category: "secret".to_string(), severity: "error".to_string(), score: Some(9), summary: "hardcoded key".to_string(), file: Some("app.js".to_string()), line: Some(5), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn reopened_webhook_leaves_a_real_ignite_override_untouched() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         store.add_override(AddOverrideArgs {
             project_id,
             job_id: "job-1",
@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn get_carry_forward_overrides_keeps_only_the_most_recent_justification_per_issue_id() {
         let (_dir, store) = open_test_db();
-        let first_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let first_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         store.add_override(AddOverrideArgs {
             project_id: first_id,
             job_id: "job-1",
@@ -581,7 +581,7 @@ mod tests {
             actor_name: None,
             email_sent: false,
         });
-        let second_id = store.create_project("job-2", "acme", "widgets", false, "ui", None);
+        let second_id = store.create_project("job-2", "acme", "widgets", false, "ui", None).unwrap();
         store.add_override(AddOverrideArgs {
             project_id: second_id,
             job_id: "job-2",
@@ -598,7 +598,7 @@ mod tests {
             email_sent: false,
         });
 
-        let third_id = store.create_project("job-3", "acme", "widgets", false, "ui", None);
+        let third_id = store.create_project("job-3", "acme", "widgets", false, "ui", None).unwrap();
         let carried = store.get_carry_forward_overrides("acme", "widgets", third_id);
         assert_eq!(carried["license-compliance::requirements.txt::0::regex"].justification, "current reasoning");
     }
@@ -643,7 +643,7 @@ mod tests {
         let path = dir.path().join("test.db");
         {
             let store = DbStore::open(&path).unwrap();
-            store.create_project("job-7", "acme", "widgets", false, "ui", None);
+            store.create_project("job-7", "acme", "widgets", false, "ui", None).unwrap();
         }
         // Reopening the same on-disk DB re-runs schema + migrations against
         // already-existing tables/columns — must not error.
@@ -764,7 +764,7 @@ mod tests {
     #[test]
     fn compliance_list_overrides_in_range_computes_days_to_override() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::a.js::1", "error", "2026-01-01 00:00:00", "2026-01-05 00:00:00");
 
         let rows = store.list_overrides_in_range("2026-01-01 00:00:00", "2026-01-31 23:59:59");
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn compliance_list_overrides_in_range_excludes_outside_window() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::a.js::1", "error", "2025-12-01 00:00:00", "2025-12-05 00:00:00");
 
         let rows = store.list_overrides_in_range("2026-01-01 00:00:00", "2026-01-31 23:59:59");
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn compliance_days_to_override_is_null_without_a_first_seen_row() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         // No issue_first_seen row inserted — override exists on its own.
         let conn = store.conn.lock();
         conn.execute(
@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn compliance_mttr_by_severity_in_range_aggregates_per_severity() {
         let (_dir, store) = open_test_db();
-        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::a.js::1", "error", "2026-01-01 00:00:00", "2026-01-03 00:00:00"); // 2 days
         seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::b.js::1", "error", "2026-01-01 00:00:00", "2026-01-07 00:00:00"); // 6 days
         seed_override_with_timestamps(&store, project_id, "acme", "widgets", "secret::c.js::1", "warning", "2026-01-01 00:00:00", "2026-01-02 00:00:00"); // 1 day
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn add_override_defaults_to_approved_status_unlike_add_pending_override() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         store.add_override(pending_args(id, "secret::a.js::1", "dev@acme.example"));
         assert!(store.has_approved_override(id, "secret::a.js::1"));
         assert!(!store.has_pending_override(id, "secret::a.js::1"));
@@ -838,7 +838,7 @@ mod tests {
     #[test]
     fn add_pending_override_is_not_approved_until_approved() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
         assert!(store.has_pending_override(id, "secret::a.js::1"));
         assert!(!store.has_approved_override(id, "secret::a.js::1"));
@@ -853,7 +853,7 @@ mod tests {
     #[test]
     fn approve_override_requires_a_different_reviewer() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
 
         let err = store.approve_override(id, override_id, "submitter@acme.example").unwrap_err();
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn approve_override_rejects_an_already_decided_row() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
         store.approve_override(id, override_id, "approver@acme.example").unwrap();
 
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn reject_override_leaves_the_issue_unapproved() {
         let (_dir, store) = open_test_db();
-        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         let override_id = store.add_pending_override(pending_args(id, "secret::a.js::1", "submitter@acme.example"));
 
         let (project_id, issue_id) = store.reject_override(id, override_id, "approver@acme.example").unwrap();

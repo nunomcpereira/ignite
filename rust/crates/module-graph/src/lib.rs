@@ -13,8 +13,22 @@ use std::path::{Path, PathBuf};
 pub const JS_TS_EXT: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
 const RESOLVABLE_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".json"];
 
-static IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bimport\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'"]+)['"]"#).unwrap());
-static EXPORT_FROM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bexport\s+(?:\*|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]"#).unwrap());
+// `$` added to the clause character class for framework-specific
+// identifiers (Svelte's `$state`, `$props`, ...) that are otherwise a
+// completely ordinary named import; `/` and `\*` (a literal `*` inside a
+// `/* ... */` block comment, not the namespace-import `*` this class
+// already allows unescaped) let an inline comment inside the import
+// clause pass through instead of breaking the match entirely. `(?s)`
+// lets `\s` (used here, not `.`) span real newlines in a multiline
+// import clause the same way it already needed to for a single-line one.
+static IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)\bimport\s+(?:[\w*{},\s$/]+\s+from\s+)?['"]([^'"]+)['"]"#).unwrap());
+// `\*\s+as\s+\w+` covers an ES2020 namespace re-export
+// (`export * as utils from './utils'`); the optional leading `type\s+`
+// covers a TypeScript type-only re-export (`export type { A } from ...`,
+// `export type * from ...`) — both previously fell through this regex
+// entirely, leaving the target module out of the dependency graph and
+// falsely reported as an `unused-file` deletion candidate.
+static EXPORT_FROM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bexport\s+(?:type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]"#).unwrap());
 static DYNAMIC_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bimport\(\s*['"]([^'"]+)['"]\s*\)"#).unwrap());
 static REQUIRE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\brequire\(\s*['"]([^'"]+)['"]\s*\)"#).unwrap());
 

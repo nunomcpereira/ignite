@@ -22,7 +22,13 @@ fn add_one_month(from: DateTime<Utc>) -> DateTime<Utc> {
     let target_month0 = from.month0() + 1; // 0-based, may be 12
     let target_year = from.year() + (target_month0 / 12) as i32;
     let target_month = target_month0 % 12 + 1; // back to 1-based
-    let first_of_month = Utc.with_ymd_and_hms(target_year, target_month, 1, from.hour(), from.minute(), from.second()).single().expect("valid first-of-month");
+    // `from.second()` can be `60` during a real leap second — chrono's
+    // `with_ymd_and_hms` has no way to represent that and returns `None`,
+    // which the previous unconditional `.expect(...)` turned into a
+    // panic that crashed the whole background scheduling thread over one
+    // recheck's date math. Clamping to 59 loses no meaningful precision
+    // for a monthly recheck schedule.
+    let first_of_month = Utc.with_ymd_and_hms(target_year, target_month, 1, from.hour(), from.minute(), from.second().min(59)).single().unwrap_or_else(|| Utc.with_ymd_and_hms(target_year, target_month, 1, 0, 0, 0).single().expect("midnight is always valid"));
     first_of_month + Days::new((day - 1) as u64)
 }
 

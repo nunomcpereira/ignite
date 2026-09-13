@@ -70,7 +70,7 @@ fn issues_json(rows: &[IssueRow]) -> Vec<Value> {
         .collect()
 }
 
-async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let phase_meta = super::phase_meta::resolve_phase_meta(&state.config);
     let phase6_title = super::phase_meta::phase_title(&phase_meta, 6);
     let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
@@ -118,24 +118,15 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     }
 
     let applied: Vec<(&Issue, String)> = result.applied.iter().map(|(i, j)| (*i, j.clone())).collect();
-    let mut actor: Option<(String, String)> = None;
-    if !applied.is_empty() {
-        // Audit-trail attribution must come from the caller's own
-        // authenticated session, never a client-supplied `actor` object in
-        // the request body — otherwise anyone who can reach this endpoint
-        // (which only requires *some* resolvable GitHub token, including
-        // the server's own ambient `GH_TOKEN` fallback for unattended
-        // callers) could submit overrides attributed to an arbitrary
-        // email, spoofing identity in the audit trail.
-        let Some(u) = &user else {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "Log in to submit overrides.", "needsReview": true, "issues": issues_json(&issue_rows) })),
-            )
-                .into_response();
-        };
-        actor = Some((u.email.clone(), u.name.clone().unwrap_or_else(|| u.email.clone())));
-    }
+    // Audit-trail attribution must come from the caller's own
+    // authenticated session, never a client-supplied `actor` object in
+    // the request body — and, per `RequireAuth` above, this whole
+    // endpoint (which provisions and pushes to GitHub) now unconditionally
+    // requires a session, not just the "submitting an override" path: a
+    // clean simulation with nothing to override was previously reachable
+    // by anyone with just a resolvable GitHub token (including the
+    // server's own ambient `GH_TOKEN` fallback for unattended callers).
+    let actor: Option<(String, String)> = if applied.is_empty() { None } else { Some((user.email.clone(), user.name.clone().unwrap_or_else(|| user.email.clone()))) };
 
     // Dual-custody: a critical-severity (score >= CRITICAL_SCORE_THRESHOLD)
     // override must be approved by a *different* reviewer before it can
@@ -338,6 +329,16 @@ mod tests {
         (app_state, db_dir)
     }
 
+    /// `effectivate` now requires `RequireAuth` unconditionally (BUG-122)
+    /// — mints a real headless API key so these tests keep exercising the
+    /// endpoint's actual business logic instead of just its auth gate.
+    fn auth_header(state: &AppState) -> String {
+        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash").unwrap();
+        let raw_key = ignite_auth::generate_api_key();
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
+        format!("Bearer {raw_key}")
+    }
+
     async fn spawn_test_server(state: Arc<AppState>) -> String {
         let router = axum::Router::new().merge(router()).with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -372,9 +373,10 @@ mod tests {
         let _guard = ENV_GUARD.lock();
         std::env::set_var("GH_TOKEN", "test-token");
         let (state, _dir) = build_state();
+        let auth = auth_header(&state);
         let base = spawn_test_server(state).await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/projects/999/effectivate")).json(&json!({})).send().await.unwrap();
+        let res = client.post(format!("{base}/api/projects/999/effectivate")).header("authorization", auth).json(&json!({})).send().await.unwrap();
         assert_eq!(res.status(), 404);
         std::env::remove_var("GH_TOKEN");
     }
@@ -385,7 +387,7 @@ mod tests {
         let _guard = ENV_GUARD.lock();
         std::env::set_var("GH_TOKEN", "test-token");
         let (state, _dir) = build_state();
-        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             project_id,
             &[IssueInput { id: "secrets::app.js::1".into(), phase: Some(4), category: "secrets".into(), severity: "error".into(), score: Some(9), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None }],
@@ -397,9 +399,10 @@ mod tests {
             crate::state::PendingEffectivation { org: "acme".into(), repo: "widgets".into(), source_backup_dir: backup_dir.path().to_path_buf(), created_at: Instant::now() },
         );
 
+        let auth = auth_header(&state);
         let base = spawn_test_server(state).await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/projects/{project_id}/effectivate")).json(&json!({})).send().await.unwrap();
+        let res = client.post(format!("{base}/api/projects/{project_id}/effectivate")).header("authorization", auth).json(&json!({})).send().await.unwrap();
         assert_eq!(res.status(), 409);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["needsReview"], true);
@@ -412,7 +415,7 @@ mod tests {
         let _guard = ENV_GUARD.lock();
         std::env::set_var("GH_TOKEN", "test-token");
         let (state, _dir) = build_state_with_override_approval_enabled();
-        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             project_id,
             &[IssueInput { id: "secret::app.js::1".into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(10), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None }],
@@ -424,11 +427,13 @@ mod tests {
             crate::state::PendingEffectivation { org: "acme".into(), repo: "widgets".into(), source_backup_dir: backup_dir.path().to_path_buf(), created_at: Instant::now() },
         );
 
+        let auth = auth_header(&state);
         let base = spawn_test_server(state.clone()).await;
         let client = reqwest::Client::new();
         let res = client
             .post(format!("{base}/api/projects/{project_id}/effectivate"))
-            .json(&json!({ "overrides": [{ "issueId": "secret::app.js::1", "justification": "reviewed, rotating the key separately" }], "actor": { "email": "submitter@acme.example", "name": "Submitter" } }))
+            .header("authorization", auth)
+            .json(&json!({ "overrides": [{ "issueId": "secret::app.js::1", "justification": "reviewed, rotating the key separately" }] }))
             .send()
             .await
             .unwrap();

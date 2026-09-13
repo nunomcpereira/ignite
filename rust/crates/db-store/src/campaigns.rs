@@ -15,16 +15,28 @@ use crate::store::DbStore;
 use crate::types::CampaignRow;
 use rusqlite::params;
 
-// Every onboarded (org, repo)'s most recent project row — the same
-// "latest scan per repo" join `list_onboarded_repo_summaries` uses, kept
-// here as its own CTE since campaigns aggregate across all repos rather
-// than reporting per-repo.
-const LATEST_PROJECT_PER_REPO_CTE: &str = "WITH latest AS (SELECT org, repo, MAX(id) AS project_id FROM projects GROUP BY org, repo)";
+// Every onboarded (org, repo)'s most recent *completed* project row — the
+// same "latest scan per repo" join `list_onboarded_repo_summaries` uses,
+// kept here as its own CTE since campaigns aggregate across all repos
+// rather than reporting per-repo. `WHERE status IN ('success', 'failure')`
+// excludes a scan that's still `running`: its issues haven't been written
+// yet, so without this filter a newly-started scan's `MAX(id)` row
+// briefly has zero matching issues, making `open_count` drop to 0 and
+// `resolved_count` spike to a false 100% completion mid-scan.
+const LATEST_PROJECT_PER_REPO_CTE: &str = "WITH latest AS (SELECT org, repo, MAX(id) AS project_id FROM projects WHERE status IN ('success', 'failed') GROUP BY org, repo)";
 
 impl DbStore {
     // ---------------- security campaigns ----------------
 
-    pub fn create_campaign(&self, title: &str, description: Option<&str>, category: Option<&str>, min_score: Option<i64>, target_date: Option<&str>, created_by: Option<&str>) -> i64 {
+    /// Returns `Err` on an insertion failure instead of the sentinel `0`
+    /// this used to return — `0` is not a valid `rowid` but the HTTP
+    /// route previously couldn't tell it apart from "campaign 0 was
+    /// created" without an extra DB round-trip, and `get_campaign(0)`
+    /// returning `None` was read as "no campaign object to return yet"
+    /// rather than "the insert itself failed", so the client got an HTTP
+    /// 200 `{"ok": true, "id": 0}` for a campaign that was never actually
+    /// created.
+    pub fn create_campaign(&self, title: &str, description: Option<&str>, category: Option<&str>, min_score: Option<i64>, target_date: Option<&str>, created_by: Option<&str>) -> rusqlite::Result<i64> {
         let conn = self.conn.lock();
         let initial_open_count: i64 = conn
             .query_row(
@@ -37,14 +49,11 @@ impl DbStore {
                 |row| row.get(0),
             )
             .unwrap_or(0);
-        if let Err(e) = conn.execute(
+        conn.execute(
             "INSERT INTO campaigns (title, description, category, min_score, target_date, initial_open_count, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![title, description, category, min_score, target_date, initial_open_count, created_by],
-        ) {
-            tracing::error!("create_campaign failed for \"{title}\": {e}");
-            return 0;
-        }
-        conn.last_insert_rowid()
+        )?;
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn close_campaign(&self, id: i64) -> bool {

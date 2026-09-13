@@ -35,11 +35,21 @@ impl DbStore {
             // it should count as newly detected, not inherit a stale
             // first-seen date from months ago.
             let current_ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
-            let placeholders = current_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!("DELETE FROM issue_first_seen WHERE org = ? AND repo = ? AND issue_id NOT IN ({placeholders})");
-            let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&org, &repo];
-            params_vec.extend(current_ids.iter().map(|s| s as &dyn rusqlite::ToSql));
-            tx.execute(&sql, params_vec.as_slice()).unwrap();
+            // `NOT IN ()` (an empty placeholder list, when a clean scan or
+            // one that resolved every previous issue leaves `issues`
+            // empty) is a SQLite syntax error, not "matches nothing" —
+            // when there's nothing to keep, every existing row for this
+            // org/repo is stale, so just delete them all directly instead
+            // of building the (in that case invalid) `NOT IN` clause.
+            if current_ids.is_empty() {
+                tx.execute("DELETE FROM issue_first_seen WHERE org = ? AND repo = ?", params![org, repo]).unwrap();
+            } else {
+                let placeholders = current_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!("DELETE FROM issue_first_seen WHERE org = ? AND repo = ? AND issue_id NOT IN ({placeholders})");
+                let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&org, &repo];
+                params_vec.extend(current_ids.iter().map(|s| s as &dyn rusqlite::ToSql));
+                tx.execute(&sql, params_vec.as_slice()).unwrap();
+            }
         }
         for issue in issues {
             let snippet_json = issue.snippet.as_ref().map(|s| serde_json::to_string(s).unwrap());

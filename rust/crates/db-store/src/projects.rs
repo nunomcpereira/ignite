@@ -10,6 +10,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 impl DbStore {
     // ---------------- projects / steps / documents ----------------
 
+    /// `job_id` has a `UNIQUE NOT NULL` constraint (`schema.rs`) — a
+    /// duplicate (a webhook replay, a client retransmitting a request
+    /// whose response it never saw) previously panicked here via
+    /// `.unwrap()` instead of being handled as the ordinary, expected
+    /// possibility a unique-constrained column implies.
     pub fn create_project(
         &self,
         job_id: &str,
@@ -18,14 +23,28 @@ impl DbStore {
         is_gxp: bool,
         source: &str,
         scan_location: Option<&str>,
-    ) -> i64 {
+    ) -> rusqlite::Result<i64> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO projects (job_id, org, repo, gxp, source, scan_location) VALUES (?, ?, ?, ?, ?, ?)",
             params![job_id, org, repo, is_gxp as i64, source, scan_location],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Sets `status` directly with no other side effect (no audit event,
+    /// no `finished_at`/`error`/`repo_url`/`pr_url` touch) — for a row
+    /// that was never a real scan run in the first place (e.g. the
+    /// `repository.created` webhook's zero-touch enrollment row) and so
+    /// has no "scan completed" event to record. Using [`Self::finish_project`]
+    /// for that case would both misrepresent a non-scan as a completed
+    /// scan in the audit trail and duplicate the caller's own more
+    /// specific audit event.
+    pub fn set_project_status(&self, project_id: i64, status: &str) {
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute("UPDATE projects SET status = ? WHERE id = ?", params![status, project_id]) {
+            tracing::error!("set_project_status({project_id}, {status:?}) failed: {e}");
+        }
     }
 
     /// Also records a `scan.completed` audit event (`audit_events.rs`) for
@@ -60,7 +79,9 @@ impl DbStore {
         let severity = if status == "failed" { "warning" } else { "info" };
         let summary = format!("scan {status} for {org}/{repo} (job {job_id})");
         let metadata = error.map(|e| serde_json::json!({ "error": e }).to_string());
-        self.record_audit_event("scan.completed", severity, &summary, None, Some(&org), Some(&repo), metadata.as_deref());
+        if let Err(e) = self.record_audit_event("scan.completed", severity, &summary, None, Some(&org), Some(&repo), metadata.as_deref()) {
+            tracing::error!("record_audit_event failed for {org}/{repo}: {e}");
+        }
     }
 
     /// The most recently created project row for `(org, repo)` — used by

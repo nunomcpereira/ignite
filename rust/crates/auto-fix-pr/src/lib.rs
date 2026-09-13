@@ -177,12 +177,26 @@ fn is_non_improving_fix(resolved: &str, fixed: &str) -> bool {
     matches!((parse_semver(resolved), parse_semver(fixed)), (Some(r), Some(f)) if f <= r)
 }
 
-/// Queries OSV.dev directly for `advisory_id`'s full record and returns
-/// the first `fixed` version event under the `affected` entry matching
+/// Queries OSV.dev directly for `advisory_id`'s full record and picks the
+/// best `fixed` version event across every matching `affected` entry for
 /// `dep_name`/`ecosystem`. deps.dev's own advisory API (already used by
 /// `ignite-dependency-license-scan`) proxies a subset of OSV that drops
 /// per-package affected/fixed ranges, so this goes to the source.
-pub async fn fetch_osv_fixed_version(http: &reqwest::Client, advisory_id: &str, ecosystem: &str, dep_name: &str) -> Option<String> {
+///
+/// A package maintained across several major branches (fixes published
+/// independently for 1.x, 2.x, and 3.x) lists a `fixed` event for each
+/// branch, in no particular order — previously the *first* one in the
+/// JSON was taken unconditionally, which for a project already on 3.x
+/// could return an older 1.x fix. `is_non_improving_fix` then correctly
+/// rejected that as a downgrade and the fix was skipped entirely, even
+/// though a real 3.x fix existed a few entries later. Now every candidate
+/// is collected and, when `resolved_version` parses, the lowest one that
+/// (a) is a genuine improvement over it and (b) stays on the same major
+/// branch is preferred — minimizing the version jump — falling back to
+/// the lowest genuine improvement on any branch only when no same-branch
+/// fix exists at all (still surfaced for a human to review as a major
+/// bump, rather than silently proposing nothing).
+pub async fn fetch_osv_fixed_version(http: &reqwest::Client, advisory_id: &str, ecosystem: &str, dep_name: &str, resolved_version: Option<&str>) -> Option<String> {
     let osv_eco = osv_ecosystem(ecosystem)?;
     let url = format!("https://api.osv.dev/v1/vulns/{}", advisory_id);
     let resp = http.get(&url).send().await.ok()?;
@@ -191,8 +205,9 @@ pub async fn fetch_osv_fixed_version(http: &reqwest::Client, advisory_id: &str, 
     }
     let body: serde_json::Value = resp.json().await.ok()?;
     let affected = body.get("affected")?.as_array()?;
+    let mut candidates: Vec<String> = Vec::new();
     for entry in affected {
-        let pkg = entry.get("package")?;
+        let Some(pkg) = entry.get("package") else { continue };
         let name_matches = pkg.get("name").and_then(|v| v.as_str()).map(|n| n.eq_ignore_ascii_case(dep_name)).unwrap_or(false);
         let eco_matches = pkg.get("ecosystem").and_then(|v| v.as_str()).map(|e| e.eq_ignore_ascii_case(osv_eco)).unwrap_or(false);
         if !name_matches || !eco_matches {
@@ -203,14 +218,25 @@ pub async fn fetch_osv_fixed_version(http: &reqwest::Client, advisory_id: &str, 
                 if let Some(events) = range.get("events").and_then(|e| e.as_array()) {
                     for event in events {
                         if let Some(fixed) = event.get("fixed").and_then(|f| f.as_str()) {
-                            return Some(fixed.to_string());
+                            candidates.push(fixed.to_string());
                         }
                     }
                 }
             }
         }
     }
-    None
+    let Some(resolved) = resolved_version.and_then(parse_semver) else {
+        // Can't compare — return the first candidate found, same as the
+        // previous behavior when there's nothing to weigh options against.
+        return candidates.into_iter().next();
+    };
+    let mut improving: Vec<(String, (u64, u64, u64))> = candidates.into_iter().filter_map(|c| parse_semver(&c).filter(|v| *v > resolved).map(|v| (c, v))).collect();
+    improving.sort_by_key(|(_, v)| *v);
+    improving
+        .iter()
+        .find(|(_, v)| v.0 == resolved.0 || (resolved.0 == 0 && v.1 == resolved.1))
+        .or_else(|| improving.first())
+        .map(|(c, _)| c.clone())
 }
 
 /// Runs the real dependency-vulnerability scan against a checked-out repo
@@ -232,7 +258,7 @@ pub async fn discover_fix_candidates(root: &Path, deps_client: &DepsDevClient, h
             }
             for vuln in &dep.vulnerabilities {
                 let Some(advisory_id) = vuln.id.clone().or_else(|| vuln.aliases.first().cloned()) else { continue };
-                let Some(fixed_version) = fetch_osv_fixed_version(http, &advisory_id, manifest.ecosystem, &dep.name).await else { continue };
+                let Some(fixed_version) = fetch_osv_fixed_version(http, &advisory_id, manifest.ecosystem, &dep.name, dep.version.as_deref()).await else { continue };
                 if dep.version.as_deref().is_some_and(|resolved| is_non_improving_fix(resolved, &fixed_version)) {
                     continue;
                 }
@@ -1089,7 +1115,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_osv_fixed_version_resolves_a_real_advisory() {
         let http = reqwest::Client::new();
-        let result = fetch_osv_fixed_version(&http, "GHSA-p6mc-m468-83gw", "npm", "lodash").await;
+        let result = fetch_osv_fixed_version(&http, "GHSA-p6mc-m468-83gw", "npm", "lodash", Some("4.17.15")).await;
         let Some(fixed) = result else {
             eprintln!("skipping: could not reach OSV.dev (network unavailable in this environment) or advisory shape changed");
             return;

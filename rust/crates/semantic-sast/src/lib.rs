@@ -40,11 +40,29 @@ static CWE_PREFIX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^CWE-\d+").unwrap(
 /// is content-aware, not a blanket downgrade of the rule.
 static USE_DEFUSEDXML_FINDING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)recommends using `?defusedxml`?").unwrap());
 static DEFUSEDXML_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*(?:from|import)\s+defusedxml\b").unwrap());
+// `ElementTree` (unqualified) covers `from xml.etree import ElementTree` —
+// as common as the fully-qualified `xml.etree.ElementTree.` or aliased
+// `ET.` forms already here, and previously unmatched entirely, which
+// meant a file that imports `defusedxml` anywhere else in it still got
+// this real XXE finding silently downgraded from error to warning.
 static NATIVE_XML_PARSE_CALL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b(?:ET|xml\.etree\.ElementTree)\s*\.\s*(?:fromstring|parse|XMLParser)\s*\(").unwrap());
+    Lazy::new(|| Regex::new(r"\b(?:ET|ElementTree|xml\.etree\.ElementTree)\s*\.\s*(?:fromstring|parse|XMLParser)\s*\(").unwrap());
 
 fn is_defusedxml_already_used_safely(content: &str) -> bool {
     DEFUSEDXML_IMPORT_RE.is_match(content) && !NATIVE_XML_PARSE_CALL_RE.is_match(content)
+}
+
+/// Semgrep rule metadata fields like `cwe`/`owasp` can be authored as
+/// either a single string or a YAML list — both are valid and common in
+/// real rulesets. Calling `.as_array()` alone returns `None` for the
+/// string form, silently dropping every CWE/OWASP id from any rule
+/// written that way.
+fn metadata_list_field(value: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+    match value {
+        Some(serde_json::Value::Array(a)) => a.clone(),
+        Some(s @ serde_json::Value::String(_)) => vec![s.clone()],
+        _ => Vec::new(),
+    }
 }
 
 pub async fn build_semgrep_env() -> std::io::Result<HashMap<String, String>> {
@@ -185,20 +203,8 @@ pub async fn check_semantic_sast(root: &Path, runner: &ToolRunner, config: &Sema
         let forced_warning = SEMGREP_FORCE_WARNING_TITLES.iter().any(|re| re.is_match(&message))
             || (USE_DEFUSEDXML_FINDING_RE.is_match(&message)
                 && content.as_deref().map(is_defusedxml_already_used_safely).unwrap_or(false));
-        let cwe_list = r
-            .get("extra")
-            .and_then(|e| e.get("metadata"))
-            .and_then(|m| m.get("cwe"))
-            .and_then(|c| c.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let owasp_list = r
-            .get("extra")
-            .and_then(|e| e.get("metadata"))
-            .and_then(|m| m.get("owasp"))
-            .and_then(|o| o.as_array())
-            .cloned()
-            .unwrap_or_default();
+        let cwe_list = metadata_list_field(r.get("extra").and_then(|e| e.get("metadata")).and_then(|m| m.get("cwe")));
+        let owasp_list = metadata_list_field(r.get("extra").and_then(|e| e.get("metadata")).and_then(|m| m.get("owasp")));
         let cwe_first = cwe_list.first().and_then(|v| v.as_str()).unwrap_or("");
         let cwe = CWE_PREFIX_RE.find(cwe_first).map(|m| m.as_str().to_string());
         let owasp = owasp_list.first().and_then(|v| v.as_str()).map(String::from);

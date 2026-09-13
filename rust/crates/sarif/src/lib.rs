@@ -108,7 +108,12 @@ fn to_sarif_result(issue: &IssueRow) -> SarifResult {
     let locations = issue.file.as_ref().map(|file| {
         vec![Location {
             physical_location: PhysicalLocation {
-                artifact_location: ArtifactLocation { uri: file.clone() },
+                // SARIF 2.1.0 §3.4.4 / RFC 3986 require `uri` to be a
+                // valid URI reference — forward slashes only. A path
+                // produced on Windows (backslashes) failed schema
+                // validation on upload to any real SARIF consumer
+                // (GitHub Code Scanning included).
+                artifact_location: ArtifactLocation { uri: file.replace('\\', "/") },
                 region: issue.line.filter(|&l| l > 0).map(|start_line| Region { start_line }),
             },
         }]

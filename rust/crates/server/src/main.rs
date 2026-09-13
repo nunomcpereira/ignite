@@ -145,7 +145,7 @@ mod tests {
     use serde_json::Value;
 
     async fn spawn_test_server() -> String {
-        spawn_test_server_with_llm_config(state::default_llm_config()).await
+        spawn_test_server_with_llm_config(state::default_llm_config()).await.0
     }
 
     /// Binds a TCP listener on an OS-assigned port and immediately drops
@@ -159,9 +159,12 @@ mod tests {
         std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
     }
 
-    async fn spawn_test_server_with_llm_config(llm_config: ignite_llm_client::LlmClientConfig) -> String {
+    async fn spawn_test_server_with_llm_config(llm_config: ignite_llm_client::LlmClientConfig) -> (String, String) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let user_id = db.create_local_user("llm-test@example.com", None, ignite_auth::dummy_hash()).unwrap();
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
         let state = Arc::new(AppState {
             runner: state::default_runner(),
             db,
@@ -184,7 +187,7 @@ mod tests {
         });
         // leak the tempdir so the db file survives for the life of the test process
         std::mem::forget(db_dir);
-        format!("http://{addr}")
+        (format!("http://{addr}"), token)
     }
 
     /// Like `spawn_test_server`, but also mints a real API key against a
@@ -194,7 +197,7 @@ mod tests {
     async fn spawn_test_server_with_api_key() -> (String, String) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        let user_id = db.create_local_user("apikey-test@example.com", None, ignite_auth::dummy_hash());
+        let user_id = db.create_local_user("apikey-test@example.com", None, ignite_auth::dummy_hash()).unwrap();
         let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
         db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
         let state = Arc::new(AppState {
@@ -243,9 +246,9 @@ mod tests {
 
     #[tokio::test]
     async fn tools_status_returns_every_expected_key() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.get(format!("{base}/api/tools/status")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/tools/status")).header("authorization", format!("Bearer {token}")).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         for key in ["ort", "licensee", "gitleaks", "trivy", "trivyImage", "checkov", "hadolint", "syft", "cosign", "semgrep", "bearer", "jscpd", "gocloc", "spectral", "guarddog", "codeql", "picklescan", "oasdiff"] {
@@ -271,56 +274,58 @@ mod tests {
 
     #[tokio::test]
     async fn baseline_round_trip_save_get_delete() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
+        let auth = format!("Bearer {token}");
 
-        let res = client.post(format!("{base}/api/baseline/acme/widgets")).json(&serde_json::json!({ "issueIds": ["a", "b"] })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/baseline/acme/widgets")).header("authorization", &auth).json(&serde_json::json!({ "issueIds": ["a", "b"] })).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["savedCount"], 2);
 
-        let res = client.get(format!("{base}/api/baseline/acme/widgets")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/baseline/acme/widgets")).header("authorization", &auth).send().await.unwrap();
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["count"], 2);
 
-        let res = client.delete(format!("{base}/api/baseline/acme/widgets")).send().await.unwrap();
+        let res = client.delete(format!("{base}/api/baseline/acme/widgets")).header("authorization", &auth).send().await.unwrap();
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["removed"], 2);
     }
 
     #[tokio::test]
     async fn baseline_save_rejects_missing_issue_ids() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/baseline/acme/widgets")).json(&serde_json::json!({})).send().await.unwrap();
+        let res = client.post(format!("{base}/api/baseline/acme/widgets")).header("authorization", format!("Bearer {token}")).json(&serde_json::json!({})).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
     #[tokio::test]
     async fn runtime_coverage_round_trip() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
+        let auth = format!("Bearer {token}");
 
-        let res = client.post(format!("{base}/api/runtime-coverage/acme/widgets")).json(&serde_json::json!({ "src/a.js": 5, "src/b.js": 0 })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/runtime-coverage/acme/widgets")).header("authorization", &auth).json(&serde_json::json!({ "src/a.js": 5, "src/b.js": 0 })).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["format"], "simple");
         assert_eq!(body["filesIngested"], 2);
 
-        let res = client.get(format!("{base}/api/runtime-coverage/acme/widgets")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/runtime-coverage/acme/widgets")).header("authorization", &auth).send().await.unwrap();
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["files"]["src/a.js"]["hitCount"], 5);
 
-        let res = client.delete(format!("{base}/api/runtime-coverage/acme/widgets")).send().await.unwrap();
+        let res = client.delete(format!("{base}/api/runtime-coverage/acme/widgets")).header("authorization", &auth).send().await.unwrap();
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["removed"], 2);
     }
 
     #[tokio::test]
     async fn auto_fix_rejects_nonexistent_project_path() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/pipeline/auto-fix")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/pipeline/auto-fix")).header("authorization", format!("Bearer {token}")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
@@ -331,9 +336,9 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), r#"{"name":"x","main":"index.js"}"#).unwrap();
         std::fs::write(dir.path().join("index.js"), "console.log(1);\n").unwrap();
 
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/pipeline/auto-fix")).json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy(), "categories": ["dead-code"] })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/pipeline/auto-fix")).header("authorization", format!("Bearer {token}")).json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy(), "categories": ["dead-code"] })).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["dryRun"], true);
@@ -342,9 +347,9 @@ mod tests {
 
     #[tokio::test]
     async fn dependencies_check_rejects_nonexistent_project_path() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/dependencies/check")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/dependencies/check")).header("authorization", format!("Bearer {token}")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
@@ -353,9 +358,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.go"), "package main\nfunc main() {}\n").unwrap();
 
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/reports/loc-metrics")).json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy() })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/reports/loc-metrics")).header("authorization", format!("Bearer {token}")).json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy() })).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["ok"], true);
@@ -363,9 +368,9 @@ mod tests {
 
     #[tokio::test]
     async fn reports_sbom_rejects_nonexistent_project_path() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/reports/sbom")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/reports/sbom")).bearer_auth(token).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
@@ -475,10 +480,11 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/app.js"), "console.log('hi');\n").unwrap();
 
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(180)).build().unwrap();
         let res = client
             .post(format!("{base}/api/pipeline/validate-all"))
+            .bearer_auth(token)
             .json(&serde_json::json!({ "projectPath": dir.path().to_string_lossy(), "runLocalCi": false, "fast": true }))
             .send()
             .await
@@ -498,9 +504,9 @@ mod tests {
 
     #[tokio::test]
     async fn validate_all_rejects_invalid_repo_name() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/pipeline/validate-all")).json(&serde_json::json!({ "repo": "..", "projectPath": "/tmp" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/pipeline/validate-all")).bearer_auth(token).json(&serde_json::json!({ "repo": "..", "projectPath": "/tmp" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["failedPhase"], 1);
@@ -508,9 +514,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_projects_returns_empty_array_for_fresh_db() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.get(format!("{base}/api/projects")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/projects")).bearer_auth(token).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body.as_array().unwrap().len(), 0);
@@ -518,9 +524,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_effectivated_projects_returns_empty_wrapper() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.get(format!("{base}/api/projects/effectivated")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/projects/effectivated")).bearer_auth(token).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["projects"].as_array().unwrap().len(), 0);
@@ -528,43 +534,43 @@ mod tests {
 
     #[tokio::test]
     async fn project_details_returns_404_for_unknown_id() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.get(format!("{base}/api/projects/999999")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/projects/999999")).bearer_auth(token).send().await.unwrap();
         assert_eq!(res.status(), 404);
     }
 
     #[tokio::test]
     async fn project_details_returns_400_for_non_numeric_id() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.get(format!("{base}/api/projects/not-a-number")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/projects/not-a-number")).bearer_auth(token).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
     #[tokio::test]
     async fn delete_all_projects_succeeds_on_empty_db() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.delete(format!("{base}/api/projects")).send().await.unwrap();
+        let res = client.delete(format!("{base}/api/projects")).bearer_auth(token).send().await.unwrap();
         assert_eq!(res.status(), 200);
     }
 
     #[tokio::test]
     async fn set_schedule_rejects_unknown_interval() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
         // project doesn't exist, but the id-shape check runs first — this
         // exercises the 404 path since no project was created in this test.
-        let res = client.post(format!("{base}/api/projects/1/schedule")).json(&serde_json::json!({ "enabled": true, "interval": "hourly" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/projects/1/schedule")).bearer_auth(token).json(&serde_json::json!({ "enabled": true, "interval": "hourly" })).send().await.unwrap();
         assert_eq!(res.status(), 404);
     }
 
     #[tokio::test]
     async fn get_document_returns_404_for_unknown_id() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.get(format!("{base}/api/documents/999999")).send().await.unwrap();
+        let res = client.get(format!("{base}/api/documents/999999")).bearer_auth(token).send().await.unwrap();
         assert_eq!(res.status(), 404);
     }
 
@@ -578,9 +584,9 @@ mod tests {
 
     #[tokio::test]
     async fn issues_explain_rejects_missing_category() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/issues/explain")).json(&serde_json::json!({ "summary": "found a thing" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/issues/explain")).bearer_auth(token).json(&serde_json::json!({ "summary": "found a thing" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
@@ -593,9 +599,9 @@ mod tests {
         // "unavailable".
         let mut llm_config = state::default_llm_config();
         llm_config.scan_url = format!("http://127.0.0.1:{}", unused_local_port());
-        let base = spawn_test_server_with_llm_config(llm_config).await;
+        let (base, token) = spawn_test_server_with_llm_config(llm_config).await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/issues/explain")).json(&serde_json::json!({ "category": "secret", "summary": "hardcoded key" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/issues/explain")).bearer_auth(token).json(&serde_json::json!({ "category": "secret", "summary": "hardcoded key" })).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["explanation"], Value::Null);
@@ -604,17 +610,17 @@ mod tests {
 
     #[tokio::test]
     async fn issues_suggest_fix_requires_snippet() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/issues/suggest-fix")).json(&serde_json::json!({ "category": "secret", "summary": "hardcoded key" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/issues/suggest-fix")).bearer_auth(token).json(&serde_json::json!({ "category": "secret", "summary": "hardcoded key" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 
     #[tokio::test]
     async fn reports_posture_rejects_nonexistent_project_path() {
-        let base = spawn_test_server().await;
+        let (base, token) = spawn_test_server_with_api_key().await;
         let client = reqwest::Client::new();
-        let res = client.post(format!("{base}/api/reports/posture")).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
+        let res = client.post(format!("{base}/api/reports/posture")).bearer_auth(token).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
     }
 }

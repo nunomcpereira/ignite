@@ -61,20 +61,27 @@ impl DbStore {
     /// across every onboarded repo, newest first.
     pub fn list_overrides_in_range(&self, from: &str, to: &str) -> Vec<OverrideAuditRow> {
         let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT o.id, p.org, p.repo, o.issue_id, o.category, o.severity, o.summary, o.justification,
-                        o.actor_email, o.actor_name, o.created_at,
-                        CASE WHEN f.first_detected_at IS NULL THEN NULL
-                             ELSE julianday(o.created_at) - julianday(f.first_detected_at) END AS days_to_override
-                 FROM overrides o
-                 INNER JOIN projects p ON p.id = o.project_id
-                 LEFT JOIN issue_first_seen f ON f.org = p.org AND f.repo = p.repo AND f.issue_id = o.issue_id
-                 WHERE o.created_at BETWEEN ?1 AND ?2 AND o.status = 'approved'
-                 ORDER BY o.created_at DESC",
-            )
-            .unwrap();
-        stmt.query_map(params![from, to], |row| {
+        // `.unwrap()` on statement prep/row decoding used to panic (and
+        // take down the Axum worker thread serving the request) on
+        // ordinary transient conditions — lock contention during
+        // preparation, or a row with an unexpected `NULL` in a
+        // non-nullable column. Empty results / dropped rows are the
+        // correct degradation for a read-only compliance report, not a
+        // crash.
+        let Ok(mut stmt) = conn.prepare_cached(
+            "SELECT o.id, p.org, p.repo, o.issue_id, o.category, o.severity, o.summary, o.justification,
+                    o.actor_email, o.actor_name, o.created_at,
+                    CASE WHEN f.first_detected_at IS NULL THEN NULL
+                         ELSE julianday(o.created_at) - julianday(f.first_detected_at) END AS days_to_override
+             FROM overrides o
+             INNER JOIN projects p ON p.id = o.project_id
+             LEFT JOIN issue_first_seen f ON f.org = p.org AND f.repo = p.repo AND f.issue_id = o.issue_id
+             WHERE o.created_at BETWEEN ?1 AND ?2 AND o.status = 'approved'
+             ORDER BY o.created_at DESC",
+        ) else {
+            return vec![];
+        };
+        let Ok(rows) = stmt.query_map(params![from, to], |row| {
             Ok(OverrideAuditRow {
                 id: row.get(0)?,
                 org: row.get(1)?,
@@ -89,10 +96,10 @@ impl DbStore {
                 created_at: row.get(10)?,
                 days_to_override: row.get(11)?,
             })
-        })
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect()
+        }) else {
+            return vec![];
+        };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     /// [`MttrBucket`] per severity, over the same window/join as

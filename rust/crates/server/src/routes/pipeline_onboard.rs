@@ -104,21 +104,15 @@ impl Logger {
     }
 }
 
-/// A resolved session/API-key identity always wins over the request
-/// body's own `actor.email` — trusting the body outright would let any
-/// caller attribute an override to an arbitrary email, spoofing the audit
-/// trail recorded against the onboarded repo. The body-supplied actor is
-/// only ever used as a fallback for a genuinely unauthenticated deployment
-/// (headless CI with no session and no API key configured).
-fn resolve_actor(headers: &axum::http::HeaderMap, db: &ignite_db_store::DbStore, body: &Value) -> Option<String> {
-    if let Some(user) = crate::auth::resolve_user(headers, db) {
-        return Some(user.email);
-    }
-    let email = body.get("actor").and_then(|a| a.get("email")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
-    if !ignite_auth::is_valid_email(&email) {
-        return None;
-    }
-    Some(email)
+/// A resolved session/API-key identity is the *only* source of audit-trail
+/// attribution here — there used to be a fallback to the request body's
+/// own `actor.email` for "a genuinely unauthenticated deployment", but
+/// that's exactly what let any caller attribute an override to an
+/// arbitrary email (including bypassing dual-custody's
+/// self-approval check, which compares against `actor_email`). Submitting
+/// an override always requires a real authenticated caller now.
+fn resolve_actor(headers: &axum::http::HeaderMap, db: &ignite_db_store::DbStore) -> Option<String> {
+    crate::auth::resolve_user(headers, db).map(|user| user.email)
 }
 
 struct PipelineError {
@@ -225,7 +219,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             logger.log(1, "Simulation mode (dryRun) — phase 6 provisioning/push will be skipped.");
         }
         let source = if body.get("_client_is_mcp").and_then(|v| v.as_bool()).unwrap_or(false) { "mcp" } else { "api" };
-        project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy()));
+        project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy())).map_err(|e| PipelineError::new(1, format!("Failed to create project record: {e}")))?;
         logger.set_project_id(project_id);
         logger.status(1, "success", None);
 
@@ -322,7 +316,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             let owned: Vec<Issue> = issues_requiring_override.iter().map(|i| (*i).clone()).collect();
             let result = validate_overrides(&owned, &requested_overrides);
             if !result.applied.is_empty() {
-                let Some(email) = resolve_actor(&headers, &state.db, &body) else {
+                let Some(email) = resolve_actor(&headers, &state.db) else {
                     return Err(PipelineError::new(4, "Overrides were submitted but no authenticated user or actor {email,name} was provided — cannot attribute the audit record."));
                 };
 

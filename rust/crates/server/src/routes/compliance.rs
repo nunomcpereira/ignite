@@ -139,7 +139,7 @@ mod tests {
     /// created local user in `state`'s db — `audit_pack` now requires
     /// `RequireAuth`.
     fn auth_header(state: &AppState) -> String {
-        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash");
+        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash").unwrap();
         let raw_key = ignite_auth::generate_api_key();
         state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
         format!("Bearer {raw_key}")
@@ -188,7 +188,7 @@ mod tests {
     #[tokio::test]
     async fn audit_pack_includes_overrides_and_mttr_in_the_requested_window() {
         let state = test_state();
-        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None);
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         // `replace_project_issues` seeds `issue_first_seen` (INSERT OR
         // IGNORE, defaulting to `datetime('now')`) the same way a real
         // scan does — the public path, rather than reaching into
