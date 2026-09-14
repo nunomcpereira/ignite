@@ -252,7 +252,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         .unwrap_or_default();
     let changed_files: Option<std::collections::HashSet<String>> = body.get("changedFiles").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect());
     let baseline_mode = body.get("baselineMode").and_then(|v| v.as_str()).filter(|m| *m == "gate" || *m == "save").map(str::to_string);
-    let baseline_issue_ids = if baseline_mode.as_deref() == Some("gate") { Some(state.db.get_baseline_issue_ids(&org, &repo)) } else { None };
+    let baseline_issue_ids = if baseline_mode.as_deref() == Some("gate") { Some(state.db.get_baseline_issue_ids(&org, &repo).unwrap_or_default()) } else { None };
 
     let project_path = match ignite_tool_runner::sanitize_absolute_project_path(&raw_project_path) {
         Ok(p) => p,

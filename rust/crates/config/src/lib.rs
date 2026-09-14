@@ -802,6 +802,20 @@ pub struct OverrideApprovalConfig {
     pub approver_emails: Vec<String>,
 }
 
+/// Lets an org treat warning-only results as a failing `ignite/gate`
+/// commit status instead of green — without this, a run with zero
+/// blocking errors always reports `success` regardless of how many
+/// non-blocking warnings it carries, which some orgs consider policy
+/// debt they want surfaced as a red check rather than silently green.
+/// `None` (the default) preserves the original "any warning count still
+/// passes" behavior exactly.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PrStatusConfig {
+    #[serde(default)]
+    pub max_warnings: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
@@ -830,6 +844,8 @@ pub struct SecurityConfig {
     pub secret_scanning: SecretScanningConfig,
     pub repository_events: RepositoryEventsConfig,
     pub override_approval: OverrideApprovalConfig,
+    #[serde(default)]
+    pub pr_status: PrStatusConfig,
     /// `POST /api/pipeline/validate-all` requires an authenticated caller
     /// (session or API key) by default — the endpoint runs a full pipeline
     /// scan and, when the request body carries `overrides`, records
@@ -1221,6 +1237,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("PUSH_PROTECTION_INBOUND_WEBHOOK_SECRET") { merged.security.push_protection.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("PUSH_PROTECTION_AUTO_FILE_ISSUE") { merged.security.push_protection.auto_file_issue = v; }
     if let Some(v) = env_str("SECRET_SCANNING_INBOUND_WEBHOOK_SECRET") { merged.security.secret_scanning.inbound_webhook_secret = Some(v); }
+    if let Some(v) = env_str("PR_STATUS_MAX_WARNINGS").and_then(|s| s.parse::<u64>().ok()) { merged.security.pr_status.max_warnings = Some(v); }
     if let Some(v) = env_str("REPOSITORY_EVENTS_INBOUND_WEBHOOK_SECRET") { merged.security.repository_events.inbound_webhook_secret = Some(v); }
     if let Some(v) = env_bool("REPOSITORY_EVENTS_APPLY_ORG_RULESET") { merged.security.repository_events.apply_org_ruleset = v; }
     if let Some(v) = env_bool("REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN") { merged.security.repository_events.trigger_baseline_scan = v; }

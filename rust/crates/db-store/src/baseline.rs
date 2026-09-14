@@ -25,15 +25,16 @@ impl DbStore {
         Ok(issue_ids.len())
     }
 
-    pub fn clear_baseline(&self, org: &str, repo: &str) -> usize {
+    pub fn clear_baseline(&self, org: &str, repo: &str) -> rusqlite::Result<usize> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM issue_baselines WHERE org = ? AND repo = ?", params![org, repo]).unwrap()
+        conn.execute("DELETE FROM issue_baselines WHERE org = ? AND repo = ?", params![org, repo])
     }
 
-    pub fn get_baseline_issue_ids(&self, org: &str, repo: &str) -> HashSet<String> {
+    pub fn get_baseline_issue_ids(&self, org: &str, repo: &str) -> rusqlite::Result<HashSet<String>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached("SELECT issue_id FROM issue_baselines WHERE org = ? AND repo = ?").unwrap();
-        stmt.query_map(params![org, repo], |row| row.get(0)).unwrap().map(|r: rusqlite::Result<String>| r.unwrap()).collect()
+        let mut stmt = conn.prepare_cached("SELECT issue_id FROM issue_baselines WHERE org = ? AND repo = ?")?;
+        let result = stmt.query_map(params![org, repo], |row| row.get(0))?.collect();
+        result
     }
 
 }

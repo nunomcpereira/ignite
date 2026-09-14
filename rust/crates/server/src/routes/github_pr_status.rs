@@ -51,21 +51,31 @@ struct Summary {
     body: String,
 }
 
-fn build_summary(issues: &[IssueRow], job_id: &str) -> Summary {
+fn build_summary(issues: &[IssueRow], job_id: &str, max_warnings: Option<u64>) -> Summary {
     let open: Vec<&IssueRow> = issues.iter().filter(|i| i.status != "overridden" && i.status != "baselined").collect();
     let errors: Vec<&&IssueRow> = open.iter().filter(|i| i.severity == "error").collect();
     let warnings: Vec<&&IssueRow> = open.iter().filter(|i| i.severity == "warning").collect();
     let overridden: Vec<&IssueRow> = issues.iter().filter(|i| i.status == "overridden").collect();
 
-    let state = if !errors.is_empty() { "failure" } else { "success" };
+    // A repo can configure `security.prStatus.maxWarnings` to have the
+    // commit status report `failure` once warnings pile up past a
+    // threshold, even with zero blocking errors — otherwise this always
+    // reports success regardless of warning count, silently letting an
+    // org's own warning-as-policy-debt threshold go unenforced. `None`
+    // (the default) preserves the original "any warning count passes"
+    // behavior exactly.
+    let warnings_exceed_threshold = max_warnings.is_some_and(|max| warnings.len() as u64 > max);
+    let state = if !errors.is_empty() || warnings_exceed_threshold { "failure" } else { "success" };
     let description = if !errors.is_empty() {
         format!("{} blocking finding(s), {} warning(s)", errors.len(), warnings.len())
+    } else if warnings_exceed_threshold {
+        format!("{} warning(s) exceeds the configured threshold ({} overridden)", warnings.len(), overridden.len())
     } else {
         format!("Passed — {} warning(s), {} overridden", warnings.len(), overridden.len())
     };
 
     let mut lines = vec![
-        format!("### {}", if !errors.is_empty() { "\u{274c} Ignite gate failed" } else { "\u{2705} Ignite gate passed" }),
+        format!("### {}", if state == "failure" { "\u{274c} Ignite gate failed" } else { "\u{2705} Ignite gate passed" }),
         String::new(),
         format!("**{}** blocking · **{}** warning · **{}** overridden", errors.len(), warnings.len(), overridden.len()),
         String::new(),
@@ -132,7 +142,7 @@ async fn github_check(State(state): State<Arc<AppState>>, crate::auth::RequireAu
     }
 
     let full_name = format!("{owner}/{repo}");
-    let summary = build_summary(&issues, job_id);
+    let summary = build_summary(&issues, job_id, state.config.security.pr_status.max_warnings);
 
     let api = GithubApi::new(&state.runner);
     let fields: HashMap<String, Value> = HashMap::from([("state".to_string(), json!(summary.state)), ("description".to_string(), json!(summary.description)), ("context".to_string(), json!("ignite/gate"))]);
@@ -341,7 +351,7 @@ mod tests {
     #[test]
     fn build_summary_reports_failure_when_blocking_issues_open() {
         let issues = vec![issue("secret", "error", "open", Some("a.js"), Some(3))];
-        let summary = build_summary(&issues, "job-1");
+        let summary = build_summary(&issues, "job-1", None);
         assert_eq!(summary.state, "failure");
         assert!(summary.body.contains("Ignite gate failed"));
         assert!(summary.body.contains("a.js:3"));
@@ -350,7 +360,7 @@ mod tests {
     #[test]
     fn build_summary_reports_success_when_no_blocking_issues() {
         let issues = vec![issue("secret", "warning", "open", None, None)];
-        let summary = build_summary(&issues, "job-1");
+        let summary = build_summary(&issues, "job-1", None);
         assert_eq!(summary.state, "success");
         assert!(summary.body.contains("Ignite gate passed"));
         assert!(summary.body.contains("(project-wide)"));
@@ -359,7 +369,7 @@ mod tests {
     #[test]
     fn build_summary_excludes_overridden_and_baselined_from_open_counts() {
         let issues = vec![issue("secret", "error", "overridden", None, None), issue("license", "error", "baselined", None, None)];
-        let summary = build_summary(&issues, "job-1");
+        let summary = build_summary(&issues, "job-1", None);
         assert_eq!(summary.state, "success");
         assert!(summary.body.contains("1** overridden"));
     }
@@ -367,7 +377,23 @@ mod tests {
     #[test]
     fn build_summary_caps_description_at_140_chars() {
         let issues: Vec<IssueRow> = (0..50).map(|i| issue("secret", "error", "open", Some(&format!("file{i}.js")), Some(1))).collect();
-        let summary = build_summary(&issues, "job-1");
+        let summary = build_summary(&issues, "job-1", None);
         assert!(summary.description.chars().count() <= 140);
+    }
+
+    #[test]
+    fn build_summary_fails_when_warnings_exceed_configured_max() {
+        let issues = vec![issue("secret", "warning", "open", None, None), issue("license", "warning", "open", None, None)];
+        assert_eq!(build_summary(&issues, "job-1", None).state, "success", "no threshold configured means any warning count still passes");
+        let summary = build_summary(&issues, "job-1", Some(1));
+        assert_eq!(summary.state, "failure");
+        assert!(summary.body.contains("Ignite gate failed"));
+    }
+
+    #[test]
+    fn build_summary_passes_when_warnings_stay_within_configured_max() {
+        let issues = vec![issue("secret", "warning", "open", None, None)];
+        let summary = build_summary(&issues, "job-1", Some(1));
+        assert_eq!(summary.state, "success");
     }
 }

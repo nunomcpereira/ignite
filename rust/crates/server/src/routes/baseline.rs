@@ -21,14 +21,21 @@ async fn save_baseline(State(state): State<Arc<AppState>>, crate::auth::RequireA
 }
 
 async fn get_baseline(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>) -> Response {
-    let ids: Vec<String> = state.db.get_baseline_issue_ids(&org, &repo).into_iter().collect();
-    let count = ids.len();
-    Json(json!({ "ok": true, "org": org, "repo": repo, "issueIds": ids, "count": count })).into_response()
+    match state.db.get_baseline_issue_ids(&org, &repo) {
+        Ok(ids) => {
+            let ids: Vec<String> = ids.into_iter().collect();
+            let count = ids.len();
+            Json(json!({ "ok": true, "org": org, "repo": repo, "issueIds": ids, "count": count })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed to load baseline: {e}") }))).into_response(),
+    }
 }
 
 async fn delete_baseline(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>) -> Response {
-    let removed = state.db.clear_baseline(&org, &repo);
-    Json(json!({ "ok": true, "org": org, "repo": repo, "removed": removed })).into_response()
+    match state.db.clear_baseline(&org, &repo) {
+        Ok(removed) => Json(json!({ "ok": true, "org": org, "repo": repo, "removed": removed })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed to delete baseline: {e}") }))).into_response(),
+    }
 }
 
 pub fn router() -> Router<Arc<AppState>> {
