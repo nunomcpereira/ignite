@@ -5,7 +5,7 @@
 
 use crate::store::DbStore;
 use crate::types::*;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use std::collections::HashMap;
 
 /// `overrides.actor_email` sentinel marking a row created by the inbound
@@ -83,8 +83,11 @@ impl DbStore {
             params![project_id, issue_id],
             |row| row.get::<_, i64>(0),
         )
-        .unwrap()
-            != 0
+        .map(|v| v != 0)
+        .unwrap_or_else(|e| {
+            tracing::error!("has_approved_override query failed for issue {issue_id}: {e}");
+            false
+        })
     }
 
     /// True when `issue_id` already has a `'pending'` override on this
@@ -98,8 +101,11 @@ impl DbStore {
             params![project_id, issue_id],
             |row| row.get::<_, i64>(0),
         )
-        .unwrap()
-            != 0
+        .map(|v| v != 0)
+        .unwrap_or_else(|e| {
+            tracing::error!("has_pending_override query failed for issue {issue_id}: {e}");
+            false
+        })
     }
 
     /// Every still-`'pending'` override across `project_id` — the queue a
@@ -148,8 +154,13 @@ impl DbStore {
     /// touches the `overrides` row itself, never `issues`, so it composes
     /// cleanly with that existing method rather than duplicating it.
     pub fn approve_override(&self, project_id: i64, override_id: i64, approver_email: &str) -> Result<(i64, String), String> {
-        let conn = self.conn.lock();
-        let (row_project_id, issue_id, actor_email, status): (i64, String, String, String) = conn
+        let mut conn = self.conn.lock();
+        // BEGIN IMMEDIATE (not the default DEFERRED) so the read-then-write
+        // below is atomic against a concurrent approve/reject of the same
+        // row from another connection, not just serialized by this
+        // process's own Mutex.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+        let (row_project_id, issue_id, actor_email, status): (i64, String, String, String) = tx
             .query_row("SELECT project_id, issue_id, actor_email, status FROM overrides WHERE id = ?", params![override_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
             .map_err(|_| "Override not found.".to_string())?;
         if row_project_id != project_id {
@@ -161,7 +172,8 @@ impl DbStore {
         if actor_email.eq_ignore_ascii_case(approver_email) {
             return Err("A different reviewer must approve this override — you can't approve your own submission.".to_string());
         }
-        conn.execute("UPDATE overrides SET status = 'approved', approved_by_email = ?, approved_at = datetime('now') WHERE id = ?", params![approver_email, override_id]).unwrap();
+        tx.execute("UPDATE overrides SET status = 'approved', approved_by_email = ?, approved_at = datetime('now') WHERE id = ?", params![approver_email, override_id]).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok((project_id, issue_id))
     }
 
@@ -174,16 +186,18 @@ impl DbStore {
     /// someone else's, on reflection) is always safe since it never
     /// unblocks anything.
     pub fn reject_override(&self, project_id: i64, override_id: i64, approver_email: &str) -> Result<(i64, String), String> {
-        let conn = self.conn.lock();
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
         let (row_project_id, issue_id, status): (i64, String, String) =
-            conn.query_row("SELECT project_id, issue_id, status FROM overrides WHERE id = ?", params![override_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|_| "Override not found.".to_string())?;
+            tx.query_row("SELECT project_id, issue_id, status FROM overrides WHERE id = ?", params![override_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|_| "Override not found.".to_string())?;
         if row_project_id != project_id {
             return Err("Override not found for this project.".to_string());
         }
         if status != "pending" {
             return Err(format!("Override is already {status}, not pending."));
         }
-        conn.execute("UPDATE overrides SET status = 'rejected', approved_by_email = ?, approved_at = datetime('now') WHERE id = ?", params![approver_email, override_id]).unwrap();
+        tx.execute("UPDATE overrides SET status = 'rejected', approved_by_email = ?, approved_at = datetime('now') WHERE id = ?", params![approver_email, override_id]).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok((project_id, issue_id))
     }
 
@@ -289,8 +303,11 @@ impl DbStore {
             params![project_id, issue_id],
             |row| row.get::<_, i64>(0),
         )
-        .unwrap()
-            != 0
+        .map(|v| v != 0)
+        .unwrap_or_else(|e| {
+            tracing::error!("issue_has_override query failed for issue {issue_id}: {e}");
+            false
+        })
     }
 
     /// Removes every GitHub-dismissal override row (see
@@ -309,7 +326,10 @@ impl DbStore {
                 AND project_id IN (SELECT id FROM projects WHERE org = ? AND repo = ?)",
             params![issue_id, GITHUB_DISMISSAL_ACTOR_EMAIL, org, repo],
         )
-        .unwrap()
+        .unwrap_or_else(|e| {
+            tracing::error!("delete_github_dismissal_overrides failed for issue {issue_id}: {e}");
+            0
+        })
     }
 
 }

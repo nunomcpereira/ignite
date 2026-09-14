@@ -38,6 +38,7 @@ mod types;
 mod campaigns;
 mod compliance;
 mod custom_secret_patterns;
+mod webhook_deliveries;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
 pub use store::DbStore;

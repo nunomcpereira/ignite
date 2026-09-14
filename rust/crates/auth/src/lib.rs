@@ -160,15 +160,23 @@ struct RateLimitEntry {
 /// against an endpoint that never succeeds) without needing one.
 const STALE_ENTRY_PRUNE_THRESHOLD: usize = 10_000;
 
+/// Below [`STALE_ENTRY_PRUNE_THRESHOLD`] entries, a prune still runs every
+/// this many calls — otherwise a sustained flood of distinct keys that
+/// never quite reaches the size threshold (e.g. ~9,999 unique attackers)
+/// could sit expired-but-unpruned in memory indefinitely, since the
+/// size-based prune above never fires below the threshold at all.
+const PERIODIC_PRUNE_EVERY_N_CALLS: u64 = 1_000;
+
 pub struct RateLimiter {
     hits: Mutex<HashMap<String, RateLimitEntry>>,
     window: Duration,
     max: u32,
+    calls_since_prune: std::sync::atomic::AtomicU64,
 }
 
 impl RateLimiter {
     pub fn new(window: Duration, max: u32) -> Self {
-        RateLimiter { hits: Mutex::new(HashMap::new()), window, max }
+        RateLimiter { hits: Mutex::new(HashMap::new()), window, max, calls_since_prune: std::sync::atomic::AtomicU64::new(0) }
     }
 
     pub fn check(&self, key: &str) -> bool {
@@ -178,11 +186,15 @@ impl RateLimiter {
         // scale, but an attacker flooding with randomized keys (distinct
         // IPs/headers per request) grows this map without bound and makes
         // every subsequent call scan an ever-larger table while holding
-        // the lock — pruning only once the map has actually grown past a
-        // reasonable size keeps the common case O(1)-ish without ever
-        // letting the map grow unboundedly either.
-        if hits.len() > STALE_ENTRY_PRUNE_THRESHOLD {
+        // the lock — pruning once the map has actually grown past a
+        // reasonable size keeps the common case O(1)-ish. The periodic
+        // counter-based prune below covers the case that leaves open:
+        // sustained traffic from many distinct expired keys that never
+        // quite crosses the size threshold.
+        let calls = self.calls_since_prune.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if hits.len() > STALE_ENTRY_PRUNE_THRESHOLD || calls >= PERIODIC_PRUNE_EVERY_N_CALLS {
             hits.retain(|_, v| v.reset_at > now);
+            self.calls_since_prune.store(0, std::sync::atomic::Ordering::Relaxed);
         }
         let entry = hits.entry(key.to_string()).or_insert_with(|| RateLimitEntry { count: 0, reset_at: now + self.window });
         if entry.reset_at <= now {

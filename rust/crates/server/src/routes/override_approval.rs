@@ -115,11 +115,13 @@ pub fn router() -> Router<Arc<AppState>> {
 mod tests {
     use super::*;
 
-    fn state_with_config(config: ignite_config::Config) -> Arc<AppState> {
+    /// Returns the `TempDir` guard alongside the state — the caller must
+    /// keep it alive for as long as `state` is in use (its `Drop` deletes
+    /// the backing directory the SQLite file lives in).
+    fn state_with_config(config: ignite_config::Config) -> (Arc<AppState>, tempfile::TempDir) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        std::mem::forget(db_dir);
-        Arc::new(AppState {
+        let state = Arc::new(AppState {
             runner: crate::state::default_runner(),
             db,
             running_runs: parking_lot::Mutex::new(std::collections::HashMap::new()),
@@ -130,7 +132,8 @@ mod tests {
             package_hallucination_checker: crate::state::default_package_hallucination_checker(),
             fix_pr_previews: parking_lot::Mutex::new(std::collections::HashMap::new()),
             audit_http: reqwest::Client::new(),
-        })
+        });
+        (state, db_dir)
     }
 
     fn user(email: &str) -> crate::auth::AttachedUser {
@@ -142,7 +145,7 @@ mod tests {
         let mut config = ignite_config::Config::default();
         config.security.override_approval.enabled = false;
         config.security.override_approval.approver_emails = vec!["admin@acme.example".to_string()];
-        let state = state_with_config(config);
+        let (state, _db_dir) = state_with_config(config);
         let (status, _) = require_approver(&state, &user("admin@acme.example")).unwrap_err();
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
@@ -152,7 +155,7 @@ mod tests {
         let mut config = ignite_config::Config::default();
         config.security.override_approval.enabled = true;
         config.security.override_approval.approver_emails = vec!["admin@acme.example".to_string()];
-        let state = state_with_config(config);
+        let (state, _db_dir) = state_with_config(config);
         let (status, _) = require_approver(&state, &user("someone-else@acme.example")).unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
@@ -162,7 +165,7 @@ mod tests {
         let mut config = ignite_config::Config::default();
         config.security.override_approval.enabled = true;
         config.security.override_approval.approver_emails = vec!["Admin@Acme.example".to_string()];
-        let state = state_with_config(config);
+        let (state, _db_dir) = state_with_config(config);
         assert!(require_approver(&state, &user("admin@acme.example")).is_ok());
     }
 
@@ -171,7 +174,7 @@ mod tests {
         let mut config = ignite_config::Config::default();
         config.security.override_approval.enabled = true;
         config.security.override_approval.approver_emails = vec!["approver@acme.example".to_string()];
-        let state = state_with_config(config);
+        let (state, _db_dir) = state_with_config(config);
         let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             project_id,

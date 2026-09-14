@@ -73,7 +73,7 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
         return err(StatusCode::UNAUTHORIZED, "Signature verification failed.".to_string());
     }
     let delivery_id = headers.get("x-github-delivery").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !ignite_github_api::record_delivery_once(delivery_id) {
+    if !state.db.record_webhook_delivery_once(delivery_id) {
         return axum::Json(json!({ "ok": true, "ignored": "duplicate_delivery" })).into_response();
     }
 

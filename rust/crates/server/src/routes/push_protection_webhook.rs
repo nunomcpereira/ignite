@@ -74,8 +74,40 @@ fn extract_bypass_info(alert: &Value) -> Option<BypassInfo> {
     })
 }
 
+/// Neutralizes Markdown-significant characters and `@` mentions in a
+/// GitHub-supplied free-text field before it's interpolated into a body
+/// that gets posted as a real GitHub issue. `info.comment`/`info.reason`/
+/// `info.secret_type` all come straight from the webhook payload's `alert`
+/// JSON — a developer bypassing push-protection controls that text
+/// themselves, so left unescaped it could carry Markdown formatting that
+/// misleads a reader, or an `@mention` used to spam/harass someone, inside
+/// a security-critical notification. `bypassed_by` (a real GitHub login,
+/// not free text) is deliberately not run through this — its `@mention`
+/// is the intended attribution, not user-controlled content.
+fn sanitize_for_issue_body(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            // Backtick (code-span/code-fence breakout) and the Markdown
+            // link/image delimiters — the constructs that actually let
+            // free text restyle the surrounding issue body or masquerade
+            // as a link. Deliberately not escaping every Markdown special
+            // character (`_`, `-`, `.`, `!`, ...) — those are common in
+            // ordinary words (e.g. a resolution reason like
+            // `used_in_tests`) and escaping them buys no real safety.
+            '\\' | '`' | '[' | ']' | '(' | ')' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '@' => out.push_str("@\u{200B}"), // zero-width space breaks GitHub's @mention parsing
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn issue_body_for(info: &BypassInfo, org: &str, repo: &str) -> String {
-    let mut body = format!("A GitHub secret push-protection block was **bypassed** on `{org}/{repo}`.\n\n- **Secret type:** {}\n", info.secret_type);
+    let mut body = format!("A GitHub secret push-protection block was **bypassed** on `{org}/{repo}`.\n\n- **Secret type:** {}\n", sanitize_for_issue_body(&info.secret_type));
     if let Some(by) = &info.bypassed_by {
         body.push_str(&format!("- **Bypassed by:** @{by}\n"));
     }
@@ -83,10 +115,10 @@ fn issue_body_for(info: &BypassInfo, org: &str, repo: &str) -> String {
         body.push_str(&format!("- **Bypassed at:** {at}\n"));
     }
     if let Some(reason) = &info.reason {
-        body.push_str(&format!("- **Stated reason:** {reason}\n"));
+        body.push_str(&format!("- **Stated reason:** {}\n", sanitize_for_issue_body(reason)));
     }
     if let Some(comment) = &info.comment {
-        body.push_str(&format!("- **Comment:** {comment}\n"));
+        body.push_str(&format!("- **Comment:** {}\n", sanitize_for_issue_body(comment)));
     }
     if let Some(url) = &info.alert_url {
         body.push_str(&format!("\n[View alert on GitHub]({url})\n"));
@@ -110,7 +142,7 @@ async fn push_protection_webhook(State(state): State<Arc<AppState>>, headers: He
         return err(StatusCode::UNAUTHORIZED, "Signature verification failed.".to_string());
     }
     let delivery_id = headers.get("x-github-delivery").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !ignite_github_api::record_delivery_once(delivery_id) {
+    if !state.db.record_webhook_delivery_once(delivery_id) {
         return (StatusCode::OK, axum::Json(json!({ "ok": true, "ignored": "duplicate_delivery" }))).into_response();
     }
 

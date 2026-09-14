@@ -33,7 +33,9 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 fn issue_row_to_input(r: &IssueRow) -> IssueInput {
     IssueInput { id: r.id.clone(), phase: r.phase, category: r.category.clone(), severity: r.severity.clone(), score: r.score, summary: r.summary.clone(), file: r.file.clone(), line: r.line, snippet: r.snippet.clone(), cross_file: r.cross_file, chain: r.chain.clone(), cwe: r.cwe.clone(), owasp: r.owasp.clone(), tool: r.tool.clone(), references: r.references.clone(), duplicate_ref: r.duplicate_ref.clone() }
@@ -44,7 +46,10 @@ fn issue_row_to_issue(r: &IssueRow) -> Issue {
         id: r.id.clone(),
         category: r.category.clone(),
         severity: if r.severity == "error" { Severity::Error } else { Severity::Warning },
-        score: r.score.unwrap_or(0) as i32,
+        // Saturating, not `as i32` — a stored score above i32::MAX would
+        // otherwise wrap into an arbitrary (possibly negative) value and
+        // could let a critical finding read as non-critical.
+        score: i32::try_from(r.score.unwrap_or(0)).unwrap_or(i32::MAX),
         summary: r.summary.clone(),
         file: r.file.clone(),
         line: r.line,
@@ -80,8 +85,16 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
 
     let pending = {
         let mut pending_map = state.pending_effectivations.lock();
-        let cutoff = Instant::now().checked_sub(Duration::from_secs(24 * 3600));
-        pending_map.retain(|_, v| cutoff.map(|c| v.created_at > c).unwrap_or(true));
+        // Check each entry's own `elapsed()` rather than building an
+        // absolute cutoff `Instant` and comparing against it — subtracting
+        // 24h from `Instant::now()` can underflow (and either panic or,
+        // via `checked_sub`, silently disable expiry entirely) during the
+        // first 24h of process uptime, since `Instant`'s epoch is the
+        // process start time. `elapsed()` never has that problem: every
+        // `created_at` here was recorded after the process started, so
+        // `now - created_at` can never go negative.
+        const PENDING_EFFECTIVATION_TTL: Duration = Duration::from_secs(24 * 3600);
+        pending_map.retain(|_, v| v.created_at.elapsed() < PENDING_EFFECTIVATION_TTL);
         pending_map.get(&project_id).map(|p| (p.org.clone(), p.repo.clone(), p.source_backup_dir.clone()))
     };
     let Some((org, repo, source_backup_dir)) = pending else {

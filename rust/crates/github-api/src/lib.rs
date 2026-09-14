@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::sync::OnceCell;
 
 mod webhook_auth;
-pub use webhook_auth::{record_delivery_once, verify_webhook_signature};
+pub use webhook_auth::verify_webhook_signature;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubApiError {

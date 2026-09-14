@@ -257,6 +257,11 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_org_repo ON audit_events(org, repo);
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  delivery_id TEXT PRIMARY KEY,
+  seen_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_seen_at ON webhook_deliveries(seen_at);
 "#;
 
 /// One-time-per-row backfill, safe to re-run every startup: every historical

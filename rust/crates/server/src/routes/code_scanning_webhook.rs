@@ -70,7 +70,7 @@ async fn code_scanning_webhook(State(state): State<Arc<AppState>>, headers: Head
     // mitigation: a validly-signed payload captured and re-POSTed later
     // now gets acknowledged as a no-op instead of re-processed.
     let delivery_id = headers.get("x-github-delivery").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !ignite_github_api::record_delivery_once(delivery_id) {
+    if !state.db.record_webhook_delivery_once(delivery_id) {
         return (StatusCode::OK, axum::Json(json!({ "ok": true, "ignored": "duplicate_delivery" }))).into_response();
     }
 
@@ -139,7 +139,12 @@ async fn code_scanning_webhook(State(state): State<Arc<AppState>>, headers: Head
         // collaborator who can dismiss a GitHub alert (no Ignite
         // permissions needed at all) could silently clear a critical
         // finding through Ignite's gate.
-        let is_critical = state.config.security.override_approval.enabled && ignite_override_engine::is_critical_score(issue.score.unwrap_or(0) as i32);
+        // Saturating cast, not `as i32` — a truncating cast on a score
+        // that happened to exceed i32::MAX could wrap into a small or
+        // negative value and let a critical finding slip past the check
+        // below instead of correctly comparing as critical.
+        let score_i32 = i32::try_from(issue.score.unwrap_or(0)).unwrap_or(i32::MAX);
+        let is_critical = state.config.security.override_approval.enabled && ignite_override_engine::is_critical_score(score_i32);
         if is_critical {
             state.db.add_pending_override(override_args);
             state.emit_audit_event(

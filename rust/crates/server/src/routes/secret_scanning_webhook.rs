@@ -85,7 +85,7 @@ async fn secret_scanning_webhook(State(state): State<Arc<AppState>>, headers: He
         return err(StatusCode::UNAUTHORIZED, "Signature verification failed.".to_string());
     }
     let delivery_id = headers.get("x-github-delivery").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !ignite_github_api::record_delivery_once(delivery_id) {
+    if !state.db.record_webhook_delivery_once(delivery_id) {
         return axum::Json(json!({ "ok": true, "ignored": "duplicate_delivery" })).into_response();
     }
 
@@ -180,7 +180,10 @@ async fn secret_scanning_webhook(State(state): State<Arc<AppState>>, headers: He
         // decision, and must not bypass the second-reviewer approval every
         // other override entry point enforces just because it arrived
         // through this webhook instead of Ignite's own UI/API.
-        let is_critical = state.config.security.override_approval.enabled && ignite_override_engine::is_critical_score(issue.score.unwrap_or(0) as i32);
+        // Saturating cast, not `as i32` — see code_scanning_webhook.rs's
+        // identical guard for why a truncating cast here is unsafe.
+        let score_i32 = i32::try_from(issue.score.unwrap_or(0)).unwrap_or(i32::MAX);
+        let is_critical = state.config.security.override_approval.enabled && ignite_override_engine::is_critical_score(score_i32);
         if is_critical {
             state.db.add_pending_override(override_args);
             state.emit_audit_event(
