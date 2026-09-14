@@ -219,15 +219,19 @@ impl DbStore {
     pub fn list_onboarded_repo_summaries(&self, sla_critical_days: u32, sla_high_days: u32, sla_medium_days: u32) -> Vec<OnboardedRepoSummary> {
         let conn = self.conn.lock();
 
-        let mut latest_stmt = conn
-            .prepare_cached(
-                "SELECT p.id, p.job_id, p.org, p.repo, p.status, COALESCE(p.finished_at, p.created_at) AS last_scan_at, p.repo_url
-                 FROM projects p
-                 INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects GROUP BY org, repo) latest
-                   ON p.org = latest.org AND p.repo = latest.repo AND p.id = latest.max_id
-                 ORDER BY last_scan_at DESC",
-            )
-            .unwrap();
+        // As in compliance.rs: a malformed/legacy row (e.g. an unexpected
+        // NULL left by an old schema migration) or lock-contention hiccup
+        // during prepare should degrade this public dashboard read to a
+        // smaller result, not panic the whole request/worker thread.
+        let Ok(mut latest_stmt) = conn.prepare_cached(
+            "SELECT p.id, p.job_id, p.org, p.repo, p.status, COALESCE(p.finished_at, p.created_at) AS last_scan_at, p.repo_url
+             FROM projects p
+             INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects GROUP BY org, repo) latest
+               ON p.org = latest.org AND p.repo = latest.repo AND p.id = latest.max_id
+             ORDER BY last_scan_at DESC",
+        ) else {
+            return vec![];
+        };
         struct Latest {
             id: i64,
             job_id: String,
@@ -237,15 +241,16 @@ impl DbStore {
             last_scan_at: String,
             repo_url: Option<String>,
         }
-        let latest_rows: Vec<Latest> = latest_stmt
-            .query_map([], |row| Ok(Latest { id: row.get(0)?, job_id: row.get(1)?, org: row.get(2)?, repo: row.get(3)?, status: row.get(4)?, last_scan_at: row.get(5)?, repo_url: row.get(6)? }))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
+        let Ok(latest_rows_iter) =
+            latest_stmt.query_map([], |row| Ok(Latest { id: row.get(0)?, job_id: row.get(1)?, org: row.get(2)?, repo: row.get(3)?, status: row.get(4)?, last_scan_at: row.get(5)?, repo_url: row.get(6)? }))
+        else {
+            return vec![];
+        };
+        let latest_rows: Vec<Latest> = latest_rows_iter.filter_map(|r| r.ok()).collect();
 
-        let mut count_stmt = conn.prepare_cached("SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND status = 'open' AND (?2 IS NULL OR category = ?2)").unwrap();
-        let mut sla_stmt = conn
-            .prepare_cached(&format!(
+        let (Ok(mut count_stmt), Ok(mut sla_stmt), Ok(mut acks_stmt), Ok(mut prs_stmt)) = (
+            conn.prepare_cached("SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND status = 'open' AND (?2 IS NULL OR category = ?2)"),
+            conn.prepare_cached(&format!(
                 "SELECT COUNT(*) FROM issues i
                  JOIN issue_first_seen f ON f.org = ?1 AND f.repo = ?2 AND f.issue_id = i.issue_id
                  WHERE i.project_id = ?3 AND i.status = 'open'
@@ -257,30 +262,28 @@ impl DbStore {
                      END
                    )",
                 ignite_override_engine::CRITICAL_SCORE_THRESHOLD
-            ))
-            .unwrap();
-        let mut acks_stmt = conn
-            .prepare_cached(
+            )),
+            conn.prepare_cached(
                 "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification,
                         o.actor_email, o.actor_name, o.email_sent, o.created_at
                  FROM overrides o INNER JOIN projects p ON o.project_id = p.id
                  WHERE p.org = ? AND p.repo = ? ORDER BY o.created_at DESC",
-            )
-            .unwrap();
-        let mut prs_stmt = conn
-            .prepare_cached(
+            ),
+            conn.prepare_cached(
                 "SELECT pr.kind, pr.url, pr.branch, pr.files_changed, pr.created_at
                  FROM pull_requests pr INNER JOIN projects p ON pr.project_id = p.id
                  WHERE p.org = ? AND p.repo = ? ORDER BY pr.created_at DESC LIMIT 20",
-            )
-            .unwrap();
+            ),
+        ) else {
+            return vec![];
+        };
 
         latest_rows
             .into_iter()
             .map(|latest| {
-                let findings_count: i64 = count_stmt.query_row(params![latest.id, Option::<&str>::None], |row| row.get(0)).unwrap();
-                let license_problems: i64 = count_stmt.query_row(params![latest.id, Some("license-compliance")], |row| row.get(0)).unwrap();
-                let sla_breaches: i64 = sla_stmt.query_row(params![latest.org, latest.repo, latest.id, sla_critical_days, sla_high_days, sla_medium_days], |row| row.get(0)).unwrap();
+                let findings_count: i64 = count_stmt.query_row(params![latest.id, Option::<&str>::None], |row| row.get(0)).unwrap_or(0);
+                let license_problems: i64 = count_stmt.query_row(params![latest.id, Some("license-compliance")], |row| row.get(0)).unwrap_or(0);
+                let sla_breaches: i64 = sla_stmt.query_row(params![latest.org, latest.repo, latest.id, sla_critical_days, sla_high_days, sla_medium_days], |row| row.get(0)).unwrap_or(0);
                 let acknowledgments = acks_stmt
                     .query_map(params![latest.org, latest.repo], |row| {
                         Ok(OverrideRow {
@@ -299,14 +302,12 @@ impl DbStore {
                             created_at: row.get(12)?,
                         })
                     })
-                    .unwrap()
-                    .map(|r| r.unwrap())
-                    .collect();
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default();
                 let recent_prs = prs_stmt
                     .query_map(params![latest.org, latest.repo], |row| Ok(PullRequestRow { kind: row.get(0)?, url: row.get(1)?, branch: row.get(2)?, files_changed: row.get(3)?, created_at: row.get(4)? }))
-                    .unwrap()
-                    .map(|r| r.unwrap())
-                    .collect();
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default();
 
                 OnboardedRepoSummary {
                     org: latest.org,

@@ -423,12 +423,13 @@ pub fn find_cycles(graph: &HashMap<PathBuf, ModuleNode>) -> Vec<Vec<PathBuf>> {
         out
     }
 
-    // Recursion via an explicit worklist would be more idiomatic Rust, but
-    // this graph is small enough in practice (a project's own JS/TS file
-    // count) that a direct recursive port (matching the JS original's own
-    // recursive dfs) keeps this easy to diff against it.
+    // Explicit worklist instead of recursion: a scanned project (attacker-
+    // controlled ZIP/folder upload) can contain an arbitrarily long linear
+    // import chain, and a recursive DFS one stack frame per file would
+    // stack-overflow (and abort the whole process, unlike a catchable panic)
+    // on such input.
     fn dfs<'a>(
-        file: &'a PathBuf,
+        start_file: &'a PathBuf,
         graph: &'a HashMap<PathBuf, ModuleNode>,
         color: &mut HashMap<&'a PathBuf, Color>,
         stack: &mut Vec<&'a PathBuf>,
@@ -436,36 +437,51 @@ pub fn find_cycles(graph: &HashMap<PathBuf, ModuleNode>) -> Vec<Vec<PathBuf>> {
         seen: &mut HashSet<String>,
         cycles: &mut Vec<Vec<PathBuf>>,
     ) {
-        color.insert(file, Color::Gray);
-        stack_index.insert(file, stack.len());
-        stack.push(file);
+        // Each work item is (file, index of next import to visit).
+        let mut work: Vec<(&'a PathBuf, usize)> = vec![(start_file, 0)];
+        color.insert(start_file, Color::Gray);
+        stack_index.insert(start_file, stack.len());
+        stack.push(start_file);
 
-        if let Some(node) = graph.get(file) {
-            for imp in &node.imports {
-                let Some(imp_key) = graph.get_key_value(imp).map(|(k, _)| k) else { continue };
-                match color.get(imp_key).copied().unwrap_or(Color::White) {
-                    Color::White => dfs(imp_key, graph, color, stack, stack_index, seen, cycles),
-                    Color::Gray => {
-                        let start = stack_index[imp_key];
-                        let cycle_files: Vec<PathBuf> = stack[start..].iter().map(|f| (*f).clone()).collect();
-                        let canon = canonicalize(&cycle_files);
-                        let key = canon
-                            .iter()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if seen.insert(key) {
-                            cycles.push(canon);
-                        }
-                    }
-                    Color::Black => {}
+        while let Some((file, imp_idx)) = work.pop() {
+            let imports = graph.get(file).map(|n| &n.imports);
+            let next_imp = imports.and_then(|imps| imps.get(imp_idx));
+
+            let Some(imp) = next_imp else {
+                // Done with this file's imports: pop from the DFS stack.
+                stack.pop();
+                stack_index.remove(file);
+                color.insert(file, Color::Black);
+                continue;
+            };
+
+            // Re-push this frame to resume at the next import after this one.
+            work.push((file, imp_idx + 1));
+
+            let Some(imp_key) = graph.get_key_value(imp).map(|(k, _)| k) else { continue };
+            match color.get(imp_key).copied().unwrap_or(Color::White) {
+                Color::White => {
+                    color.insert(imp_key, Color::Gray);
+                    stack_index.insert(imp_key, stack.len());
+                    stack.push(imp_key);
+                    work.push((imp_key, 0));
                 }
+                Color::Gray => {
+                    let start = stack_index[imp_key];
+                    let cycle_files: Vec<PathBuf> = stack[start..].iter().map(|f| (*f).clone()).collect();
+                    let canon = canonicalize(&cycle_files);
+                    let key = canon
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if seen.insert(key) {
+                        cycles.push(canon);
+                    }
+                }
+                Color::Black => {}
             }
         }
-
-        stack.pop();
-        stack_index.remove(file);
-        color.insert(file, Color::Black);
     }
 
     let all_files: Vec<&PathBuf> = graph.keys().collect();
@@ -622,6 +638,25 @@ mod tests {
         assert_eq!(cycles.len(), 1);
         assert_eq!(cycles[0].len(), 2);
         ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[test]
+    fn find_cycles_handles_a_deep_linear_chain_without_stack_overflow() {
+        // A recursive DFS (one stack frame per file) used to stack-overflow
+        // and abort the whole process on a long enough linear import chain —
+        // exactly the shape an attacker-controlled ZIP/folder upload with
+        // many generated/vendored files could produce. Built in-memory
+        // since writing 50k real files would be slow; this exercises the
+        // same `find_cycles` worklist regardless.
+        const DEPTH: usize = 50_000;
+        let mut graph: HashMap<PathBuf, ModuleNode> = HashMap::new();
+        for i in 0..DEPTH {
+            let path = PathBuf::from(format!("file{i}.js"));
+            let imports = if i + 1 < DEPTH { vec![PathBuf::from(format!("file{}.js", i + 1))] } else { vec![] };
+            graph.insert(path, ModuleNode { content: String::new(), imports, bare_imports: vec![], exports: ExportInfo::default() });
+        }
+        let cycles = find_cycles(&graph);
+        assert!(cycles.is_empty(), "a linear chain has no cycles");
     }
 
     #[test]

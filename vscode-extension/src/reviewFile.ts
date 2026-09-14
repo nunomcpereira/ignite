@@ -99,6 +99,20 @@ export async function loadAcknowledgedIds(repoRoot: string): Promise<Set<string>
   return new Set(entries.filter((e) => e.justification).map((e) => e.id));
 }
 
+/**
+ * Collapses embedded newlines/carriage-returns to spaces before a value is
+ * interpolated into a single markdown line of acknowledgments.md. Fields
+ * like `issue.summary`/`issue.category` and a matched code snippet can echo
+ * scanned-repo content (a semgrep/bearer rule message, a matched source
+ * fragment, a package name) — an untrusted repo crafting one of those with
+ * an embedded `\nID: ...\nAcknowledge: ...\n` could otherwise forge a fake
+ * entry that parseBlocks() reads back as a legitimately-justified override
+ * for an unrelated issue id.
+ */
+function sanitizeLine(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ');
+}
+
 function codeForIssue(issue: IgniteIssue): string | null {
   const snippet = issue.snippet;
   if (!snippet || !Array.isArray(snippet.lines)) return null;
@@ -127,14 +141,14 @@ export async function appendUnresolvedIssues(repoRoot: string, issues: IgniteIss
       : undefined;
     if (match) match.superseded = true;
     const ackLine = match
-      ? `Acknowledge: ${match.justification} (auto-carried-forward from ${match.id} - pure line-number drift, flagged code unchanged)`
+      ? `Acknowledge: ${match.justification} (auto-carried-forward from ${sanitizeLine(match.id)} - pure line-number drift, flagged code unchanged)`
       : 'Acknowledge: ';
     newBlocks.push(
       [
-        `ID: ${issue.id}`,
-        `# [${(issue.severity || '').toUpperCase()}] ${issue.category} - ${issue.summary}`,
-        `#   ${loc}`,
-        ...(code ? [`# Code: ${code}`] : []),
+        `ID: ${sanitizeLine(issue.id)}`,
+        `# [${(issue.severity || '').toUpperCase()}] ${sanitizeLine(issue.category)} - ${sanitizeLine(issue.summary)}`,
+        `#   ${sanitizeLine(loc)}`,
+        ...(code ? [`# Code: ${sanitizeLine(code)}`] : []),
         ackLine,
       ].join('\n')
     );
@@ -208,19 +222,19 @@ export async function acknowledgeIssues(repoRoot: string, issues: IgniteIssue[],
   for (const issue of issues) {
     const match = byId.get(issue.id);
     if (match) {
-      match.raw = match.raw.replace(/^Acknowledge:.*$/m, `Acknowledge: ${justification}`);
-      if (!/^Acknowledge:/m.test(match.raw)) match.raw += `\nAcknowledge: ${justification}`;
+      match.raw = match.raw.replace(/^Acknowledge:.*$/m, `Acknowledge: ${sanitizeLine(justification)}`);
+      if (!/^Acknowledge:/m.test(match.raw)) match.raw += `\nAcknowledge: ${sanitizeLine(justification)}`;
       continue;
     }
     const loc = issue.file ? issue.file + (issue.line ? ':' + issue.line : '') : '(no file)';
     const code = codeForIssue(issue);
     newBlocks.push(
       [
-        `ID: ${issue.id}`,
-        `# [${(issue.severity || '').toUpperCase()}] ${issue.category} - ${issue.summary}`,
-        `#   ${loc}`,
-        ...(code ? [`# Code: ${code}`] : []),
-        `Acknowledge: ${justification}`,
+        `ID: ${sanitizeLine(issue.id)}`,
+        `# [${(issue.severity || '').toUpperCase()}] ${sanitizeLine(issue.category)} - ${sanitizeLine(issue.summary)}`,
+        `#   ${sanitizeLine(loc)}`,
+        ...(code ? [`# Code: ${sanitizeLine(code)}`] : []),
+        `Acknowledge: ${sanitizeLine(justification)}`,
       ].join('\n')
     );
   }

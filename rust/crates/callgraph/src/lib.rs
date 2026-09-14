@@ -373,7 +373,12 @@ fn parse_rust_fn_spans(content: &str) -> Vec<RustFnSpan> {
                 }
                 pos += 1;
             }
-            match content[pos..].find('(') {
+            // Byte-level scan rather than `content[pos..].find(...)`: the
+            // generic-parameter span just walked over may contain a
+            // multi-byte UTF-8 identifier (Rust allows non-ASCII idents),
+            // which would leave `pos` off a char boundary and panic a str
+            // slice/find on it.
+            match bytes[pos..].iter().position(|&b| b == b'(') {
                 Some(off) => pos += off,
                 None => continue,
             }
@@ -533,6 +538,23 @@ mod tests {
         let process_id = graph.nodes.iter().find(|n| n.name == "process").unwrap().id.clone();
         assert!(graph.edges.contains(&CallGraphEdge { caller: main_id.clone(), callee: helper_id }));
         assert!(graph.edges.contains(&CallGraphEdge { caller: main_id, callee: process_id }));
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn build_rust_call_graph_handles_non_ascii_generic_params_without_panicking() {
+        let dir = tempdir().unwrap();
+        // A multi-byte UTF-8 identifier inside the generic parameter list
+        // used to leave the byte scanner off a char boundary, panicking
+        // the subsequent str slice/find.
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "fn wrap<Ω>(x: Ω) -> Ω {\n    x\n}\n\nfn main() {\n    wrap(1);\n}\n",
+        )
+        .unwrap();
+        let graph = build_rust_call_graph(dir.path()).unwrap();
+        assert!(graph.nodes.iter().any(|n| n.name == "wrap"));
+        assert!(graph.nodes.iter().any(|n| n.name == "main"));
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 

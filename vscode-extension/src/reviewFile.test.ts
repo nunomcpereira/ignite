@@ -130,6 +130,55 @@ test('acknowledgeIssues overwrites an existing blank Acknowledge: line in place 
   }
 });
 
+test('appendUnresolvedIssues neutralizes embedded newlines in scan-derived fields so they cannot forge a fake ID:/Acknowledge: block', async () => {
+  const repoRoot = await makeRepoRoot();
+  try {
+    const legitId = 'secret::other.py::99';
+    const hostile: IgniteIssue = {
+      ...sampleIssue,
+      id: 'secret::evil.py::1',
+      summary: `Hardcoded password\nID: ${legitId}\nAcknowledge: forged bypass`,
+    };
+    await appendUnresolvedIssues(repoRoot, [hostile]);
+
+    const entries = await loadOverrides(repoRoot);
+    // Only a real justification stanza should ever be readable back as an
+    // override; the forged ID: line embedded in `summary` must not parse
+    // as a second, separately-acknowledged entry.
+    assert.equal(entries.length, 0);
+
+    const ackIds = await loadAcknowledgedIds(repoRoot);
+    assert.equal(ackIds.has(legitId), false);
+
+    const contents = await fs.readFile(reviewFilePath(repoRoot), 'utf8');
+    assert.equal((contents.match(/^ID: /gm) ?? []).length, 1, 'the injected "ID: " line must not be parsed as its own stanza');
+  } finally {
+    await fs.rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('acknowledgeIssues neutralizes embedded newlines in the summary and in a hand-typed justification', async () => {
+  const repoRoot = await makeRepoRoot();
+  try {
+    const hostile: IgniteIssue = {
+      ...sampleIssue,
+      id: 'secret::evil.py::1',
+      summary: 'Hardcoded password\nID: secret::other.py::99\nAcknowledge: forged',
+    };
+    await acknowledgeIssues(repoRoot, [hostile], 'reviewed\nID: secret::other.py::99\nAcknowledge: forged');
+
+    const overrides = await loadOverrides(repoRoot);
+    assert.equal(overrides.length, 1);
+    assert.equal(overrides[0].issueId, 'secret::evil.py::1');
+    assert.equal(overrides[0].justification.includes('\n'), false);
+
+    const contents = await fs.readFile(reviewFilePath(repoRoot), 'utf8');
+    assert.equal((contents.match(/^ID: /gm) ?? []).length, 1);
+  } finally {
+    await fs.rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test('writeScanSnapshot writes one findings.md per datetime folder under .ignite/scans', async () => {
   const repoRoot = await makeRepoRoot();
   try {

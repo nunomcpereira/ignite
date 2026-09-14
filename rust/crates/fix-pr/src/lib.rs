@@ -441,13 +441,20 @@ fn bracket_depth_signatures(text: &str) -> ((i64, i64), (i64, i64), (i64, i64)) 
 ///   decorator/`def`/call-opening line while leaving what it opened in
 ///   place further down.
 fn passes_structural_check(file: &str, original_content: &str, new_content: &str) -> bool {
-    if file.ends_with(".json") {
+    // Case-insensitive: a repo can legitimately have `config.JSON` or
+    // `values.YAML` (common coming from case-insensitive filesystems, or
+    // just inconsistent naming) — a case-sensitive `ends_with` silently
+    // fell through to the generic bracket-balance check below instead of
+    // actually validating JSON/YAML/Python syntax, which could let a
+    // syntactically-broken auto-fix through as "structurally sound."
+    let lower = file.to_ascii_lowercase();
+    if lower.ends_with(".json") {
         return serde_json::from_str::<serde_json::Value>(new_content).is_ok();
     }
-    if file.ends_with(".yml") || file.ends_with(".yaml") {
+    if lower.ends_with(".yml") || lower.ends_with(".yaml") {
         return serde_yaml::from_str::<serde_yaml::Value>(new_content).is_ok();
     }
-    if file.ends_with(".py") {
+    if lower.ends_with(".py") {
         if let Some(valid) = python_syntax_is_valid(new_content) {
             return valid;
         }
@@ -1071,6 +1078,18 @@ mod tests {
         let original = ".iconBtn {\n  background: none;";
         let replacement = "/* .iconBtn {\n  background: none;\n} */";
         assert!(apply_candidate_to_content(&format!("{original}\n}}\n"), 1, 2, original, replacement).is_none());
+    }
+
+    #[test]
+    fn passes_structural_check_validates_json_yaml_regardless_of_extension_case() {
+        // A case-sensitive `ends_with` used to silently skip real JSON/YAML
+        // validation for a file whose extension isn't lowercase (a repo can
+        // legitimately have `config.JSON` or `values.YAML`), falling
+        // through to the much weaker bracket-balance check instead — which
+        // would happily pass invalid JSON as "structurally sound."
+        assert!(!passes_structural_check("config.JSON", "{}", "{not valid json"));
+        assert!(passes_structural_check("config.JSON", "{}", r#"{"a": 1}"#));
+        assert!(!passes_structural_check("values.YAML", "a: 1", "a: [1, 2"));
     }
 
     #[test]

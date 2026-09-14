@@ -971,224 +971,245 @@ ID: complexity-health::rust/crates/governance-ci/src/lib.rs::1::low-maintainabil
 # Code: //! Phase 5: org governance CI, run locally via `act`. Faithful port of
 Acknowledge: 
 
-ID: complexity-health::public/i18n.js::1::low-maintainability
-# Issue #138
-# [WARNING] complexity-health - Maintainability Index 30/100 — below the 40 threshold (complexity 31 over 1246 lines of code).
-#   public/i18n.js:1
-# Code: // Ignite web UI translations — static UI chrome only (buttons, labels,
-Acknowledge: 
-
 ID: complexity-health::vscode-extension/src/panels/findingsTree.ts::1::low-maintainability
-# Issue #139
+# Issue #138
 # [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 41 over 179 lines of code).
 #   vscode-extension/src/panels/findingsTree.ts:1
 # Code: import * as vscode from 'vscode';
 Acknowledge: 
 
 ID: complexity-health::vscode-extension/src/panels/reportPanel.ts::1::low-maintainability
-# Issue #140
+# Issue #139
 # [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 56 over 273 lines of code).
 #   vscode-extension/src/panels/reportPanel.ts:1
 # Code: import * as vscode from 'vscode';
 Acknowledge: 
 
 ID: complexity-health::vscode-extension/src/extension.ts::1::low-maintainability
-# Issue #141
+# Issue #140
 # [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 91 over 488 lines of code).
 #   vscode-extension/src/extension.ts:1
 # Code: import * as vscode from 'vscode';
 Acknowledge: 
 
 ID: complexity-health::vscode-extension/src/api.ts::1::low-maintainability
-# Issue #142
+# Issue #141
 # [WARNING] complexity-health - Maintainability Index 30/100 — below the 40 threshold (complexity 68 over 397 lines of code).
 #   vscode-extension/src/api.ts:1
 # Code: import * as vscode from 'vscode';
 Acknowledge: 
 
 ID: complexity-health::vscode-extension/src/reviewFile.ts::1::low-maintainability
-# Issue #143
+# Issue #142
 # [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 46 over 226 lines of code).
 #   vscode-extension/src/reviewFile.ts:1
 # Code: import * as fs from 'fs/promises';
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::7aa895fb
-# Issue #144
+# Issue #143
 # [WARNING] css-dead-code - CSS class ".infima" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::3239fc7e
-# Issue #145
+# Issue #144
 # [WARNING] css-dead-code - CSS class ".theme-common" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::8b93d74d
-# Issue #146
+# Issue #145
 # [WARNING] css-dead-code - CSS class ".theme-classic" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::7246118d
-# Issue #147
+# Issue #146
 # [WARNING] css-dead-code - CSS class ".core" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::c98c98f5
-# Issue #148
+# Issue #147
 # [WARNING] css-dead-code - CSS class ".plugin-debug" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::ae40698e
-# Issue #149
+# Issue #148
 # [WARNING] css-dead-code - CSS class ".theme-mermaid" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::f63f75e9
-# Issue #150
+# Issue #149
 # [WARNING] css-dead-code - CSS class ".theme-live-codeblock" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::59b3bc2f
-# Issue #151
+# Issue #150
 # [WARNING] css-dead-code - CSS class ".theme-search-algolia" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::9cc5937b
-# Issue #152
+# Issue #151
 # [WARNING] css-dead-code - CSS class ".docsearch" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/src/css/custom.css::32::unused-css-class
-# Issue #153
+# Issue #152
 # [WARNING] css-dead-code - CSS class ".markdown" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/src/css/custom.css:32
 # Code: .markdown {
 Acknowledge: 
 
 ID: css-dead-code::docs-site/src/css/custom.css::88::unused-css-class
-# Issue #154
+# Issue #153
 # [WARNING] css-dead-code - CSS class ".theme-admonition" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/src/css/custom.css:88
 # Code: .theme-admonition {
 Acknowledge: 
 
 ID: css-dead-code::docs-site/src/css/custom.css::95::unused-css-class
-# Issue #155
+# Issue #154
 # [WARNING] css-dead-code - CSS class ".theme-doc-markdown" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/src/css/custom.css:95
 # Code: .theme-doc-markdown table {
 Acknowledge: 
 
 ID: css-dead-code::docs-site/src/css/custom.css::173::unused-css-class
-# Issue #156
+# Issue #155
 # [WARNING] css-dead-code - CSS class ".heroShot" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/src/css/custom.css:173
 # Code: .heroShot {
 Acknowledge: 
 
 ID: css-dead-code::docs-site/src/css/custom.css::193::unused-css-class
-# Issue #157
+# Issue #156
 # [WARNING] css-dead-code - CSS class ".phaseDiagram" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/src/css/custom.css:193
 # Code: .phaseDiagram {
 Acknowledge: 
 
 ID: css-dead-code::docs-site/src/css/custom.css::209::unused-css-class
-# Issue #158
+# Issue #157
 # [WARNING] css-dead-code - CSS class ".phase-link" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs-site/src/css/custom.css:209
 # Code: .phase-link {
 Acknowledge: 
 
 ID: css-dead-code::docs/assets/css/style.scss::4::unused-css-class
-# Issue #159
+# Issue #158
 # [WARNING] css-dead-code - CSS class ".theme" is declared in docs/assets/css/style.scss but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs/assets/css/style.scss:4
 # Code: @import "{{ site.theme }}";
 Acknowledge: 
 
 ID: css-dead-code::docs/assets/css/style.scss::6::unused-css-class
-# Issue #160
+# Issue #159
 # [WARNING] css-dead-code - CSS class ".main-content" is declared in docs/assets/css/style.scss but never referenced in a class/className attribute across 32 scanned markup file(s).
 #   docs/assets/css/style.scss:6
 # Code: // Cayman's default .main-content is a fixed ~64rem column with no overflow
 Acknowledge: 
 
 ID: dependency-vulnerability::rust/crates/server/Cargo.toml::60::jsonwebtoken::GHSA-h395-gr6q-cpjc
-# Issue #161
+# Issue #160
 # [WARNING] dependency-vulnerability - jsonwebtoken@9.3.1 — GHSA-h395-gr6q-cpjc: jsonwebtoken has Type Confusion that leads to potential authorization bypass (CVE-2026-25537) (CVSS 0)
 #   rust/crates/server/Cargo.toml:60
 # Code: jsonwebtoken = "9"
 Acknowledge: 
 
-ID: code-duplication::rust/crates/db-store/src/overrides.rs::198::8f3adedb
-# Issue #162
-# [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/db-store/src/projects.rs:285-303.
-#   rust/crates/db-store/src/overrides.rs:198
-# Code: stmt.query_map(params![project_id], |row| {
-Acknowledge: 
-
 ID: code-duplication::rust/crates/mcp-server/src/main.rs::620
-# Issue #163
+# Issue #161
 # [WARNING] code-duplication - 36-line duplicate block, also found in rust/crates/mcp-server/src/main.rs:772-806.
 #   rust/crates/mcp-server/src/main.rs:620
 # Code: let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
 Acknowledge: 
 
 ID: code-duplication::rust/crates/server/src/routes/audit_log.rs::105::6f31953d
-# Issue #164
+# Issue #162
 # [WARNING] code-duplication - 35-line duplicate block, also found in rust/crates/server/src/routes/custom_secret_patterns.rs:162-196.
 #   rust/crates/server/src/routes/audit_log.rs:105
 # Code: Router::new().route("/api/audit-log", get(list)).route("/api/audit-log/verify", get(verify))
 Acknowledge: 
 
 ID: code-duplication::rust/crates/server/src/routes/effectivate.rs::298
-# Issue #165
+# Issue #163
 # [WARNING] code-duplication - 16-line duplicate block, also found in rust/crates/server/src/routes/pipeline_interactive.rs:403-418.
 #   rust/crates/server/src/routes/effectivate.rs:298
 # Code: fn build_state() -> (Arc<AppState>, tempfile::TempDir) {
 Acknowledge: 
 
 ID: code-duplication::rust/crates/server/src/routes/studio.rs::336::9cf59e7c
-# Issue #166
+# Issue #164
 # [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/server/src/routes/studio.rs:439-457.
 #   rust/crates/server/src/routes/studio.rs:336
 # Code: async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
 Acknowledge: 
 
 ID: code-duplication::rust/crates/server/src/routes/studio.rs::336::189d9a56
-# Issue #167
+# Issue #165
 # [WARNING] code-duplication - 22-line duplicate block, also found in rust/crates/server/src/routes/studio.rs:554-574.
 #   rust/crates/server/src/routes/studio.rs:336
 # Code: async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
 Acknowledge: 
 
-ID: code-duplication::../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/e3ecd6a8-1a46-43fa-beb0-39fe1d989ff9-api-validation/CLAUDE.md:markdown::72
-# Issue #168
-# [WARNING] code-duplication - 24-line duplicate block, also found in ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/e3ecd6a8-1a46-43fa-beb0-39fe1d989ff9-api-validation/CLAUDE.md:markdown:72-95.
-#   ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/e3ecd6a8-1a46-43fa-beb0-39fe1d989ff9-api-validation/CLAUDE.md:markdown:72
+ID: code-duplication::CLAUDE.md:markdown::72
+# Issue #166
+# [WARNING] code-duplication - 24-line duplicate block, also found in CLAUDE.md:markdown:72-95.
+#   CLAUDE.md:markdown:72
 Acknowledge: 
 
-ID: code-duplication::../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/e3ecd6a8-1a46-43fa-beb0-39fe1d989ff9-api-validation/README.md:markdown::110
+ID: code-duplication::README.md:markdown::110
+# Issue #167
+# [WARNING] code-duplication - 28-line duplicate block, also found in README.md:markdown:427-502.
+#   README.md:markdown:110
+Acknowledge: 
+
+ID: code-duplication::rust/crates/db-store/src/overrides.rs::198::4a2e394e
+# Issue #168
+# [WARNING] code-duplication - 18-line duplicate block, also found in rust/crates/db-store/src/projects.rs:288-305.
+#   rust/crates/db-store/src/overrides.rs:198
+# Code: stmt.query_map(params![project_id], |row| {
+Acknowledge: 
+
+ID: complexity-health::rust/crates/dead-code/src/lib.rs::1::low-maintainability
 # Issue #169
-# [WARNING] code-duplication - 28-line duplicate block, also found in ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/e3ecd6a8-1a46-43fa-beb0-39fe1d989ff9-api-validation/README.md:markdown:427-502.
-#   ../../../../../../../../var/folders/s1/72d38yqs3sv1m0sjtqyl8tm00000gn/T/gatekeeper-staging/e3ecd6a8-1a46-43fa-beb0-39fe1d989ff9-api-validation/README.md:markdown:110
+# [WARNING] complexity-health - Maintainability Index 30/100 — below the 40 threshold (complexity 66 over 437 lines of code).
+#   rust/crates/dead-code/src/lib.rs:1
+# Code: //! Built-in dead-code / unused-export / unused-dependency / circular-import
+Acknowledge: 
+
+ID: complexity-health::rust/crates/css-dead-code/src/lib.rs::1::low-maintainability
+# Issue #170
+# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 59 over 353 lines of code).
+#   rust/crates/css-dead-code/src/lib.rs:1
+# Code: //! Built-in CSS/Tailwind dead-class scan. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/guidelines/src/checks.rs::1::low-maintainability
+# Issue #171
+# [WARNING] complexity-health - Maintainability Index 25/100 — below the 40 threshold (complexity 87 over 680 lines of code).
+#   rust/crates/guidelines/src/checks.rs:1
+# Code: //! Mechanical checks for the automated subset of the guideline catalog.
+Acknowledge: 
+
+ID: complexity-health::rust/crates/callgraph/src/lib.rs::1::low-maintainability
+# Issue #172
+# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 62 over 593 lines of code).
+#   rust/crates/callgraph/src/lib.rs:1
+# Code: //! Studio's "Call Graph" feature: caller -> callee edges across a project,
 Acknowledge: 
