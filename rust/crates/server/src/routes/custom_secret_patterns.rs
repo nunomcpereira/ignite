@@ -47,7 +47,10 @@ async fn create_pattern(State(state): State<Arc<AppState>>, crate::auth::Require
     // client-supplied `createdBy` in the body — otherwise any
     // authenticated user could forge a pattern's audit trail to point at
     // someone else.
-    let id = state.db.create_custom_secret_pattern(name, regex, Some(&_user.email));
+    let id = match state.db.create_custom_secret_pattern(name, regex, Some(&_user.email)) {
+        Ok(id) => id,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create custom secret pattern: {e}")),
+    };
     match state.db.get_custom_secret_pattern(id) {
         Some(row) => (StatusCode::CREATED, Json(row)).into_response(),
         None => Json(json!({ "ok": true, "id": id })).into_response(),
@@ -272,7 +275,7 @@ mod tests {
     async fn set_enabled_toggles_and_persists() {
         let state = test_state();
         let auth = auth_header(&state);
-        let id = state.db.create_custom_secret_pattern("P", "a", None);
+        let id = state.db.create_custom_secret_pattern("P", "a", None).unwrap();
         let app = router().with_state(state.clone());
         let res = app.oneshot(Request::post(format!("/api/secret-patterns/{id}/enabled")).header("content-type", "application/json").header("authorization", &auth).body(Body::from(r#"{"enabled":false}"#)).unwrap()).await.unwrap();
         let json = body_json(res).await;
@@ -283,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn sweep_requires_auth() {
         let state = test_state();
-        let id = state.db.create_custom_secret_pattern("P", "a", None);
+        let id = state.db.create_custom_secret_pattern("P", "a", None).unwrap();
         let app = router().with_state(state);
         let res = app.oneshot(Request::post(format!("/api/secret-patterns/{id}/sweep")).header("content-type", "application/json").body(Body::from(r#"{"owner":"acme","repo":"widgets"}"#)).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);

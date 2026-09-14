@@ -250,7 +250,7 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
     // A loopback call to this same server — same `PORT`-env-overrides-
     // `config.json` precedence `main.rs` binds with.
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
-    let server_base = format!("http://127.0.0.1:{port}");
+    let server_base = std::env::var("IGNITE_BASE_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"));
     let outcome = ignite_fix_pr::open_fix_pr(&state.runner, &github_api, &http, &state.llm_config, &server_base, &full_name, &base_branch, job_id, &candidates, &token).await;
     if outcome.already_open {
         return Json(json!({ "ok": true, "alreadyOpen": true, "branch": outcome.branch })).into_response();

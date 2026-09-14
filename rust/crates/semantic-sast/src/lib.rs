@@ -12,7 +12,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Same rationale as BEARER_FORCE_WARNING_TITLES in pii-dataflow.js (not
 /// yet ported): these rule messages are known noisy/low-confidence
@@ -65,17 +65,41 @@ fn metadata_list_field(value: Option<&serde_json::Value>) -> Vec<serde_json::Val
     }
 }
 
-pub async fn build_semgrep_env() -> std::io::Result<HashMap<String, String>> {
-    let semgrep_home = std::env::temp_dir().join("ignite-semgrep-home");
+/// Removes the per-invocation Semgrep home directory `build_semgrep_env`
+/// creates when this guard drops — covers every exit path out of
+/// `check_semantic_sast` (a normal finish, an early `return` on a scan
+/// failure, or a cancelled/timed-out future), not just the happy path.
+struct SemgrepHomeGuard(PathBuf);
+impl Drop for SemgrepHomeGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn semgrep_unique_suffix() -> String {
+    format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0))
+}
+
+/// Returns the environment to run Semgrep with, plus the isolated home
+/// directory it points at — the caller removes it (best-effort) once the
+/// invocation is done. A single shared `ignite-semgrep-home` (the
+/// previous behavior) meant every concurrent scan/background recheck
+/// pointed Semgrep at the exact same internal SQLite cache database,
+/// producing `database is locked` errors and spurious "semgrep failed to
+/// run" pipeline failures under concurrency — a unique directory per
+/// invocation (same `pid-nanos` convention as `container-image-
+/// vulnerabilities`'s `unique_suffix`) removes the collision, at the cost
+/// of not reusing a downloaded ruleset cache across invocations.
+pub async fn build_semgrep_env() -> std::io::Result<(HashMap<String, String>, PathBuf)> {
+    let semgrep_home = std::env::temp_dir().join(format!("ignite-semgrep-home-{}", semgrep_unique_suffix()));
     let semgrep_cache = semgrep_home.join("cache");
-    let _ = tokio::fs::create_dir_all(&semgrep_home).await;
-    let _ = tokio::fs::create_dir_all(&semgrep_cache).await;
+    tokio::fs::create_dir_all(&semgrep_cache).await?;
     let mut env = HashMap::new();
     env.insert("HOME".to_string(), semgrep_home.to_string_lossy().into_owned());
     env.insert("XDG_CONFIG_HOME".to_string(), semgrep_home.to_string_lossy().into_owned());
     env.insert("XDG_CACHE_HOME".to_string(), semgrep_cache.to_string_lossy().into_owned());
     env.insert("SEMGREP_SEND_METRICS".to_string(), "off".to_string());
-    Ok(env)
+    Ok((env, semgrep_home))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -86,8 +110,10 @@ pub struct SemgrepToolingProbe {
 }
 
 pub async fn semgrep_tooling(runner: &ToolRunner) -> SemgrepToolingProbe {
-    let env = build_semgrep_env().await.unwrap_or_default();
-    match runner.run_tool("semgrep", &["--version".to_string()], std::env::temp_dir().to_str().unwrap_or("."), RunToolOptions { env, ..Default::default() }).await {
+    let (env, semgrep_home) = build_semgrep_env().await.unwrap_or_default();
+    let _guard = SemgrepHomeGuard(semgrep_home);
+    let result = runner.run_tool("semgrep", &["--version".to_string()], std::env::temp_dir().to_str().unwrap_or("."), RunToolOptions { env, ..Default::default() }).await;
+    match result {
         Ok(out) => SemgrepToolingProbe { ok: true, version: Some(out.stdout.trim().to_string()).filter(|s| !s.is_empty()), reason: None },
         Err(_) => SemgrepToolingProbe {
             ok: false,
@@ -144,7 +170,8 @@ pub async fn check_semantic_sast(root: &Path, runner: &ToolRunner, config: &Sema
     }
 
     let config_packs: Vec<String> = config.semgrep_config.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
-    let env = build_semgrep_env().await.unwrap_or_default();
+    let (env, semgrep_home) = build_semgrep_env().await.unwrap_or_default();
+    let _guard = SemgrepHomeGuard(semgrep_home);
 
     let mut args = vec!["scan".to_string()];
     for pack in &config_packs {

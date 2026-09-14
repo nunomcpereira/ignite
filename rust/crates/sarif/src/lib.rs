@@ -112,8 +112,13 @@ fn to_sarif_result(issue: &IssueRow) -> SarifResult {
                 // valid URI reference — forward slashes only. A path
                 // produced on Windows (backslashes) failed schema
                 // validation on upload to any real SARIF consumer
-                // (GitHub Code Scanning included).
-                artifact_location: ArtifactLocation { uri: file.replace('\\', "/") },
+                // (GitHub Code Scanning included). GitHub also rejects an
+                // absolute/rooted `uri` with no accompanying `uriBaseId`
+                // (HTTP 422 on upload) — stripping a leading `/` keeps
+                // every location relative to the repo root, which is what
+                // every issue's `file` is meant to represent regardless of
+                // whether a particular scanner emitted it with one.
+                artifact_location: ArtifactLocation { uri: file.replace('\\', "/").trim_start_matches('/').to_string() },
                 region: issue.line.filter(|&l| l > 0).map(|start_line| Region { start_line }),
             },
         }]

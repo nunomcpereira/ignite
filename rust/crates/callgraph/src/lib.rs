@@ -205,8 +205,12 @@ pub async fn build_codeql_call_graph(
 /* Rust fallback — regex-based, no CodeQL support for this language     */
 /* ------------------------------------------------------------------ */
 
+// Any combination/order of `const`/`async`/`unsafe`/`extern "ABI"` before
+// `fn` — a fixed `async? unsafe?` sequence previously missed `const fn`
+// and `extern "C" fn` (and any ordering other than exactly async-then-
+// unsafe) entirely, silently dropping those functions as call-graph nodes.
 static RUST_FN_DEF_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*[(<]").unwrap());
+    Lazy::new(|| Regex::new(r#"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:(?:const|async|unsafe|extern\s+"[^"]*")\s+)*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*[(<]"#).unwrap());
 
 /// Any `identifier(` — a word boundary already excludes it from matching
 /// mid-identifier, and holds regardless of whether the identifier is
@@ -285,10 +289,52 @@ fn skip_non_code(bytes: &[u8], i: usize) -> usize {
     }
 }
 
+/// Detects a Rust raw (`r"..."`, `r#"..."#`, ...) or raw byte
+/// (`br"..."`, `br#"..."#`, ...) string literal starting at `i`, and
+/// returns the byte index right after it. Unlike a normal string, a raw
+/// string has no escape processing at all — `\"` is two literal
+/// characters, not an escaped quote — so `skip_non_code`'s
+/// backslash-aware scan would stop at the wrong `"` (or run past the
+/// intended end entirely) on content like a regex pattern or a JSON
+/// fixture embedded as `r#"{"key": "value"}"#`, corrupting brace-depth
+/// tracking for the rest of the containing function. Returns `None` when
+/// `i` isn't actually a raw string literal start (so the caller falls
+/// through to ordinary byte-by-byte scanning).
+fn skip_raw_string(bytes: &[u8], i: usize) -> Option<usize> {
+    let mut j = i;
+    if bytes.get(j) == Some(&b'b') {
+        j += 1;
+    }
+    if bytes.get(j) != Some(&b'r') {
+        return None;
+    }
+    j += 1;
+    let mut hashes = 0usize;
+    while bytes.get(j) == Some(&b'#') {
+        hashes += 1;
+        j += 1;
+    }
+    if bytes.get(j) != Some(&b'"') {
+        return None;
+    }
+    j += 1; // past the opening quote
+    while j < bytes.len() {
+        if bytes[j] == b'"' && bytes[j + 1..].iter().take(hashes).all(|&b| b == b'#') && bytes.len() - (j + 1) >= hashes {
+            return Some(j + 1 + hashes);
+        }
+        j += 1;
+    }
+    Some(bytes.len())
+}
+
 fn balanced_close(bytes: &[u8], open_pos: usize, open: u8, close: u8) -> Option<usize> {
     let mut depth = 0i32;
     let mut i = open_pos;
     while i < bytes.len() {
+        if let Some(end) = skip_raw_string(bytes, i) {
+            i = end;
+            continue;
+        }
         match bytes[i] {
             b'"' | b'\'' | b'/' => {
                 i = skip_non_code(bytes, i);
@@ -534,6 +580,43 @@ mod tests {
         let graph = build_rust_call_graph(dir.path()).unwrap();
         let caller_id = graph.nodes.iter().find(|n| n.name == "caller").unwrap().id.clone();
         assert!(!graph.edges.iter().any(|e| e.caller == caller_id));
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn build_rust_call_graph_finds_const_and_extern_fn() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "const fn helper() -> i32 {\n    1\n}\n\npub const unsafe extern \"C\" fn ffi_entry() -> i32 {\n    helper()\n}\n",
+        )
+        .unwrap();
+        let graph = build_rust_call_graph(dir.path()).unwrap();
+        assert_eq!(graph.nodes.len(), 2, "expected both `const fn` and `extern \"C\" fn` to be found: {:?}", graph.nodes);
+        let helper_id = graph.nodes.iter().find(|n| n.name == "helper").unwrap().id.clone();
+        let ffi_id = graph.nodes.iter().find(|n| n.name == "ffi_entry").unwrap().id.clone();
+        assert!(graph.edges.contains(&CallGraphEdge { caller: ffi_id, callee: helper_id }));
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+    }
+
+    #[test]
+    fn build_rust_call_graph_does_not_miscount_braces_inside_raw_strings() {
+        let dir = tempdir().unwrap();
+        // A `{` inside a raw string (a JSON fixture, here) must never
+        // affect brace-depth tracking — a naive backslash-aware scan would
+        // treat `\"` inside the raw string as an escaped quote and either
+        // stop too early or run past the real closing `"#`, in both cases
+        // corrupting the function's body span and dropping the real call
+        // to `after_raw_string` below it.
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "fn uses_raw_string() {\n    let fixture = r#\"{\"key\": \"value\"}\"#;\n    let _ = fixture;\n    after_raw_string();\n}\n\nfn after_raw_string() {}\n",
+        )
+        .unwrap();
+        let graph = build_rust_call_graph(dir.path()).unwrap();
+        let caller_id = graph.nodes.iter().find(|n| n.name == "uses_raw_string").unwrap().id.clone();
+        let callee_id = graph.nodes.iter().find(|n| n.name == "after_raw_string").unwrap().id.clone();
+        assert!(graph.edges.contains(&CallGraphEdge { caller: caller_id, callee: callee_id }));
         ignite_fs_utils::invalidate_walk_cache(dir.path());
     }
 }

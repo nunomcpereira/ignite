@@ -6668,7 +6668,7 @@
         <div class="px-5 py-3.5" data-id="${p.id}">
           <div class="flex items-start gap-2">
             <div class="flex-1 min-w-0">
-              <a href="${escapeAttr(p.repo_url)}" target="_blank" rel="noopener" class="text-sm font-semibold text-slate-800 hover:text-brand-600 hover:underline truncate">${escapeHtml(p.org)}/${escapeHtml(p.repo)}</a>
+              ${p.repo_url && /^https?:\/\//i.test(p.repo_url) ? `<a href="${escapeAttr(p.repo_url)}" target="_blank" rel="noopener" class="text-sm font-semibold text-slate-800 hover:text-brand-600 hover:underline truncate">${escapeHtml(p.org)}/${escapeHtml(p.repo)}</a>` : `<span class="text-sm font-semibold text-slate-800 truncate">${escapeHtml(p.org)}/${escapeHtml(p.repo)}</span>`}
               <p class="text-[11px] mt-0.5">${lastRun}</p>
               ${p.last_scheduled_status === 'failed' && p.last_scheduled_error ? `<p class="text-[11px] text-rose-500 mt-0.5 truncate" title="${escapeAttr(p.last_scheduled_error)}">${escapeHtml(p.last_scheduled_error)}</p>` : ''}
             </div>
@@ -6752,7 +6752,7 @@
       $('onboardedReposEmpty').classList.toggle('hidden', repos.length > 0);
       $('onboardedReposTableBody').innerHTML = repos.map((r, i) => {
         const orgCell = `<a href="https://github.com/${escapeAttr(r.org)}" target="_blank" rel="noopener" class="text-slate-600 hover:text-brand-600 hover:underline">${escapeHtml(r.org)}</a>`;
-        const repoCell = r.repoUrl
+        const repoCell = r.repoUrl && /^https?:\/\//i.test(r.repoUrl)
           ? `<a href="${escapeAttr(r.repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>`
           : `<span class="font-semibold text-slate-800">${escapeHtml(r.repo)}</span>`;
         const prsCell = r.recentPrs.length === 0

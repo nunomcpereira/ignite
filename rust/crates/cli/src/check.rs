@@ -49,7 +49,7 @@ fn git(repo: &Path, args: &[&str]) -> Option<String> {
 /// directly rather than reimplemented, so both SSH (`git@host:owner/repo.git`)
 /// and HTTPS (`https://host/owner/repo.git`) remotes parse identically.
 fn parse_org_repo(remote_url: &str) -> (String, String) {
-    static RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"[:/]([^/]+)/([^/.]+)(?:\.git)?$").unwrap());
+    static RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"[:/]([^/]+)/([^/]+?)(?:\.git)?$").unwrap());
     match RE.captures(remote_url) {
         Some(c) => (c[1].to_string(), c[2].to_string()),
         None => (String::new(), String::new()),
@@ -148,7 +148,14 @@ fn print_failed_phases(response: &Value) {
 pub async fn run(args: CheckArgs) -> i32 {
     let repo_path = &args.project_path;
 
-    let existing_text = std::fs::read_to_string(&args.review_file).unwrap_or_default();
+    // Normalize CRLF to LF before anything else parses this text — on a
+    // CRLF checkout (Windows, or a repo with `core.autocrlf` on),
+    // per-line regex captures (`ID_RE` et al. in `acknowledgments.rs`)
+    // would otherwise retain a trailing `\r` in every captured field
+    // (issue ids, justifications, ...), and the content comparison below
+    // would never converge since generated content is always `\n`-only —
+    // trapping every commit in an endless amend loop.
+    let existing_text = std::fs::read_to_string(&args.review_file).unwrap_or_default().replace("\r\n", "\n");
     let existing_entries = acknowledgments::parse_blocks(&existing_text);
     let overrides = acknowledgments::build_overrides(&existing_entries);
 

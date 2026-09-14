@@ -104,19 +104,24 @@ pub trait RegistryChecker: Send + Sync {
 /// Rust-vs-JS difference — the JS original doesn't set a custom
 /// User-Agent either): crates.io's API returns 403 for a generic/missing
 /// User-Agent per its stated data-access policy
-/// (https://crates.io/data-access), so the `cargo` ecosystem currently
-/// always comes back inconclusive (`None`) in practice rather than a real
-/// existence check. `npm`/`pypi` don't have this requirement and work as
-/// designed. Left matching the original's behavior rather than adding a
-/// UA header unilaterally, since that's a scope decision (what to send as
-/// this tool's identity) beyond a mechanical port.
+/// (https://crates.io/data-access), which previously made the `cargo`
+/// ecosystem always come back inconclusive (`None`) rather than a real
+/// existence check — package-hallucination detection was dead for every
+/// Rust/Cargo dependency. `npm`/`pypi` don't have this requirement.
+/// Fixed by sending a descriptive `User-Agent`, per crates.io's own
+/// documented policy, rather than continuing to match the JS original's
+/// (broken, for this one registry) behavior.
 pub struct HttpRegistryChecker {
     client: reqwest::Client,
 }
 
 impl Default for HttpRegistryChecker {
     fn default() -> Self {
-        HttpRegistryChecker { client: reqwest::Client::new() }
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("ignite-package-hallucination/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_default();
+        HttpRegistryChecker { client }
     }
 }
 

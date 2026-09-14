@@ -575,7 +575,17 @@ fn merge_gitleaks_findings_as(
     known_public_key_patterns: &[Regex],
     tool: &str,
 ) -> Vec<SecretFinding> {
-    let mut seen: HashSet<String> = existing.iter().map(|f| format!("{}:{}", f.file, f.line)).collect();
+    // Dedup against `existing` (an earlier scan pass / a different tool)
+    // stays file:line-only, on purpose: the same secret is routinely
+    // reported under a different rule name by the built-in scanner vs.
+    // Gitleaks, and this is what keeps that from double-reporting (see
+    // `merge_gitleaks_history_findings_dedupes_against_working_tree_findings_at_same_location`).
+    let existing_locations: HashSet<String> = existing.iter().map(|f| format!("{}:{}", f.file, f.line)).collect();
+    // Within this Gitleaks batch, though, two *different* secrets can
+    // legitimately sit on the same line (e.g. `AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...`)
+    // — keying on kind too here (rather than file:line alone) keeps both
+    // instead of the second one silently disappearing.
+    let mut seen_within_batch: HashSet<String> = HashSet::new();
     let mut added = Vec::new();
     for f in gitleaks {
         if should_skip_secret_file(&f.file) {
@@ -588,11 +598,13 @@ fn merge_gitleaks_findings_as(
         if should_ignore_secret_line(known_public_key_patterns, &f.file, &line_text, IgnoreLineArgs { quote: "", value: "" }) {
             continue;
         }
-        let key = format!("{}:{}", f.file, f.line);
-        if seen.contains(&key) {
+        if existing_locations.contains(&format!("{}:{}", f.file, f.line)) {
             continue;
         }
-        seen.insert(key);
+        let unique_key = format!("{}:{}:{}", f.file, f.line, f.kind);
+        if !seen_within_batch.insert(unique_key) {
+            continue;
+        }
         added.push(SecretFinding { file: f.file.clone(), line: f.line, kind: f.kind.clone(), tool: tool.to_string(), code: f.code.clone() });
     }
     added

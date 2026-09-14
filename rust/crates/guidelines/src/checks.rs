@@ -32,13 +32,17 @@ static INJECTION_SINK_REGEXES: Lazy<Vec<Regex>> = Lazy::new(|| {
     ]
 });
 
-// `yaml.load(` not followed (same line) by `Loader = yaml.SafeLoader` — the
-// `regex` crate has no lookahead support, so this pair is checked as a
-// separate per-line post-match exclusion (see no_insecure_deserialization)
-// rather than folded into one regex like the JS original's negative
-// lookahead.
+// `yaml.load(` not paired with a safe `Loader=` argument anywhere within
+// its own (possibly multi-line) call — the `regex` crate has no lookahead
+// support, so this pair is checked as a separate post-match exclusion over
+// the whole balanced call span (see no_insecure_deserialization) rather
+// than folded into one regex like the JS original's negative lookahead.
 static YAML_LOAD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"yaml\.load\(").unwrap());
-static YAML_SAFE_LOADER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"Loader\s*=\s*yaml\.SafeLoader").unwrap());
+// Matches `Loader=yaml.SafeLoader` as well as the C-accelerated
+// `CSafeLoader`/`CBaseLoader` variants and an unqualified `SafeLoader`/
+// `BaseLoader` reached via `from yaml import SafeLoader` — all of these
+// are real, safe PyYAML loaders, not just the one exact spelling.
+static YAML_SAFE_LOADER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"Loader\s*=\s*(?:yaml\.)?C?(?:Safe|Base)Loader\b").unwrap());
 static INSECURE_DESERIALIZATION_REGEXES: Lazy<Vec<Regex>> = Lazy::new(|| vec![Regex::new(r"\bpickle\.loads?\(").unwrap(), Regex::new(r"vm\.runInNewContext\(").unwrap()]);
 
 // `http://` to a non-loopback host — the `regex` crate has no negative-
@@ -177,18 +181,29 @@ fn ai_recursion_limit(content: &str, rel_path: &str) -> Vec<CheckHit> {
     if !AGENT_FRAMEWORK_HINT_REGEX.is_match(content) {
         return vec![];
     }
-    if content.contains("recursion_limit") {
-        return vec![];
+    let mut hits = Vec::new();
+    for cap in AI_INVOKE_REGEX.captures_iter(content) {
+        let whole = cap.get(0).unwrap();
+        let receiver = cap.get(1).map(|g| g.as_str()).unwrap_or("");
+        let last_segment = receiver.rsplit('.').next().unwrap_or(receiver);
+        if GENERIC_CLIENT_RECEIVER_RE.is_match(last_segment) {
+            continue;
+        }
+        // Only this specific call's own (possibly multi-line) argument
+        // list is checked for `recursion_limit` — a whole-file substring
+        // search previously let an unrelated comment, or a *different*
+        // `.invoke()` call elsewhere in the same file, silently suppress
+        // every ungoverned call in that file rather than just the one
+        // that actually sets it.
+        let call_args = extract_balanced_paren_span(&content[whole.end()..]);
+        if call_args.contains("recursion_limit") {
+            continue;
+        }
+        let line = content[..whole.start()].matches('\n').count() + 1;
+        let line_text = content[whole.start()..].lines().next().unwrap_or("");
+        hits.push(CheckHit { line, snippet: line_text.trim().chars().take(160).collect(), kind: None });
     }
-    scan_lines(content, &AI_INVOKE_REGEX)
-        .into_iter()
-        .filter(|h| {
-            let receiver = h.receiver.as_deref().unwrap_or("");
-            let last_segment = receiver.rsplit('.').next().unwrap_or(receiver);
-            !GENERIC_CLIENT_RECEIVER_RE.is_match(last_segment)
-        })
-        .map(|h| CheckHit { line: h.line, snippet: h.snippet, kind: None })
-        .collect()
+    hits
 }
 
 fn no_hardcoded_secrets(content: &str) -> Vec<CheckHit> {
@@ -219,13 +234,46 @@ fn no_weak_crypto(content: &str) -> Vec<CheckHit> {
 
 fn no_insecure_deserialization(content: &str) -> Vec<CheckHit> {
     let mut hits: Vec<CheckHit> = plain(scan_lines_all(content, &INSECURE_DESERIALIZATION_REGEXES));
-    for (i, line) in content.split('\n').enumerate() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if YAML_LOAD_RE.is_match(line) && !YAML_SAFE_LOADER_RE.is_match(line) {
-            hits.push(CheckHit { line: i + 1, snippet: line.trim().chars().take(160).collect(), kind: None });
+    for m in YAML_LOAD_RE.find_iter(content) {
+        // The `Loader=` argument commonly sits on its own line in a
+        // formatted multi-line call:
+        //   yaml.load(
+        //       f,
+        //       Loader=yaml.SafeLoader,
+        //   )
+        // so the safe-loader check needs the whole balanced call span, not
+        // just the line `yaml.load(` itself matched on.
+        let call_args = extract_balanced_paren_span(&content[m.end()..]);
+        if !YAML_SAFE_LOADER_RE.is_match(call_args) {
+            let line = content[..m.start()].matches('\n').count() + 1;
+            let line_text = content[m.start()..].lines().next().unwrap_or("");
+            hits.push(CheckHit { line, snippet: line_text.trim().chars().take(160).collect(), kind: None });
         }
     }
     hits
+}
+
+/// Given the text right after a call's opening `(` (already consumed),
+/// returns the slice up to its matching closing `)` — tracking nested
+/// parens so an argument that itself contains a call
+/// (`yaml.load(f, Loader=get_loader())`) doesn't truncate the scan at the
+/// first `)` it reaches.
+fn extract_balanced_paren_span(rest: &str) -> &str {
+    let bytes = rest.as_bytes();
+    let mut depth = 1i32;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    rest
 }
 
 fn no_plaintext_http_egress(content: &str) -> Vec<CheckHit> {
@@ -399,12 +447,29 @@ pub struct Violation {
 /// Check a single in-memory file (code snippet or full file) against every
 /// automated guideline that applies to its extension.
 pub fn check_content(content: &str, rel_path: &str) -> Vec<Violation> {
-    let ext = Path::new(rel_path).extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
+    // An empty `rel_path` means the caller (an ad-hoc `POST /check`/MCP
+    // `check_guidelines` call with no `path`/filename hint) never gave us
+    // a file at all — distinct from `check_project`'s own file walk (below)
+    // always passing a real, if extensionless, path. Treating the two the
+    // same silently skipped every extension-scoped guideline (SQL
+    // injection, XSS sinks, weak crypto, insecure deserialization, ...)
+    // whenever a caller omitted `path`, giving false assurance that
+    // clearly malicious content was compliant. Only a genuinely
+    // extensionless real file (`Dockerfile`, `Makefile`) still gets
+    // filtered as before.
+    let ext = Path::new(rel_path).extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase()));
     let mut violations = Vec::new();
 
     for g in guidelines() {
         let Some(check_id) = g.check_id else { continue };
-        if !g.applies_to.contains(&"*") && !g.applies_to.contains(&ext.as_str()) {
+        if let Some(ext) = &ext {
+            if !g.applies_to.contains(&"*") && !g.applies_to.contains(&ext.as_str()) {
+                continue;
+            }
+        } else if rel_path.is_empty() {
+            // No path given at all — don't filter by extension.
+        } else if !g.applies_to.contains(&"*") {
+            // A real, extensionless path — same filtering as before.
             continue;
         }
         let Some(hits) = run_check(check_id, content, rel_path) else { continue };
@@ -526,6 +591,17 @@ mod tests {
         let content = "import langchain\nchain.invoke(x, {'recursion_limit': 10})\n";
         let hits = run_check("aiRecursionLimit", content, "app.py").unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn ai_recursion_limit_still_flags_an_ungoverned_call_when_a_different_call_sets_recursion_limit() {
+        // A whole-file substring search for "recursion_limit" previously
+        // let this governed call suppress the finding for the completely
+        // separate, actually-ungoverned `other_chain.invoke(x)` below it.
+        let content = "import langchain\nchain.invoke(x, {'recursion_limit': 10})\nother_chain.invoke(x)\n";
+        let hits = run_check("aiRecursionLimit", content, "app.py").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 3);
     }
 
     #[test]

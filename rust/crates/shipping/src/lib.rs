@@ -139,6 +139,13 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
     // this doesn't just fail outright against such an org.
     let default_branch = github_api.default_branch(&full_name, gh_token).await.unwrap_or_else(|_| "main".to_string());
 
+    // A retry (after a previous shipping attempt failed partway through)
+    // or a repo Phase 4 already initialized with its own git remote both
+    // leave an `origin` already configured — `git remote add` would then
+    // exit 128 ("remote origin already exists") and abort the whole
+    // pipeline. Removing any existing `origin` first (ignoring the error
+    // when there wasn't one) makes this idempotent.
+    let _ = git(runner, &s(&["remote", "remove", "origin"]), &root_str, gh_token).await;
     log(&format!("$ git remote add origin \"{remote_url}\""));
     git(runner, &s(&["remote", "add", "origin", &remote_url]), &root_str, gh_token).await?;
 

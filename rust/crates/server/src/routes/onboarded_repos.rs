@@ -42,7 +42,8 @@ async fn rescan_repo(State(state): State<Arc<AppState>>, crate::auth::RequireAut
     // validate-all is called over real HTTP rather than in-process so this
     // route reuses the exact same code path a scheduled/CI-triggered scan
     // does, not a second parallel implementation.
-    let server_base = std::env::var("IGNITE_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:51337".to_string());
+    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
+    let server_base = std::env::var("IGNITE_SERVER_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"));
     let http = reqwest::Client::new();
     let target = RescanTarget { org, repo };
     let outcome = rescan_one(&state.runner, &http, &server_base, &gh_token, &target, auto_fix_mode_from_env()).await;

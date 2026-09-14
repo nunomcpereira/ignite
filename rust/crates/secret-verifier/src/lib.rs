@@ -394,7 +394,17 @@ async fn verify_npm_token(http: &reqwest::Client, value: &str, timeout: Duration
     let resp = http.get("https://registry.npmjs.org/-/npm/v1/user").bearer_auth(value).timeout(timeout).send().await;
     match resp {
         Ok(r) if r.status().is_success() => VerificationOutcome::Live,
-        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED || r.status() == reqwest::StatusCode::FORBIDDEN => VerificationOutcome::Revoked,
+        // A granular, package-scoped, or automation npm token is commonly
+        // configured with publish-only/read-only *package* access and has
+        // no permission to read this endpoint's user-profile metadata —
+        // npm answers that case with 403, not 401, even though the token
+        // itself is live. Only 401 (the token itself doesn't authenticate
+        // at all) means revoked; 403 means "valid token, wrong scope for
+        // this particular check", so it's reported as live rather than a
+        // false-negative "revoked" for an active, potentially
+        // high-privilege leaked credential.
+        Ok(r) if r.status() == reqwest::StatusCode::FORBIDDEN => VerificationOutcome::Live,
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => VerificationOutcome::Revoked,
         _ => VerificationOutcome::Unknown,
     }
 }

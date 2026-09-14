@@ -252,8 +252,8 @@ async fn suggest_fix(State(state): State<Arc<AppState>>, crate::auth::RequireAut
     match ignite_llm_client::llm_complete(&ignite_llm_client::LlmCompleteRequest { client: &http, config: &state.llm_config, system_prompt: ISSUE_SUGGEST_FIX_PROMPT, user_content: &user, temperature: 0.2, timeout_ms: 60_000, label: &label }, |_| {}).await {
         Ok(text) => match parse_suggest_fix_response(&text) {
             Ok(parsed) => {
-                let start_line = snippet.start_line;
-                let end_line = snippet.start_line + snippet.lines.len() as i64 - 1;
+                let start_line = snippet.lines.first().map(|l| l.number).unwrap_or(snippet.start_line);
+                let end_line = snippet.lines.last().map(|l| l.number).unwrap_or(start_line);
                 Json(json!({ "ok": true, "suggestion": { "explanation": parsed.explanation, "replacement": parsed.replacement, "startLine": start_line, "endLine": end_line } })).into_response()
             }
             Err(msg) => (StatusCode::BAD_GATEWAY, Json(json!({ "ok": false, "error": msg }))).into_response(),

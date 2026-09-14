@@ -276,10 +276,17 @@ impl IgniteMcp {
     /// until `done: true` (or a generous timeout) before handing back the
     /// real result.
     async fn proxy_to_ignite_and_poll(&self, start_endpoint: &str, status_endpoint: &str) -> Result<CallToolResult, McpError> {
-        // The initial response is never returned to the caller — it's
-        // always `done: false` with no candidates yet, and the polled
-        // status response below is the freshest/authoritative one.
-        let _started = self.proxy_to_ignite(start_endpoint, serde_json::json!({})).await?;
+        // The initial response's success payload is never returned to the
+        // caller — it's always `done: false` with no candidates yet, and
+        // the polled status response below is the freshest/authoritative
+        // one. An error here (bad job id, auth failure, network failure)
+        // is real and must surface now — otherwise the polling loop below
+        // just hits the same failure against `status_endpoint` and reports
+        // a confusing "no such job" instead of the actual cause.
+        let started = self.proxy_to_ignite(start_endpoint, serde_json::json!({})).await?;
+        if started.is_error == Some(true) {
+            return Ok(started);
+        }
         let base_url = ignite_base_url();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {

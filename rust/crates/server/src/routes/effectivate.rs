@@ -249,6 +249,8 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     if let Err(e) = ignite_staging::clone_directory_without_symlinks(&source_backup_dir, &publish_dir) {
         log(&format!("✗ Effectivate failed: {e}"));
         state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
+        state.db.finish_project("failed", Some(&e.to_string()), None, None, project_id);
+        let _ = std::fs::remove_dir_all(&publish_dir);
         return (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Effectivate failed: {e}") }))).into_response();
     }
 
@@ -276,6 +278,8 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         Err(e) => {
             log(&format!("✗ Effectivate failed: {e}"));
             state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
+            state.db.finish_project("failed", Some(&e.to_string()), None, None, project_id);
+            let _ = std::fs::remove_dir_all(&publish_dir);
             (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Effectivate failed: {e}") }))).into_response()
         }
     }

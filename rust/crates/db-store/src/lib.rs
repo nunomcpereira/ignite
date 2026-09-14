@@ -354,12 +354,12 @@ mod tests {
         let (_dir, store) = open_test_db();
         let saved = store.save_baseline("acme", "widgets", &["a".into(), "b".into()]).unwrap();
         assert_eq!(saved, 2);
-        let ids = store.get_baseline_issue_ids("acme", "widgets");
+        let ids = store.get_baseline_issue_ids("acme", "widgets").unwrap();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains("a"));
-        let cleared = store.clear_baseline("acme", "widgets");
+        let cleared = store.clear_baseline("acme", "widgets").unwrap();
         assert_eq!(cleared, 2);
-        assert!(store.get_baseline_issue_ids("acme", "widgets").is_empty());
+        assert!(store.get_baseline_issue_ids("acme", "widgets").unwrap().is_empty());
     }
 
     #[test]
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn custom_secret_pattern_create_and_get_round_trips_fields() {
         let (_dir, store) = open_test_db();
-        let id = store.create_custom_secret_pattern("Internal Token", r"tok_[a-z0-9]{16}", Some("dev@acme.com"));
+        let id = store.create_custom_secret_pattern("Internal Token", r"tok_[a-z0-9]{16}", Some("dev@acme.com")).unwrap();
         let row = store.get_custom_secret_pattern(id).unwrap();
         assert_eq!(row.name, "Internal Token");
         assert_eq!(row.regex, r"tok_[a-z0-9]{16}");
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn custom_secret_pattern_disabling_removes_from_enabled_list_but_not_full_list() {
         let (_dir, store) = open_test_db();
-        let id = store.create_custom_secret_pattern("Pattern", "a", None);
+        let id = store.create_custom_secret_pattern("Pattern", "a", None).unwrap();
         assert!(store.set_custom_secret_pattern_enabled(id, false));
         assert!(store.list_enabled_custom_secret_patterns().is_empty());
         assert_eq!(store.list_custom_secret_patterns().len(), 1);
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn custom_secret_pattern_delete_removes_row_and_reports_whether_one_existed() {
         let (_dir, store) = open_test_db();
-        let id = store.create_custom_secret_pattern("Pattern", "a", None);
+        let id = store.create_custom_secret_pattern("Pattern", "a", None).unwrap();
         assert!(store.delete_custom_secret_pattern(id));
         assert!(store.get_custom_secret_pattern(id).is_none());
         assert!(!store.delete_custom_secret_pattern(id), "deleting again must report nothing existed");

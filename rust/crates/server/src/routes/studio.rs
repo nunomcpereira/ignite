@@ -270,10 +270,36 @@ async fn rescan(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) 
         Err(r) => return r,
     };
 
-    let secrets_result = match ignite_secrets::check_secrets(&ctx.root, &ignite_secrets::SecretsConfig::default(), &std::collections::HashMap::new()) {
-        Ok((r, _)) => r,
+    let sec = &state.config.security;
+    let gitleaks_config_path = if sec.gitleaks.config_path.is_empty() { None } else { Some(std::path::PathBuf::from(&sec.gitleaks.config_path)) };
+    let known_public_key_patterns: Vec<regex::Regex> = sec.secrets.known_public_key_patterns.iter().filter_map(|p| regex::Regex::new(p).ok()).collect();
+    let secrets_config = ignite_secrets::SecretsConfig {
+        known_public_key_patterns,
+        max_scan_file_bytes: ignite_secrets::SecretsConfig::default().max_scan_file_bytes,
+        gitleaks_config_path: gitleaks_config_path.clone(),
+        gitleaks_enabled: sec.gitleaks.enabled,
+        gitleaks_scan_history: sec.gitleaks.scan_history,
+    };
+    let (mut secrets_result, _) = match ignite_secrets::check_secrets(&ctx.root, &secrets_config, &std::collections::HashMap::new()) {
+        Ok(r) => r,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     };
+    // A rescan purges and rebuilds every "secret" category issue
+    // (`RESCAN_PURGE_CATEGORIES` below) — without also re-running Gitleaks
+    // here, clicking Rescan would silently delete every Gitleaks-sourced
+    // secret finding from the initial scan and replace it with only the
+    // built-in regex findings.
+    if secrets_config.gitleaks_enabled {
+        let gitleaks_raw = ignite_secrets::run_gitleaks_scan(&ctx.root, &state.runner, gitleaks_config_path.as_deref()).await;
+        let gitignore_patterns = ignite_fs_utils::load_gitignore_patterns(&ctx.root);
+        let added = ignite_secrets::merge_gitleaks_findings(&secrets_result.findings, &gitleaks_raw, &gitignore_patterns, &secrets_config.known_public_key_patterns);
+        secrets_result.findings.extend(added);
+        if secrets_config.gitleaks_scan_history {
+            let history_raw = ignite_secrets::run_gitleaks_history_scan(&ctx.root, &state.runner, gitleaks_config_path.as_deref()).await;
+            let history_added = ignite_secrets::merge_gitleaks_history_findings(&secrets_result.findings, &history_raw, &gitignore_patterns, &secrets_config.known_public_key_patterns);
+            secrets_result.findings.extend(history_added);
+        }
+    }
     let governance_result = match ignite_ai_governance::check_ai_governance(&ctx.root, &std::collections::HashMap::new()) {
         Ok((r, _)) => r,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),

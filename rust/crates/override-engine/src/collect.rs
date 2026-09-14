@@ -387,6 +387,12 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                 "high-complexity" | "low-maintainability" => "complexity-health",
                 "unused-css-class" => "css-dead-code",
                 "boundary-violation" => "architecture-boundary",
+                // Per-document kinds (`ai-act-compliance-documents-<category>`)
+                // carry a category-specific suffix so each missing document
+                // gets its own issue id/override match (see BUGv2-004) —
+                // but they all still score/group under the one fixed
+                // "ai-act-compliance-documents" category, same as before.
+                k if k.starts_with("ai-act-compliance-documents") => "ai-act-compliance-documents",
                 k if k.starts_with("ai-act-") => k,
                 _ => "codebase-intelligence",
             };

@@ -15,13 +15,10 @@ use rusqlite::params;
 impl DbStore {
     // ---------------- custom secret patterns ----------------
 
-    pub fn create_custom_secret_pattern(&self, name: &str, regex: &str, created_by: Option<&str>) -> i64 {
+    pub fn create_custom_secret_pattern(&self, name: &str, regex: &str, created_by: Option<&str>) -> rusqlite::Result<i64> {
         let conn = self.conn.lock();
-        if let Err(e) = conn.execute("INSERT INTO custom_secret_patterns (name, regex, created_by) VALUES (?, ?, ?)", params![name, regex, created_by]) {
-            tracing::error!("create_custom_secret_pattern failed for \"{name}\": {e}");
-            return 0;
-        }
-        conn.last_insert_rowid()
+        conn.execute("INSERT INTO custom_secret_patterns (name, regex, created_by) VALUES (?, ?, ?)", params![name, regex, created_by])?;
+        Ok(conn.last_insert_rowid())
     }
 
     fn row_from(row: &rusqlite::Row) -> rusqlite::Result<CustomSecretPatternRow> {

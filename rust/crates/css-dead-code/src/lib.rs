@@ -34,12 +34,18 @@ static CLASS_ATTR_RE: Lazy<Regex> = Lazy::new(|| {
 // own regardless of what's inside `{}`. Previously unmatched, so every
 // class only ever referenced this way was flagged as dead code.
 static SVELTE_CLASS_DIRECTIVE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bclass:([A-Za-z_-][\w-]*)").unwrap());
-// Vue's `:class="..."`/`v-bind:class="..."` binding — same string-literal
-// shape as `class=`, just a different attribute name. A dynamic
-// object/array expression (`:class="{ active: isActive }"`) still has its
-// class names as bare quoted strings inside, which the shared
-// `extract_quoted_words` helper below picks up regardless.
-static VUE_CLASS_BIND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:v-bind:class|:class)\s*=\s*"([^"]*)""#).unwrap());
+// Vue's `:class="..."`/`v-bind:class="..."` binding — the attribute value
+// is a JS expression, not a literal class list, so unlike `class=` its
+// content is never split on whitespace directly; a static string
+// (`'btn-primary'`), a dynamic object (`{ 'active-tab': isActive }`), or a
+// ternary (`isActive ? 'foo' : 'bar'`) all carry their real class names as
+// bare quoted substrings, which `QUOTED_STRING_RE` (below, in
+// `extract_used_classes`) picks up regardless of which JS shape wraps
+// them. Matches either quote style around the whole attribute value —
+// Vue templates commonly use single quotes for the outer attribute since
+// the expression inside often needs double quotes of its own (or vice
+// versa).
+static VUE_CLASS_BIND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:v-bind:class|:class)\s*=\s*(?:"([^"]*)"|'([^']*)')"#).unwrap());
 // `clsx(...)`/`classnames(...)`/`cn(...)` utility calls and
 // `classList.add/remove/toggle(...)` — extracts every quoted-string
 // argument's contents (each may itself be space-separated classes) rather
@@ -61,12 +67,46 @@ fn next_char_ends_selector(rest: &str) -> bool {
     }
 }
 
+/// Blanks out `/* ... */` comment bodies (replaced with spaces, preserving
+/// byte offsets/line numbers so callers keying off match position are
+/// unaffected) — a commented-out selector or a doc-comment URL
+/// (`/* see https://example.com/docs */`) previously matched
+/// `CLASS_SELECTOR_RE` just like real, active CSS, falsely marking classes
+/// (and the odd stray `.com`-shaped "class") as declared-but-possibly-dead.
+fn strip_css_comments(css_content: &str) -> String {
+    let bytes = css_content.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            out.push(' ');
+            out.push(' ');
+            i += 2;
+            while i < bytes.len() {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    out.push(' ');
+                    out.push(' ');
+                    i += 2;
+                    break;
+                }
+                out.push(if bytes[i] == b'\n' { '\n' } else { ' ' });
+                i += 1;
+            }
+        } else {
+            out.push(css_content[i..].chars().next().unwrap());
+            i += css_content[i..].chars().next().unwrap().len_utf8();
+        }
+    }
+    out
+}
+
 /// Order matches the JS `Set`'s insertion order (first-seen, left to
 /// right through the content) rather than an arbitrary hash order — kept
 /// as a `Vec` with a dedup check instead of a bare `HashSet` so finding
 /// order stays byte-identical to the Node original, not just membership-
 /// identical.
 pub fn extract_declared_classes(css_content: &str) -> Vec<String> {
+    let css_content = &strip_css_comments(css_content);
     let mut seen = HashSet::new();
     let mut names = Vec::new();
     for m in CLASS_SELECTOR_RE.find_iter(css_content) {
@@ -93,8 +133,12 @@ pub fn extract_used_classes(markup_content: &str) -> HashSet<String> {
         names.insert(cap[1].to_string());
     }
     for cap in VUE_CLASS_BIND_RE.captures_iter(markup_content) {
-        for cls in cap[1].split_whitespace() {
-            names.insert(cls.to_string());
+        let raw = cap.get(1).or_else(|| cap.get(2)).map(|m| m.as_str()).unwrap_or("");
+        for qcap in QUOTED_STRING_RE.captures_iter(raw) {
+            let literal = qcap.get(1).or_else(|| qcap.get(2)).or_else(|| qcap.get(3)).map(|m| m.as_str()).unwrap_or("");
+            for cls in literal.split_whitespace() {
+                names.insert(cls.to_string());
+            }
         }
     }
     for m in CLASS_UTILITY_CALL_START_RE.find_iter(markup_content) {

@@ -948,7 +948,7 @@ fn derive_eu_ai_act_findings(posture: &ignite_feature_posture::PostureReport, do
     ];
     for (category, message) in document_labels {
         if documents.get(category).map(|d| d.status) == Some("MISSING") {
-            findings.push(RawFinding { kind: Some("ai-act-compliance-documents".to_string()), message: Some(message.to_string()), ..Default::default() });
+            findings.push(RawFinding { kind: Some(format!("ai-act-compliance-documents-{category}")), message: Some(message.to_string()), ..Default::default() });
         }
     }
     CheckResult { findings, engine: None }
@@ -1100,9 +1100,9 @@ mod tests {
 
         let db_dir = tempdir().unwrap();
         let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        store.create_custom_secret_pattern("Acme Internal Token", r"acme_live_[0-9a-f]{16}", None);
+        store.create_custom_secret_pattern("Acme Internal Token", r"acme_live_[0-9a-f]{16}", None).unwrap();
         // A disabled pattern must never reach the live scan.
-        let disabled_id = store.create_custom_secret_pattern("Should Not Fire", r"never_matches_anything_zzz", None);
+        let disabled_id = store.create_custom_secret_pattern("Should Not Fire", r"never_matches_anything_zzz", None).unwrap();
         store.set_custom_secret_pattern_enabled(disabled_id, false);
 
         let mut config = test_config(None);

@@ -1,52 +1,249 @@
 //! Lightweight JS/TS module graph: parses import/require/export statements
-//! with regexes (no bundled parser dependency) and resolves relative
-//! specifiers to real files on disk. Faithful port of
-//! `lib/module-graph.js`. Shared by the dead-code and boundaries checks so
-//! both walk the exact same graph.
+//! via a real ECMAScript/TypeScript AST (`oxc_parser`) rather than regexes,
+//! and resolves relative specifiers to real files on disk. Shared by the
+//! dead-code and boundaries checks so both walk the exact same graph.
+//!
+//! A regex-based scanner (this crate's original implementation) fights a
+//! context-free grammar it fundamentally can't represent — multiline
+//! import clauses, TypeScript inline type exports
+//! (`export { type Foo }`), ES2020 namespace re-exports, and CommonJS
+//! object-shorthand `module.exports = { a, b }` each needed their own
+//! regex escape hatch, and there was always another shape (a comment
+//! containing `import`, a string literal containing `require(`) a purely
+//! textual scanner could misparse. Parsing for real once per file and
+//! walking the resulting AST handles all of these correctly by
+//! construction instead of accumulating regex special cases.
+//!
+//! Parsing always uses [`SourceType::tsx`] regardless of the file's real
+//! extension — TypeScript (and JSX) syntax is a superset of plain
+//! JS/CJS, so this one permissive mode parses every extension this crate
+//! supports (`.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs`/`.mts`/`.cts`)
+//! without needing to thread a real extension through `extract_specifiers`/
+//! `extract_exports`'s public, content-only signatures.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use once_cell::sync::Lazy;
-use regex::Regex;
+use oxc_allocator::Allocator;
+use oxc_ast::ast::*;
+use oxc_ast_visit::{walk_js::*, VisitJs};
+use oxc_parser::Parser;
+use oxc_span::SourceType;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const JS_TS_EXT: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
 const RESOLVABLE_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".json"];
 
-// `$` added to the clause character class for framework-specific
-// identifiers (Svelte's `$state`, `$props`, ...) that are otherwise a
-// completely ordinary named import; `/` and `\*` (a literal `*` inside a
-// `/* ... */` block comment, not the namespace-import `*` this class
-// already allows unescaped) let an inline comment inside the import
-// clause pass through instead of breaking the match entirely. `(?s)`
-// lets `\s` (used here, not `.`) span real newlines in a multiline
-// import clause the same way it already needed to for a single-line one.
-static IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)\bimport\s+(?:[\w*{},\s$/]+\s+from\s+)?['"]([^'"]+)['"]"#).unwrap());
-// `\*\s+as\s+\w+` covers an ES2020 namespace re-export
-// (`export * as utils from './utils'`); the optional leading `type\s+`
-// covers a TypeScript type-only re-export (`export type { A } from ...`,
-// `export type * from ...`) — both previously fell through this regex
-// entirely, leaving the target module out of the dependency graph and
-// falsely reported as an `unused-file` deletion candidate.
-static EXPORT_FROM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bexport\s+(?:type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]"#).unwrap());
-static DYNAMIC_IMPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bimport\(\s*['"]([^'"]+)['"]\s*\)"#).unwrap());
-static REQUIRE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\brequire\(\s*['"]([^'"]+)['"]\s*\)"#).unwrap());
+/// Extracts the plain string content of a `ModuleExportName` — the
+/// `foo`/`"foo"` on either side of an `export { local as exported }` /
+/// `import { imported as local }` specifier, regardless of whether it's a
+/// bare identifier or (an ES2022 addition) a string literal.
+fn module_export_name_text<'a>(name: &ModuleExportName<'a>) -> &'a str {
+    match name {
+        ModuleExportName::IdentifierName(n) => n.name.as_str(),
+        ModuleExportName::IdentifierReference(n) => n.name.as_str(),
+        ModuleExportName::StringLiteral(s) => s.value.as_str(),
+    }
+}
 
-static EXPORT_DECL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\bexport\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)").unwrap());
-// The JS original is `\bexport\s*\{([^}]*)\}(?!\s*from)` — the `regex`
-// crate has no lookaround support, so the "not followed by `from`"
-// condition is checked manually against the text right after each match
-// (see `extract_exports` below) instead of being part of the pattern.
-// TypeScript type-only exports (`export type { Foo, Bar }`) put `type`
-// between `export` and `{` — previously unmatched, so a type export was
-// treated as unexported and falsely flagged as dead code.
-static EXPORT_LIST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bexport\s*(?:type\s+)?\{([^}]*)\}").unwrap());
-static EXPORT_LIST_FOLLOWED_BY_FROM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*from").unwrap());
-static EXPORT_DEFAULT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bexport\s+default\b").unwrap());
-static CJS_EXPORT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:module\.exports\.|exports\.)([A-Za-z_$][\w$]*)\s*=").unwrap());
-static CJS_EXPORT_OBJECT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bmodule\.exports\s*=\s*\{([^}]*)\}").unwrap());
-static NAME_AS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([\w$]+)(?:\s+as\s+([\w$]+))?$").unwrap());
+/// `module.exports` as an assignment target (the object half of
+/// `module.exports.foo = ...` / `module.exports = {...}`) — an
+/// `Expression::StaticMemberExpression` whose own object is the bare
+/// identifier `module` and whose property is `exports`.
+fn is_module_dot_exports(expr: &Expression) -> bool {
+    let Expression::StaticMemberExpression(sme) = expr else { return false };
+    sme.property.name.as_str() == "exports" && matches!(&sme.object, Expression::Identifier(id) if id.name.as_str() == "module")
+}
+
+/// The exported name from a CJS `module.exports.X = ...` / `exports.X = ...`
+/// assignment target, or `None` if `target` isn't shaped like either.
+fn cjs_named_export_target<'a>(target: &'a AssignmentTarget<'a>) -> Option<&'a str> {
+    let AssignmentTarget::StaticMemberExpression(sme) = target else { return None };
+    let prop = sme.property.name.as_str();
+    let is_bare_exports = matches!(&sme.object, Expression::Identifier(id) if id.name.as_str() == "exports");
+    if is_bare_exports || is_module_dot_exports(&sme.object) {
+        Some(prop)
+    } else {
+        None
+    }
+}
+
+/// Whether `target` is exactly `module.exports` (the whole-object-replace
+/// shape, `module.exports = {...}`), as opposed to `module.exports.X`/
+/// `exports.X` (a single named export assignment).
+fn is_module_exports_whole_object_target(target: &AssignmentTarget) -> bool {
+    let AssignmentTarget::StaticMemberExpression(sme) = target else { return false };
+    sme.property.name.as_str() == "exports" && matches!(&sme.object, Expression::Identifier(id) if id.name.as_str() == "module")
+}
+
+#[derive(Default)]
+struct ModuleVisitor {
+    specifiers: Vec<String>,
+    names_set: Vec<String>,
+    names_seen: HashSet<String>,
+    has_default: bool,
+}
+
+impl ModuleVisitor {
+    fn push_name(&mut self, n: &str) {
+        if self.names_seen.insert(n.to_string()) {
+            self.names_set.push(n.to_string());
+        }
+    }
+
+    /// Declared binding name(s) from a top-level `export <decl>` —
+    /// `function`/`class` contribute their own name (if any; an anonymous
+    /// default-exported function/class carries no separate named export),
+    /// `const`/`let`/`var` contribute each declarator's simple identifier.
+    /// A destructuring declarator (`export const { a, b } = x`) is skipped,
+    /// same as the regex-based implementation this replaces — real AST
+    /// support for that is possible but out of scope for a first cut here.
+    fn collect_declaration_names(&mut self, decl: &Declaration) {
+        match decl {
+            Declaration::FunctionDeclaration(f) => {
+                if let Some(id) = &f.id {
+                    self.push_name(id.name.as_str());
+                }
+            }
+            Declaration::ClassDeclaration(c) => {
+                if let Some(id) = &c.id {
+                    self.push_name(id.name.as_str());
+                }
+            }
+            Declaration::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                        self.push_name(bi.name.as_str());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<'a> VisitJs<'a> for ModuleVisitor {
+    fn visit_import_declaration(&mut self, it: &ImportDeclaration<'a>) {
+        self.specifiers.push(it.source.value.as_str().to_string());
+    }
+
+    fn visit_export_from_declaration(&mut self, it: &ExportFromDeclaration<'a>) {
+        // `export { a, b } from './x'` / `export type { A } from './x'` —
+        // a re-export forwards names from elsewhere rather than declaring
+        // them here, so (matching the prior regex-based behavior) this
+        // only ever contributes the specifier path, never a local name.
+        self.specifiers.push(it.source.value.as_str().to_string());
+    }
+
+    fn visit_export_all_declaration(&mut self, it: &ExportAllDeclaration<'a>) {
+        // `export * from './x'` / `export * as ns from './x'`.
+        self.specifiers.push(it.source.value.as_str().to_string());
+    }
+
+    fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+        if let Expression::StringLiteral(s) = &it.source {
+            self.specifiers.push(s.value.as_str().to_string());
+        }
+        walk_import_expression(self, it);
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if let Expression::Identifier(callee) = &it.callee {
+            if callee.name.as_str() == "require" {
+                if let Some(Argument::StringLiteral(s)) = it.arguments.first() {
+                    self.specifiers.push(s.value.as_str().to_string());
+                }
+            }
+        }
+        walk_call_expression(self, it);
+    }
+
+    fn visit_export_declaration(&mut self, it: &ExportDeclaration<'a>) {
+        self.collect_declaration_names(&it.declaration);
+        walk_export_declaration(self, it);
+    }
+
+    fn visit_export_named_declaration(&mut self, it: &ExportNamedDeclaration<'a>) {
+        // `export { a, b as c };` — a purely local named-export list (no
+        // `from`). The exported (possibly aliased) name is what a consumer
+        // actually imports, matching what the prior regex-based
+        // implementation pushed for `x as y` clauses.
+        for spec in &it.specifiers {
+            let local = module_export_name_text(&spec.local);
+            if local == "default" {
+                // `export { default as Foo }` re-exports the module's own
+                // default under a new name — treated purely as "this file
+                // has a default export" (matching prior behavior), not as
+                // declaring a separately-named local export.
+                self.has_default = true;
+                continue;
+            }
+            self.push_name(module_export_name_text(&spec.exported));
+        }
+    }
+
+    fn visit_export_default_declaration(&mut self, it: &ExportDefaultDeclaration<'a>) {
+        self.has_default = true;
+        walk_export_default_declaration(self, it);
+    }
+
+    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        if it.operator == AssignmentOperator::Assign {
+            if is_module_exports_whole_object_target(&it.left) {
+                // `module.exports = { foo, bar: renamedBar, ...spread }` —
+                // each plain (non-computed, non-spread) key is an exported
+                // name; a spread has no single destructurable key to
+                // report (matching the prior regex-based behavior).
+                if let Expression::ObjectExpression(obj) = &it.right {
+                    for prop in &obj.properties {
+                        if let ObjectPropertyKind::ObjectProperty(p) = prop {
+                            if let PropertyKey::StaticIdentifier(key) = &p.key {
+                                self.push_name(key.name.as_str());
+                            }
+                        }
+                    }
+                }
+            } else if let Some(name) = cjs_named_export_target(&it.left) {
+                // `module.exports.foo = ...` / `exports.foo = ...`.
+                self.push_name(name);
+            }
+        }
+        walk_assignment_expression(self, it);
+    }
+}
+
+/// Parses `content` once (always as permissive TSX — see the module doc)
+/// and returns both the module specifiers it references and the names it
+/// exports — the one real-AST replacement for what used to be two
+/// independent regex passes (`extract_specifiers`/`extract_exports`).
+/// Malformed source that the parser can't recover from at all yields
+/// empty results rather than panicking or propagating a parse error —
+/// this crate's checks have always treated "found nothing" as a safe,
+/// silent degradation for a file this scanner can't make sense of.
+fn analyze(content: &str) -> (Vec<String>, ExportInfo) {
+    let allocator = Allocator::default();
+    let source_type = SourceType::tsx();
+    let ret = Parser::new(&allocator, content, source_type).parse();
+    if ret.fatal_error {
+        return (Vec::new(), ExportInfo::default());
+    }
+    let mut visitor = ModuleVisitor::default();
+    visitor.visit_program(&ret.program);
+    (visitor.specifiers, ExportInfo { names: visitor.names_set, has_default: visitor.has_default })
+}
+
+pub fn extract_specifiers(content: &str) -> Vec<String> {
+    analyze(content).0
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExportInfo {
+    pub names: Vec<String>,
+    pub has_default: bool,
+}
+
+pub fn extract_exports(content: &str) -> ExportInfo {
+    analyze(content).1
+}
 
 // A leading `/` is not a relative specifier in real JS/TS module
 // resolution — Node/bundlers treat only `.`/`..`-prefixed specifiers as
@@ -108,88 +305,6 @@ fn normalize_path(p: &Path) -> PathBuf {
         }
     }
     out
-}
-
-pub fn extract_specifiers(content: &str) -> Vec<String> {
-    let mut specs = Vec::new();
-    for re in [&*IMPORT_RE, &*EXPORT_FROM_RE, &*DYNAMIC_IMPORT_RE, &*REQUIRE_RE] {
-        for cap in re.captures_iter(content) {
-            specs.push(cap[1].to_string());
-        }
-    }
-    specs
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ExportInfo {
-    pub names: Vec<String>,
-    pub has_default: bool,
-}
-
-pub fn extract_exports(content: &str) -> ExportInfo {
-    let mut names_set: Vec<String> = Vec::new();
-    let mut names_seen = HashSet::new();
-    let mut push_name = |n: String| {
-        if names_seen.insert(n.clone()) {
-            names_set.push(n);
-        }
-    };
-
-    let mut has_default = EXPORT_DEFAULT_RE.is_match(content);
-
-    for cap in EXPORT_DECL_RE.captures_iter(content) {
-        push_name(cap[1].to_string());
-    }
-
-    for m in EXPORT_LIST_RE.find_iter(content) {
-        let after = &content[m.end()..];
-        if EXPORT_LIST_FOLLOWED_BY_FROM_RE.is_match(after) {
-            continue; // `export { a } from '...'` — a re-export, not a local declaration
-        }
-        let caps = EXPORT_LIST_RE.captures(m.as_str()).unwrap();
-        for part in caps[1].split(',') {
-            let piece = part.trim();
-            if piece.is_empty() {
-                continue;
-            }
-            let Some(as_match) = NAME_AS_ALIAS_RE.captures(piece) else { continue };
-            if &as_match[1] == "default" {
-                has_default = true;
-                continue;
-            }
-            push_name(as_match.get(2).map_or(&as_match[1], |m| m.as_str()).to_string());
-        }
-    }
-
-    for cap in CJS_EXPORT_RE.captures_iter(content) {
-        push_name(cap[1].to_string());
-    }
-
-    if let Some(obj_match) = CJS_EXPORT_OBJECT_RE.captures(content) {
-        for part in obj_match[1].split(',') {
-            let piece = part.trim();
-            if piece.is_empty() {
-                continue;
-            }
-            // `{ key: value }` -> exported name is the key (what a consumer
-            // destructures as), not the local value identifier.
-            let key = piece.split(':').next().unwrap().trim();
-            // JS: `.replace(/^\.\.\.$/, '')` — anchored both ends, so this
-            // only clears a key that IS exactly "...", never strips a
-            // "..." prefix off something like "...spread" (that stays
-            // "...spread" and fails the identifier check below, same as
-            // the JS original — a spread has no single destructurable key
-            // name to report as an export).
-            let key = if key == "..." { "" } else { key };
-            if !key.is_empty() && key.chars().enumerate().all(|(i, c)| {
-                if i == 0 { c.is_ascii_alphabetic() || c == '_' || c == '$' } else { c.is_ascii_alphanumeric() || c == '_' || c == '$' }
-            }) {
-                push_name(key.to_string());
-            }
-        }
-    }
-
-    ExportInfo { names: names_set, has_default }
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +540,60 @@ mod tests {
         assert!(info.names.contains(&"foo".to_string()));
         assert!(info.names.contains(&"bar".to_string()));
         assert!(!info.names.contains(&"spread".to_string()), "...spread has no destructurable key name");
+    }
+
+    #[test]
+    fn extract_exports_covers_typescript_inline_type_exports() {
+        let content = "export { type User, type Config as AppConfig, apiClient };\n";
+        let info = extract_exports(content);
+        assert!(info.names.contains(&"User".to_string()));
+        assert!(info.names.contains(&"AppConfig".to_string()));
+        assert!(info.names.contains(&"apiClient".to_string()));
+    }
+
+    #[test]
+    fn extract_specifiers_handles_a_real_multiline_import_clause() {
+        let content = "import {\n    a,\n    b,\n    c,\n} from './multiline';\n";
+        let specs = extract_specifiers(content);
+        assert!(specs.contains(&"./multiline".to_string()));
+    }
+
+    #[test]
+    fn extract_specifiers_covers_namespace_re_export() {
+        let content = "export * as utils from './utils';\n";
+        let specs = extract_specifiers(content);
+        assert!(specs.contains(&"./utils".to_string()));
+    }
+
+    #[test]
+    fn extract_exports_ignores_names_inside_comments_and_strings() {
+        // A regex-based scanner could be fooled by text that merely looks
+        // like an export inside a comment or string literal; a real parser
+        // never is.
+        let content = "// export const fake = 1;\nconst s = \"export const alsoFake = 2;\";\nexport const real = 3;\n";
+        let info = extract_exports(content);
+        assert!(info.names.contains(&"real".to_string()));
+        assert!(!info.names.contains(&"fake".to_string()));
+        assert!(!info.names.contains(&"alsoFake".to_string()));
+    }
+
+    #[test]
+    fn extract_exports_finds_multiple_variable_declarators_in_one_statement() {
+        // A single regex capture group could only ever pull out one name
+        // per `export const ...` match — a real AST walk naturally
+        // enumerates every declarator.
+        let content = "export const a = 1, b = 2, c = 3;\n";
+        let info = extract_exports(content);
+        for name in ["a", "b", "c"] {
+            assert!(info.names.contains(&name.to_string()), "missing {name}");
+        }
+    }
+
+    #[test]
+    fn extract_specifiers_finds_require_nested_inside_an_export_declaration() {
+        let content = "export const db = require('./db');\n";
+        let specs = extract_specifiers(content);
+        assert!(specs.contains(&"./db".to_string()));
     }
 
     #[test]

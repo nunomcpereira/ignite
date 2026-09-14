@@ -63,6 +63,38 @@ fn count_decisions(line: &str, is_rust: bool) -> usize {
 struct StripState {
     in_string: Option<char>,
     in_block_comment: bool,
+    /// `Some(n)` while inside a Rust raw string that closes on `"` followed
+    /// by exactly `n` `#` characters (0 for a plain `r"..."`) — raw strings
+    /// need their own state distinct from `in_string` because they use no
+    /// backslash-escaping at all (unlike every other string this stripper
+    /// handles), and a `{`/`}` inside one (a JSON fixture embedded as
+    /// `r#"{"key": "value"}"#`) must never affect brace-depth tracking.
+    in_raw_string_hashes: Option<usize>,
+}
+
+/// Detects a Rust raw (`r"..."`, `r#"..."#`, ...) or raw byte
+/// (`br"..."`, ...) string literal opening at `chars[i]`, returning
+/// `(prefix_len, hash_count)` — `prefix_len` covers `r`/`br` plus the
+/// hashes plus the opening quote, `hash_count` is how many `#`s the
+/// closing `"` must be followed by.
+fn rust_raw_string_open(chars: &[char], i: usize) -> Option<(usize, usize)> {
+    let mut j = i;
+    if chars.get(j) == Some(&'b') {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'r') {
+        return None;
+    }
+    j += 1;
+    let mut hashes = 0usize;
+    while chars.get(j) == Some(&'#') {
+        hashes += 1;
+        j += 1;
+    }
+    if chars.get(j) != Some(&'"') {
+        return None;
+    }
+    Some((j + 1 - i, hashes))
 }
 
 /// Removes the *contents* of quoted string/template literals (replaced
@@ -99,11 +131,26 @@ struct StripState {
 /// inflating brace depth/decisions), and code after the closing
 /// quote/`*/` on a later line was erroneously stripped as if still inside
 /// it.
-fn strip_string_literals(line: &str, state: &mut StripState) -> String {
+fn strip_string_literals(line: &str, state: &mut StripState, is_rust: bool) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(chars.len());
     let mut i = 0;
     while i < chars.len() {
+        if let Some(hashes) = state.in_raw_string_hashes {
+            let c = chars[i];
+            if c == '"' && (0..hashes).all(|k| chars.get(i + 1 + k) == Some(&'#')) {
+                state.in_raw_string_hashes = None;
+                out.push(c);
+                for _ in 0..hashes {
+                    out.push('#');
+                }
+                i += 1 + hashes;
+            } else {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
         if state.in_block_comment {
             if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
                 state.in_block_comment = false;
@@ -150,6 +197,16 @@ fn strip_string_literals(line: &str, state: &mut StripState) -> String {
             i += 2;
             continue;
         }
+        if is_rust {
+            if let Some((prefix_len, hashes)) = rust_raw_string_open(&chars, i) {
+                for _ in 0..prefix_len {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                state.in_raw_string_hashes = Some(hashes);
+                continue;
+            }
+        }
         let c = chars[i];
         if c == '"' || c == '`' {
             state.in_string = Some(c);
@@ -158,10 +215,19 @@ fn strip_string_literals(line: &str, state: &mut StripState) -> String {
             continue;
         }
         if c == '\'' {
-            // Only a real char/string literal if it plausibly closes
-            // soon: `'x'` (one char) or `'\x'`/`'\xx'` (one escape).
-            let closes_as_char_literal = (chars.get(i + 1) == Some(&'\\') && chars.get(i + 3) == Some(&'\'')) || (chars.get(i + 1).is_some_and(|c| *c != '\'') && chars.get(i + 2) == Some(&'\''));
-            if closes_as_char_literal {
+            if is_rust {
+                // Rust: a `'` is ambiguous with a lifetime annotation
+                // (`&'a str`, `fn f<'a>()`), so only treat it as a real
+                // char/string literal if it plausibly closes soon: `'x'`
+                // (one char) or `'\x'`/`'\xx'` (one escape).
+                let closes_as_char_literal = (chars.get(i + 1) == Some(&'\\') && chars.get(i + 3) == Some(&'\'')) || (chars.get(i + 1).is_some_and(|c| *c != '\'') && chars.get(i + 2) == Some(&'\''));
+                if closes_as_char_literal {
+                    state.in_string = Some(c);
+                }
+            } else {
+                // Every other supported language (JS/TS, Python, Ruby,
+                // PHP, ...) uses `'` as an ordinary multi-character string
+                // delimiter with no lifetime ambiguity to guard against.
                 state.in_string = Some(c);
             }
             out.push(c);
@@ -189,7 +255,7 @@ pub fn cyclomatic_and_cognitive_for(content: &str, is_rust: bool) -> CyclomaticA
     let mut depth: i64 = 0;
     let mut strip_state = StripState::default();
     for raw_line in content.split(['\n']).flat_map(|l| l.strip_suffix('\r').or(Some(l))) {
-        let line = strip_string_literals(raw_line, &mut strip_state);
+        let line = strip_string_literals(raw_line, &mut strip_state, is_rust);
         let decisions = count_decisions(&line, is_rust) as i64;
         cyclomatic += decisions;
         cognitive += decisions * (1 + depth);
@@ -530,6 +596,26 @@ mod tests {
         assert_eq!(crap_score(10, Some(0.0)), 110); // 100*1 + 10
         assert_eq!(crap_score(10, Some(100.0)), 10); // 100*0 + 10
         assert_eq!(crap_score(10, None), 110); // no coverage treated as 0%
+    }
+
+    #[test]
+    fn strip_string_literals_ignores_braces_inside_rust_raw_strings() {
+        let content = "fn f() {\n    let fixture = r#\"if (x) { while (y) {} }\"#;\n    if real_condition {\n        do_thing();\n    }\n}\n";
+        let result = cyclomatic_and_cognitive_for(content, true);
+        // Only the one real `if` outside the raw string counts — the
+        // `if`/`while`/braces embedded in the raw string fixture must be
+        // invisible to complexity counting.
+        assert_eq!(result.cyclomatic, 2); // base 1 + the one real `if`
+    }
+
+    #[test]
+    fn strip_string_literals_treats_single_quotes_as_full_strings_outside_rust() {
+        let content = "function f() {\n  if ('if (a) { while (b) {} }') {\n    doThing();\n  }\n}\n";
+        let result = cyclomatic_and_cognitive_for(content, false);
+        // The single-quoted JS string literal's contents (`if`/`while`/
+        // braces) must not be parsed as real code — only the one real
+        // `if` guarding it counts.
+        assert_eq!(result.cyclomatic, 2);
     }
 
     #[test]

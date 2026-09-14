@@ -17,6 +17,37 @@ pub fn is_istanbul_report(data: &Value) -> bool {
     entry_obj.contains_key("statementMap") || entry_obj.contains_key("s")
 }
 
+/// Lexically resolves `.`/`..` path components (no filesystem access,
+/// no symlink resolution — just segment-level collapsing) so a coverage
+/// path reported with a `../` component (e.g. a monorepo test runner
+/// reporting paths relative to its own package rather than the project
+/// root) still matches the plain, `..`-free relative path Ignite's own
+/// issue findings use for the same file.
+fn collapse_dot_components(path: &str) -> String {
+    // Preserve a leading `/` for a genuinely absolute path (e.g. the
+    // outside-the-project-root fallback that keeps the raw absolute key
+    // unchanged) — splitting on `/` alone would otherwise treat the empty
+    // segment before a leading slash the same as a bare `.` and silently
+    // drop it, turning an absolute path into a relative-looking one.
+    let is_absolute = path.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            _ => out.push(seg),
+        }
+    }
+    let joined = out.join("/");
+    if is_absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
 fn normalize_istanbul(data: &Value, project_root: Option<&str>) -> HashMap<String, RuntimeCoverageInput> {
     let mut out = HashMap::new();
     let Some(obj) = data.as_object() else { return out };
@@ -32,6 +63,7 @@ fn normalize_istanbul(data: &Value, project_root: Option<&str>) -> HashMap<Strin
             Some(root) if abs_or_rel.starts_with(root) && abs_or_rel[root.len()..].starts_with(['/', '\\']) => abs_or_rel[root.len()..].trim_start_matches(['/', '\\']).replace('\\', "/"),
             _ => abs_or_rel.replace('\\', "/"),
         };
+        let rel_path = collapse_dot_components(&rel_path);
         let hits: Vec<i64> = file_cov.get("s").and_then(|s| s.as_object()).map(|s| s.values().map(|v| v.as_i64().unwrap_or(0)).collect()).unwrap_or_default();
         let hit_count: i64 = hits.iter().sum();
         let covered = hits.iter().filter(|&&n| n > 0).count();

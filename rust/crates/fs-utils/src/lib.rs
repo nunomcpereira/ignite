@@ -191,159 +191,64 @@ fn split_lines(content: &str) -> Vec<&str> {
 
 // --- .gitignore-syntax pattern matching --------------------------------
 
+/// One `.gitignore`-syntax pattern, matched via the `ignore` crate's real
+/// gitignore engine (the same one ripgrep/`ignore`-crate consumers use)
+/// rather than a hand-rolled glob-to-regex translator. The previous
+/// hand-rolled `GlobRegex` got the common cases right but diverged from
+/// real `.gitignore` semantics on edge cases like a leading `**/` not
+/// matching a root-level file/directory (`**/node_modules`, `**/.env*`) —
+/// switching engines here fixes that class of bug outright instead of
+/// patching each edge case as it's found.
 #[derive(Debug, Clone)]
 pub struct IgnorePattern {
-    regex: GlobRegex,
-    negate: bool,
+    matcher: ignore::gitignore::Gitignore,
 }
 
-/// Minimal .gitignore matcher: last-matching pattern wins (negation with `!`
-/// supported), `*`/`**`/`?` handled, `/`-anchored vs anywhere-in-tree
-/// patterns distinguished. Good enough to recognize the common cases
-/// (`.env`, `.env*`) without pulling in a full gitignore-semantics crate —
-/// same scope as the Node original, ported logic-for-logic rather than
-/// swapped for the `ignore` crate's fuller (and behaviorally different)
-/// semantics.
+/// Compiles one `.gitignore`-syntax line (as it would appear in a real
+/// `.gitignore` file — `!` negation, a leading `/` anchor, a trailing `/`
+/// directory marker, `*`/`**`/`?` globs, all handled by `add_line` per real
+/// git semantics) into a matcher for just that one pattern. A malformed
+/// pattern silently compiles to a matcher that never matches, rather than
+/// panicking or dropping the whole pattern list.
 pub fn gitignore_pattern_to_regex(raw_pattern: &str) -> IgnorePattern {
-    let mut pattern = raw_pattern.trim().to_string();
-    let mut negate = false;
-    if let Some(stripped) = pattern.strip_prefix('!') {
-        negate = true;
-        pattern = stripped.to_string();
-    }
-    let anchored = pattern.starts_with('/');
-    if anchored {
-        pattern = pattern[1..].to_string();
-    }
-    if let Some(stripped) = pattern.strip_suffix('/') {
-        pattern = stripped.to_string();
-    }
-    IgnorePattern {
-        regex: GlobRegex::compile(&pattern, anchored),
-        negate,
-    }
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(".");
+    let matcher = match builder.add_line(None, raw_pattern.trim()) {
+        Ok(b) => b.build().unwrap_or_else(|_| ignore::gitignore::Gitignore::empty()),
+        Err(_) => ignore::gitignore::Gitignore::empty(),
+    };
+    IgnorePattern { matcher }
 }
 
+/// Last-matching pattern wins, same as real `.gitignore` precedence (and
+/// the same external contract this function has always had) — only the
+/// per-pattern matching engine underneath changed. Every caller of this
+/// exact signature (outside this crate) only ever checks an individual
+/// already-discovered *file*, never a directory, so `is_dir: false` here
+/// is correct for them unchanged; `is_gitignored_path` below is the
+/// directory-aware variant `walk_dir` uses instead, since a directory-only
+/// pattern (`dist/`) must actually only match a directory, not a
+/// same-named file.
 pub fn is_gitignored(patterns: &[IgnorePattern], rel_path: &str) -> bool {
+    is_gitignored_path(patterns, rel_path, false)
+}
+
+/// Like [`is_gitignored`], but `is_dir` lets a directory-only pattern
+/// (`dist/`) correctly match only a directory, not a same-named file —
+/// needed by `walk_dir` (which knows each entry's real file type as it
+/// walks) but not by any of this function's other callers, which only
+/// ever check individual files.
+pub fn is_gitignored_path(patterns: &[IgnorePattern], rel_path: &str, is_dir: bool) -> bool {
     let normalized = rel_path.replace(std::path::MAIN_SEPARATOR, "/");
+    let path = Path::new(&normalized);
     let mut ignored = false;
     for p in patterns {
-        if p.regex.is_match(&normalized) {
-            ignored = !p.negate;
+        match p.matcher.matched(path, is_dir) {
+            ignore::Match::Ignore(_) => ignored = true,
+            ignore::Match::Whitelist(_) => ignored = false,
+            ignore::Match::None => {}
         }
     }
     ignored
-}
-
-/// A tiny hand-rolled glob matcher covering exactly what
-/// gitignorePatternToRegex needs (`*`, `**`, `?`, and an anchored vs.
-/// anywhere-in-tree mode) — no regex crate dependency for something this
-/// small.
-#[derive(Debug, Clone)]
-struct GlobRegex {
-    tokens: Vec<GlobToken>,
-    anchored: bool,
-}
-
-#[derive(Debug, Clone)]
-enum GlobToken {
-    Literal(char),
-    Star,       // `*` - matches any run of non-'/' chars
-    DoubleStar, // `**` - matches any run of chars including '/'
-    AnyChar,    // `?` - matches exactly one non-'/' char... JS impl used [^/] for `?` too
-}
-
-impl GlobRegex {
-    fn compile(pattern: &str, anchored: bool) -> Self {
-        let mut tokens = Vec::new();
-        let chars: Vec<char> = pattern.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            if chars[i] == '*' {
-                if i + 1 < chars.len() && chars[i + 1] == '*' {
-                    tokens.push(GlobToken::DoubleStar);
-                    i += 2;
-                } else {
-                    tokens.push(GlobToken::Star);
-                    i += 1;
-                }
-            } else if chars[i] == '?' {
-                tokens.push(GlobToken::AnyChar);
-                i += 1;
-            } else {
-                tokens.push(GlobToken::Literal(chars[i]));
-                i += 1;
-            }
-        }
-        GlobRegex { tokens, anchored }
-    }
-
-    /// Mirrors the JS regex `^pattern(/.*)?$` (anchored) or
-    /// `(^|/)pattern(/.*)?$` (anywhere-in-tree).
-    fn is_match(&self, haystack: &str) -> bool {
-        if self.anchored {
-            self.match_at(haystack, 0)
-        } else {
-            // Try matching the pattern starting at the beginning, or right
-            // after any '/' in the haystack.
-            if self.match_at(haystack, 0) {
-                return true;
-            }
-            for (i, c) in haystack.char_indices() {
-                if c == '/' && self.match_at(haystack, i + 1) {
-                    return true;
-                }
-            }
-            false
-        }
-    }
-
-    fn match_at(&self, haystack: &str, start: usize) -> bool {
-        let hay: Vec<char> = haystack[start..].chars().collect();
-        self.match_tokens(&self.tokens, &hay, 0, 0)
-    }
-
-    /// Backtracking matcher for the small token set above, then requires
-    /// the rest of the haystack (if any) to be exactly `(/.*)?` — i.e. the
-    /// pattern must match a full path segment, optionally followed by a
-    /// deeper path.
-    fn match_tokens(&self, tokens: &[GlobToken], hay: &[char], ti: usize, hi: usize) -> bool {
-        if ti == tokens.len() {
-            return hi == hay.len() || hay[hi] == '/';
-        }
-        match &tokens[ti] {
-            GlobToken::Literal(c) => {
-                hi < hay.len() && hay[hi] == *c && self.match_tokens(tokens, hay, ti + 1, hi + 1)
-            }
-            GlobToken::AnyChar => {
-                hi < hay.len() && hay[hi] != '/' && self.match_tokens(tokens, hay, ti + 1, hi + 1)
-            }
-            GlobToken::Star => {
-                let mut j = hi;
-                loop {
-                    if self.match_tokens(tokens, hay, ti + 1, j) {
-                        return true;
-                    }
-                    if j >= hay.len() || hay[j] == '/' {
-                        return false;
-                    }
-                    j += 1;
-                }
-            }
-            GlobToken::DoubleStar => {
-                let mut j = hi;
-                loop {
-                    if self.match_tokens(tokens, hay, ti + 1, j) {
-                        return true;
-                    }
-                    if j >= hay.len() {
-                        return false;
-                    }
-                    j += 1;
-                }
-            }
-        }
-    }
 }
 
 fn load_ignore_file_patterns(root: &Path, filename: &str) -> Vec<IgnorePattern> {
@@ -395,7 +300,7 @@ fn walk_dir(root: &Path, dir: &Path, ignore_patterns: &[IgnorePattern], out: &mu
                 .unwrap_or(&full)
                 .to_string_lossy()
                 .replace(std::path::MAIN_SEPARATOR, "/");
-            if is_gitignored(ignore_patterns, &rel) {
+            if is_gitignored_path(ignore_patterns, &rel, file_type.is_dir()) {
                 continue;
             }
         }
@@ -469,7 +374,15 @@ pub fn hash_buffer(buffer: &[u8]) -> String {
 pub fn relative_to_root(root: &Path, target_path: &str) -> PathBuf {
     let resolved = root.join(target_path);
     let real_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let real_target = fs::canonicalize(&resolved).unwrap_or(resolved);
+    // If `resolved` doesn't exist on disk (a deleted file reported by git,
+    // or a new file not yet staged), it can't be canonicalized — falling
+    // back to the un-canonicalized `resolved` here would pair it against
+    // a canonicalized `real_root` that symlink-resolution has moved onto a
+    // different prefix (macOS's `/tmp` -> `/private/tmp`, `/var` ->
+    // `/private/var`), producing a broken `../../../..`-laden relative
+    // path. Falling back to joining the already-canonicalized root
+    // instead keeps both sides on the same resolved prefix.
+    let real_target = fs::canonicalize(&resolved).unwrap_or_else(|_| real_root.join(target_path));
     pathdiff(&real_target, &real_root)
 }
 

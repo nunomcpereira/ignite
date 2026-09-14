@@ -64,15 +64,25 @@ impl DbStore {
     pub fn finish_project(&self, status: &str, error: Option<&str>, repo_url: Option<&str>, pr_url: Option<&str>, project_id: i64) {
         let conn = self.conn.lock();
         let found: Option<(String, String, String)> =
-            conn.query_row("SELECT org, repo, job_id FROM projects WHERE id = ?", params![project_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().unwrap();
+            match conn.query_row("SELECT org, repo, job_id FROM projects WHERE id = ?", params![project_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional() {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::error!("finish_project: failed to look up project {project_id}: {e}");
+                    return;
+                }
+            };
         let Some((org, repo, job_id)) = found else { return };
-        conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE projects SET status = ?, error = ?, repo_url = ?, pr_url = ?, finished_at = datetime('now') WHERE id = ?",
             params![status, error, repo_url, pr_url, project_id],
-        )
-        .unwrap();
+        ) {
+            tracing::error!("finish_project: failed to update status for {project_id}: {e}");
+            return;
+        }
         if let Some(url) = pr_url {
-            conn.execute("INSERT INTO pull_requests (project_id, kind, url) VALUES (?, 'onboarding', ?)", params![project_id, url]).unwrap();
+            if let Err(e) = conn.execute("INSERT INTO pull_requests (project_id, kind, url) VALUES (?, 'onboarding', ?)", params![project_id, url]) {
+                tracing::error!("finish_project: failed to record pull request for {project_id}: {e}");
+            }
         }
         drop(conn); // release before record_audit_event re-acquires the same lock
 
