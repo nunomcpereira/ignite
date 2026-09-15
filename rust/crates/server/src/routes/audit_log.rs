@@ -210,4 +210,37 @@ mod tests {
         let res = app.oneshot(Request::get("/api/audit-log").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn download_log_streams_the_stored_gzip_archive() {
+        let state = test_state();
+        let auth = auth_header(&state);
+        let event_id = state.db.record_audit_event("scan.completed", "info", "clean scan", None, Some("acme"), Some("widgets"), None).unwrap();
+        state.db.save_audit_event_log(event_id, b"fake gzip bytes");
+
+        let app = router().with_state(state);
+        let res = app.oneshot(Request::get(format!("/api/audit-log/{event_id}/log")).header("authorization", &auth).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(), "application/gzip");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], b"fake gzip bytes");
+    }
+
+    #[tokio::test]
+    async fn download_log_404s_when_no_archive_was_recorded() {
+        let state = test_state();
+        let auth = auth_header(&state);
+        let event_id = state.db.record_audit_event("gate.push_rejected", "critical", "blocked push", None, None, None, None).unwrap();
+
+        let app = router().with_state(state);
+        let res = app.oneshot(Request::get(format!("/api/audit-log/{event_id}/log")).header("authorization", &auth).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn download_log_requires_auth() {
+        let app = router().with_state(test_state());
+        let res = app.oneshot(Request::get("/api/audit-log/1/log").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
 }

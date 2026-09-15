@@ -85,6 +85,8 @@ window.IGNITE_I18N = {
       'governance.colSummary': 'Summary',
       'governance.colRepo': 'Org / repo',
       'governance.colActor': 'Actor',
+      'governance.colLog': 'Log',
+      'governance.downloadLog': '⬇ .gz',
       'governance.auditLogEmpty': 'No audit events match this filter.',
       'governance.auditLogLoadError': 'Could not load the audit log.',
       'governance.loadMore': 'Load more',

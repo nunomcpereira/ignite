@@ -634,6 +634,7 @@
                 <th class="px-4 py-3" data-i18n="governance.colSummary">Summary</th>
                 <th class="px-4 py-3" data-i18n="governance.colRepo">Org / repo</th>
                 <th class="px-4 py-3" data-i18n="governance.colActor">Actor</th>
+                <th class="px-4 py-3" data-i18n="governance.colLog">Log</th>
               </tr>
             </thead>
             <tbody id="auditLogTableBody" class="divide-y divide-slate-100"></tbody>
@@ -7101,6 +7102,14 @@
       $('auditLogEmpty').classList.toggle('hidden', auditLogItems.length > 0);
       const rowsHtml = items.map((e) => {
         const repoCell = e.org || e.repo ? `${escapeHtml(e.org || '—')} / ${escapeHtml(e.repo || '—')}` : '<span class="text-slate-300">—</span>';
+        // `metadata.hasLogArchive` (set by `finish_project`'s
+        // scan.completed event, db-store/src/projects.rs) means a gzip of
+        // every phase's collected log text was attached — GET
+        // /api/audit-log/:id/log streams it straight from the DB, no
+        // separate lookup needed.
+        const logCell = e.metadata && e.metadata.hasLogArchive
+          ? `<a href="/api/audit-log/${e.id}/log" download class="inline-flex items-center gap-1 text-[11px] font-semibold text-brand-600 hover:text-brand-700" title="Download scan log (.gz)">${t('governance.downloadLog')}</a>`
+          : '<span class="text-slate-300">—</span>';
         return `
         <tr class="align-top">
           <td class="px-4 py-3 text-[11px] text-slate-500 whitespace-nowrap font-mono">${escapeHtml(e.createdAt)}</td>
@@ -7109,6 +7118,7 @@
           <td class="px-4 py-3 text-slate-700">${escapeHtml(e.summary)}</td>
           <td class="px-4 py-3 text-[11px] text-slate-500 whitespace-nowrap">${repoCell}</td>
           <td class="px-4 py-3 text-[11px] text-slate-500">${e.actor ? escapeHtml(e.actor) : '<span class="text-slate-300">—</span>'}</td>
+          <td class="px-4 py-3 text-[11px] whitespace-nowrap">${logCell}</td>
         </tr>`;
       }).join('');
       $('auditLogTableBody').innerHTML = append ? $('auditLogTableBody').innerHTML + rowsHtml : rowsHtml;
