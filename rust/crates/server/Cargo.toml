@@ -73,6 +73,7 @@ ignite-dead-code = { path = "../dead-code" }
 ignite-ai-governance = { path = "../ai-governance" }
 ignite-deps-dev-client = { path = "../deps-dev-client" }
 ignite-provenance = { path = "../provenance" }
+ignite-evidence = { path = "../evidence" }
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"

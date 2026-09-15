@@ -463,6 +463,12 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 if let Some(pid) = project_id {
                     let issues_json = serde_json::to_string(&review_issues).unwrap_or_else(|_| "[]".to_string());
                     state.db.create_pending_review(rid, pid, &org, &repo, &owner_email, &issues_json);
+                    // US-05: bounded lease — a run awaiting review is
+                    // "active work" the retention sweeper must not evict
+                    // out from under a reviewer, but the hold still has
+                    // to expire eventually rather than pin the source
+                    // forever if the review is simply abandoned.
+                    state.db.set_snapshot_lease(pid, "awaiting_review", 72);
                 }
                 if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::AwaitingReview) {
                     tracing::warn!("transition_scan_run({rid}, AwaitingReview) failed: {e}");
@@ -751,6 +757,13 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             pending.retain(|_, v| cutoff.map(|c| v.created_at > c).unwrap_or(true));
             pending.insert(pid, PendingEffectivation { org: org.clone(), repo: repo.clone(), source_backup_dir: source_backup_dir.clone(), created_at: Instant::now() });
             keep_source_backup_dir = true;
+            // US-05: persisted counterpart to the 24h in-memory
+            // `pending_effectivations` window above — the in-memory map
+            // doesn't survive a restart, so without this the retention
+            // sweeper (a separate process) would have no way to know this
+            // project's retained source is still "active work" pending a
+            // real push.
+            state.db.set_snapshot_lease(pid, "pending_effectivation", 24);
         }
     }
 

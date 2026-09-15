@@ -333,6 +333,42 @@ CREATE TABLE IF NOT EXISTS pending_reviews (
   resolved_at  TEXT,
   decision_json TEXT
 );
+
+-- US-05: the versioned evidence manifest (source digest, policy/config
+-- digests, check coverage, artifact digests — see `ignite-evidence`) for
+-- one scan run, plus a bounded lease that protects a retained source
+-- directory from the retention sweeper (`retention-sweeper`) while it's
+-- still under active review/pending publication. `snapshot_leases` is
+-- keyed by `project_id`, not `run_id` — leases exist to protect
+-- `retained_sources`' on-disk directory, which is itself still
+-- project-id-keyed (see CLAUDE.md's US-01 note: the retained-source path
+-- hasn't moved onto the normalized model yet).
+CREATE TABLE IF NOT EXISTS evidence_manifests (
+  run_id        INTEGER PRIMARY KEY REFERENCES scan_runs(id) ON DELETE CASCADE,
+  manifest_json TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS snapshot_leases (
+  project_id  INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  reason      TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- The full collected stdout/log text for one scan's `scan.completed`
+-- audit event, gzip-compressed — an auditor reading the audit log gets a
+-- downloadable archive of exactly what the scan printed, not just the
+-- one-line summary. `event_id` is the `audit_events.id` this archive
+-- belongs to (never a `projects.id`/`scan_runs.id` directly, since the
+-- download is reached from the audit log itself, not from a project
+-- view — those already have `GET /api/pipeline/:jobId/status`'s
+-- `steps[].logs` for the same information without needing to unzip
+-- anything).
+CREATE TABLE IF NOT EXISTS audit_event_logs (
+  event_id   INTEGER PRIMARY KEY REFERENCES audit_events(id) ON DELETE CASCADE,
+  gzip_blob  BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 /// Backfills `repositories`/`source_snapshots`/`scan_runs` from every
@@ -349,8 +385,9 @@ CREATE TABLE IF NOT EXISTS pending_reviews (
 /// path that exists today (`repository_events_webhook.rs`).
 pub(crate) const BACKFILL_REPOSITORY_MODEL_SQL: &str = r#"
 INSERT INTO repositories (org, repo, created_at)
-SELECT DISTINCT p.org, p.repo, p.created_at FROM projects p
-WHERE NOT EXISTS (SELECT 1 FROM repositories r WHERE r.org = p.org AND r.repo = p.repo);
+SELECT p.org, p.repo, MIN(p.created_at) FROM projects p
+WHERE NOT EXISTS (SELECT 1 FROM repositories r WHERE r.org = p.org AND r.repo = p.repo)
+GROUP BY p.org, p.repo;
 
 INSERT INTO source_snapshots (repository_id, source_digest, commit_sha, storage_ref, retention_state, created_at)
 SELECT r.id, 'legacy:project:' || p.id, p.source_commit_sha, p.scan_location, 'unknown', p.created_at

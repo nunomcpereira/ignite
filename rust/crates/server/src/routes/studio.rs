@@ -261,6 +261,19 @@ async fn put_file(State(state): State<Arc<AppState>>, Path(job_id): Path<String>
     if ctx.backup_root != ctx.root {
         ignite_fs_utils::invalidate_walk_cache(&ctx.backup_root);
     }
+    // US-05: "an edit creates a new snapshot and invalidates affected
+    // approval/evidence" — the evidence manifest computed for the
+    // pre-edit source no longer describes what's actually on disk (its
+    // `sourceDigest` is now stale), so it's deleted outright rather than
+    // left around to be mistaken for still-current. `GET
+    // .../evidence` 404s until a fresh scan (which re-digests the edited
+    // tree and writes a new manifest) runs again — an explicit "you need
+    // to rescan before this can be published" signal, not a silent gap.
+    if let Some(pid) = ctx.project_id {
+        if let Some(run) = state.db.get_scan_run_for_legacy_project(pid) {
+            state.db.delete_evidence_manifest(run.id);
+        }
+    }
     Json(json!({ "ok": true })).into_response()
 }
 

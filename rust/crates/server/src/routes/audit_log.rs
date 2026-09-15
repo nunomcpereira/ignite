@@ -101,8 +101,29 @@ async fn verify(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_us
     }
 }
 
+/// `GET /api/audit-log/:id/log` — the gzip-compressed archive of every
+/// phase's full log text for a `scan.completed` event (see
+/// `db-store/src/projects.rs`'s `archive_project_logs`, written at the
+/// same time as the event itself). Not every event type has one (only
+/// scans do) — a plain 404 for those, not an empty/fabricated archive.
+async fn download_log(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, axum::extract::Path(id_raw): axum::extract::Path<String>) -> Response {
+    let Ok(id) = id_raw.parse::<i64>() else { return err(StatusCode::BAD_REQUEST, "Invalid audit event id.") };
+    match state.db.get_audit_event_log(id) {
+        Some(gzip_bytes) => axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "application/gzip")
+            .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"audit-event-{id}-log.gz\""))
+            .body(axum::body::Body::from(gzip_bytes))
+            .unwrap_or_else(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response.")),
+        None => err(StatusCode::NOT_FOUND, "No log archive recorded for this audit event."),
+    }
+}
+
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/api/audit-log", get(list)).route("/api/audit-log/verify", get(verify))
+    Router::new()
+        .route("/api/audit-log", get(list))
+        .route("/api/audit-log/verify", get(verify))
+        .route("/api/audit-log/:id/log", get(download_log))
 }
 
 #[cfg(test)]

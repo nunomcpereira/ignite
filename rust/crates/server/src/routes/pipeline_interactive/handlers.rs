@@ -5,11 +5,23 @@
 use super::run::run_interactive_pipeline;
 use super::*;
 
-async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, multipart: Multipart) -> Response {
+async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, multipart: Multipart) -> Response {
     let upload = match parse_multipart(multipart).await {
         Ok(u) => u,
         Err((status, body)) => return (status, axum::Json(body)).into_response(),
     };
+
+    // A real session is required unless `security.allow_unauthenticated_interactive_dry_run`
+    // is explicitly on *and* this is a simulation — a real provisioning+
+    // push is independently blocked in `run_interactive_pipeline`'s own
+    // Phase 1 (no session-backed GitHub token, dry_run false -> error),
+    // but rejecting it here too means an unauthenticated caller gets a
+    // clear 401 up front instead of watching Phase 1 fail after the
+    // upload already streamed.
+    let unauthenticated_dry_run_allowed = state.config.security.allow_unauthenticated_interactive_dry_run && upload.dry_run;
+    if user.is_none() && !unauthenticated_dry_run_allowed {
+        return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Authentication required." }))).into_response();
+    }
 
     let session_gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     let job_id = uuid::Uuid::new_v4().to_string();
@@ -18,7 +30,11 @@ async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(u
     let log = Arc::new(EventLog { state: state.clone(), meta: super::super::phase_meta::resolve_phase_meta(&state.config), tx, record: Mutex::new(HashMap::new()), project_id: Mutex::new(None), job_id: job_id.clone() });
 
     let job_id_task = job_id.clone();
-    let owner_email = user.email.clone();
+    // Never a client-supplied identity (unlike `validate-all`'s body-actor
+    // fallback) — an unauthenticated *simulation* has no session to
+    // attribute it to, so it gets one clearly-labeled synthetic owner
+    // rather than trusting anything the request itself claims to be.
+    let owner_email = user.map(|u| u.email).unwrap_or_else(|| "unauthenticated-simulation@ignite.internal".to_string());
     tokio::spawn(async move {
         run_interactive_pipeline(state, upload, log, job_id_task, session_gh_token, owner_email).await;
     });

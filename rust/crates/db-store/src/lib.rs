@@ -24,6 +24,7 @@ mod auth;
 mod baseline;
 mod caches;
 mod dependency_and_fixpr;
+mod evidence;
 mod github;
 mod issues;
 mod lifecycle;
@@ -78,6 +79,28 @@ mod tests {
         assert_eq!(project.status, "success");
         assert_eq!(project.repo_url.as_deref(), Some("https://github.com/acme/widgets"));
         assert!(project.finished_at.is_some());
+    }
+
+    #[test]
+    fn finish_project_gzip_archives_the_collected_step_logs_onto_its_audit_event() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-3", "acme", "widgets", false, "ui", None).unwrap();
+        store.upsert_step(id, 1, "Input & Metadata Configuration", "success", "line one\nline two");
+        store.upsert_step(id, 3, "Extraction", "success", "extracted 12 files");
+        store.finish_project("success", None, None, None, id);
+
+        let events = store.list_audit_events(None, None, Some("scan.completed"), None, None, None, None, 10);
+        assert_eq!(events.len(), 1);
+        let metadata: serde_json::Value = serde_json::from_str(events[0].metadata_json.as_deref().unwrap()).unwrap();
+        assert_eq!(metadata["hasLogArchive"], true);
+
+        let gzip_bytes = store.get_audit_event_log(events[0].id).expect("archive must exist after finish_project");
+        let mut decoder = flate2::read::GzDecoder::new(&gzip_bytes[..]);
+        let mut decompressed = String::new();
+        std::io::Read::read_to_string(&mut decoder, &mut decompressed).unwrap();
+        assert!(decompressed.contains("line one\nline two"));
+        assert!(decompressed.contains("extracted 12 files"));
+        assert!(decompressed.contains("Phase 1: Input & Metadata Configuration"));
     }
 
     #[test]

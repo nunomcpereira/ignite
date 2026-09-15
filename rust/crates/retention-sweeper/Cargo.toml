@@ -1,0 +1,18 @@
+[package]
+name = "ignite-retention-sweeper"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "retention-sweeper"
+path = "src/main.rs"
+
+[dependencies]
+ignite-db-store = { path = "../db-store" }
+ignite-run-lifecycle = { path = "../run-lifecycle" }
+ignite-fs-utils = { path = "../fs-utils" }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

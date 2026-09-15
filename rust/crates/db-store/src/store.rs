@@ -64,3 +64,53 @@ fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: `BACKFILL_REPOSITORY_MODEL_SQL` used to
+    /// `SELECT DISTINCT p.org, p.repo, p.created_at` — deduping on all
+    /// three columns instead of just `(org, repo)`, so a repository
+    /// scanned more than once (any real rescan — the common case, not an
+    /// edge case) produced one "distinct" row per differing
+    /// `created_at`, and the second `INSERT` into `repositories`
+    /// violated its `UNIQUE(org, repo)` index. `DbStore::open` propagated
+    /// that as an unhandled `rusqlite::Error`, which panicked at
+    /// `main.rs`'s `.expect("failed to open db")` on server startup —
+    /// this reproduces it directly against `open()` without needing a
+    /// real server process.
+    #[test]
+    fn opening_a_db_with_multiple_projects_for_the_same_repo_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            // Raw inserts (not `create_project`, which already live-mirrors
+            // into `repositories`/`scan_runs` on every call — that path
+            // never had this bug) simulate a real pre-US-01 database:
+            // `projects` rows exist with no corresponding `repositories`/
+            // `scan_runs` rows yet, and — the part that actually triggers
+            // the bug — two rows for the *same* `(org, repo)` with
+            // different `created_at` timestamps, exactly what a repo
+            // scanned more than once produces.
+            let db = DbStore::open(&db_path).unwrap();
+            let conn = db.conn.lock();
+            conn.execute("INSERT INTO projects (job_id, org, repo, created_at) VALUES ('job-1', 'acme', 'widgets', '2026-01-01 00:00:00')", []).unwrap();
+            conn.execute("INSERT INTO projects (job_id, org, repo, created_at) VALUES ('job-2', 'acme', 'widgets', '2026-01-02 00:00:00')", []).unwrap();
+            conn.execute("DELETE FROM repositories", []).unwrap();
+            conn.execute("DELETE FROM scan_runs", []).unwrap();
+            conn.execute("DELETE FROM source_snapshots", []).unwrap();
+        }
+
+        // Re-opening re-runs `BACKFILL_REPOSITORY_MODEL_SQL` against the
+        // now-populated (and repositories-table-emptied) `projects` table
+        // — this must not panic, and must produce exactly one repository
+        // shared by both scan runs, not one repository row per distinct
+        // `created_at`.
+        let db = DbStore::open(&db_path).unwrap();
+        let repo = db.get_repository_by_org_repo("acme", "widgets").unwrap();
+        let runs = db.list_scan_runs_for_repository(repo.id);
+        assert_eq!(runs.len(), 2, "both projects must resolve to the same repository, as two separate scan runs");
+    }
+}

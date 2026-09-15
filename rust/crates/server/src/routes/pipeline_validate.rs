@@ -576,6 +576,50 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         logger.log(6, "Shipping phase skipped in validate-all mode.");
         logger.status(6, "skipped", None);
 
+        // US-05: the versioned evidence manifest — computed once the
+        // source is fully staged and Phase 4 has finished (so
+        // `phase4_coverage` reflects what actually ran this scan), while
+        // the staging directory this run scanned still exists on disk
+        // (cleanup, below, removes it once this closure returns).
+        // `finalize_scan_run_snapshot` re-points this run's
+        // `source_snapshots` row at the *real* content-addressed digest,
+        // replacing the synthetic `unknown:project:<id>` placeholder
+        // `create_project` had to use at Phase 1 (nothing was staged yet)
+        // — two scans of byte-and-mode-identical source now share one
+        // snapshot row, same as US-01 always intended.
+        if let Some(rid) = run_id {
+            match ignite_provenance::digest_project_tree(&root) {
+                Ok(tree) => {
+                    let repository_id = state.db.resolve_repository(&org, &repo, None);
+                    let commit_sha = state
+                        .runner
+                        .run_tool("git", &["rev-parse".to_string(), "HEAD".to_string()], &root.to_string_lossy(), ignite_tool_runner::RunToolOptions::default())
+                        .await
+                        .ok()
+                        .map(|o| o.stdout.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    let source_digest = format!("sha256:{}", tree.sha256);
+                    state.db.finalize_scan_run_snapshot(rid, repository_id, &source_digest, commit_sha.as_deref());
+
+                    let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
+                    let manifest = ignite_evidence::build_evidence_manifest(
+                        source_digest,
+                        tree.file_count,
+                        commit_sha,
+                        policy_version.id.clone(),
+                        ignite_evidence::config_digest(&state.config),
+                        phase4_coverage.clone(),
+                        vec![],
+                        ignite_evidence::now_iso8601(),
+                    );
+                    if let Ok(manifest_json) = serde_json::to_string(&manifest) {
+                        state.db.save_evidence_manifest(rid, &manifest_json);
+                    }
+                }
+                Err(e) => tracing::warn!("evidence: failed to compute snapshot digest for run {rid}: {e}"),
+            }
+        }
+
         // Set *before* `finish_project` — its own internal lifecycle sync
         // is a naive `"success" -> "published"` fallback that doesn't
         // know validate-all never publishes anything; a precise state set

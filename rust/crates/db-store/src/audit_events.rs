@@ -112,6 +112,26 @@ impl DbStore {
         }
         Ok(())
     }
+
+    /// Attaches a gzip-compressed log archive to an already-recorded
+    /// audit event (`event_id` from [`Self::record_audit_event`]'s return
+    /// value) — never part of the hashed/chained event row itself, so
+    /// attaching one after the fact doesn't retroactively change the
+    /// event's own hash.
+    pub fn save_audit_event_log(&self, event_id: i64, gzip_bytes: &[u8]) {
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute(
+            "INSERT INTO audit_event_logs (event_id, gzip_blob) VALUES (?, ?) ON CONFLICT(event_id) DO UPDATE SET gzip_blob = excluded.gzip_blob, created_at = datetime('now')",
+            params![event_id, gzip_bytes],
+        ) {
+            tracing::error!("save_audit_event_log({event_id}) failed: {e}");
+        }
+    }
+
+    pub fn get_audit_event_log(&self, event_id: i64) -> Option<Vec<u8>> {
+        let conn = self.conn.lock();
+        conn.query_row("SELECT gzip_blob FROM audit_event_logs WHERE event_id = ?", params![event_id], |row| row.get(0)).optional().unwrap_or(None)
+    }
 }
 
 fn row_to_audit_event(row: &rusqlite::Row) -> rusqlite::Result<AuditEventRow> {
@@ -173,6 +193,21 @@ mod tests {
             conn.execute("UPDATE audit_events SET summary = 'tampered' WHERE summary = 'first'", []).unwrap();
         }
         assert!(db.verify_audit_chain().is_err());
+    }
+
+    #[test]
+    fn audit_event_log_round_trips_and_is_absent_by_default() {
+        let db = test_db();
+        let event_id = db.record_audit_event("scan.completed", "info", "clean", None, None, None, None).unwrap();
+        assert!(db.get_audit_event_log(event_id).is_none());
+
+        db.save_audit_event_log(event_id, b"fake gzip bytes");
+        assert_eq!(db.get_audit_event_log(event_id).as_deref(), Some(&b"fake gzip bytes"[..]));
+
+        // Replacing an existing archive (e.g. a re-archive) overwrites
+        // rather than erroring on the PRIMARY KEY.
+        db.save_audit_event_log(event_id, b"updated bytes");
+        assert_eq!(db.get_audit_event_log(event_id).as_deref(), Some(&b"updated bytes"[..]));
     }
 
     #[test]

@@ -18,25 +18,50 @@ pub struct TreeDigest {
 }
 
 /// Content-addressed identity of exactly what was staged/scanned: a sha256
-/// over every non-.git file's own sha256, sorted by relative path so the
-/// digest is deterministic regardless of directory-walk order.
+/// over every file's own sha256 plus its executable bit, sorted by
+/// relative path so the digest is deterministic regardless of directory-
+/// walk order. `walk_files`'s own documented `SKIP_DIRS` (`.git`,
+/// `node_modules`, `dist`, `build`, ...) is this crate's "exclude
+/// tool-generated artifacts and VCS administrative data from source
+/// identity" rule — one shared exclusion list every check that walks a
+/// project already uses, not a second one invented here.
+///
+/// US-05: the executable bit is folded in (`x`/`-` marker per entry) so a
+/// `chmod +x` with byte-identical content changes the digest — file
+/// *mode*, not just file *bytes*, is part of source identity. Unix-only
+/// (`std::os::unix::fs::PermissionsExt`); every file is treated as
+/// non-executable on a platform without POSIX permission bits, which
+/// only ever makes the digest coarser there, never wrong on the platform
+/// that actually has the concept.
 pub fn digest_project_tree(root: &Path) -> std::io::Result<TreeDigest> {
-    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut entries: Vec<(String, bool, String)> = Vec::new();
     for file in walk_files(root)? {
         let rel = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
         let Ok(buffer) = std::fs::read(&file) else { continue };
+        let executable = is_executable(&file);
         let mut hasher = Sha256::new();
         hasher.update(&buffer);
         let hash = hex_encode(&hasher.finalize());
-        entries.push((rel, hash));
+        entries.push((rel, executable, hash));
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut combined = Sha256::new();
-    for (rel, hash) in &entries {
-        combined.update(format!("{}:{}\n", rel, hash).as_bytes());
+    for (rel, executable, hash) in &entries {
+        combined.update(format!("{}:{}:{}\n", rel, if *executable { "x" } else { "-" }, hash).as_bytes());
     }
     Ok(TreeDigest { sha256: hex_encode(&combined.finalize()), file_count: entries.len() })
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    false
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -232,6 +257,44 @@ mod tests {
         ignite_fs_utils::invalidate_walk_cache(root);
         let d2 = digest_project_tree(root).unwrap();
         assert_ne!(d1.sha256, d2.sha256);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn digest_changes_when_only_the_executable_bit_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let file = root.join("script.sh");
+        fs::write(&file, b"#!/bin/sh\necho hi\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        let d1 = digest_project_tree(root).unwrap();
+
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        ignite_fs_utils::invalidate_walk_cache(root);
+        let d2 = digest_project_tree(root).unwrap();
+        assert_ne!(d1.sha256, d2.sha256, "making a byte-identical file executable must change the digest");
+        assert_eq!(d1.file_count, d2.file_count);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[test]
+    fn digest_ignores_vcs_and_tool_generated_directories() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("app.js"), b"real source").unwrap();
+        let d1 = digest_project_tree(root).unwrap();
+
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::write(root.join(".git/objects/whatever"), b"vcs administrative data").unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join("node_modules/pkg/index.js"), b"tool-generated/vendored").unwrap();
+        ignite_fs_utils::invalidate_walk_cache(root);
+        let d2 = digest_project_tree(root).unwrap();
+
+        assert_eq!(d1.sha256, d2.sha256, "VCS/tool-generated directories must not affect source identity");
+        assert_eq!(d1.file_count, d2.file_count);
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 

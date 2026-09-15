@@ -486,6 +486,18 @@ pub struct PendingReviewRow {
     pub decision_json: Option<String>,
 }
 
+/// US-05: a bounded lease protecting a project's retained source
+/// directory from the retention sweeper while it's under active
+/// review/pending publication.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotLeaseRow {
+    pub project_id: i64,
+    pub reason: String,
+    pub expires_at: String,
+    pub created_at: String,
+}
+
 /// US-04: idempotency-key lookup result — the existing run a duplicate
 /// request with a matching key+payload should be pointed back at, instead
 /// of starting a second one.

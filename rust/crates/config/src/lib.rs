@@ -878,6 +878,23 @@ pub struct SecurityConfig {
     /// to is unaffected; this flag is scoped to this one endpoint only.
     #[serde(default)]
     pub allow_unauthenticated_validate_all: bool,
+
+    /// Same bypass as `allow_unauthenticated_validate_all`, extended to
+    /// the interactive browser upload endpoint (`POST /api/pipeline`) —
+    /// but scoped to `dryRun: true` requests only, never a real
+    /// provisioning+push. A simulation run has no GitHub side effects to
+    /// protect regardless of who's calling; a real push still requires an
+    /// actual session (`run_interactive_pipeline`'s own Phase 1 check
+    /// enforces this independently: `dryRun: false` with no session-backed
+    /// GitHub token fails with "connect GitHub" before Phase 1 completes,
+    /// this flag notwithstanding). Default `false` — an existing
+    /// deployment's behavior never changes silently. When enabled and no
+    /// session is present, the run is attributed to a clearly-labeled
+    /// synthetic actor (`unauthenticated-simulation@ignite.internal`),
+    /// never a client-supplied identity, so this can't be used to spoof
+    /// the audit trail the way trusting a request body would.
+    #[serde(default)]
+    pub allow_unauthenticated_interactive_dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1260,6 +1277,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN") { merged.security.repository_events.trigger_baseline_scan = v; }
     if let Some(v) = env_bool("OVERRIDE_APPROVAL_ENABLED") { merged.security.override_approval.enabled = v; }
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_VALIDATE_ALL") { merged.security.allow_unauthenticated_validate_all = v; }
+    if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN") { merged.security.allow_unauthenticated_interactive_dry_run = v; }
     if let Some(v) = env_csv("OVERRIDE_APPROVAL_APPROVER_EMAILS") { merged.security.override_approval.approver_emails = v; }
     if let Some(v) = env_bool("POLICY_STRICT") { merged.policy.strict = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }

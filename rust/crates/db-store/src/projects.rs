@@ -6,6 +6,7 @@
 use crate::store::DbStore;
 use crate::types::*;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::json;
 
 impl DbStore {
     // ---------------- projects / steps / documents ----------------
@@ -108,9 +109,51 @@ impl DbStore {
 
         let severity = if status == "failed" { "warning" } else { "info" };
         let summary = format!("scan {status} for {org}/{repo} (job {job_id})");
-        let metadata = error.map(|e| serde_json::json!({ "error": e }).to_string());
-        if let Err(e) = self.record_audit_event("scan.completed", severity, &summary, None, Some(&org), Some(&repo), metadata.as_deref()) {
-            tracing::error!("record_audit_event failed for {org}/{repo}: {e}");
+        // `hasLogArchive` is set unconditionally (not after checking
+        // whether the gzip below actually produced anything) — a project
+        // row only ever reaches `finish_project` after Phase 1 already
+        // wrote at least one `steps` row, so there's always something to
+        // archive; the download endpoint 404s gracefully in the
+        // pathological case where it somehow isn't, rather than this
+        // metadata field lying about it either way.
+        let metadata = json!({ "error": error, "hasLogArchive": true }).to_string();
+        match self.record_audit_event("scan.completed", severity, &summary, None, Some(&org), Some(&repo), Some(&metadata)) {
+            Ok(event_id) => self.archive_project_logs(event_id, project_id),
+            Err(e) => tracing::error!("record_audit_event failed for {org}/{repo}: {e}"),
+        }
+    }
+
+    /// Gzips every phase's collected log text for `project_id` into one
+    /// archive attached to `event_id` (the just-recorded `scan.completed`
+    /// audit event) — see [`Self::save_audit_event_log`]. Best-effort:
+    /// a compression/write failure is logged, never propagated, since the
+    /// scan itself already completed successfully by the time this runs.
+    fn archive_project_logs(&self, event_id: i64, project_id: i64) {
+        use std::io::Write;
+        let steps = {
+            let conn = self.conn.lock();
+            let Ok(mut stmt) = conn.prepare_cached("SELECT phase, title, logs FROM steps WHERE project_id = ? ORDER BY phase") else { return };
+            let rows: Vec<(i64, String, String)> = match stmt.query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))) {
+                Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+                Err(_) => return,
+            };
+            rows
+        };
+        if steps.is_empty() {
+            return;
+        }
+        let mut combined = String::new();
+        for (phase, title, logs) in &steps {
+            combined.push_str(&format!("=== Phase {phase}: {title} ===\n{logs}\n\n"));
+        }
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        if let Err(e) = encoder.write_all(combined.as_bytes()) {
+            tracing::warn!("archive_project_logs({project_id}): gzip write failed: {e}");
+            return;
+        }
+        match encoder.finish() {
+            Ok(gzip_bytes) => self.save_audit_event_log(event_id, &gzip_bytes),
+            Err(e) => tracing::warn!("archive_project_logs({project_id}): gzip finish failed: {e}"),
         }
     }
 

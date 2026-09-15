@@ -12,6 +12,7 @@ serde_json = "1"
 tracing = "0.1"
 sha2 = "0.10"
 thiserror = "2"
+flate2 = "1"
 ignite-override-engine = { path = "../override-engine" }
 ignite-run-lifecycle = { path = "../run-lifecycle" }
 

@@ -232,7 +232,35 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/repositories/:org/:repo", get(repository_history))
         .route("/api/pipeline/:job_id/issues", get(job_issues_handler))
         .route("/api/pipeline/:job_id/status", get(job_status))
+        .route("/api/pipeline/:job_id/evidence", get(job_evidence))
         .route("/api/documents/:id", get(get_document))
+}
+
+/// GET /api/pipeline/:jobId/evidence — US-05's versioned evidence
+/// manifest for one scan run. The stored JSON (`ignite_evidence::EvidenceManifest`,
+/// built in `pipeline_validate.rs` right after Phase 4 completes) is
+/// already redacted by construction — digests, counts, timestamps, and
+/// `ignite_policy::CheckCoverage` entries only, never a raw file path or a
+/// config secret — so this handler returns it as-is rather than filtering
+/// it a second time.
+async fn job_evidence(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>) -> Response {
+    let Some(project_id) = state.db.get_project_id_by_job_id(job_id.trim()) else {
+        return err(StatusCode::NOT_FOUND, "Unknown job id.");
+    };
+    let Some(run) = state.db.get_scan_run_for_legacy_project(project_id) else {
+        return err(StatusCode::NOT_FOUND, "No scan run recorded for this job id.");
+    };
+    match state.db.get_evidence_manifest(run.id) {
+        Some(manifest_json) => match serde_json::from_str::<Value>(&manifest_json) {
+            Ok(manifest) => Json(json!({ "ok": true, "runId": run.id, "manifest": manifest })).into_response(),
+            Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Stored evidence manifest is corrupt."),
+        },
+        // Not every entry point builds a manifest yet (see CLAUDE.md's
+        // US-05 note: only validate-all does, so far), and a run that
+        // failed before reaching it never gets one either — both are a
+        // clear, honest 404, not a fabricated empty manifest.
+        None => err(StatusCode::NOT_FOUND, "No evidence manifest recorded for this run."),
+    }
 }
 
 #[cfg(test)]
