@@ -440,20 +440,20 @@
         <h2 class="text-lg font-bold text-slate-900" data-i18n="pipeline.status">Pipeline Status</h2>
         <span id="pipelineStatusBadge" class="hidden text-[11px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-md border items-center gap-1.5"></span>
       </div>
-      <div class="flex items-center gap-2">
-      <button id="viewChecksReportBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.checksReportTitle">
+      <div class="flex items-center flex-wrap gap-2">
+      <button id="viewChecksReportBtn" type="button" class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.checksReportTitle">
         <span data-i18n="pipeline.checksReport">📋 Checks report</span>
       </button>
-      <button id="viewPerformanceBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.performanceTitle">
+      <button id="viewPerformanceBtn" type="button" class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.performanceTitle">
         <span data-i18n="pipeline.performance">⏱ Performance</span>
       </button>
-      <button id="viewIssuesBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.viewIssuesTitle" data-hint="hint.action.viewIssues">
+      <button id="viewIssuesBtn" type="button" class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="pipeline.viewIssuesTitle" data-hint="hint.action.viewIssues">
         <span data-i18n="pipeline.viewIssues">View flagged issues</span>
       </button>
-      <button id="fixPrBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" data-i18n-title="pipeline.generateFixPrTitle" data-hint="hint.action.fixPr">
+      <button id="fixPrBtn" type="button" class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" data-i18n-title="pipeline.generateFixPrTitle" data-hint="hint.action.fixPr">
         <span data-i18n="pipeline.generateFixPr">✨ Generate fix PR</span>
       </button>
-      <button id="openStudioBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50" data-i18n-title="pipeline.openStudioTitle">
+      <button id="openStudioBtn" type="button" class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50" data-i18n-title="pipeline.openStudioTitle">
         <span data-i18n="pipeline.openStudio">⧉ Open in Studio</span>
       </button>
       </div>
@@ -2732,6 +2732,26 @@
     };
     const CHECK_AREA_ORDER = ['Security', 'Quality', 'Dependencies', 'API & Schema', 'Process & Governance', 'Other'];
 
+    // phase4-orchestrator's own task_timings names (rust/crates/phase4-orchestrator/src/lib.rs) —
+    // the tool each one actually shells out to (or "built-in" when there's
+    // none), so the Performance modal reads "alias (tool)" the same way
+    // the checks report already labels a check by both its id and the
+    // underlying tool. Falls back to the bare name for anything not
+    // listed here (a future check added there before this map is updated).
+    const TASK_TIMING_TOOLS = {
+      secrets: 'gitleaks', governance: 'built-in', semanticSast: 'Semgrep', pii: 'Bearer',
+      duplication: 'jscpd', locMetrics: 'gocloc', igniteIgnore: 'built-in', llm: 'LLM deep-scan',
+      iac: 'Trivy/Checkov/hadolint', ghaSecurity: 'zizmor', sbom: 'Syft', provenance: 'built-in',
+      imageProvenance: 'Cosign', apiSchema: 'Spectral', apiSchemaDrift: 'oasdiff',
+      maliciousDependencies: 'GuardDog', modelArtifactSecurity: 'picklescan',
+      packageHallucination: 'deps.dev', posture: 'Semgrep/built-in', codeql: 'CodeQL',
+      euAiActDocuments: 'built-in', health: 'built-in',
+    };
+    function taskTimingLabel(name) {
+      const tool = TASK_TIMING_TOOLS[name];
+      return tool ? `${name} (${tool})` : name;
+    }
+
     function buildChecksReportByArea(issues) {
       const byCategory = new Map();
       issues.forEach((i) => {
@@ -2865,8 +2885,9 @@
         : rows.map(({ name, ms }) => {
             const pct = Math.round((ms / maxMs) * 100);
             const isBottleneck = ms === maxMs && rows.length > 1;
+            const label = taskTimingLabel(name);
             return `<div class="flex items-center gap-3 text-xs py-1.5">
-              <span class="w-40 shrink-0 truncate text-slate-700" title="${escapeHtml(name)}">${escapeHtml(name)}${isBottleneck ? ' <span class="text-rose-500" title="Bottleneck — slowest check this run">⬤</span>' : ''}</span>
+              <span class="w-56 shrink-0 truncate text-slate-700" title="${escapeHtml(label)}">${escapeHtml(label)}${isBottleneck ? ' <span class="text-rose-500" title="Bottleneck — slowest check this run">⬤</span>' : ''}</span>
               <div class="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
                 <div class="h-full rounded-full ${isBottleneck ? 'bg-rose-400' : 'bg-brand-400'}" style="width:${pct}%"></div>
               </div>
