@@ -215,36 +215,15 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             let client = ignite_deps_dev_client::DepsDevClient::new();
             let npm_http = reqwest::Client::new();
             let log_a = log.clone();
-            let log_b = log.clone();
-            let (mut license_issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root, &state.runner, &client, &npm_http, move |m| log_a.log(3, m)).await;
-            if let (Some(pid), Some(scan_json)) = (project_id, &dep_scan_json) {
-                state.db.save_dependency_scan_cache(pid, scan_json);
-            }
-            license_issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root, &client, move |m| log_b.log(3, m)).await);
+            let license_issues = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, project_id, move |m| log_a.log(3, m)).await;
             if !license_issues.is_empty() {
                 all_issues.extend(license_issues);
                 persist!();
             }
 
-            log.log(3, "Check 1 — scanning for raw environment files (.env*)...");
-            let env_check = ignite_staging::check_env_files(&root).map_err(|e| e.to_string())?;
-            if !env_check.ignored.is_empty() {
-                log.log(3, &format!("ℹ {} .env file(s) found but already excluded by this project's .gitignore — not blocking: {}", env_check.ignored.len(), env_check.ignored.join(", ")));
-            }
-            if !env_check.blocking.is_empty() {
-                log.log(3, &format!("✗ {} forbidden environment file(s) found:", env_check.blocking.len()));
-                for f in &env_check.blocking {
-                    log.log(3, &format!("    ✗ {f}"));
-                }
-                return Err(format!("Raw environment files detected ({}). Remove them and re-upload.", env_check.blocking.len()));
-            }
-            log.log(3, "✓ Check 1 passed — no raw environment files present.");
-            log.log(3, "Check 2 — checking for a CODEOWNERS file...");
-            let codeowners = ignite_staging::check_codeowners(&root);
-            if codeowners.found {
-                log.log(3, &format!("✓ CODEOWNERS found at {} ({} contact email(s)).", codeowners.path.as_deref().unwrap_or(""), codeowners.emails.len()));
-            } else {
-                log.log(3, "ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).");
+            {
+                let log_b = log.clone();
+                ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them and re-upload.", move |m| log_b.log(3, m)).map_err(|e| e.to_string())?;
             }
             let log_c = log.clone();
             ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| log_c.log(3, m)).await.map_err(|e| e.to_string())?;
@@ -320,47 +299,23 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
         } else {
             log.status(5, "running", None);
             let root = project_root.clone().unwrap();
-            let tooling = ignite_governance_ci::act_tooling(&state.runner).await;
-            if !tooling.ok {
-                log.log(5, &format!("⚠ Local CI skipped: {}", tooling.reason.unwrap_or_default()));
-                log.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
-                log.status(5, "success", None);
-            } else {
-                let gh_api = ignite_github_api::GithubApi::new(&state.runner);
-                // Named `resolved`, not `server_token` — see the
-                // governance-ci crate's own note on why (Phase 5's
-                // non-overridable "Plaintext Tokens" scan flags any
-                // `*token* = ...` line).
-                let resolved = ignite_github_api::resolve_server_github_token();
-                let log_5 = log.clone();
-                let result: Result<(), String> = async {
-                    let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &resolved, {
-                        let l = log_5.clone();
-                        move |m| l.log(5, m)
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-                    log_5.log(5, &format!("Executing org governance workflows locally with act (event: {}).", state.config.governance.event));
-                    ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: state.config.governance.event.clone(), act_timeout_min: state.config.governance.timeout_minutes as u64 }, {
-                        let l = log_5.clone();
-                        move |m| l.log(5, m)
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-                    Ok(())
+            let log_5 = log.clone();
+            let gov = &state.config.governance;
+            match ignite_pipeline_core::run_governance_ci_phase(&root, &workflow_dir, &state.runner, &state.db, &gov.repo, &gov.workflow, &gov.event, gov.timeout_minutes, move |m| log_5.log(5, m)).await {
+                Ok(ignite_pipeline_core::GovernanceCiOutcome::Skipped(reason)) => {
+                    log.log(5, &format!("⚠ Local CI skipped: {reason}"));
+                    log.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
+                    log.status(5, "success", None);
                 }
-                .await;
-                match result {
-                    Ok(()) => {
-                        log.log(5, "✓ All org governance jobs passed locally.");
-                        log.status(5, "success", None);
-                    }
-                    Err(msg) => {
-                        log.log(5, &format!("✗ {msg}"));
-                        log.status(5, "failed", Some(json!({ "error": msg })));
-                        all_issues.push(new_issue("phase5::governance-ci".to_string(), 5, "governance-ci", Severity::Error, msg, None, None));
-                        persist!();
-                    }
+                Ok(ignite_pipeline_core::GovernanceCiOutcome::Passed) => {
+                    log.log(5, "✓ All org governance jobs passed locally.");
+                    log.status(5, "success", None);
+                }
+                Err(msg) => {
+                    log.log(5, &format!("✗ {msg}"));
+                    log.status(5, "failed", Some(json!({ "error": msg })));
+                    all_issues.push(new_issue("phase5::governance-ci".to_string(), 5, "governance-ci", Severity::Error, msg, None, None));
+                    persist!();
                 }
             }
         }

@@ -111,8 +111,13 @@ impl Logger {
 /// arbitrary email (including bypassing dual-custody's
 /// self-approval check, which compares against `actor_email`). Submitting
 /// an override always requires a real authenticated caller now.
-fn resolve_actor(headers: &axum::http::HeaderMap, db: &ignite_db_store::DbStore) -> Option<String> {
-    crate::auth::resolve_user(headers, db).map(|user| user.email)
+fn resolve_actor(headers: &axum::http::HeaderMap, db: &ignite_db_store::DbStore) -> Option<ignite_pipeline_core::Actor> {
+    let user = crate::auth::resolve_user(headers, db);
+    // `allow_unauth_body_actor: false` — onboarding always allows a real
+    // provisioning + push to follow, so attribution must come from a
+    // verified session; there is no body to consult anyway. See
+    // `ignite_pipeline_core::resolve_actor`'s own doc comment.
+    ignite_pipeline_core::resolve_actor(user.as_ref().map(|u| u.email.as_str()), user.as_ref().and_then(|u| u.name.as_deref()), None, None, false)
 }
 
 struct PipelineError {
@@ -260,32 +265,11 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         let client = ignite_deps_dev_client::DepsDevClient::new();
         let npm_http = reqwest::Client::new();
         let l3a = logger.clone();
-        let l3b = logger.clone();
-        let (mut license_issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root, &state.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
-        if let Some(scan_json) = &dep_scan_json {
-            state.db.save_dependency_scan_cache(project_id, scan_json);
-        }
-        license_issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root, &client, move |m| l3b.log(3, m)).await);
+        let license_issues = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await;
 
-        logger.log(3, "Check 1 — scanning for raw environment files (.env*)...");
-        let env_check = ignite_staging::check_env_files(&root).map_err(|e| PipelineError::new(3, e.to_string()))?;
-        if !env_check.ignored.is_empty() {
-            logger.log(3, &format!("ℹ {} .env file(s) found but already excluded by this project's .gitignore — not blocking: {}", env_check.ignored.len(), env_check.ignored.join(", ")));
-        }
-        if !env_check.blocking.is_empty() {
-            logger.log(3, &format!("✗ {} forbidden environment file(s) found:", env_check.blocking.len()));
-            for f in &env_check.blocking {
-                logger.log(3, &format!("    ✗ {f}"));
-            }
-            return Err(PipelineError::new(3, format!("Raw environment files detected ({}). Remove them before onboarding.", env_check.blocking.len())));
-        }
-        logger.log(3, "✓ Check 1 passed — no raw environment files present.");
-        logger.log(3, "Check 2 — checking for a CODEOWNERS file...");
-        let codeowners = ignite_staging::check_codeowners(&root);
-        if codeowners.found {
-            logger.log(3, &format!("✓ CODEOWNERS found at {} ({} contact email(s)).", codeowners.path.as_deref().unwrap_or(""), codeowners.emails.len()));
-        } else {
-            logger.log(3, "ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).");
+        {
+            let l3b = logger.clone();
+            ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them before onboarding.", move |m| l3b.log(3, m)).map_err(|e| PipelineError::new(3, e.to_string()))?;
         }
         {
             let l3c = logger.clone();
@@ -316,7 +300,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             let owned: Vec<Issue> = issues_requiring_override.iter().map(|i| (*i).clone()).collect();
             let result = validate_overrides(&owned, &requested_overrides);
             if !result.applied.is_empty() {
-                let Some(email) = resolve_actor(&headers, &state.db) else {
+                let Some(actor) = resolve_actor(&headers, &state.db) else {
                     return Err(PipelineError::new(4, "Overrides were submitted but no authenticated user or actor {email,name} was provided — cannot attribute the audit record."));
                 };
 
@@ -332,7 +316,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                     (result.applied.clone(), Vec::new())
                 };
 
-                logger.log(4, &format!("⚠ {} flagged issue(s) overridden by {email}:", auto_applied.len()));
+                logger.log(4, &format!("⚠ {} flagged issue(s) overridden by {}:", auto_applied.len(), actor.email));
                 for (issue, justification) in &auto_applied {
                     logger.log(4, &format!("    ⚠ [override] [{:?}] {}:{} — {} — \"{justification}\"", issue.severity, issue.file.as_deref().unwrap_or(""), issue.line.unwrap_or(0), issue.summary));
                     applied_override_ids.insert(issue.id.clone());
@@ -350,13 +334,13 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                         file: issue.file.as_deref(),
                         line: issue.line,
                         justification,
-                        actor_email: &email,
-                        actor_name: None,
+                        actor_email: &actor.email,
+                        actor_name: Some(&actor.name),
                         email_sent: false,
                     });
                     state.emit_audit_event(
                         ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
-                            .actor(email.clone())
+                            .actor(actor.email.clone())
                             .repo(&org, &repo)
                             .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
                     );
@@ -380,13 +364,13 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                                 file: issue.file.as_deref(),
                                 line: issue.line,
                                 justification,
-                                actor_email: &email,
-                                actor_name: None,
+                                actor_email: &actor.email,
+                                actor_name: Some(&actor.name),
                                 email_sent: false,
                             });
                             state.emit_audit_event(
                                 ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
-                                    .actor(email.clone())
+                                    .actor(actor.email.clone())
                                     .repo(&org, &repo)
                                     .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
                             );
@@ -422,24 +406,19 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             logger.log(5, "Local CI execution disabled by request (runLocalCi=false).");
             logger.status(5, "skipped", None);
         } else {
-            let tooling = ignite_governance_ci::act_tooling(&state.runner).await;
-            if !tooling.ok {
-                logger.log(5, &format!("⚠ Local CI skipped: {}", tooling.reason.unwrap_or_default()));
-                logger.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
-                logger.status(5, "success", None);
-            } else {
-                let gh_api = ignite_github_api::GithubApi::new(&state.runner);
-                // Named `resolved`, not `server_token` — see the governance-ci
-                // crate's own note on why (Phase 5's non-overridable
-                // "Plaintext Tokens" scan flags any `*token* = ...` line).
-                let resolved = ignite_github_api::resolve_server_github_token();
-                let l5 = logger.clone();
-                let wf_file = ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &resolved, move |m| l5.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
-                logger.log(5, &format!("Executing org governance workflows locally with act (event: {}).", state.config.governance.event));
-                let l5b = logger.clone();
-                ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: state.config.governance.event.clone(), act_timeout_min: state.config.governance.timeout_minutes as u64 }, move |m| l5b.log(5, m)).await.map_err(|e| PipelineError::new(5, e.to_string()))?;
-                logger.log(5, "✓ All org governance jobs passed locally.");
-                logger.status(5, "success", None);
+            let l5 = logger.clone();
+            let gov = &state.config.governance;
+            match ignite_pipeline_core::run_governance_ci_phase(&root, &workflow_dir, &state.runner, &state.db, &gov.repo, &gov.workflow, &gov.event, gov.timeout_minutes, move |m| l5.log(5, m)).await {
+                Ok(ignite_pipeline_core::GovernanceCiOutcome::Skipped(reason)) => {
+                    logger.log(5, &format!("⚠ Local CI skipped: {reason}"));
+                    logger.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
+                    logger.status(5, "success", None);
+                }
+                Ok(ignite_pipeline_core::GovernanceCiOutcome::Passed) => {
+                    logger.log(5, "✓ All org governance jobs passed locally.");
+                    logger.status(5, "success", None);
+                }
+                Err(e) => return Err(PipelineError::new(5, e)),
             }
         }
 

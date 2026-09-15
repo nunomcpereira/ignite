@@ -116,17 +116,15 @@ impl Logger {
 /// no API key configured), matching this endpoint's documented "agent/CI
 /// callers" use case.
 fn resolve_actor(headers: &axum::http::HeaderMap, db: &ignite_db_store::DbStore, body: &Value) -> Option<(String, String)> {
-    if let Some(user) = crate::auth::resolve_user(headers, db) {
-        let name = user.name.clone().unwrap_or_else(|| user.email.clone());
-        return Some((user.email, name));
-    }
-    let email = body.get("actor").and_then(|a| a.get("email")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
-    let name = body.get("actor").and_then(|a| a.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-    if !ignite_auth::is_valid_email(&email) {
-        return None;
-    }
-    let name = if name.is_empty() { email.clone() } else { name };
-    Some((email, name))
+    let session_user = crate::auth::resolve_user(headers, db);
+    let body_email = body.get("actor").and_then(|a| a.get("email")).and_then(|v| v.as_str());
+    let body_name = body.get("actor").and_then(|a| a.get("name")).and_then(|v| v.as_str());
+    // `allow_unauth_body_actor: true` — this endpoint's documented
+    // agent/CI use case: a genuinely unauthenticated deployment with no
+    // session may still self-declare an actor. See
+    // `ignite_pipeline_core::resolve_actor`'s own doc comment for why
+    // `pipeline_onboard.rs` deliberately passes `false` here instead.
+    ignite_pipeline_core::resolve_actor(session_user.as_ref().map(|u| u.email.as_str()), session_user.as_ref().and_then(|u| u.name.as_deref()), body_email, body_name, true).map(|a| (a.email, a.name))
 }
 
 struct StageTiming {
@@ -334,25 +332,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         let root = ignite_staging::resolve_project_root(&staging_dir).map_err(|e| PipelineError::new(3, e.to_string()))?;
         project_root = Some(root.clone());
 
-        logger.log(3, "Check 1 — scanning for raw environment files (.env*)...");
-        let env_check = time_stage(&timings, "checkEnvFiles", async { ignite_staging::check_env_files(&root) }).await.map_err(|e| PipelineError::new(3, e.to_string()))?;
-        if !env_check.ignored.is_empty() {
-            logger.log(3, &format!("ℹ {} .env file(s) found but already excluded by this project's .gitignore — not blocking: {}", env_check.ignored.len(), env_check.ignored.join(", ")));
-        }
-        if !env_check.blocking.is_empty() {
-            logger.log(3, &format!("✗ {} forbidden environment file(s) found:", env_check.blocking.len()));
-            for f in &env_check.blocking {
-                logger.log(3, &format!("    ✗ {f}"));
-            }
-            return Err(PipelineError::new(3, format!("Raw environment files detected ({}). Remove them before validation.", env_check.blocking.len())));
-        }
-        logger.log(3, "✓ Check 1 passed — no raw environment files present.");
-        logger.log(3, "Check 2 — checking for a CODEOWNERS file...");
-        let codeowners = time_stage(&timings, "checkCodeowners", async { ignite_staging::check_codeowners(&root) }).await;
-        if codeowners.found {
-            logger.log(3, &format!("✓ CODEOWNERS found at {} ({} contact email(s)).", codeowners.path.as_deref().unwrap_or(""), codeowners.emails.len()));
-        } else {
-            logger.log(3, "ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).");
+        {
+            let l3 = logger.clone();
+            time_stage(&timings, "envAndCodeownersChecks", async { ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them before validation.", move |m| l3.log(3, m)) }).await.map_err(|e| PipelineError::new(3, e.to_string()))?;
         }
         {
             let l3 = logger.clone();
@@ -368,17 +350,10 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
-            let l3b = logger.clone();
-            let (license_issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root, &state.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
-            if let Some(scan_json) = &dep_scan_json {
-                state.db.save_dependency_scan_cache(project_id, scan_json);
-            }
-            issues.extend(license_issues);
-            issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root, &client, move |m| l3b.log(3, m)).await);
+            issues.extend(ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await);
         } else {
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
-            let l3b = logger.clone();
             let l4 = logger.clone();
             let root_a = root.clone();
             let root_b = root.clone();
@@ -386,14 +361,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let state_b = state.clone();
             let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), fast, Some(project_path.clone()));
             let (license_result, phase4_result) = tokio::join!(
-                time_stage(&timings, "licenseAndDependencyScan", async move {
-                    let (mut v, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(&root_a, &state_a.runner, &client, &npm_http, move |m| l3a.log(3, m)).await;
-                    if let Some(scan_json) = &dep_scan_json {
-                        state_a.db.save_dependency_scan_cache(project_id, scan_json);
-                    }
-                    v.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&root_a, &client, move |m| l3b.log(3, m)).await);
-                    v
-                }),
+                time_stage(&timings, "licenseAndDependencyScan", async move { ignite_pipeline_core::run_license_and_dependency_scan(&root_a, &state_a.runner, &client, &npm_http, &state_a.db, Some(project_id), move |m| l3a.log(3, m)).await }),
                 time_stage(&timings, "phase4Total", async move { ignite_phase4_orchestrator::run_phase4_checks(&root_b, &state_b.runner, &state_b.db, &config, &state_b.package_hallucination_checker, &|m: &str| l4.log(4, m)).await })
             );
             match phase4_result {
@@ -533,37 +501,30 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             logger.log(5, "Local CI execution disabled by request (runLocalCi=false).");
             logger.status(5, "skipped", None);
         } else {
-            let tooling = ignite_governance_ci::act_tooling(&state.runner).await;
-            if !tooling.ok {
-                logger.log(5, &format!("⚠ Local CI skipped: {}", tooling.reason.unwrap_or_default()));
-                logger.status(5, "skipped", None);
-            } else {
-                let gh_api = ignite_github_api::GithubApi::new(&state.runner);
-                // Named `resolved`, not `gh_token` — see the governance-ci
-                // crate's own note on why (Phase 5's non-overridable
-                // "Plaintext Tokens" scan flags any `*token* = ...` line).
-                let resolved = ignite_github_api::resolve_server_github_token();
-                let root = project_root.clone().unwrap();
-                let l5 = logger.clone();
-                let wf_result = time_stage(&timings, "fetchGovernanceWorkflow", async {
-                    ignite_governance_ci::fetch_governance_workflow(&workflow_dir, &gh_api, &state.db, &state.config.governance.repo, &state.config.governance.workflow, &resolved, move |m| l5.log(5, m)).await
-                })
-                .await;
-                match wf_result {
-                    Ok(wf_file) => {
-                        logger.log(5, &format!("Executing org governance workflows locally with act (event: {}).", state.config.governance.event));
-                        let l5b = logger.clone();
-                        let run_result = time_stage(&timings, "runActionsLocally", async { ignite_governance_ci::run_actions_locally(&root, &wf_file, &state.runner, &gh_api, &ignite_governance_ci::RunActionsConfig { act_event: state.config.governance.event.clone(), act_timeout_min: state.config.governance.timeout_minutes as u64 }, move |m| l5b.log(5, m)).await }).await;
-                        match run_result {
-                            Ok(_) => {
-                                logger.log(5, "✓ All org governance jobs passed locally.");
-                                logger.status(5, "success", None);
-                            }
-                            Err(e) => return Err(PipelineError::new(5, e.to_string())),
-                        }
-                    }
-                    Err(e) => return Err(PipelineError::new(5, e.to_string())),
+            let root = project_root.clone().unwrap();
+            let l5 = logger.clone();
+            let gov = &state.config.governance;
+            let gov_result = time_stage(&timings, "governanceCi", async {
+                ignite_pipeline_core::run_governance_ci_phase(&root, &workflow_dir, &state.runner, &state.db, &gov.repo, &gov.workflow, &gov.event, gov.timeout_minutes, move |m| l5.log(5, m)).await
+            })
+            .await;
+            match gov_result {
+                Ok(ignite_pipeline_core::GovernanceCiOutcome::Skipped(reason)) => {
+                    logger.log(5, &format!("⚠ Local CI skipped: {reason}"));
+                    // Matches `pipeline_onboard.rs`/`pipeline_interactive/run.rs`'s
+                    // treatment of "act tooling unavailable" as a
+                    // non-blocking success (the org governance workflows
+                    // still gate the repo on GitHub after push) — this
+                    // route previously reported "skipped" here instead,
+                    // the one behavioral divergence US-03's shared
+                    // extraction surfaced across the three entry points.
+                    logger.status(5, "success", None);
                 }
+                Ok(ignite_pipeline_core::GovernanceCiOutcome::Passed) => {
+                    logger.log(5, "✓ All org governance jobs passed locally.");
+                    logger.status(5, "success", None);
+                }
+                Err(e) => return Err(PipelineError::new(5, e)),
             }
         }
 

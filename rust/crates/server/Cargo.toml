@@ -44,6 +44,7 @@ ignite-scheduled-rechecks = { path = "../scheduled-rechecks" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 urlencoding = "2"
 ignite-override-engine = { path = "../override-engine" }
+ignite-pipeline-core = { path = "../pipeline-core" }
 ignite-staging = { path = "../staging" }
 ignite-unit-test-runner = { path = "../unit-test-runner" }
 ignite-governance-ci = { path = "../governance-ci" }

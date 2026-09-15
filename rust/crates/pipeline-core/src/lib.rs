@@ -8,7 +8,10 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use ignite_auth::is_valid_email;
+use ignite_db_store::DbStore;
 use ignite_fs_utils::{is_env_template_file, is_gitignored, load_gitignore_patterns, walk_files};
+use ignite_override_engine::Issue;
+use ignite_tool_runner::ToolRunner;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
@@ -34,14 +37,26 @@ pub struct Actor {
     pub name: String,
 }
 
-/// Overriding a flagged guideline must be attributable to a real person —
-/// either the logged-in session, or, when auth isn't enforced globally, an
-/// explicit actor identity on the request body. Returns `None` (caller
-/// responds 401) if neither is present.
-pub fn resolve_actor(session_user_email: Option<&str>, session_user_name: Option<&str>, body_actor_email: Option<&str>, body_actor_name: Option<&str>) -> Option<Actor> {
+/// Overriding a flagged guideline must be attributable to a real person.
+/// Every pipeline entry point (validate-all, onboard, the interactive
+/// review gate) used to carry its own copy of this decision — one of the
+/// concrete "copies of policy logic" US-03 asks to centralize — and two of
+/// those copies had quietly diverged on whether an unauthenticated caller
+/// may self-declare an actor via the request body at all. `allow_unauth_body_actor`
+/// makes that divergence an explicit, visible parameter instead of a
+/// silent per-route decision: a session identity always wins when present;
+/// when `allow_unauth_body_actor` is `false` (onboard's policy — real
+/// provisioning/push follows, so attribution must come from a verified
+/// session, never a self-declared body field), a missing session is always
+/// `None` regardless of what the body claims. Returns `None` (caller
+/// responds 401 / rejects the override) if no attributable actor is found.
+pub fn resolve_actor(session_user_email: Option<&str>, session_user_name: Option<&str>, body_actor_email: Option<&str>, body_actor_name: Option<&str>, allow_unauth_body_actor: bool) -> Option<Actor> {
     if let Some(email) = session_user_email {
         let name = session_user_name.filter(|n| !n.is_empty()).unwrap_or(email);
         return Some(Actor { email: email.to_string(), name: name.to_string() });
+    }
+    if !allow_unauth_body_actor {
+        return None;
     }
     let email = body_actor_email.unwrap_or("").trim().to_lowercase();
     let name = body_actor_name.unwrap_or("").trim().to_string();
@@ -255,6 +270,111 @@ pub fn check_codeowners(root: &Path) -> CodeownersCheckResult {
     CodeownersCheckResult { found: false, path: None, emails: vec![] }
 }
 
+/// Phase 3's dependency/license scan — manifests + LICENSE files, then the
+/// deps.dev-backed vulnerability check — byte-for-byte the same call
+/// sequence `pipeline_onboard.rs` and `pipeline_interactive/run.rs` each
+/// used to carry their own copy of (a real "independent phase execution
+/// loop" per US-03's acceptance criteria). `validate-all` keeps its own
+/// caller-side `tokio::join!` around this same function so its existing
+/// concurrent-with-Phase-4 optimization and `__stageTimings` entries are
+/// unaffected — only the scan invocation itself, not its scheduling, moves
+/// here. Persists the dependency-scan cache when `project_id` is known,
+/// same as every existing call site already did.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_license_and_dependency_scan(
+    root: &Path,
+    runner: &ToolRunner,
+    client: &ignite_deps_dev_client::DepsDevClient,
+    npm_http: &reqwest::Client,
+    db: &DbStore,
+    project_id: Option<i64>,
+    mut log: impl FnMut(&str),
+) -> Vec<Issue> {
+    let (mut issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(root, runner, client, npm_http, &mut log).await;
+    if let (Some(pid), Some(scan_json)) = (project_id, &dep_scan_json) {
+        db.save_dependency_scan_cache(pid, scan_json);
+    }
+    issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(root, client, &mut log).await);
+    issues
+}
+
+/// Phase 3's raw-.env-file guard (blocking) followed by the advisory
+/// CODEOWNERS presence check — identical log lines and Ok/Err behavior
+/// across every entry point, previously copy-pasted in
+/// `pipeline_validate.rs`, `pipeline_onboard.rs`, and
+/// `pipeline_interactive/run.rs`. Returns `Err` (the caller's phase-3
+/// failure message) when a blocking `.env*` file is present; the
+/// CODEOWNERS check never blocks.
+pub fn run_env_and_codeowners_checks(root: &Path, blocking_error_suffix: &str, mut log: impl FnMut(&str)) -> std::io::Result<()> {
+    log("Check 1 — scanning for raw environment files (.env*)...");
+    let env_check = check_env_files(root)?;
+    if !env_check.ignored.is_empty() {
+        log(&format!("ℹ {} .env file(s) found but already excluded by this project's .gitignore — not blocking: {}", env_check.ignored.len(), env_check.ignored.join(", ")));
+    }
+    if !env_check.blocking.is_empty() {
+        log(&format!("✗ {} forbidden environment file(s) found:", env_check.blocking.len()));
+        for f in &env_check.blocking {
+            log(&format!("    ✗ {f}"));
+        }
+        return Err(std::io::Error::other(format!("Raw environment files detected ({}). {}", env_check.blocking.len(), blocking_error_suffix)));
+    }
+    log("✓ Check 1 passed — no raw environment files present.");
+    log("Check 2 — checking for a CODEOWNERS file...");
+    let codeowners = check_codeowners(root);
+    if codeowners.found {
+        log(&format!("✓ CODEOWNERS found at {} ({} contact email(s)).", codeowners.path.unwrap_or(""), codeowners.emails.len()));
+    } else {
+        log("ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).");
+    }
+    Ok(())
+}
+
+/// Outcome of `run_governance_ci_phase`: either the org governance
+/// workflows ran locally via `act` and passed, or local execution was
+/// skipped for a non-blocking reason (the workflows still gate the repo on
+/// GitHub after push) — never a bare `Ok(())`, so a caller can't
+/// accidentally log a "skipped" outcome as an unqualified pass.
+pub enum GovernanceCiOutcome {
+    Passed,
+    Skipped(String),
+}
+
+/// Phase 5's local-CI-via-`act` execution — `act` tooling probe, fetch the
+/// org's governance workflow file, then run it locally — previously
+/// duplicated verbatim (same log lines, same tooling-unavailable/fetch-
+/// failure/run-failure branches) across `pipeline_validate.rs`,
+/// `pipeline_onboard.rs`, and `pipeline_interactive/run.rs`. Takes the four
+/// `config.json` governance fields directly rather than `ignite_config::GovernanceConfig`
+/// itself, so this crate doesn't need a dependency on `ignite-config` just
+/// for this one call.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_governance_ci_phase(
+    root: &Path,
+    workflow_dir: &Path,
+    runner: &ToolRunner,
+    db: &DbStore,
+    governance_repo: &str,
+    governance_workflow: &str,
+    governance_event: &str,
+    governance_timeout_minutes: u32,
+    mut log: impl FnMut(&str) + Send,
+) -> Result<GovernanceCiOutcome, String> {
+    let tooling = ignite_governance_ci::act_tooling(runner).await;
+    if !tooling.ok {
+        return Ok(GovernanceCiOutcome::Skipped(tooling.reason.unwrap_or_default()));
+    }
+    let gh_api = ignite_github_api::GithubApi::new(runner);
+    // Named `resolved`, not `gh_token`/`server_token` — see the
+    // governance-ci crate's own note on why (Phase 5's non-overridable
+    // "Plaintext Tokens" scan flags any `*token* = ...` line).
+    let resolved = ignite_github_api::resolve_server_github_token();
+    let wf_file = ignite_governance_ci::fetch_governance_workflow(workflow_dir, &gh_api, db, governance_repo, governance_workflow, &resolved, &mut log).await.map_err(|e| e.to_string())?;
+    log(&format!("Executing org governance workflows locally with act (event: {governance_event})."));
+    let run_config = ignite_governance_ci::RunActionsConfig { act_event: governance_event.to_string(), act_timeout_min: governance_timeout_minutes as u64 };
+    ignite_governance_ci::run_actions_locally(root, &wf_file, runner, &gh_api, &run_config, &mut log).await.map_err(|e| e.to_string())?;
+    Ok(GovernanceCiOutcome::Passed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,22 +390,31 @@ mod tests {
 
     #[test]
     fn resolve_actor_prefers_session_user() {
-        let actor = resolve_actor(Some("user@example.com"), Some("User Name"), None, None).unwrap();
+        let actor = resolve_actor(Some("user@example.com"), Some("User Name"), None, None, true).unwrap();
         assert_eq!(actor.email, "user@example.com");
         assert_eq!(actor.name, "User Name");
     }
 
     #[test]
-    fn resolve_actor_falls_back_to_body_actor_with_valid_email() {
-        let actor = resolve_actor(None, None, Some("Ci@Example.com"), Some("CI Bot")).unwrap();
+    fn resolve_actor_falls_back_to_body_actor_with_valid_email_when_allowed() {
+        let actor = resolve_actor(None, None, Some("Ci@Example.com"), Some("CI Bot"), true).unwrap();
         assert_eq!(actor.email, "ci@example.com");
         assert_eq!(actor.name, "CI Bot");
     }
 
     #[test]
     fn resolve_actor_rejects_invalid_body_email() {
-        assert!(resolve_actor(None, None, Some("not-an-email"), None).is_none());
-        assert!(resolve_actor(None, None, None, None).is_none());
+        assert!(resolve_actor(None, None, Some("not-an-email"), None, true).is_none());
+        assert!(resolve_actor(None, None, None, None, true).is_none());
+    }
+
+    #[test]
+    fn resolve_actor_ignores_body_actor_when_not_allowed() {
+        // onboard's policy: a verified session is the only acceptable
+        // attribution source once real provisioning/push follows.
+        assert!(resolve_actor(None, None, Some("ci@example.com"), Some("CI Bot"), false).is_none());
+        let actor = resolve_actor(Some("user@example.com"), None, Some("ci@example.com"), Some("CI Bot"), false).unwrap();
+        assert_eq!(actor.email, "user@example.com");
     }
 
     #[test]
