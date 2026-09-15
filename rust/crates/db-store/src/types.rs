@@ -435,3 +435,34 @@ pub struct SaveFixPrPreviewParams<'a> {
     pub reason: Option<&'a str>,
     pub candidates: &'a serde_json::Value,
 }
+
+/// US-01: durable repository identity — see `repositories.rs`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryRow {
+    pub id: i64,
+    pub org: String,
+    pub repo: String,
+    pub github_repo_id: Option<String>,
+    pub access_scope: String,
+    pub created_at: String,
+}
+
+/// US-01: one scan execution, compatibility-mapped back to its legacy
+/// `projects` row via `legacy_project_id`/`legacy_job_id`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanRunRow {
+    pub id: i64,
+    pub legacy_project_id: Option<i64>,
+    pub repository_id: i64,
+    pub snapshot_id: i64,
+    pub initiator: Option<String>,
+    pub source_channel: String,
+    pub policy_version: Option<String>,
+    pub lifecycle_state: String,
+    pub is_enrollment_only: bool,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+    pub legacy_job_id: Option<String>,
+}

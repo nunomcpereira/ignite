@@ -95,6 +95,11 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
         return err(StatusCode::BAD_REQUEST, "Invalid or missing repository owner/name in payload.".to_string());
     }
     let repo_url = payload.get("repository").and_then(|r| r.get("html_url")).and_then(|v| v.as_str()).map(str::to_string);
+    // GitHub's numeric repository id, stable across renames/transfers —
+    // the one signal this payload carries that a plain upload never does,
+    // so `resolve_repository` can merge a future rename back onto this
+    // same durable repository row (US-01) instead of forking a new one.
+    let github_repo_id = payload.get("repository").and_then(|r| r.get("id")).map(|v| v.to_string());
 
     // 1. Always: enroll a minimal project row, even before any real scan
     // has run — `status` stays NULL, same as a fresh `create_project` row
@@ -114,6 +119,7 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
     // indistinguishable from an actually-in-progress (or crashed) scan in
     // every dashboard/monitor that reads project status.
     state.db.set_project_status(project_id, "enrolled");
+    state.db.resolve_repository(&org, &repo, github_repo_id.as_deref());
     state.emit_audit_event(ignite_audit_log::AuditEvent::new("repository.enrolled", "info", format!("{org}/{repo}: auto-enrolled on GitHub \"{action}\" event")).repo(&org, &repo).metadata(json!({ "projectId": project_id, "action": action, "repoUrl": repo_url })));
 
     // 2. Optional: apply/update the org's ignite-gate Repository Ruleset —

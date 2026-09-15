@@ -59,6 +59,19 @@ async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::Require
     Json(json!({ "ok": true, "issues": state.db.get_project_issues(id) })).into_response()
 }
 
+/// GET /api/repositories/:org/:repo — US-01's new, additive endpoint:
+/// the durable repository identity plus every scan run ever recorded
+/// against it (including enrollment-only rows, each labeled), independent
+/// of which `projects.id`/`job_id` any one of those runs happens to carry.
+/// Existing `/api/projects*` endpoints are untouched by this story.
+async fn repository_history(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>) -> Response {
+    let Some(repository) = state.db.get_repository_by_org_repo(&org, &repo) else {
+        return err(StatusCode::NOT_FOUND, "Repository not found.");
+    };
+    let scan_runs = state.db.list_scan_runs_for_repository(repository.id);
+    Json(json!({ "ok": true, "repository": repository, "scanRuns": scan_runs })).into_response()
+}
+
 async fn job_issues_handler(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
     // live-run branch also needs a projectId alongside the issues, which
@@ -194,6 +207,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/projects/:id", get(project_details).delete(delete_project))
         .route("/api/projects/:id/issues", get(project_issues))
         .route("/api/projects/:id/schedule", post(set_schedule))
+        .route("/api/repositories/:org/:repo", get(repository_history))
         .route("/api/pipeline/:job_id/issues", get(job_issues_handler))
         .route("/api/pipeline/:job_id/status", get(job_status))
         .route("/api/documents/:id", get(get_document))
@@ -265,6 +279,37 @@ mod tests {
         assert_eq!(body["running"], false);
         assert_eq!(body["project"]["status"], "success");
         assert_eq!(body["steps"][0]["title"], "Extraction");
+    }
+
+    fn auth_header(state: &AppState) -> String {
+        let user_id = state.db.create_local_user("tester@example.com", Some("Tester"), "unused-hash").unwrap();
+        let raw_key = ignite_auth::generate_api_key();
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
+        format!("Bearer {raw_key}")
+    }
+
+    #[tokio::test]
+    async fn repository_history_returns_repository_and_its_scan_runs() {
+        let (base, state) = spawn_test_server().await;
+        let job_id = "job-a".to_string();
+        let project_id = state.db.create_project(&job_id, "acme", "widgets", false, "ui", None).unwrap();
+        state.db.finish_project("success", None, None, None, project_id);
+
+        let client = reqwest::Client::new();
+        let body: Value = client.get(format!("{base}/api/repositories/acme/widgets")).header("Authorization", auth_header(&state)).send().await.unwrap().json().await.unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["repository"]["org"], "acme");
+        assert_eq!(body["scanRuns"].as_array().unwrap().len(), 1);
+        assert_eq!(body["scanRuns"][0]["legacyJobId"], "job-a");
+        assert_eq!(body["scanRuns"][0]["lifecycleState"], "published");
+    }
+
+    #[tokio::test]
+    async fn repository_history_404s_for_an_unknown_repository() {
+        let (base, state) = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("{base}/api/repositories/acme/does-not-exist")).header("Authorization", auth_header(&state)).send().await.unwrap();
+        assert_eq!(res.status(), 404);
     }
 
     #[tokio::test]

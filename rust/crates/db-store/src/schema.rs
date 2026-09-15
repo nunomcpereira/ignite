@@ -262,6 +262,90 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   seen_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_seen_at ON webhook_deliveries(seen_at);
+
+-- US-01: durable repository identity, separate from any one scan
+-- execution. `projects`/`steps`/`issues`/... stay exactly as they were —
+-- every historical `jobId`/`projectId` URL still resolves through them
+-- unchanged — these three tables sit alongside as the new normalized
+-- identity model, backfilled from `projects` by
+-- `BACKFILL_REPOSITORY_MODEL_SQL` below and kept live going forward by
+-- `repositories.rs`'s `resolve_repository`/`record_scan_run`/
+-- `finish_scan_run_for_project`, called from `create_project`/
+-- `finish_project` (`projects.rs`).
+CREATE TABLE IF NOT EXISTS repositories (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  org            TEXT NOT NULL,
+  repo           TEXT NOT NULL,
+  github_repo_id TEXT UNIQUE,
+  access_scope   TEXT NOT NULL DEFAULT 'standard',
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_repositories_org_repo ON repositories(org, repo);
+CREATE TABLE IF NOT EXISTS source_snapshots (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository_id   INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  source_digest   TEXT NOT NULL,
+  commit_sha      TEXT,
+  storage_ref     TEXT,
+  retention_state TEXT NOT NULL DEFAULT 'unknown',
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_source_snapshots_dedup ON source_snapshots(repository_id, source_digest);
+CREATE TABLE IF NOT EXISTS scan_runs (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  legacy_project_id      INTEGER UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  repository_id          INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  snapshot_id            INTEGER NOT NULL REFERENCES source_snapshots(id) ON DELETE CASCADE,
+  initiator              TEXT,
+  source_channel         TEXT NOT NULL DEFAULT 'unknown',
+  policy_version         TEXT,
+  lifecycle_state        TEXT NOT NULL DEFAULT 'queued',
+  is_enrollment_only     INTEGER NOT NULL DEFAULT 0,
+  cancellation_requested INTEGER NOT NULL DEFAULT 0,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scan_runs_repository ON scan_runs(repository_id);
+"#;
+
+/// Backfills `repositories`/`source_snapshots`/`scan_runs` from every
+/// historical `projects` row that doesn't have a `scan_runs` entry yet —
+/// runs every startup (same idempotent-via-`WHERE NOT IN`/`NOT EXISTS`
+/// posture as [`BACKFILL_ONBOARDING_PRS_SQL`]), so it also repairs any row
+/// a future bug or crash left un-mirrored, not just the true one-time
+/// historical backfill. A pre-existing project's true source digest was
+/// never recorded, so its snapshot gets a synthetic per-project digest
+/// (`legacy:project:<id>`) rather than a fabricated one — labeled
+/// unknown/legacy, matching this backlog's "do not invent trustworthy
+/// historical ... digests" instruction. `is_enrollment_only` is derived
+/// from `source = 'repository-event'`, the one and only enrollment-only
+/// path that exists today (`repository_events_webhook.rs`).
+pub(crate) const BACKFILL_REPOSITORY_MODEL_SQL: &str = r#"
+INSERT INTO repositories (org, repo, created_at)
+SELECT DISTINCT p.org, p.repo, p.created_at FROM projects p
+WHERE NOT EXISTS (SELECT 1 FROM repositories r WHERE r.org = p.org AND r.repo = p.repo);
+
+INSERT INTO source_snapshots (repository_id, source_digest, commit_sha, storage_ref, retention_state, created_at)
+SELECT r.id, 'legacy:project:' || p.id, p.source_commit_sha, p.scan_location, 'unknown', p.created_at
+FROM projects p
+JOIN repositories r ON r.org = p.org AND r.repo = p.repo
+WHERE NOT EXISTS (SELECT 1 FROM scan_runs sr WHERE sr.legacy_project_id = p.id);
+
+INSERT INTO scan_runs (legacy_project_id, repository_id, snapshot_id, source_channel, lifecycle_state, is_enrollment_only, created_at, finished_at)
+SELECT p.id, r.id, s.id, COALESCE(p.source, 'unknown'),
+       CASE
+         WHEN p.status = 'success' THEN 'published'
+         WHEN p.status = 'failed' THEN 'failed'
+         WHEN p.status = 'enrolled' THEN 'completed'
+         WHEN p.status IS NULL THEN 'queued'
+         ELSE 'scanning'
+       END,
+       CASE WHEN p.source = 'repository-event' THEN 1 ELSE 0 END,
+       p.created_at, p.finished_at
+FROM projects p
+JOIN repositories r ON r.org = p.org AND r.repo = p.repo
+JOIN source_snapshots s ON s.repository_id = r.id AND s.source_digest = 'legacy:project:' || p.id
+WHERE NOT EXISTS (SELECT 1 FROM scan_runs sr WHERE sr.legacy_project_id = p.id);
 "#;
 
 /// One-time-per-row backfill, safe to re-run every startup: every historical

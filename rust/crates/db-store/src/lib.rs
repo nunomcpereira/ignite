@@ -28,6 +28,7 @@ mod github;
 mod issues;
 mod overrides;
 mod projects;
+mod repositories;
 mod retained_sources;
 mod runtime_coverage;
 mod schema;
@@ -898,5 +899,101 @@ mod tests {
         let (_dir, store) = open_test_db();
         let err = store.approve_override(1, 999, "approver@acme.example").unwrap_err();
         assert!(err.contains("not found"), "{err}");
+    }
+
+    // ---------------- US-01: repository/snapshot/scan-run identity ----------------
+
+    #[test]
+    fn two_scans_of_the_same_repository_share_one_repository_row() {
+        let (_dir, store) = open_test_db();
+        let job1 = store.create_project("job-a", "acme", "widgets", false, "ui", None).unwrap();
+        let job2 = store.create_project("job-b", "acme", "widgets", false, "ui", None).unwrap();
+
+        let repo = store.get_repository_by_org_repo("acme", "widgets").unwrap();
+        let run1 = store.get_scan_run_for_legacy_project(job1).unwrap();
+        let run2 = store.get_scan_run_for_legacy_project(job2).unwrap();
+        assert_eq!(run1.repository_id, repo.id);
+        assert_eq!(run2.repository_id, repo.id);
+        assert_ne!(run1.id, run2.id);
+        assert_ne!(run1.snapshot_id, run2.snapshot_id, "distinct uploads get distinct snapshots");
+        assert_eq!(store.list_scan_runs_for_repository(repo.id).len(), 2);
+    }
+
+    #[test]
+    fn different_orgs_with_the_same_repo_name_stay_separate() {
+        let (_dir, store) = open_test_db();
+        store.create_project("job-a", "acme", "widgets", false, "ui", None).unwrap();
+        store.create_project("job-b", "globex", "widgets", false, "ui", None).unwrap();
+
+        let acme = store.get_repository_by_org_repo("acme", "widgets").unwrap();
+        let globex = store.get_repository_by_org_repo("globex", "widgets").unwrap();
+        assert_ne!(acme.id, globex.id);
+    }
+
+    #[test]
+    fn historical_job_id_and_project_id_urls_still_resolve() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-a", "acme", "widgets", false, "ui", None).unwrap();
+        store.finish_project("success", None, Some("https://github.com/acme/widgets"), None, id);
+
+        // The legacy accessor surface (project lookup by id / job_id) is
+        // untouched by this story...
+        let project = store.get_project(id).unwrap();
+        assert_eq!(project.org, "acme");
+        // ...and the new run-side accessor resolves the same legacy id.
+        let run = store.get_scan_run_for_legacy_project(id).unwrap();
+        assert_eq!(run.legacy_job_id.as_deref(), Some("job-a"));
+        assert_eq!(run.lifecycle_state, "published");
+        assert!(run.finished_at.is_some());
+    }
+
+    #[test]
+    fn enrollment_only_rows_are_distinguishable_from_real_scans() {
+        let (_dir, store) = open_test_db();
+        let enroll_id = store.create_project("repo-event-1", "acme", "widgets", false, "repository-event", None).unwrap();
+        store.set_project_status(enroll_id, "enrolled");
+        let scan_id = store.create_project("job-real", "acme", "widgets", false, "ui", None).unwrap();
+        store.finish_project("success", None, None, None, scan_id);
+
+        let enroll_run = store.get_scan_run_for_legacy_project(enroll_id).unwrap();
+        let scan_run = store.get_scan_run_for_legacy_project(scan_id).unwrap();
+        assert!(enroll_run.is_enrollment_only);
+        assert!(!scan_run.is_enrollment_only);
+    }
+
+    #[test]
+    fn repository_rename_with_known_github_id_preserves_history() {
+        let (_dir, store) = open_test_db();
+        let repo_id = store.resolve_repository("acme", "widgets-old", Some("gh-42"));
+        let legacy_id = store.create_project("job-rename", "acme", "widgets-old", false, "ui", None).unwrap();
+        let run_id = store.record_scan_run(legacy_id, repo_id, store.create_or_reuse_snapshot(repo_id, "d1", None, None), "ui", false);
+
+        // Renamed on GitHub; same github_repo_id.
+        let renamed_repo_id = store.resolve_repository("acme", "widgets-new", Some("gh-42"));
+        assert_eq!(renamed_repo_id, repo_id, "same durable repository row survives a rename");
+
+        let repo = store.get_repository_by_org_repo("acme", "widgets-new").unwrap();
+        assert_eq!(repo.id, repo_id);
+        assert_eq!(repo.github_repo_id.as_deref(), Some("gh-42"));
+        // History recorded under the old name is still reachable.
+        assert_eq!(store.list_scan_runs_for_repository(repo_id).iter().filter(|r| r.id == run_id).count(), 1);
+    }
+
+    #[test]
+    fn migration_backfill_is_idempotent_on_rerun() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let store = DbStore::open(&db_path).unwrap();
+            store.create_project("job-a", "acme", "widgets", false, "ui", None).unwrap();
+        }
+        // Reopening re-runs SCHEMA_SQL/migrations/backfill against a
+        // populated database — must not duplicate repositories/snapshots/
+        // scan_runs or violate any foreign key.
+        let store = DbStore::open(&db_path).unwrap();
+        let repo = store.get_repository_by_org_repo("acme", "widgets").unwrap();
+        assert_eq!(store.list_scan_runs_for_repository(repo.id).len(), 1);
+        store.create_project("job-b", "acme", "widgets", false, "ui", None).unwrap();
+        assert_eq!(store.list_scan_runs_for_repository(repo.id).len(), 2);
     }
 }

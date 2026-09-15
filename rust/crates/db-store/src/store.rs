@@ -3,7 +3,7 @@
 //! blocks in their own module, all operating on this one shared
 //! connection.
 
-use crate::schema::{BACKFILL_ONBOARDING_PRS_SQL, MIGRATIONS, SCHEMA_SQL};
+use crate::schema::{BACKFILL_ONBOARDING_PRS_SQL, BACKFILL_REPOSITORY_MODEL_SQL, MIGRATIONS, SCHEMA_SQL};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use std::path::Path;
@@ -26,6 +26,7 @@ impl DbStore {
         conn.execute_batch(SCHEMA_SQL)?;
         run_migrations(&conn)?;
         conn.execute_batch(BACKFILL_ONBOARDING_PRS_SQL)?;
+        conn.execute_batch(BACKFILL_REPOSITORY_MODEL_SQL)?;
         Ok(DbStore { conn: Mutex::new(conn) })
     }
 }

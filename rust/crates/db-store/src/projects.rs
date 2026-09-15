@@ -29,7 +29,24 @@ impl DbStore {
             "INSERT INTO projects (job_id, org, repo, gxp, source, scan_location) VALUES (?, ?, ?, ?, ?, ?)",
             params![job_id, org, repo, is_gxp as i64, source, scan_location],
         )?;
-        Ok(conn.last_insert_rowid())
+        let project_id = conn.last_insert_rowid();
+        drop(conn); // release before the repositories.rs helpers re-acquire the same lock
+
+        // US-01: mirror every new project into the normalized
+        // repository/snapshot/scan-run model live, going forward — no
+        // GitHub repository id is known at upload time (only discovered
+        // later, if ever, at publication), so resolution here is by
+        // (org, repo) only; `resolve_repository` still merges onto a
+        // github_repo_id-identified row transparently if one already
+        // exists for this (org, repo) pair. Canonical content-addressed
+        // snapshot hashing is US-05's scope — until then each project gets
+        // its own unlabeled-as-trustworthy digest so it never collides
+        // with, or is mistaken for, a real hash.
+        let repository_id = self.resolve_repository(org, repo, None);
+        let snapshot_id = self.create_or_reuse_snapshot(repository_id, &format!("unknown:project:{project_id}"), None, scan_location);
+        self.record_scan_run(project_id, repository_id, snapshot_id, source, source == "repository-event");
+
+        Ok(project_id)
     }
 
     /// Sets `status` directly with no other side effect (no audit event,
@@ -45,6 +62,8 @@ impl DbStore {
         if let Err(e) = conn.execute("UPDATE projects SET status = ? WHERE id = ?", params![status, project_id]) {
             tracing::error!("set_project_status({project_id}, {status:?}) failed: {e}");
         }
+        drop(conn);
+        self.sync_scan_run_lifecycle(project_id, status, status != "running");
     }
 
     /// Also records a `scan.completed` audit event (`audit_events.rs`) for
@@ -84,7 +103,8 @@ impl DbStore {
                 tracing::error!("finish_project: failed to record pull request for {project_id}: {e}");
             }
         }
-        drop(conn); // release before record_audit_event re-acquires the same lock
+        drop(conn); // release before record_audit_event/sync_scan_run_lifecycle re-acquire the same lock
+        self.sync_scan_run_lifecycle(project_id, status, true);
 
         let severity = if status == "failed" { "warning" } else { "info" };
         let summary = format!("scan {status} for {org}/{repo} (job {job_id})");
