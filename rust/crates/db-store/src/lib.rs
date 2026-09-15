@@ -26,6 +26,7 @@ mod caches;
 mod dependency_and_fixpr;
 mod github;
 mod issues;
+mod lifecycle;
 mod overrides;
 mod projects;
 mod repositories;

@@ -257,6 +257,41 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         Err(e) => return Err((json!({ "ok": false, "error": e.to_string() }), json!({}))),
     };
 
+    // US-04: scoped idempotency — a caller (a CI retry after a dropped
+    // connection, a pre-push hook re-invoked by a flaky shell) that
+    // re-sends the exact same request with the same `idempotencyKey`
+    // gets back a reference to the run that key already started, instead
+    // of a second full pipeline execution; the same key with a genuinely
+    // different payload is a conflict, not a replay. Scoped per
+    // repository (not globally) so two different repos can't collide on
+    // a caller-chosen key.
+    if let Some(key) = body.get("idempotencyKey").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+        let repository_id = state.db.resolve_repository(&org, &repo, None);
+        let payload_hash = idempotency_payload_hash(&body);
+        if let Some(existing) = state.db.find_scan_run_by_idempotency(repository_id, key) {
+            if existing.payload_hash != payload_hash {
+                return Err((
+                    json!({ "ok": false, "error": "idempotencyKey was already used with a different request payload.", "conflict": true, "jobId": existing.legacy_job_id }),
+                    json!({}),
+                ));
+            }
+            if let Some(pid) = existing.legacy_project_id {
+                if let Some(details) = state.db.get_project_details(pid) {
+                    return Ok(json!({
+                        "ok": details.project.status != "failed",
+                        "mode": "validate-all",
+                        "idempotent": true,
+                        "jobId": existing.legacy_job_id,
+                        "projectId": pid,
+                        "project": details.project,
+                        "phases": details.steps,
+                        "issues": state.db.get_project_issues(pid),
+                    }));
+                }
+            }
+        }
+    }
+
     let timings: Mutex<Vec<StageTiming>> = Mutex::new(Vec::new());
     let job_id = uuid::Uuid::new_v4().to_string();
     tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting validate-all pipeline run");
@@ -272,6 +307,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let mut phase4_coverage: Vec<ignite_policy::CheckCoverage> = vec![];
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut project_id: i64 = 0;
+    let mut run_id: Option<i64> = None;
 
     // The staging directory / walk-cache cleanup below (`invalidate_walk_cache`
     // + `remove_dir_all`) previously ran as plain code after this block's
@@ -299,6 +335,15 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         logger.log(1, &format!("GxP-regulated process: {}", if is_gxp { "YES" } else { "no" }));
         let source = if body.get("_client_is_mcp").and_then(|v| v.as_bool()).unwrap_or(false) { "mcp" } else { "api" };
         project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy())).map_err(|e| PipelineError::new(1, format!("Failed to create project record: {e}")))?;
+        run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
+        if let Some(rid) = run_id {
+            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Scanning) {
+                tracing::warn!("transition_scan_run({rid}, Scanning) failed: {e}");
+            }
+            if let Some(key) = body.get("idempotencyKey").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+                state.db.set_scan_run_idempotency(rid, key, &idempotency_payload_hash(&body));
+            }
+        }
         logger.set_project_id(project_id);
         logger.status(1, "success", None);
 
@@ -531,6 +576,16 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         logger.log(6, "Shipping phase skipped in validate-all mode.");
         logger.status(6, "skipped", None);
 
+        // Set *before* `finish_project` — its own internal lifecycle sync
+        // is a naive `"success" -> "published"` fallback that doesn't
+        // know validate-all never publishes anything; a precise state set
+        // first is never overwritten (terminal states reject any further
+        // transition, `sync_scan_run_lifecycle`'s included).
+        if let Some(rid) = run_id {
+            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Completed) {
+                tracing::warn!("transition_scan_run({rid}, Completed) failed: {e}");
+            }
+        }
         state.db.finish_project("success", None, None, None, project_id);
         Ok(())
     })
@@ -552,6 +607,23 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     }
     let _ = std::fs::remove_dir_all(&staging_dir);
     let _ = std::fs::remove_dir_all(&workflow_dir);
+
+    // The `Ok(())` (success) case already set its precise terminal state
+    // (`Completed`) inline above, before `finish_project` ran — only the
+    // failure case still needs to be classified here, since its
+    // `finish_project("failed", ...)` call happens below, in this same
+    // match.
+    if let (Some(rid), Err(e)) = (run_id, &result) {
+        // `e.issues.is_some()` is only ever set on the one failure path
+        // that means "blocking findings were never resolved" (see
+        // `e.issues = Some(owned)` above) — every other failure (bad
+        // input, a tool crash, a missing snapshot) is a genuine error,
+        // not a declined/unresolved review outcome.
+        let target = if e.issues.is_some() { ignite_run_lifecycle::RunLifecycleState::Blocked } else { ignite_run_lifecycle::RunLifecycleState::Failed };
+        if let Err(err) = state.db.transition_scan_run(rid, target) {
+            tracing::warn!("transition_scan_run({rid}, {target:?}) failed: {err}");
+        }
+    }
 
     match result {
         Ok(()) => {
@@ -670,6 +742,16 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             Err((response, json!({})))
         }
     }
+}
+
+/// Deterministic digest of the whole request body — `serde_json::Value`
+/// serializes object keys in sorted order (this workspace never enables
+/// `preserve_order`), so two requests with identical content hash
+/// identically regardless of the order fields were sent in over the wire.
+fn idempotency_payload_hash(body: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = serde_json::to_string(body).unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
 fn filter_tagged_by_changed_files(tagged: &[Value], changed_files: Option<&std::collections::HashSet<String>>) -> Vec<Value> {
@@ -828,5 +910,81 @@ mod phase_gating_tests {
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
         let res = client.post(format!("{base}/api/pipeline/validate-all")).json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false })).send().await.unwrap();
         assert_ne!(res.status(), 401, "unauthenticated validate-all must not be rejected once explicitly allowed");
+    }
+
+    // US-04: a clean validate-all run reaches the "completed" (not
+    // "published" — this endpoint never ships) lifecycle state.
+    #[tokio::test]
+    async fn a_clean_run_reaches_the_completed_lifecycle_state() {
+        let dir = clean_fixture_dir();
+        let cfg = ignite_config::Config { phases: vec![json!({ "id": 4, "enabled": false })], security: ignite_config::SecurityConfig { allow_unauthenticated_validate_all: true, ..Default::default() }, ..Default::default() };
+        let (state, _db_dir) = build_state(cfg);
+        let base = spawn_test_server(state.clone()).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+        let body: Value = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(body["ok"], true);
+        let project_id = state.db.get_project_id_by_job_id(body["jobId"].as_str().unwrap()).unwrap();
+        let run = state.db.get_scan_run_for_legacy_project(project_id).unwrap();
+        assert_eq!(run.lifecycle_state, "completed");
+    }
+
+    fn clean_fixture_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"idempotency-fixture"}"#).unwrap();
+        dir
+    }
+
+    // US-04: scoped idempotency keys.
+    #[tokio::test]
+    async fn same_idempotency_key_and_payload_replays_the_existing_run() {
+        let dir = clean_fixture_dir();
+        let cfg = ignite_config::Config { phases: vec![json!({ "id": 4, "enabled": false })], security: ignite_config::SecurityConfig { allow_unauthenticated_validate_all: true, ..Default::default() }, ..Default::default() };
+        let (state, _db_dir) = build_state(cfg);
+        let base = spawn_test_server(state).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+        let payload = json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false, "idempotencyKey": "retry-1" });
+
+        let first: Value = client.post(format!("{base}/api/pipeline/validate-all")).json(&payload).send().await.unwrap().json().await.unwrap();
+        assert_eq!(first["ok"], true);
+        let first_job_id = first["jobId"].as_str().unwrap().to_string();
+
+        let second: Value = client.post(format!("{base}/api/pipeline/validate-all")).json(&payload).send().await.unwrap().json().await.unwrap();
+        assert_eq!(second["idempotent"], true);
+        assert_eq!(second["jobId"].as_str(), Some(first_job_id.as_str()), "a retry with the same key+payload must reference the original run, not start a new one");
+    }
+
+    #[tokio::test]
+    async fn same_idempotency_key_with_a_different_payload_conflicts() {
+        let dir = clean_fixture_dir();
+        let cfg = ignite_config::Config { phases: vec![json!({ "id": 4, "enabled": false })], security: ignite_config::SecurityConfig { allow_unauthenticated_validate_all: true, ..Default::default() }, ..Default::default() };
+        let (state, _db_dir) = build_state(cfg);
+        let base = spawn_test_server(state).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+
+        let first = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false, "idempotencyKey": "retry-2" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), 200);
+
+        let second = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .json(&json!({ "projectPath": dir.path().to_string_lossy(), "fast": true, "runLocalCi": false, "idempotencyKey": "retry-2", "warningDecision": "block" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second.status(), 400);
+        let body: Value = second.json().await.unwrap();
+        assert_eq!(body["conflict"], true);
     }
 }

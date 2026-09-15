@@ -112,7 +112,7 @@ async fn job_status(State(state): State<Arc<AppState>>, Path(job_id): Path<Strin
         return Json(json!({ "ok": true, "running": true, "reviewActive": review_active, "project": Value::Null, "steps": Value::Array(vec![]) })).into_response();
     };
     match state.db.get_project_details(pid) {
-        Some(details) => Json(json!({ "ok": true, "running": true, "reviewActive": review_active, "project": details.project, "steps": details.steps })).into_response(),
+        Some(details) => Json(json!({ "ok": true, "running": true, "reviewActive": review_active, "project": details.project, "steps": details.steps, "lifecycle": lifecycle_summary(&state, pid) })).into_response(),
         None => Json(json!({ "ok": true, "running": true, "reviewActive": review_active, "project": Value::Null, "steps": Value::Array(vec![]) })).into_response(),
     }
 }
@@ -124,7 +124,29 @@ fn job_status_from_db(state: &AppState, job_id: &str) -> Response {
     let Some(details) = state.db.get_project_details(pid) else {
         return err(StatusCode::NOT_FOUND, "Project not found.");
     };
-    Json(json!({ "ok": true, "running": false, "project": details.project, "steps": details.steps })).into_response()
+    // US-04: `running: false` here covers two genuinely different cases a
+    // client reconnecting with just a job id can't otherwise tell apart —
+    // a run that finished normally, and a run that was `awaiting_review`
+    // when the server restarted and lost the in-memory task that would
+    // have resumed it. `lifecycle` (and, when still unresolved,
+    // `pendingReview`) makes that distinction explicit instead of leaving
+    // the client to infer it from `project.status` alone.
+    Json(json!({ "ok": true, "running": false, "project": details.project, "steps": details.steps, "lifecycle": lifecycle_summary(state, pid) })).into_response()
+}
+
+/// `lifecycleState` (from `scan_runs`, US-04) plus, when a review is
+/// still unresolved, the durable `pending_reviews` snapshot — issues,
+/// owner, and when it was raised — so a client can render "still awaiting
+/// review" accurately even when nothing is currently running in this
+/// process to ask.
+fn lifecycle_summary(state: &AppState, project_id: i64) -> Value {
+    let Some(run) = state.db.get_scan_run_for_legacy_project(project_id) else { return Value::Null };
+    let pending_review = if run.lifecycle_state == "awaiting_review" { state.db.get_pending_review(run.id).filter(|r| r.resolved_at.is_none()) } else { None };
+    json!({
+        "runId": run.id,
+        "state": run.lifecycle_state,
+        "pendingReview": pending_review,
+    })
 }
 
 async fn delete_project(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {

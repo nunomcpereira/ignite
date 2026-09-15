@@ -63,9 +63,42 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
     // authenticated user could still decide any other user's paused run.
     match state.review_gate.resolve(&job_id, &user.email, ReviewDecisionInput { proceed, overrides, actor }) {
         crate::review_gate::ResolveOutcome::Resolved => (StatusCode::OK, axum::Json(json!({ "ok": true }))).into_response(),
-        crate::review_gate::ResolveOutcome::NotFound => (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response(),
+        // US-04: the in-memory oneshot this run's paused task was
+        // actually awaiting is gone after every process restart — true
+        // resume-from-checkpoint execution isn't implemented (a much
+        // larger architecture change than this pass attempts; see
+        // CLAUDE.md's US-04 writeup). What *is* durable across a restart
+        // is `pending_reviews` (US-04's persisted counterpart to
+        // `ReviewGate::wait`): distinguishing "there never was a paused
+        // run under this job id" from "there was one, but the server
+        // restarted and it can't be resumed" is the honest, recoverable
+        // failure this acceptance criterion actually asks for, instead of
+        // a generic 404 that reads the same as a typo'd job id.
+        crate::review_gate::ResolveOutcome::NotFound => match lost_pending_review(&state, &job_id, &user.email) {
+            Some(true) => (
+                StatusCode::GONE,
+                axum::Json(json!({
+                    "ok": false,
+                    "error": "This run was awaiting review, but the server restarted and resuming an in-progress run isn't supported yet — the prior findings are still on record. Start a new scan to continue.",
+                    "recoverable": true,
+                })),
+            )
+                .into_response(),
+            Some(false) => (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "This run was started by a different user." }))).into_response(),
+            None => (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response(),
+        },
         crate::review_gate::ResolveOutcome::Forbidden => (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "This run was started by a different user." }))).into_response(),
     }
+}
+
+/// `Some(true)` — an unresolved `pending_reviews` row exists for this job
+/// id and `caller_email` owns it (a restart-orphaned review). `Some(false)`
+/// — the row exists but belongs to a different owner. `None` — no such
+/// row at all (a genuinely unknown/already-resolved job id).
+fn lost_pending_review(state: &AppState, job_id: &str, caller_email: &str) -> Option<bool> {
+    let project_id = state.db.get_project_id_by_job_id(job_id)?;
+    let review = state.db.get_pending_review_by_project(project_id).filter(|r| r.resolved_at.is_none())?;
+    Some(review.owner_email == caller_email)
 }
 
 pub fn router() -> Router<Arc<AppState>> {

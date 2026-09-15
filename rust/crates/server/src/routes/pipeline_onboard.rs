@@ -200,6 +200,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
     let logger = Logger { state: state.clone(), meta: phase_meta.clone(), inner: Arc::new(Mutex::new(PipelineState { record: HashMap::new(), events: vec![], project_id: None })), job_id: job_id.clone() };
     let mut project_root: Option<std::path::PathBuf> = None;
     let mut project_id: i64 = 0;
+    let mut run_id: Option<i64> = None;
     let mut repo_url: Option<String> = None;
     let mut pr_url: Option<String> = None;
 
@@ -225,6 +226,12 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         }
         let source = if body.get("_client_is_mcp").and_then(|v| v.as_bool()).unwrap_or(false) { "mcp" } else { "api" };
         project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy())).map_err(|e| PipelineError::new(1, format!("Failed to create project record: {e}")))?;
+        run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
+        if let Some(rid) = run_id {
+            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Scanning) {
+                tracing::warn!("transition_scan_run({rid}, Scanning) failed: {e}");
+            }
+        }
         logger.set_project_id(project_id);
         logger.status(1, "success", None);
 
@@ -396,6 +403,17 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             }
         }
         logger.status(4, "success", None);
+        // Onboard has no interactive review gate — a blocking finding is
+        // either resolved synchronously via a body-supplied override
+        // above (an early `return Err` otherwise) or there were none to
+        // begin with, so reaching here always means "approved", the same
+        // way `pipeline_interactive/run.rs`'s no-findings-needed-review
+        // case reaches it directly from `Scanning`.
+        if let Some(rid) = run_id {
+            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Approved) {
+                tracing::warn!("transition_scan_run({rid}, Approved) failed: {e}");
+            }
+        }
 
         logger.status(5, "running", None);
         if !phase_enabled(&phase_meta, 5) {
@@ -425,11 +443,23 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         if dry_run {
             logger.log(6, "Simulation mode (dryRun) — all checks passed; skipping repository provisioning and push.");
             logger.status(6, "skipped", None);
+            // Before `finish_project` — see `pipeline_validate.rs`'s
+            // identical comment on why the ordering matters.
+            if let Some(rid) = run_id {
+                if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Completed) {
+                    tracing::warn!("transition_scan_run({rid}, Completed) failed: {e}");
+                }
+            }
             state.db.finish_project("success", None, None, None, project_id);
         } else {
             logger.status(6, "running", None);
             if !source_backup_dir.is_dir() {
                 return Err(PipelineError::new(6, "Immutable source snapshot is missing before phase 6."));
+            }
+            if let Some(rid) = run_id {
+                if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Publishing) {
+                    tracing::warn!("transition_scan_run({rid}, Publishing) failed: {e}");
+                }
             }
             let _ = std::fs::remove_dir_all(&publish_dir);
             ignite_staging::clone_directory_without_symlinks(&source_backup_dir, &publish_dir).map_err(|e| PipelineError::new(6, e.to_string()))?;
@@ -446,6 +476,11 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             repo_url = Some(ship_result.repo_url);
             pr_url = ship_result.pr_url;
 
+            if let Some(rid) = run_id {
+                if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Published) {
+                    tracing::warn!("transition_scan_run({rid}, Published) failed: {e}");
+                }
+            }
             state.db.finish_project("success", None, repo_url.as_deref(), pr_url.as_deref(), project_id);
         }
 
@@ -469,6 +504,17 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
     let _ = std::fs::remove_dir_all(&source_backup_dir);
     let _ = std::fs::remove_dir_all(&publish_dir);
     let _ = std::fs::remove_dir_all(&workflow_dir);
+
+    // The `Ok(())` (success) cases already set their precise terminal
+    // state (`Completed`/`Published`) inline above, before their
+    // respective `finish_project` calls — only the failure case still
+    // needs to be classified here.
+    if let (Some(rid), Err(e)) = (run_id, &result) {
+        let target = if e.issues.is_some() { ignite_run_lifecycle::RunLifecycleState::Blocked } else { ignite_run_lifecycle::RunLifecycleState::Failed };
+        if let Err(err) = state.db.transition_scan_run(rid, target) {
+            tracing::warn!("transition_scan_run({rid}, {target:?}) failed: {err}");
+        }
+    }
 
     match result {
         Ok(()) => Ok(json!({

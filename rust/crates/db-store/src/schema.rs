@@ -306,6 +306,33 @@ CREATE TABLE IF NOT EXISTS scan_runs (
   finished_at            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scan_runs_repository ON scan_runs(repository_id);
+
+-- US-04: persisted lifecycle-state history and the durable "awaiting
+-- review" record — see `ignite-run-lifecycle` for the legal-transition
+-- rules `lifecycle.rs`'s `transition_scan_run` enforces before writing a
+-- row here, and `review_gate.rs` for the two call sites (`wait`/`resolve`)
+-- that turn what used to be purely in-memory review-gate state into these
+-- rows, so a server restart doesn't erase the fact a review was pending or
+-- what it was decided.
+CREATE TABLE IF NOT EXISTS scan_run_transitions (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id     INTEGER NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,
+  from_state TEXT NOT NULL,
+  to_state   TEXT NOT NULL,
+  at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_scan_run_transitions_run ON scan_run_transitions(run_id);
+CREATE TABLE IF NOT EXISTS pending_reviews (
+  run_id       INTEGER PRIMARY KEY REFERENCES scan_runs(id) ON DELETE CASCADE,
+  project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  org          TEXT NOT NULL,
+  repo         TEXT NOT NULL,
+  owner_email  TEXT NOT NULL,
+  issues_json  TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at  TEXT,
+  decision_json TEXT
+);
 "#;
 
 /// Backfills `repositories`/`source_snapshots`/`scan_runs` from every
@@ -419,4 +446,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // JSON array of `{name, ms}`; NULL for every row written before this
     // migration and for any phase other than 4.
     (26, "ALTER TABLE steps ADD COLUMN task_timings_json TEXT"),
+    // US-04: scoped idempotency keys — "same key and payload returns the
+    // same run; conflicting payload returns a conflict." The partial
+    // unique index (SQLite: a `WHERE` clause on the index itself) only
+    // constrains rows that actually supplied a key, so every pre-existing
+    // row (and every future caller that doesn't pass one) is unaffected.
+    (27, "ALTER TABLE scan_runs ADD COLUMN idempotency_key TEXT; ALTER TABLE scan_runs ADD COLUMN idempotency_payload_hash TEXT; CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_runs_idempotency ON scan_runs(repository_id, idempotency_key) WHERE idempotency_key IS NOT NULL;"),
 ];

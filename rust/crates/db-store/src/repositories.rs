@@ -90,7 +90,25 @@ impl DbStore {
     /// normalized run's lifecycle never drifts from the legacy row's own
     /// status. Unrecognized/custom statuses map to `completed` rather than
     /// panicking, since `projects.status` is a free-form `TEXT` column.
+    ///
+    /// US-04: this mapping is deliberately naive — it has no way to tell
+    /// "success" (validate-all, or a dry-run onboard/interactive run —
+    /// nothing was actually published) apart from "success, and it really
+    /// did publish" the way `transition_scan_run` callers who know which
+    /// case they're in can. Those callers set the *precise* terminal
+    /// state (`completed`/`published`/`blocked`) themselves before
+    /// calling `finish_project`; this function only ever fills in a
+    /// value when nothing more precise already has, since a terminal
+    /// state has no legal outgoing transition to overwrite — so it acts
+    /// purely as a fallback for call sites (`set_project_status`,
+    /// `scheduled-rescan`, ...) that don't yet compute a precise outcome,
+    /// never clobbering one that already exists.
     pub fn sync_scan_run_lifecycle(&self, legacy_project_id: i64, project_status: &str, finished: bool) {
+        let conn = self.conn.lock();
+        let current: Option<String> = conn.query_row("SELECT lifecycle_state FROM scan_runs WHERE legacy_project_id = ?", params![legacy_project_id], |r| r.get(0)).optional().unwrap_or(None);
+        if current.as_deref().and_then(ignite_run_lifecycle::RunLifecycleState::parse).map(|s| s.is_terminal()).unwrap_or(false) {
+            return;
+        }
         let lifecycle = match project_status {
             "success" => "published",
             "failed" => "failed",
@@ -98,7 +116,6 @@ impl DbStore {
             "running" => "scanning",
             _ => "completed",
         };
-        let conn = self.conn.lock();
         if finished {
             if let Err(e) = conn.execute("UPDATE scan_runs SET lifecycle_state = ?, finished_at = datetime('now') WHERE legacy_project_id = ?", params![lifecycle, legacy_project_id]) {
                 tracing::error!("sync_scan_run_lifecycle({legacy_project_id}) failed: {e}");

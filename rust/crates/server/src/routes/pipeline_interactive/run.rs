@@ -20,6 +20,11 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
 
     let mut all_issues: Vec<Issue> = Vec::new();
     let mut project_id: Option<i64> = None;
+    // US-04: the normalized `scan_runs.id` for this run, resolved once
+    // `project_id` is known — `None` for the (rare) case Phase 1 itself
+    // failed before a project row (and so a scan run) ever existed, in
+    // which case there's nothing to transition.
+    let mut run_id: Option<i64> = None;
     let mut phase1_ok = false;
     let mut project_root_ready = false;
     let mut project_root: Option<PathBuf> = None;
@@ -77,6 +82,12 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 match state.db.create_project(&job_id, &org, &repo, is_gxp, "ui", Some(&scan_location)) {
                     Ok(pid) => {
                         project_id = Some(pid);
+                        run_id = state.db.get_scan_run_for_legacy_project(pid).map(|r| r.id);
+                        if let Some(rid) = run_id {
+                            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Scanning) {
+                                tracing::warn!("transition_scan_run({rid}, Scanning) failed: {e}");
+                            }
+                        }
                         log.set_project_id(pid);
                         if let Some(live) = state.running_runs.lock().get_mut(&job_id) {
                             live.project_id = Some(pid);
@@ -440,10 +451,37 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 .collect();
             log.send(json!({ "type": "review_required", "phase": 6, "jobId": job_id, "issues": review_issues }));
 
+            // US-04: the durable counterpart to `review_gate.wait`'s
+            // in-memory registration above — a server restart loses the
+            // live oneshot (and so the ability to transparently resume
+            // *this* task), but `pending_reviews` still lets a client
+            // reconnecting with this job id (`GET .../status`) see that a
+            // review was pending, for which issues, and lets an operator
+            // recognize the run needs to be restarted rather than silently
+            // hanging forever.
+            if let Some(rid) = run_id {
+                if let Some(pid) = project_id {
+                    let issues_json = serde_json::to_string(&review_issues).unwrap_or_else(|_| "[]".to_string());
+                    state.db.create_pending_review(rid, pid, &org, &repo, &owner_email, &issues_json);
+                }
+                if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::AwaitingReview) {
+                    tracing::warn!("transition_scan_run({rid}, AwaitingReview) failed: {e}");
+                }
+            }
+
             let decision = match rx.await {
                 Ok(d) => d,
-                Err(_) => break 'run Err((6, "Pipeline interrupted: review gate closed without a decision.".to_string())),
+                Err(_) => {
+                    if let Some(rid) = run_id {
+                        let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Failed);
+                    }
+                    break 'run Err((6, "Pipeline interrupted: review gate closed without a decision.".to_string()));
+                }
             };
+            if let Some(rid) = run_id {
+                let decision_json = json!({ "proceed": decision.proceed, "actorEmail": decision.actor.email, "overrideCount": decision.overrides.len() }).to_string();
+                state.db.record_review_decision(rid, &decision_json);
+            }
             if let Some(live) = state.running_runs.lock().get_mut(&job_id) {
                 live.review_active = false;
             }
@@ -556,9 +594,15 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             persist_issues_snapshot(&state, &job_id, project_id, &all_issues, &applied_ids);
 
             if !decision.proceed {
+                if let Some(rid) = run_id {
+                    let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Blocked);
+                }
                 break 'run Err((6, "Pipeline interrupted by user after reviewing all flagged issues.".to_string()));
             }
             if !needs_approval.is_empty() {
+                // Stays `awaiting_review` — this is a *different* gate (a
+                // second reviewer's dual-custody approval) still pending,
+                // not this run reaching a terminal state.
                 break 'run Err((6, format!("{} critical finding(s) require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.", needs_approval.len())));
             }
             if !ok {
@@ -566,9 +610,22 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 for line in &unresolved_lines {
                     log.log(6, line);
                 }
+                if let Some(rid) = run_id {
+                    let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Blocked);
+                }
                 break 'run Err((6, format!("{unresolved_count} unresolved blocking finding(s) remain across the run. Override each with a justification, or fix them and re-run.")));
             }
             log.log(6, "✓ User chose to continue after reviewing all flagged issues.");
+        }
+        if let Some(rid) = run_id {
+            // Reached phase 6 with nothing left blocking — either no
+            // finding ever needed a decision (`Scanning -> Approved`
+            // directly), or the review above just approved proceeding
+            // (`AwaitingReview -> Approved`); a same-state call is a legal
+            // no-op either way.
+            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Approved) {
+                tracing::warn!("transition_scan_run({rid}, Approved) failed: {e}");
+            }
         }
 
         // ---------------- Phase 6: provisioning + shipping ----------------
@@ -583,6 +640,14 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             );
             log.log(6, "The validated snapshot is kept so this run can be effectivated (provisioned + pushed for real) later, still gated on any unresolved blocking findings.");
             log.status(6, "skipped", None);
+            // Before `finish_project` — its own internal lifecycle sync
+            // is a naive `"success" -> "published"` fallback that
+            // doesn't know this was a dry run; a precise state set first
+            // is never overwritten (terminal states reject any further
+            // transition, `sync_scan_run_lifecycle`'s included).
+            if let Some(rid) = run_id {
+                let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Completed);
+            }
             if let Some(pid) = project_id {
                 state.db.finish_project("success", None, None, None, pid);
             }
@@ -590,12 +655,28 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             break 'run Ok(());
         }
 
+        // A missing required snapshot must be a clear, recoverable
+        // failure — never something that could be mistaken for a passing
+        // decision (this run's own `all_issues`/policy outcome is
+        // unrelated to whether the snapshot phase 6 needs is actually on
+        // disk).
         let backup_ok = source_backup_dir.is_dir();
         if !backup_ok {
+            if let Some(rid) = run_id {
+                let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Failed);
+            }
             break 'run Err((6, "Immutable source snapshot is missing before phase 6 — an earlier phase failed to produce a publishable project.".to_string()));
+        }
+        if let Some(rid) = run_id {
+            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Publishing) {
+                tracing::warn!("transition_scan_run({rid}, Publishing) failed: {e}");
+            }
         }
         let _ = std::fs::remove_dir_all(&publish_dir);
         if let Err(e) = ignite_staging::clone_directory_without_symlinks(&source_backup_dir, &publish_dir) {
+            if let Some(rid) = run_id {
+                let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Failed);
+            }
             break 'run Err((6, e.to_string()));
         }
         log.log(6, "Prepared clean publish workspace from immutable source snapshot.");
@@ -611,6 +692,11 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 log.log(6, &format!("✓ Repository live at {}", ship_result.repo_url));
                 log.status(6, "success", Some(json!({ "repoUrl": ship_result.repo_url, "prUrl": ship_result.pr_url })));
                 shipped_for_real = true;
+                // Before `finish_project` — see the dry-run branch's
+                // identical comment on why the ordering matters.
+                if let Some(rid) = run_id {
+                    let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Published);
+                }
                 if let Some(pid) = project_id {
                     state.db.finish_project("success", None, Some(&ship_result.repo_url), ship_result.pr_url.as_deref(), pid);
                     // publish_dir still has the just-pushed commit checked
@@ -631,7 +717,19 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 log.send(json!({ "type": "done", "ok": true, "dryRun": dry_run, "repoUrl": ship_result.repo_url, "prUrl": ship_result.pr_url, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id }));
                 Ok(())
             }
-            Err(e) => Err((6, e.to_string())),
+            Err(e) => {
+                // `ship_to_github` failing here doesn't tell us whether it
+                // failed before or after actually creating/pushing to the
+                // remote repository (see `ignite-shipping`'s own
+                // reconciliation gap — US-06's scope, not this story's);
+                // "failed" is at least never mistaken for "published",
+                // which is what this acceptance criterion actually asks
+                // for.
+                if let Some(rid) = run_id {
+                    let _ = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Failed);
+                }
+                Err((6, e.to_string()))
+            }
         }
     };
 

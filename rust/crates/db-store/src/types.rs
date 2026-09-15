@@ -466,3 +466,33 @@ pub struct ScanRunRow {
     pub finished_at: Option<String>,
     pub legacy_job_id: Option<String>,
 }
+
+/// US-04: the durable "awaiting review" record — what `review_gate.rs`'s
+/// `ReviewGate::wait` used to hold only in an in-process `oneshot` map.
+/// Surviving a restart means this row (and `resolved_at`/`decision_json`
+/// once a decision lands) is queryable even though the original async
+/// task awaiting that oneshot is gone.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReviewRow {
+    pub run_id: i64,
+    pub project_id: i64,
+    pub org: String,
+    pub repo: String,
+    pub owner_email: String,
+    pub issues_json: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub decision_json: Option<String>,
+}
+
+/// US-04: idempotency-key lookup result — the existing run a duplicate
+/// request with a matching key+payload should be pointed back at, instead
+/// of starting a second one.
+#[derive(Debug, Clone)]
+pub struct IdempotentRunMatch {
+    pub run_id: i64,
+    pub legacy_project_id: Option<i64>,
+    pub legacy_job_id: Option<String>,
+    pub payload_hash: String,
+}
