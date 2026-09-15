@@ -162,6 +162,62 @@ pub struct Phase4Output {
     /// that runs gets a timing, including the built-in ones outside the
     /// concurrent fan-out.
     pub task_timings: Vec<(&'static str, u64)>,
+    /// US-02: one [`ignite_policy::CheckCoverage`] per check that ran (or
+    /// was skipped/disabled/unavailable) this Phase 4 pass — see
+    /// [`coverage_for_engine`]. Distinct from `issues`: a check with an
+    /// empty findings list still gets a `Completed` coverage entry here,
+    /// so "found nothing" and "never ran" are never conflated downstream.
+    pub coverage: Vec<ignite_policy::CheckCoverage>,
+}
+
+/// Maps this codebase's existing `engine: &'static str` convention
+/// (already present on ~25 check result structs — `"disabled"`,
+/// `"failed"`/`"error"`, `"unconfigured"`, `"fallback"`, or the real tool/
+/// `"built-in"` name) onto a [`ignite_policy::CheckCoverage`], with no
+/// change needed to any individual check crate. `"fallback"` is the one
+/// value that means a *degraded* built-in path was used in place of a
+/// full external engine (`sbom`, `feature-posture`) — every other check's
+/// own `"built-in"` is its one true native engine, not a degraded
+/// substitute for anything, so it's `is_fallback: false`.
+/// Every Phase 4 check id *except* `secrets`/`governance`/`semanticSast`/
+/// `fileEncapsulation` (`FAST_MODE_TASKS`) — must be kept in sync with the
+/// check ids passed to [`coverage_for_engine`]/`coverage.push` in the
+/// full-mode path below.
+const FULL_MODE_ONLY_CHECKS: &[&str] = &[
+    "pii",
+    "duplication",
+    "locMetrics",
+    "igniteIgnore",
+    "llm",
+    "iac",
+    "ghaSecurity",
+    "imageVulnerabilities",
+    "sbom",
+    "provenance",
+    "imageProvenance",
+    "apiSchema",
+    "apiSchemaDrift",
+    "maliciousDependencies",
+    "modelArtifactSecurity",
+    "packageHallucination",
+    "posture",
+    "codeql",
+    "euAiActDocuments",
+    "deadCode",
+    "health",
+    "cssDeadCode",
+    "boundaries",
+];
+
+fn coverage_for_engine(check_id: &'static str, engine: &str, finding_count: usize) -> ignite_policy::CheckCoverage {
+    use ignite_policy::CheckCoverage;
+    match engine {
+        "disabled" => CheckCoverage::disabled(check_id),
+        "failed" | "error" => CheckCoverage::failed(check_id, "check returned an error result instead of completing"),
+        "unconfigured" => CheckCoverage::not_applicable(check_id, "not configured for this project"),
+        "fallback" => CheckCoverage::completed(check_id, "built-in-fallback", true),
+        other => CheckCoverage::completed(check_id, other, false).with_scope(format!("{finding_count} finding(s)")),
+    }
 }
 
 fn to_json_bytes<T: serde::Serialize>(v: &T) -> Vec<u8> {
@@ -205,6 +261,7 @@ pub async fn run_phase4_checks(
     log: &(dyn Fn(&str) + Sync),
 ) -> std::io::Result<Phase4Output> {
     let mut task_timings: Vec<(&'static str, u64)> = Vec::new();
+    let mut coverage: Vec<ignite_policy::CheckCoverage> = Vec::new();
     let __t0 = std::time::Instant::now();
     log("→ secrets starting...");
     let secrets_cache = store.get_file_scan_cache(&config.org, &config.repo, "secrets");
@@ -212,6 +269,7 @@ pub async fn run_phase4_checks(
         secrets_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_secrets::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
     let __t_secrets = std::time::Instant::now();
     let (mut secrets_result, secrets_new_cache) = ignite_secrets::check_secrets(root, &config.secrets, &secrets_cache)?;
+    coverage.push(ignite_policy::CheckCoverage::completed("secrets", if config.secrets.gitleaks_enabled { "built-in+gitleaks" } else { "built-in" }, false).with_scope(format!("{} file(s) scanned, {} cache hit(s)", secrets_result.scanned, secrets_result.cache_hits)));
     store.replace_file_scan_cache(
         &config.org,
         &config.repo,
@@ -350,6 +408,7 @@ pub async fn run_phase4_checks(
         &governance_new_cache.iter().map(|(k, v)| ignite_db_store::FileScanCacheInput { rel_path: k.clone(), hash: v.hash.clone(), findings: serde_json::to_value(v).unwrap() }).collect::<Vec<_>>(),
     );
     let ms_governance = __t_governance.elapsed().as_millis() as u64;
+    coverage.push(ignite_policy::CheckCoverage::completed("governance", "built-in", false).with_duration_ms(ms_governance));
     task_timings.push(("governance", ms_governance));
     log(&format!("✓ governance done ({} finding(s), {ms_governance}ms)", governance_result.findings.len()));
     let governance_check =
@@ -416,7 +475,16 @@ pub async fn run_phase4_checks(
         };
         let issues = ignite_override_engine::collect_phase4_issues(&inputs);
         task_timings.push(("phase4Total", __t0.elapsed().as_millis() as u64));
-        return Ok(Phase4Output { issues, documents: Phase4Documents { sbom: None, provenance: None, loc_metrics: None, posture_report: None, ai_act_documents_report: None }, task_timings });
+        coverage.push(coverage_for_engine("semanticSast", semantic_sast_result.engine, semantic_sast_result.findings.len()));
+        coverage.push(coverage_for_engine("fileEncapsulation", file_encapsulation_result.engine, file_encapsulation_result.findings.len()));
+        // Every other Phase 4 check simply isn't run in fast mode
+        // (`FAST_MODE_TASKS` above) — an operator's own deliberate
+        // scope choice, the same "turned off" shape as `Disabled` for any
+        // one check, not a failure of any kind.
+        for check_id in FULL_MODE_ONLY_CHECKS {
+            coverage.push(ignite_policy::CheckCoverage::disabled_with_reason(*check_id, "skipped: fast mode only runs secrets/governance/semanticSast/fileEncapsulation"));
+        }
+        return Ok(Phase4Output { issues, documents: Phase4Documents { sbom: None, provenance: None, loc_metrics: None, posture_report: None, ai_act_documents_report: None }, task_timings, coverage });
     }
 
     let http_client = reqwest::Client::new();
@@ -677,6 +745,40 @@ pub async fn run_phase4_checks(
         ("codeql", ms_codeql),
     ]);
 
+    coverage.push(coverage_for_engine("semanticSast", semantic_sast_result.engine, semantic_sast_result.findings.len()));
+    coverage.push(coverage_for_engine("pii", pii_result.engine, pii_result.findings.len()));
+    coverage.push(coverage_for_engine("duplication", duplication_result.engine, duplication_result.findings.len()));
+    coverage.push(match &loc_metrics_result.metrics {
+        Some(m) => coverage_for_engine("locMetrics", loc_metrics_result.engine, m.files.len()).with_scope(format!("{} language(s)", m.languages.len())),
+        None => coverage_for_engine("locMetrics", loc_metrics_result.engine, 0),
+    });
+    coverage.push(coverage_for_engine("igniteIgnore", igniteignore_result.engine, igniteignore_result.findings.len()));
+    coverage.push(match &llm_result {
+        None => ignite_policy::CheckCoverage::disabled("llm"),
+        Some(x) if !x.available => ignite_policy::CheckCoverage::unavailable("llm", x.reason.clone().unwrap_or_else(|| "model unavailable".to_string())),
+        Some(x) => ignite_policy::CheckCoverage::completed("llm", "llm-deep-scan", false).with_scope(format!("{} finding(s)", x.findings.len())),
+    });
+    coverage.push(coverage_for_engine("iac", &iac_result.engine, iac_result.findings.len()));
+    coverage.push(coverage_for_engine("ghaSecurity", gha_security_result.engine, gha_security_result.findings.len()));
+    coverage.push(coverage_for_engine("imageVulnerabilities", image_vuln_result.engine, image_vuln_result.findings.len()));
+    coverage.push(coverage_for_engine(
+        "sbom",
+        sbom_result.engine,
+        match &sbom_result.sbom {
+            ignite_sbom::SbomOutcome::Syft(v) => v.get("components").and_then(|c| c.as_array()).map(|a| a.len()).unwrap_or(0),
+            ignite_sbom::SbomOutcome::Fallback(f) => f.components.len(),
+        },
+    ));
+    coverage.push(if provenance_result.is_some() { ignite_policy::CheckCoverage::completed("provenance", "built-in", false) } else { ignite_policy::CheckCoverage::not_applicable("provenance", "no project id") });
+    coverage.push(coverage_for_engine("imageProvenance", image_provenance_result.engine, image_provenance_result.findings.len()));
+    coverage.push(coverage_for_engine("apiSchema", api_schema_result.engine, api_schema_result.findings.len()));
+    coverage.push(coverage_for_engine("apiSchemaDrift", api_schema_drift_result.engine, api_schema_drift_result.findings.len()));
+    coverage.push(coverage_for_engine("maliciousDependencies", malicious_deps_result.engine, malicious_deps_result.findings.len()));
+    coverage.push(coverage_for_engine("modelArtifactSecurity", model_artifact_result.engine, model_artifact_result.findings.len()));
+    coverage.push(coverage_for_engine("packageHallucination", hallucination_result.engine, hallucination_result.findings.len()));
+    coverage.push(coverage_for_engine("posture", posture_result.engine, posture_result.posture.len()));
+    coverage.push(coverage_for_engine("codeql", codeql_result.engine, codeql_result.findings.len()));
+
     let llm_check = llm_result.map(|result| LlmResult {
         available: result.available,
         findings: result
@@ -766,6 +868,7 @@ pub async fn run_phase4_checks(
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("fileEncapsulation", ms));
+    coverage.push(coverage_for_engine("fileEncapsulation", file_encapsulation_result.engine, file_encapsulation_result.findings.len()));
     log(&format!("✓ fileEncapsulation done ({} finding(s), {ms}ms)", file_encapsulation_result.findings.len()));
     let file_encapsulation_check = Some(CheckResult {
         findings: file_encapsulation_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
@@ -809,6 +912,7 @@ pub async fn run_phase4_checks(
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("euAiActDocuments", ms));
+    coverage.push(coverage_for_engine("euAiActDocuments", ai_act_docs_result.engine, 0));
     log(&format!("✓ euAiActDocuments done ({ms}ms)"));
     let ai_act_docs_doc = if config.project_id.is_some() { Some(to_json_bytes(&serde_json::json!({ "engine": ai_act_docs_result.engine, "documents": ai_act_docs_result.documents }))) } else { None };
 
@@ -826,6 +930,7 @@ pub async fn run_phase4_checks(
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("deadCode", ms));
+    coverage.push(coverage_for_engine("deadCode", dead_code_result.engine, dead_code_result.findings.len()));
     log(&format!("✓ deadCode done ({} finding(s), {ms}ms)", dead_code_result.findings.len()));
     let dead_code_check = Some(CheckResult {
         findings: dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
@@ -843,6 +948,7 @@ pub async fn run_phase4_checks(
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("health", ms));
+    coverage.push(coverage_for_engine("health", health_result.engine, health_result.findings.len()));
     log(&format!("✓ health done ({} finding(s), {ms}ms)", health_result.findings.len()));
     let health_check = Some(CheckResult {
         findings: health_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
@@ -857,6 +963,7 @@ pub async fn run_phase4_checks(
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("cssDeadCode", ms));
+    coverage.push(coverage_for_engine("cssDeadCode", css_dead_code_result.engine, css_dead_code_result.findings.len()));
     log(&format!("✓ cssDeadCode done ({} finding(s), {ms}ms)", css_dead_code_result.findings.len()));
     let css_dead_code_check = Some(CheckResult {
         findings: css_dead_code_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
@@ -871,6 +978,7 @@ pub async fn run_phase4_checks(
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("boundaries", ms));
+    coverage.push(coverage_for_engine("boundaries", boundaries_result.engine, boundaries_result.findings.len()));
     log(&format!("✓ boundaries done ({} finding(s), {ms}ms)", boundaries_result.findings.len()));
     let boundaries_check = Some(CheckResult {
         findings: boundaries_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
@@ -923,6 +1031,7 @@ pub async fn run_phase4_checks(
         issues,
         documents: Phase4Documents { sbom: sbom_doc, provenance: provenance_doc, loc_metrics: loc_metrics_doc, posture_report: posture_doc, ai_act_documents_report: ai_act_docs_doc },
         task_timings,
+        coverage,
     })
 }
 

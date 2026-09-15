@@ -225,6 +225,9 @@
     "highDays": 30,
     "mediumDays": 90
   },
+  "policy": {
+    "strict": false
+  },
   "auditLog": {
     "enabled": false,
     "sinks": [

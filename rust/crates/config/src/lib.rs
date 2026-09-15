@@ -62,6 +62,7 @@ pub struct Config {
     pub ai_auto_justify: AiAutoJustifyConfig,
     pub sla: SlaConfig,
     pub audit_log: AuditLogConfig,
+    pub policy: PolicyConfig,
 }
 
 impl Default for Config {
@@ -86,6 +87,7 @@ impl Default for Config {
             ai_auto_justify: AiAutoJustifyConfig::default(),
             sla: SlaConfig::default(),
             audit_log: AuditLogConfig::default(),
+            policy: PolicyConfig::default(),
         }
     }
 }
@@ -130,6 +132,21 @@ impl std::fmt::Debug for AuditSinkConfig {
 /// since the score already carries the finer-grained triage signal.
 /// Defaults follow common vuln-management SLA norms (critical/high/medium
 /// tiers); `mediumDays` also covers everything below the high threshold.
+/// US-02: which named [`ignite_policy::PolicyVersion`] `validate-all`
+/// pins for a run. `strict: false` (default) is
+/// [`ignite_policy::PolicyVersion::legacy_compatible`] — every existing
+/// installation's gate behavior is unchanged, coverage is still reported
+/// but never turns a clean-findings run `incomplete`. `strict: true` opts
+/// into [`ignite_policy::PolicyVersion::strict_publication`] — a
+/// deliberate, explicit per-deployment choice, matching this backlog's
+/// "require deliberate configuration to change an existing installation's
+/// gating policy" instruction.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyConfig {
+    pub strict: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlaConfig {
@@ -1244,6 +1261,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("OVERRIDE_APPROVAL_ENABLED") { merged.security.override_approval.enabled = v; }
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_VALIDATE_ALL") { merged.security.allow_unauthenticated_validate_all = v; }
     if let Some(v) = env_csv("OVERRIDE_APPROVAL_APPROVER_EMAILS") { merged.security.override_approval.approver_emails = v; }
+    if let Some(v) = env_bool("POLICY_STRICT") { merged.policy.strict = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }

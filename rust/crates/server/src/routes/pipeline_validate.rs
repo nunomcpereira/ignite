@@ -271,6 +271,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let mut project_root: Option<std::path::PathBuf> = None;
     let mut issues: Vec<Issue> = vec![];
     let mut phase4_task_timings: Vec<(&'static str, u64)> = vec![];
+    let mut phase4_coverage: Vec<ignite_policy::CheckCoverage> = vec![];
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut project_id: i64 = 0;
 
@@ -399,6 +400,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 Ok(output) => {
                     issues.extend(output.issues);
                     phase4_task_timings.extend(output.task_timings);
+                    phase4_coverage.extend(output.coverage);
                 }
                 Err(e) => return Err(PipelineError::new(4, e.to_string())),
             }
@@ -607,6 +609,19 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let total_issue_count = tagged.len();
             let filtered = filter_tagged_by_changed_files(&tagged, changed_files.as_ref());
 
+            // US-02: report coverage/policy decision alongside findings —
+            // `evaluate_policy` is the same pure function every entry point
+            // (browser streaming, this headless path, CLI, MCP-via-HTTP)
+            // shares, so a clean `issues` list can never be mistaken for a
+            // complete assessment. `legacy_compatible()` preserves this
+            // existing endpoint's current gate behavior unchanged (no check
+            // is individually required) while still surfacing what did/
+            // didn't run; a deployment opts into `strict_publication()` via
+            // `policy.version` in `config.json` (`ignite_config`).
+            let blocking_unresolved = issues.iter().any(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id));
+            let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
+            let policy_decision = ignite_policy::evaluate_policy(&phase4_coverage, blocking_unresolved, false, &policy_version);
+
             if baseline_mode.as_deref() == Some("save") {
                 let ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
                 if let Err(e) = state.db.save_baseline(&org, &repo, &ids) {
@@ -623,6 +638,8 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 "phases": phases,
                 "__stageTimings": stage_timings,
                 "events": events,
+                "coverage": phase4_coverage,
+                "policyDecision": policy_decision,
             });
             let obj = response.as_object_mut().unwrap();
             if fast {
@@ -658,6 +675,12 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                     })
                     .collect()
             });
+            // US-02: coverage/policy decision survive onto a failed run's
+            // response too — a blocked/incomplete run is exactly the case
+            // where knowing what did/didn't run matters most.
+            let blocking_unresolved = e.issues.as_ref().map(|list| list.iter().any(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id))).unwrap_or(true);
+            let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
+            let policy_decision = ignite_policy::evaluate_policy(&phase4_coverage, blocking_unresolved, false, &policy_version);
             let mut response = json!({
                 "ok": false,
                 "mode": "validate-all",
@@ -668,6 +691,8 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 "phases": phases,
                 "__stageTimings": stage_timings,
                 "events": events,
+                "coverage": phase4_coverage,
+                "policyDecision": policy_decision,
             });
             let obj = response.as_object_mut().unwrap();
             if let Some(fi) = &failure_issues {
@@ -813,6 +838,14 @@ mod phase_gating_tests {
 
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
         assert!(issues.iter().any(|i| i["category"] == "secret"), "expected a secrets finding with phase 4 enabled: {issues:?}");
+
+        // US-02: coverage/policyDecision ride along with every validate-all
+        // response (pass or fail — an unresolved secret finding here makes
+        // this a 400/blocked response, not a 200), not just the findings
+        // list.
+        let coverage = body["coverage"].as_array().cloned().unwrap_or_default();
+        assert!(coverage.iter().any(|c| c["checkId"] == "secrets" && c["outcome"] == "completed"), "expected a completed 'secrets' coverage entry: {coverage:?}");
+        assert_eq!(body["policyDecision"]["policyVersion"], "legacy-compatible-v1", "default config pins the legacy-compatible policy");
     }
 
     #[tokio::test]

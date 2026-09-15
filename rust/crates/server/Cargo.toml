@@ -52,6 +52,7 @@ ignite-fs-utils = { path = "../fs-utils" }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 ignite-phase4-orchestrator = { path = "../phase4-orchestrator" }
+ignite-policy = { path = "../policy" }
 ignite-complexity-health = { path = "../complexity-health" }
 ignite-boundaries = { path = "../boundaries" }
 ignite-file-encapsulation = { path = "../file-encapsulation" }
