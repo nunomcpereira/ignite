@@ -5,6 +5,14 @@
 use super::run::run_interactive_pipeline;
 use super::*;
 
+/// The fixed owner identity an unauthenticated *simulation* run
+/// (`security.allow_unauthenticated_interactive_dry_run`) is attributed
+/// to — never a client-supplied value. Shared between `pipeline` (which
+/// sets it as `ReviewGate::wait`'s `owner_email`) and `review_decision`
+/// (which must accept it back as `caller_email` for that same run, since
+/// there's no session to compare against instead).
+const UNAUTHENTICATED_SIMULATION_ACTOR: &str = "unauthenticated-simulation@ignite.internal";
+
 async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, multipart: Multipart) -> Response {
     let upload = match parse_multipart(multipart).await {
         Ok(u) => u,
@@ -34,7 +42,7 @@ async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(
     // fallback) — an unauthenticated *simulation* has no session to
     // attribute it to, so it gets one clearly-labeled synthetic owner
     // rather than trusting anything the request itself claims to be.
-    let owner_email = user.map(|u| u.email).unwrap_or_else(|| "unauthenticated-simulation@ignite.internal".to_string());
+    let owner_email = user.map(|u| u.email).unwrap_or_else(|| UNAUTHENTICATED_SIMULATION_ACTOR.to_string());
     tokio::spawn(async move {
         run_interactive_pipeline(state, upload, log, job_id_task, session_gh_token, owner_email).await;
     });
@@ -54,7 +62,7 @@ async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(
 /// the review gate. Thin enough to live here rather than waiting on the
 /// full routes/review_gate.js port (studio.js's file-browsing endpoints,
 /// which share that file, are the parts still not ported).
-async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, axum::Json(body): axum::Json<Value>) -> Response {
+async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, axum::Json(body): axum::Json<Value>) -> Response {
     let proceed = body.get("proceed").and_then(|v| v.as_bool()).unwrap_or(false);
     let overrides: Vec<SubmittedOverride> = body
         .get("overrides")
@@ -65,19 +73,35 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
             code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }).collect())
         .unwrap_or_default();
-    // Every decision now requires a real authenticated session — an
-    // unauthenticated `{"proceed": false}` or `{"proceed": true}` used to
-    // go through unchecked (only submitting overrides required auth),
-    // which let anyone who could guess/observe a job id abort or
-    // force-proceed a run they had no relationship to at all. Identity
-    // for the audit trail always comes from the session, never a
-    // client-supplied {email, name}, which anyone could spoof.
-    let actor = Actor { email: user.email.clone(), name: user.name.clone().unwrap_or_else(|| user.email.clone()) };
-    // `ReviewGate::resolve` additionally verifies `user.email` matches
+    // A decision requires a real authenticated session, *unless* this is
+    // the review gate for a run that itself started as an unauthenticated
+    // simulation (`security.allow_unauthenticated_interactive_dry_run`) —
+    // that run's owner is the fixed `UNAUTHENTICATED_SIMULATION_ACTOR`
+    // sentinel, never a client-supplied identity, so this can't be used
+    // to decide *any other* run: `ReviewGate::resolve` below still
+    // verifies `caller_email` matches the specific `owner_email`
+    // `ReviewGate::wait` recorded, exactly as it always has — an
+    // unauthenticated caller can only ever match a run that was itself
+    // started unauthenticated. Without this, a simulation run could be
+    // started without a session but then never be dismissed: the popup
+    // has no session to submit a decision with, `Authentication
+    // required.` on every Continue/Stop click, permanently stuck.
+    let (caller_email, actor) = match user {
+        Some(u) => {
+            let name = u.name.clone().unwrap_or_else(|| u.email.clone());
+            (u.email.clone(), Actor { email: u.email, name })
+        }
+        None if state.config.security.allow_unauthenticated_interactive_dry_run => {
+            (UNAUTHENTICATED_SIMULATION_ACTOR.to_string(), Actor { email: UNAUTHENTICATED_SIMULATION_ACTOR.to_string(), name: "Unauthenticated simulation".to_string() })
+        }
+        None => return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Authentication required." }))).into_response(),
+    };
+    // `ReviewGate::resolve` additionally verifies `caller_email` matches
     // whoever started this run (`ReviewGate::wait`'s `owner_email`) — a
-    // second layer beyond "must be logged in", since without it any
-    // authenticated user could still decide any other user's paused run.
-    match state.review_gate.resolve(&job_id, &user.email, ReviewDecisionInput { proceed, overrides, actor }) {
+    // second layer beyond "must be logged in" (or, here, "must be the
+    // one unauthenticated-simulation sentinel"), since without it any
+    // caller could still decide any other user's paused run.
+    match state.review_gate.resolve(&job_id, &caller_email, ReviewDecisionInput { proceed, overrides, actor }) {
         crate::review_gate::ResolveOutcome::Resolved => (StatusCode::OK, axum::Json(json!({ "ok": true }))).into_response(),
         // US-04: the in-memory oneshot this run's paused task was
         // actually awaiting is gone after every process restart — true
@@ -90,7 +114,7 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
         // restarted and it can't be resumed" is the honest, recoverable
         // failure this acceptance criterion actually asks for, instead of
         // a generic 404 that reads the same as a typo'd job id.
-        crate::review_gate::ResolveOutcome::NotFound => match lost_pending_review(&state, &job_id, &user.email) {
+        crate::review_gate::ResolveOutcome::NotFound => match lost_pending_review(&state, &job_id, &caller_email) {
             Some(true) => (
                 StatusCode::GONE,
                 axum::Json(json!({
