@@ -369,6 +369,89 @@ CREATE TABLE IF NOT EXISTS audit_event_logs (
   gzip_blob  BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- US-06: publication intent, persisted *before* the remote GitHub side
+-- effects it describes (repo create/reuse, push, PR create) rather than
+-- only ever being reconstructed from GitHub's own state after the fact.
+-- `source_digest` binds a publish to the exact approved snapshot it may
+-- publish; `idempotency_key` lets a client-retried request return the
+-- original attempt instead of provisioning/pushing a second time.
+CREATE TABLE IF NOT EXISTS publication_attempts (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id           INTEGER REFERENCES scan_runs(id) ON DELETE SET NULL,
+  org              TEXT NOT NULL,
+  repo             TEXT NOT NULL,
+  source_digest    TEXT NOT NULL,
+  idempotency_key  TEXT,
+  stage            TEXT NOT NULL DEFAULT 'pending',
+  repo_url         TEXT,
+  commit_sha       TEXT,
+  pr_url           TEXT,
+  error            TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_publication_attempts_project_digest ON publication_attempts(project_id, source_digest);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_publication_attempts_idempotency ON publication_attempts(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+-- US-07: stable finding identity, separate from a run's raw per-scan
+-- issue list. `fingerprint` is `ignite_override_engine::stable_fingerprint`
+-- (content-hashed, tolerant of pure line drift) — the old
+-- `category::file::line` id (`legacy_issue_id`) is kept alongside it
+-- purely as a compatibility pointer back to the override/SARIF/GitHub-
+-- alert id scheme, never as the row's own identity.
+CREATE TABLE IF NOT EXISTS findings (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository_id     INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  category          TEXT NOT NULL,
+  fingerprint       TEXT NOT NULL,
+  legacy_issue_id   TEXT NOT NULL,
+  tool              TEXT,
+  status            TEXT NOT NULL DEFAULT 'open',
+  first_seen_run_id INTEGER REFERENCES scan_runs(id) ON DELETE SET NULL,
+  first_seen_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_run_id  INTEGER REFERENCES scan_runs(id) ON DELETE SET NULL,
+  last_seen_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_repo_fingerprint ON findings(repository_id, fingerprint);
+
+-- Per-run evidence for a finding: exactly where/how it showed up (or that
+-- it was classified `resolved`/`reopened`) on one specific scan, so a
+-- finding's history is a real timeline, not just its current state.
+CREATE TABLE IF NOT EXISTS finding_observations (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_id     INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  run_id         INTEGER REFERENCES scan_runs(id) ON DELETE SET NULL,
+  classification TEXT NOT NULL,
+  file           TEXT,
+  line           INTEGER,
+  severity       TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_finding_observations_finding ON finding_observations(finding_id);
+
+-- US-08: explicit, repository/org-scoped permission grants — the real
+-- authorization model this codebase didn't have (see CLAUDE.md's own gap
+-- analysis, `routes/override_approval.rs`'s doc comment). `org`/`repo` both
+-- NULL means a global grant; `org` set with `repo` NULL means every
+-- repository in that org; both set means exactly that repository. Keyed
+-- by `subject_email` (not a `users.id` foreign key) so a grant can be
+-- issued before the person's first login creates their `users` row,
+-- matching how `security.overrideApproval.approverEmails` already worked.
+-- API keys are never granted separately — they resolve to their owning
+-- user and therefore can never exceed that user's own grants.
+CREATE TABLE IF NOT EXISTS permission_grants (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject_email  TEXT NOT NULL,
+  permission     TEXT NOT NULL,
+  org            TEXT,
+  repo           TEXT,
+  granted_by     TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_permission_grants_unique ON permission_grants(subject_email, permission, COALESCE(org, ''), COALESCE(repo, ''));
+CREATE INDEX IF NOT EXISTS idx_permission_grants_subject ON permission_grants(subject_email);
 "#;
 
 /// Backfills `repositories`/`source_snapshots`/`scan_runs` from every
@@ -489,4 +572,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // constrains rows that actually supplied a key, so every pre-existing
     // row (and every future caller that doesn't pass one) is unaffected.
     (27, "ALTER TABLE scan_runs ADD COLUMN idempotency_key TEXT; ALTER TABLE scan_runs ADD COLUMN idempotency_payload_hash TEXT; CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_runs_idempotency ON scan_runs(repository_id, idempotency_key) WHERE idempotency_key IS NOT NULL;"),
+    // US-08: an exception (override) can now carry its own expiry and the
+    // policy version it was granted under — both NULL for every
+    // pre-existing row (and every row inserted by a caller that doesn't
+    // pass one), meaning "never expires" exactly like before this
+    // migration, so no existing override's behavior changes.
+    (28, "ALTER TABLE overrides ADD COLUMN expires_at TEXT; ALTER TABLE overrides ADD COLUMN policy_version TEXT;"),
 ];

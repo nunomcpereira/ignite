@@ -225,8 +225,26 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                 }
             }
 
-            let Some(mut licenses) = licenses else {
-                return LicenseScanDependency {
+            // deps.dev is useful for cross-ecosystem metadata, but a
+            // transient miss (or an older package/version not indexed yet)
+            // must not turn a valid npm package into a commercial-risk
+            // finding. npm is the authoritative source for package.json's
+            // declared license, so use it before falling back to Red.
+            let mut licenses = match licenses {
+                Some(licenses) => licenses,
+                None if spec.system == "NPM" => match fetch_npm_registry_license(npm_http, &dep.name, &resolved_version).await {
+                    Some(npm_license) => npm_license,
+                    None => return LicenseScanDependency {
+                        name: dep.name.clone(),
+                        version_range: dep.version_range.clone(),
+                        version: Some(version),
+                        line,
+                        licenses: vec![],
+                        tier: DependencyLicenseTier::Red,
+                        reason: "License lookup failed (package/version not found upstream).".to_string(),
+                    },
+                },
+                None => return LicenseScanDependency {
                     name: dep.name.clone(),
                     version_range: dep.version_range.clone(),
                     version: Some(version),
@@ -234,7 +252,7 @@ pub async fn scan_dependency_licenses_fallback(root: &Path, client: &DepsDevClie
                     licenses: vec![],
                     tier: DependencyLicenseTier::Red,
                     reason: "License lookup failed (package/version not found upstream).".to_string(),
-                };
+                },
             };
 
             if spec.system == "NPM" && ignite_deps_dev_client::is_placeholder_license_list(&licenses) {

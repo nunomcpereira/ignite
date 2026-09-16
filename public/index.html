@@ -883,9 +883,14 @@
                   class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="issuesView.downloadTitle">
             <span data-i18n="common.downloadBtn">Download ⤓</span>
           </button>
+          <a id="issuesViewDownloadSarifBtn" href="#" target="_blank" rel="noopener"
+                  class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="issuesView.downloadSarifTitle">
+            <span data-i18n="common.downloadSarif">Download .sarif ⤓</span>
+          </a>
           <button id="issuesViewCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none" data-i18n-title="common.close">✕</button>
         </div>
       </div>
+      <div id="issuesViewSeverityBar" class="hidden px-6 py-2 border-b border-slate-100 text-xs"></div>
       <div id="issuesViewList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
     </div>
   </div>
@@ -1839,6 +1844,12 @@
         line: issue.line, summary: issue.summary, snippet,
       }));
       const highlightEnd = Number.isInteger(snippet.highlightEndLine) ? snippet.highlightEndLine : snippet.highlightLine;
+      // Matches renderStudioCodeView's own error-vs-warning color split —
+      // this used to hardcode amber/rose regardless of issue.severity,
+      // so a blocking (error) finding's historical snippet view showed
+      // the same amber highlight as an advisory warning.
+      const markClass = issue.severity === 'error' ? 'bg-rose-200 text-rose-900' : 'bg-amber-200 text-amber-900';
+      const rowClass = issue.severity === 'error' ? 'bg-rose-50' : 'bg-amber-50';
       const rows = snippet.lines.map((l) => {
         const raw = l.text || '';
         const isHl = l.number >= snippet.highlightLine && l.number <= highlightEnd;
@@ -1847,13 +1858,13 @@
           const before = escapeHtml(raw.slice(0, snippet.highlightStart));
           const mid = escapeHtml(raw.slice(snippet.highlightStart, snippet.highlightEnd)) || ' ';
           const after = escapeHtml(raw.slice(snippet.highlightEnd));
-          text = `${before}<mark class="bg-amber-200 text-amber-900 rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${mid}</mark>${after}`;
+          text = `${before}<mark class="${markClass} rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${mid}</mark>${after}`;
         } else if (isHl) {
-          text = `<mark class="bg-amber-200 text-amber-900 rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${escapeHtml(raw) || ' '}</mark>`;
+          text = `<mark class="${markClass} rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${escapeHtml(raw) || ' '}</mark>`;
         } else {
           text = escapeHtml(raw);
         }
-        return `<div class="flex ${isHl ? 'bg-rose-50' : ''}" data-line="${l.number}">` +
+        return `<div class="flex ${isHl ? rowClass : ''}" data-line="${l.number}">` +
           `<span class="w-9 shrink-0 text-right pr-2 text-slate-400 select-none">${l.number}</span>` +
           `<span class="flex-1 whitespace-pre-wrap break-all">${text}</span></div>`;
       }).join('');
@@ -2255,18 +2266,78 @@
     // Anytime, read-only issues viewer — usable while a run is still in
     // progress (live, polled from the running pipeline) or long after it
     // finished (from the project history panel).
+    // `issuesViewState` holds the full unfiltered list plus the active
+    // severity filter — module-scope since only one instance of this
+    // modal is ever open at a time, same convention `studioState` uses.
+    const issuesViewState = { issues: [], meta: {}, severityFilter: null };
+
+    function renderIssuesViewSeverityBar() {
+      const bar = $('issuesViewSeverityBar');
+      const issues = issuesViewState.issues;
+      if (issues.length === 0) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+      const errorCount = issues.filter((i) => i.severity === 'error').length;
+      const niceToHaveCount = issues.filter((i) => i.category === 'code-duplication').length;
+      const warningCount = issues.length - errorCount - niceToHaveCount;
+      const chip = (key, label, count, activeColor) => {
+        const active = issuesViewState.severityFilter === key;
+        return `<button type="button" class="issues-view-severity-chip font-semibold mr-3 ${active ? 'underline' : ''} ${count > 0 ? activeColor : 'text-slate-400'}" data-severity="${key}">${count} ${label}</button>`;
+      };
+      bar.innerHTML = chip('error', errorCount === 1 ? 'error' : 'errors', errorCount, 'text-rose-600 hover:text-rose-700', '') +
+        chip('warning', warningCount === 1 ? 'warning' : 'warnings', warningCount, 'text-amber-600 hover:text-amber-700', '') +
+        chip('nice-to-have', 'nice to have', niceToHaveCount, 'text-emerald-600 hover:text-emerald-700', '') +
+        (issuesViewState.severityFilter ? `<button type="button" id="issuesViewClearFilterBtn" class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200">✕ clear filter</button>` : '');
+      bar.classList.remove('hidden');
+      bar.querySelectorAll('.issues-view-severity-chip').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          issuesViewState.severityFilter = issuesViewState.severityFilter === btn.dataset.severity ? null : btn.dataset.severity;
+          renderIssuesViewList();
+        });
+      });
+      const clearBtn = document.getElementById('issuesViewClearFilterBtn');
+      if (clearBtn) clearBtn.addEventListener('click', () => { issuesViewState.severityFilter = null; renderIssuesViewList(); });
+    }
+
+    function filteredIssuesViewIssues() {
+      const { issues, severityFilter } = issuesViewState;
+      if (!severityFilter) return issues;
+      if (severityFilter === 'nice-to-have') return issues.filter((i) => i.category === 'code-duplication');
+      if (severityFilter === 'warning') return issues.filter((i) => i.severity === 'warning' && i.category !== 'code-duplication');
+      return issues.filter((i) => i.severity === severityFilter);
+    }
+
+    function renderIssuesViewList() {
+      const list = $('issuesViewList');
+      renderIssuesViewSeverityBar();
+      const filtered = filteredIssuesViewIssues();
+      list.innerHTML = filtered.length
+        ? filtered.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: false })).join('')
+        : issuesViewState.issues.length
+          ? '<p class="text-xs text-slate-400">No issues match this filter.</p>'
+          : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
+      wireIssueListInteractions(list, $('issuesViewExpandAllBtn'));
+    }
+
     function openIssuesViewer(issues, subtitle, meta = {}) {
       const modal = $('issuesViewModal');
-      const list = $('issuesViewList');
       $('issuesViewSubtitle').textContent = subtitle || 'Read-only — issue-by-issue detail.';
-      list.innerHTML = issues.length
-        ? issues.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: false })).join('')
-        : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
-      wireIssueListInteractions(list, $('issuesViewExpandAllBtn'));
+      issuesViewState.issues = issues;
+      issuesViewState.meta = meta;
+      issuesViewState.severityFilter = null;
+      renderIssuesViewList();
 
       const downloadBtn = $('issuesViewDownloadBtn');
       downloadBtn.classList.toggle('hidden', issues.length === 0);
-      downloadBtn.onclick = () => downloadIssuesReport(issues, meta);
+      downloadBtn.onclick = () => downloadIssuesReport(filteredIssuesViewIssues(), meta);
+
+      // SARIF export needs a job id or project id to look the run back up
+      // server-side (it re-derives the SARIF doc from stored issues rather
+      // than being built from the in-memory `issues` array here) — hidden
+      // whenever neither is available (e.g. a not-yet-persisted live run
+      // with no jobId passed through `meta`).
+      const sarifBtn = $('issuesViewDownloadSarifBtn');
+      const sarifHref = meta.jobId ? `/api/pipeline/${encodeURIComponent(meta.jobId)}/sarif` : meta.projectId ? `/api/projects/${encodeURIComponent(meta.projectId)}/sarif` : null;
+      sarifBtn.classList.toggle('hidden', issues.length === 0 || !sarifHref);
+      if (sarifHref) sarifBtn.href = sarifHref;
 
       modal.classList.remove('hidden');
     }
@@ -2444,6 +2515,9 @@
     $('issuesViewModal').addEventListener('click', (ev) => {
       if (ev.target.id === 'issuesViewModal') $('issuesViewModal').classList.add('hidden');
     });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('issuesViewModal').classList.contains('hidden')) $('issuesViewModal').classList.add('hidden');
+    });
 
     function updateViewIssuesButton() {
       $('viewIssuesBtn').classList.toggle('hidden', !state.jobId);
@@ -2464,7 +2538,7 @@
         openIssuesViewer(data.issues || [], data.running
           ? 'Read-only — updates as later phases run. Overrides are only settled at the final review gate.'
           : 'Read-only — final result of this run.',
-          { org: orgInput.value.trim(), repo: repoInput.value.trim() });
+          { org: orgInput.value.trim(), repo: repoInput.value.trim(), jobId: state.jobId });
       } catch {
         openIssuesViewer([], 'Could not load issues for this run.');
       }
@@ -6603,7 +6677,7 @@
             const res = await fetch(`/api/projects/${id}/issues`);
             const data = await res.json();
             openIssuesViewer(data.issues || [], `Read-only — ${data.issues?.length || 0} issue(s) flagged for this project.`,
-              { org: btn.dataset.org, repo: btn.dataset.repo });
+              { org: btn.dataset.org, repo: btn.dataset.repo, projectId: id });
           } catch {
             openIssuesViewer([], 'Could not load issues for this project.');
           }
@@ -6829,7 +6903,7 @@
           try {
             const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
             const data = await res.json();
-            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo });
+            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId });
           } catch {
             openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
           }

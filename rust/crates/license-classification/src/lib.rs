@@ -94,6 +94,26 @@ pub fn normalize_license_id(raw: &str) -> String {
 
 static COMMERCIAL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)commercial|proprietary").unwrap());
 
+/// A handful of packages (Microsoft's `@microsoft/sp-*`/SPFx family chief
+/// among them) put a bare URL in `package.json`'s `license` field instead
+/// of an SPDX id — pointing at the actual proprietary license text rather
+/// than naming it. These still classify `Red` (a URL is not an OSI-
+/// approved license, and nothing here can safely assume the linked terms
+/// are permissive), but a bare "Unrecognized license" reason left a
+/// reviewer to go look the URL up themselves with no hint what they'd
+/// find. Recognized URLs get a named, human-readable reason instead;
+/// anything not in this table still falls through to the generic
+/// "Unrecognized license" message unchanged.
+static KNOWN_LICENSE_URLS: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
+    HashMap::from([
+        ("https://aka.ms/spfx/license", "Microsoft SharePoint Framework (SPFx) license — a proprietary Microsoft license (not OSI-approved open source); review the terms at this URL before accepting."),
+    ])
+});
+
+fn known_license_url_reason(raw: &str) -> Option<&'static str> {
+    KNOWN_LICENSE_URLS.get(raw.trim()).copied()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LicenseTier {
@@ -150,6 +170,9 @@ pub fn classify_license_tier(licenses: &[String]) -> LicenseClassification {
     }
     if list.iter().any(|l| LICENSE_TIER_WARNING.contains(l.as_str())) {
         return LicenseClassification { tier: LicenseTier::Warning, reason: format!("Copyleft license: {}", list.join(", ")) };
+    }
+    if let Some(known) = list.iter().find_map(|l| known_license_url_reason(l)) {
+        return LicenseClassification { tier: LicenseTier::Red, reason: known.to_string() };
     }
     LicenseClassification { tier: LicenseTier::Red, reason: format!("Unrecognized license — treat as risk until reviewed: {}", list.join(", ")) }
 }
@@ -237,6 +260,15 @@ mod tests {
         let c = classify_license_tier(&["Some Proprietary License".to_string()]);
         assert_eq!(c.tier, LicenseTier::Red);
         assert!(c.reason.contains("Commercial/restrictive"));
+    }
+
+    #[test]
+    fn classifies_spfx_license_url_as_red_with_a_named_reason() {
+        let c = classify_license_tier(&["https://aka.ms/spfx/license".to_string()]);
+        assert_eq!(c.tier, LicenseTier::Red);
+        assert!(c.reason.contains("SharePoint Framework"), "reason: {}", c.reason);
+        assert!(c.reason.contains("proprietary"), "reason: {}", c.reason);
+        assert!(!c.reason.starts_with("Unrecognized license"), "a known license URL should get a named reason, not the generic fallback: {}", c.reason);
     }
 
     #[test]

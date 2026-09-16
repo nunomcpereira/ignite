@@ -4,13 +4,20 @@
 //! which are what actually put a row into the `pending` state this module
 //! resolves).
 //!
-//! There's no database-backed role/permission system in Ignite (see
-//! CLAUDE.md's own gap analysis) — "sufficient role" here means "a real
-//! authenticated session or API key whose email appears in
-//! `security.overrideApproval.approverEmails`", checked by
-//! [`require_approver`] below. This is deliberately a config-driven
-//! allowlist, not a new `users.role` column: adding real RBAC is a much
-//! bigger schema/UI change than this feature needs to be useful.
+//! US-08: "sufficient role" here means "a real authenticated session or
+//! API key whose email either appears in
+//! `security.overrideApproval.approverEmails` (the original, still-
+//! supported global allowlist — kept for backward compatibility; startup
+//! also mirrors it into an equivalent global `review`
+//! [`ignite_db_store::DbStore::grant_permission`], see `main.rs`) or
+//! holds an explicit `review` permission grant scoped globally, to the
+//! project's org, or to the project's exact org/repo", checked by
+//! [`require_approver`] below. The grant model
+//! (`ignite_db_store::permissions`) is deliberately narrow — no
+//! `users.role` column, no team/group concept, just per-(subject, org?,
+//! repo?) grants — but it's real and queryable, unlike a config-only
+//! allowlist, and lets an org scope a reviewer to just the repositories
+//! they actually own instead of every project in the deployment.
 //!
 //! All three routes 404 when `security.overrideApproval.enabled` is
 //! `false` — same "unconfigured means the endpoint doesn't exist" posture
@@ -34,23 +41,30 @@ fn is_configured_approver(state: &AppState, email: &str) -> bool {
     state.config.security.override_approval.approver_emails.iter().any(|e| e.eq_ignore_ascii_case(email))
 }
 
-/// `Ok(())` when `security.overrideApproval` is on and `user` is on the
-/// configured approver list; otherwise the `(status, message)` the route
-/// handler should turn into a response immediately. A plain tuple rather
-/// than a built `Response` here keeps the `Err` variant small — building
-/// the actual response is cheap and left to each call site via `err(...)`.
-fn require_approver(state: &AppState, user: &crate::auth::AttachedUser) -> Result<(), (StatusCode, &'static str)> {
+/// `Ok(())` when `security.overrideApproval` is on and `user` is
+/// authorized to review overrides for `project_id` — either via the
+/// legacy global config allowlist or an explicit `review` permission
+/// grant scoped globally, to the project's org, or to its exact org/repo;
+/// otherwise the `(status, message)` the route handler should turn into a
+/// response immediately. A plain tuple rather than a built `Response`
+/// here keeps the `Err` variant small — building the actual response is
+/// cheap and left to each call site via `err(...)`.
+fn require_approver(state: &AppState, user: &crate::auth::AttachedUser, project_id: i64) -> Result<(), (StatusCode, &'static str)> {
     if !state.config.security.override_approval.enabled {
         return Err((StatusCode::NOT_FOUND, "Override approval is not enabled."));
     }
-    if !is_configured_approver(state, &user.email) {
-        return Err((StatusCode::FORBIDDEN, "Your account is not on the configured override-approver list."));
+    if is_configured_approver(state, &user.email) {
+        return Ok(());
     }
-    Ok(())
+    let (org, repo) = state.db.get_project(project_id).map(|p| (p.org, p.repo)).unwrap_or_default();
+    if state.db.has_permission(&user.email, "review", &org, &repo) {
+        return Ok(());
+    }
+    Err((StatusCode::FORBIDDEN, "Your account is not authorized to review overrides for this project."))
 }
 
 async fn list_pending(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth) -> Response {
-    if let Err((status, message)) = require_approver(&state, &user) {
+    if let Err((status, message)) = require_approver(&state, &user, project_id) {
         return err(status, message);
     }
     let pending = state.db.list_pending_overrides(project_id);
@@ -58,7 +72,7 @@ async fn list_pending(Path(project_id): Path<i64>, State(state): State<Arc<AppSt
 }
 
 async fn approve(Path((project_id, override_id)): Path<(i64, i64)>, State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth) -> Response {
-    if let Err((status, message)) = require_approver(&state, &user) {
+    if let Err((status, message)) = require_approver(&state, &user, project_id) {
         return err(status, message);
     }
     match state.db.approve_override(project_id, override_id, &user.email) {
@@ -76,7 +90,7 @@ async fn approve(Path((project_id, override_id)): Path<(i64, i64)>, State(state)
 }
 
 async fn reject(Path((project_id, override_id)): Path<(i64, i64)>, State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth) -> Response {
-    if let Err((status, message)) = require_approver(&state, &user) {
+    if let Err((status, message)) = require_approver(&state, &user, project_id) {
         return err(status, message);
     }
     match state.db.reject_override(project_id, override_id, &user.email) {
@@ -146,7 +160,7 @@ mod tests {
         config.security.override_approval.enabled = false;
         config.security.override_approval.approver_emails = vec!["admin@acme.example".to_string()];
         let (state, _db_dir) = state_with_config(config);
-        let (status, _) = require_approver(&state, &user("admin@acme.example")).unwrap_err();
+        let (status, _) = require_approver(&state, &user("admin@acme.example"), 1).unwrap_err();
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -156,7 +170,7 @@ mod tests {
         config.security.override_approval.enabled = true;
         config.security.override_approval.approver_emails = vec!["admin@acme.example".to_string()];
         let (state, _db_dir) = state_with_config(config);
-        let (status, _) = require_approver(&state, &user("someone-else@acme.example")).unwrap_err();
+        let (status, _) = require_approver(&state, &user("someone-else@acme.example"), 1).unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
@@ -166,7 +180,21 @@ mod tests {
         config.security.override_approval.enabled = true;
         config.security.override_approval.approver_emails = vec!["Admin@Acme.example".to_string()];
         let (state, _db_dir) = state_with_config(config);
-        assert!(require_approver(&state, &user("admin@acme.example")).is_ok());
+        assert!(require_approver(&state, &user("admin@acme.example"), 1).is_ok());
+    }
+
+    #[test]
+    fn require_approver_ok_for_a_repo_scoped_grant_holder() {
+        let mut config = ignite_config::Config::default();
+        config.security.override_approval.enabled = true;
+        let (state, _db_dir) = state_with_config(config);
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
+        state.db.grant_permission("reviewer@acme.example", "review", Some("acme"), Some("widgets"), None);
+        assert!(require_approver(&state, &user("reviewer@acme.example"), project_id).is_ok());
+
+        let other_project = state.db.create_project("job-2", "acme", "gadgets", false, "ui", None).unwrap();
+        let (status, _) = require_approver(&state, &user("reviewer@acme.example"), other_project).unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN, "a repo-scoped grant must not authorize a sibling repository");
     }
 
     #[tokio::test]

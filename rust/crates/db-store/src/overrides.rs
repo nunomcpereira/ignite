@@ -76,10 +76,17 @@ impl DbStore {
     /// project — the predicate the dual-custody gate actually cares about
     /// (unlike [`Self::issue_has_override`], which also returns `true` for
     /// a still-pending row that must keep blocking the gate).
+    /// US-08: an override whose `expires_at` has passed can no longer
+    /// authorize anything — "expired/revoked exceptions cannot authorize
+    /// a later publication", enforced here since this is the one query
+    /// `routes/effectivate.rs`'s dual-custody gate actually checks before
+    /// treating a critical finding as already resolved. `expires_at IS
+    /// NULL` (the default — no expiry set) always passes, so no
+    /// pre-existing override's behavior changes.
     pub fn has_approved_override(&self, project_id: i64, issue_id: &str) -> bool {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM overrides WHERE project_id = ? AND issue_id = ? AND status = 'approved')",
+            "SELECT EXISTS(SELECT 1 FROM overrides WHERE project_id = ? AND issue_id = ? AND status = 'approved' AND (expires_at IS NULL OR expires_at > datetime('now')))",
             params![project_id, issue_id],
             |row| row.get::<_, i64>(0),
         )
@@ -88,6 +95,22 @@ impl DbStore {
             tracing::error!("has_approved_override query failed for issue {issue_id}: {e}");
             false
         })
+    }
+
+    /// Sets (or clears, with `None`) an override's expiry — SQLite
+    /// `datetime('now', ?)` modifier syntax (e.g. `"+30 days"`), same
+    /// convention as `set_snapshot_lease`'s own `ttl_hours` formatting, so
+    /// the stored value always compares correctly as plain text against
+    /// `datetime('now')` at read time.
+    pub fn set_override_expiry(&self, override_id: i64, ttl_modifier: Option<&str>) {
+        let conn = self.conn.lock();
+        let result = match ttl_modifier {
+            Some(modifier) => conn.execute("UPDATE overrides SET expires_at = datetime('now', ?) WHERE id = ?", params![modifier, override_id]),
+            None => conn.execute("UPDATE overrides SET expires_at = NULL WHERE id = ?", params![override_id]),
+        };
+        if let Err(e) = result {
+            tracing::error!("set_override_expiry({override_id}) failed: {e}");
+        }
     }
 
     /// True when `issue_id` already has a `'pending'` override on this

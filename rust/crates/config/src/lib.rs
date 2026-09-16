@@ -895,6 +895,20 @@ pub struct SecurityConfig {
     /// the audit trail the way trusting a request body would.
     #[serde(default)]
     pub allow_unauthenticated_interactive_dry_run: bool,
+
+    /// Same bypass shape as `allow_unauthenticated_validate_all`, scoped
+    /// to `POST /api/issues/explain` and `POST /api/issues/suggest-fix`
+    /// (`routes/issues.rs`) — the two Studio "Explain this issue"/"AI
+    /// Suggested Fix" actions, which `RequireAuth`-gate by default because
+    /// each call spends real money against the configured LLM provider's
+    /// API key with no per-caller limit otherwise. Default `false`: an
+    /// existing deployment's behavior never changes silently. Set `true`
+    /// only for a single-operator local/offline deployment where the
+    /// GitHub-OAuth login flow is friction with no real attribution
+    /// benefit (no one else can reach the server) — a real multi-user
+    /// deployment should leave this off so LLM spend stays attributable.
+    #[serde(default)]
+    pub allow_unauthenticated_ai_assist: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1278,6 +1292,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("OVERRIDE_APPROVAL_ENABLED") { merged.security.override_approval.enabled = v; }
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_VALIDATE_ALL") { merged.security.allow_unauthenticated_validate_all = v; }
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN") { merged.security.allow_unauthenticated_interactive_dry_run = v; }
+    if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_AI_ASSIST") { merged.security.allow_unauthenticated_ai_assist = v; }
     if let Some(v) = env_csv("OVERRIDE_APPROVAL_APPROVER_EMAILS") { merged.security.override_approval.approver_emails = v; }
     if let Some(v) = env_bool("POLICY_STRICT") { merged.policy.strict = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }

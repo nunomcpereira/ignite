@@ -105,6 +105,11 @@ async fn main() {
     let config_port = state.config.port;
     let public_dir = config_dir.join("public");
 
+    // US-08: mirror the legacy config allowlist into the real, queryable
+    // grant model on every startup (idempotent) — additive only, never
+    // revokes anything an operator granted/removed directly.
+    state.db.sync_configured_approvers_into_grants(&state.config.security.override_approval.approver_emails);
+
     state.db.sweep_expired_sessions();
     state.db.abort_stale_running_projects();
     {

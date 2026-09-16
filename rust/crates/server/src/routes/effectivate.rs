@@ -267,11 +267,59 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         return (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Effectivate failed: {e}") }))).into_response();
     }
 
+    // US-06: bind this publish to the exact snapshot about to be pushed —
+    // the same digest scheme evidence manifests use
+    // (`ignite_provenance::digest_project_tree`) — and persist publication
+    // intent *before* any remote GitHub call. A digest failure here is
+    // treated as a hard stop (never silently publish an undigestable
+    // tree), and a request carrying an idempotency key that was already
+    // used for a *different* snapshot is rejected outright rather than
+    // risk publishing the wrong one under a reused key.
+    let source_digest = match ignite_provenance::digest_project_tree(&publish_dir) {
+        Ok(d) => d.sha256,
+        Err(e) => {
+            log(&format!("✗ Effectivate failed: could not digest source tree: {e}"));
+            state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
+            state.db.finish_project("failed", Some(&format!("could not digest source tree: {e}")), None, None, project_id);
+            let _ = std::fs::remove_dir_all(&publish_dir);
+            return (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Effectivate failed: could not digest source tree: {e}") }))).into_response();
+        }
+    };
+    let idempotency_key = body.get("idempotencyKey").and_then(|v| v.as_str());
+    let run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
+
+    let attempt = match state.db.find_or_create_publication_attempt(project_id, run_id, &org, &repo, &source_digest, idempotency_key) {
+        ignite_db_store::PublicationAttemptOutcome::Conflict { existing_digest } => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "idempotencyKey was already used for a different snapshot of this project.", "conflict": true, "existingSourceDigest": existing_digest })),
+            )
+                .into_response();
+        }
+        ignite_db_store::PublicationAttemptOutcome::Existing(row) if row.stage == "completed" => {
+            // Idempotent replay: this exact snapshot was already published
+            // (or the same idempotency key was already resolved) — return
+            // the prior result instead of provisioning/pushing again.
+            log(&format!("✓ Already effectivated (publication attempt {}) — returning the prior result.", row.id));
+            state.db.upsert_step(project_id, 6, &phase6_title, "success", &effectivate_logs.lock().join("\n"));
+            state.pending_effectivations.lock().remove(&project_id);
+            let _ = std::fs::remove_dir_all(&publish_dir);
+            return (StatusCode::OK, Json(json!({ "ok": true, "repoUrl": row.repo_url, "prUrl": row.pr_url, "idempotentReplay": true }))).into_response();
+        }
+        ignite_db_store::PublicationAttemptOutcome::Existing(row) => row,
+        ignite_db_store::PublicationAttemptOutcome::Created(row) => row,
+    };
+    let attempt_id = attempt.id;
+
     ignite_shipping::archive_phase6_payload(&publish_dir, Some(project_id), &state.runner, &state.db, &mut log).await;
 
     let ship_config = ignite_shipping::ShippingConfig::default();
     let gh_api = ignite_github_api::GithubApi::new(&state.runner);
-    match ignite_shipping::ship_to_github(&publish_dir, &org, &repo, &gh_token, &state.runner, &gh_api, &ship_config, &mut log).await {
+    let db_for_stage = &state.db;
+    let on_stage = |stage: &str, repo_url: Option<&str>, commit_sha: Option<&str>, pr_url: Option<&str>| {
+        db_for_stage.record_publication_stage(attempt_id, stage, repo_url, commit_sha, pr_url, None);
+    };
+    match ignite_shipping::ship_to_github_tracked(&publish_dir, &org, &repo, &gh_token, &state.runner, &gh_api, &ship_config, &mut log, on_stage).await {
         Ok(ship_result) => {
             state.db.finish_project("success", None, Some(&ship_result.repo_url), ship_result.pr_url.as_deref(), project_id);
             log(&format!("✓ Effectivated — repository live at {}", ship_result.repo_url));
@@ -290,6 +338,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         }
         Err(e) => {
             log(&format!("✗ Effectivate failed: {e}"));
+            state.db.record_publication_stage(attempt_id, "failed", None, None, None, Some(&e.to_string()));
             state.db.upsert_step(project_id, 6, &phase6_title, "failed", &effectivate_logs.lock().join("\n"));
             state.db.finish_project("failed", Some(&e.to_string()), None, None, project_id);
             let _ = std::fs::remove_dir_all(&publish_dir);

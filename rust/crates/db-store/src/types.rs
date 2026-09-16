@@ -508,3 +508,96 @@ pub struct IdempotentRunMatch {
     pub legacy_job_id: Option<String>,
     pub payload_hash: String,
 }
+
+/// US-06: a persisted `PublicationAttempt` — publication intent and stage
+/// recorded *before* the remote GitHub side effects it describes, so a
+/// repeat request (retry, restart) can be answered from this row instead
+/// of blindly re-provisioning/re-pushing. `stage` is one of `pending`,
+/// `repo_resolved`, `pushed`, `pr_created`, `completed`, `failed` —
+/// see `ignite_db_store::publications` for the transitions a real publish
+/// walks through.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationAttemptRow {
+    pub id: i64,
+    pub project_id: i64,
+    pub run_id: Option<i64>,
+    pub org: String,
+    pub repo: String,
+    pub source_digest: String,
+    pub idempotency_key: Option<String>,
+    pub stage: String,
+    pub repo_url: Option<String>,
+    pub commit_sha: Option<String>,
+    pub pr_url: Option<String>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// US-07: one row per distinct finding *identity* (fingerprint), tracked
+/// across every scan of a repository — not the per-run raw issue list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingRow {
+    pub id: i64,
+    pub repository_id: i64,
+    pub category: String,
+    pub fingerprint: String,
+    pub legacy_issue_id: String,
+    pub tool: Option<String>,
+    pub status: String,
+    pub first_seen_run_id: Option<i64>,
+    pub first_seen_at: String,
+    pub last_seen_run_id: Option<i64>,
+    pub last_seen_at: String,
+}
+
+/// US-07: one input finding for [`crate::DbStore::record_finding_observations`]
+/// — the minimal shape needed to identify and classify it, not the full
+/// `Issue`/`IssueRow`.
+#[derive(Debug, Clone)]
+pub struct FindingObservationInput {
+    pub legacy_issue_id: String,
+    pub category: String,
+    pub fingerprint: String,
+    pub file: Option<String>,
+    pub line: Option<i64>,
+    pub severity: String,
+    pub tool: Option<String>,
+}
+
+/// Outcome of one [`crate::DbStore::record_finding_observations`] call —
+/// how many findings this run classified into each bucket, mainly for
+/// logging/tests; the durable record itself lives in `finding_observations`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FindingSyncSummary {
+    pub new_count: usize,
+    pub existing_count: usize,
+    pub reopened_count: usize,
+    pub resolved_count: usize,
+}
+
+/// US-08: one explicit, org/repo-scoped permission grant.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionGrantRow {
+    pub id: i64,
+    pub subject_email: String,
+    pub permission: String,
+    pub org: Option<String>,
+    pub repo: Option<String>,
+    pub granted_by: Option<String>,
+    pub created_at: String,
+}
+
+/// Result of [`crate::DbStore::find_or_create_publication_attempt`] —
+/// distinguishes a brand-new attempt from a matched-and-returned prior one
+/// (the idempotent-replay path) from a genuine idempotency-key conflict
+/// (same key, different source digest — a caller error, not a retry).
+#[derive(Debug, Clone)]
+pub enum PublicationAttemptOutcome {
+    Created(PublicationAttemptRow),
+    Existing(PublicationAttemptRow),
+    Conflict { existing_digest: String },
+}

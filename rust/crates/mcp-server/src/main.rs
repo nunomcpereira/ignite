@@ -2,7 +2,7 @@
 //! port of `mcp-server.js`. Tools: list_guidelines, get_guideline,
 //! check_guidelines, check_project (all local, backed directly by
 //! ignite-guidelines), plus check_dependency_licenses,
-//! check_dependency_vulnerabilities, onboard_project,
+//! check_dependency_vulnerabilities, get_sarif_report, onboard_project,
 //! resolve_review_decision, effectivate_project, preview_fix_pr,
 //! apply_fix_pr (thin proxies to a running Ignite server, same "MCP
 //! process never touches git/gh/the manifest parsers directly" pattern
@@ -228,6 +228,18 @@ struct PreviewFixPrRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct GetSarifReportRequest {
+    /// The scan job id (from a prior onboard_project/check_project-style run against the Ignite server). Exactly one of job_id, project_id, or org+repo must be given.
+    job_id: Option<String>,
+    /// The numeric project id (e.g. from an onboard_project(dryRun: true) response).
+    project_id: Option<i64>,
+    /// GitHub org — pass together with repo to fetch findings from that repository's most recent scan.
+    org: Option<String>,
+    /// GitHub repo name — pass together with org.
+    repo: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ApplyFixPrRequest {
     /// Same job id passed to preview_fix_pr.
     job_id: String,
@@ -318,6 +330,30 @@ impl IgniteMcp {
         }
     }
 
+    /// GET (not POST) proxy for endpoints that return a raw document body
+    /// rather than the `{"ok": ...}`-wrapped envelope every other route
+    /// this MCP server talks to uses — the SARIF endpoints (`sarif.rs`)
+    /// return the SARIF document itself with no such wrapper, so
+    /// `proxy_to_ignite`'s `ok`-field success/failure check doesn't apply
+    /// here; a 200 is success, anything else is the error body verbatim.
+    async fn proxy_get_ignite(&self, endpoint: &str) -> Result<CallToolResult, McpError> {
+        let base_url = ignite_base_url();
+        let mut req = self.http.get(format!("{base_url}{endpoint}")).header("X-Ignite-Client", "mcp");
+        if let Some(key) = ignite_api_key() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => return Ok(text_result(format!("Could not reach Ignite server at {base_url}: {e}."), true)),
+        };
+        let status = response.status();
+        let is_error = !status.is_success();
+        let Some(result): Option<Value> = response.json().await.ok() else {
+            return Ok(text_result(format!("Ignite server returned a non-JSON response (HTTP {status}) from {endpoint}."), true));
+        };
+        Ok(text_result(serde_json::to_string_pretty(&result).unwrap_or_default(), is_error))
+    }
+
     #[tool(description = "List the company AI/security validation guidelines, optionally filtered by category or severity.")]
     async fn list_guidelines(&self, Parameters(req): Parameters<ListGuidelinesRequest>) -> Result<CallToolResult, McpError> {
         let severity = match req.severity.as_deref() {
@@ -380,6 +416,27 @@ impl IgniteMcp {
     )]
     async fn check_dependency_vulnerabilities(&self, Parameters(req): Parameters<ProjectPathRequest>) -> Result<CallToolResult, McpError> {
         self.proxy_to_ignite("/api/dependencies/vulnerabilities", serde_json::json!({ "projectPath": req.project_path })).await
+    }
+
+    #[tool(
+        description = "Retrieve the SARIF 2.1.0 findings report for a prior scan, identified by exactly one of job_id, project_id, or org+repo (the latter resolves to that repository's most recently scanned project). Same document GitHub's code-scanning/sarifs upload uses, suitable for uploading by hand (gh api .../code-scanning/sarifs) or feeding into another SARIF-consuming tool. Requires a running Ignite server reachable at IGNITE_BASE_URL."
+    )]
+    async fn get_sarif_report(&self, Parameters(req): Parameters<GetSarifReportRequest>) -> Result<CallToolResult, McpError> {
+        let identifiers_given = [req.job_id.is_some(), req.project_id.is_some(), req.org.is_some() || req.repo.is_some()].iter().filter(|v| **v).count();
+        if identifiers_given != 1 {
+            return Ok(text_result("Pass exactly one of: job_id, project_id, or org+repo.".to_string(), true));
+        }
+        let endpoint = if let Some(job_id) = req.job_id.as_deref() {
+            format!("/api/pipeline/{}/sarif", urlencoding::encode(job_id))
+        } else if let Some(project_id) = req.project_id {
+            format!("/api/projects/{project_id}/sarif")
+        } else {
+            match (req.org.as_deref(), req.repo.as_deref()) {
+                (Some(org), Some(repo)) => format!("/api/repositories/{}/{}/sarif", urlencoding::encode(org), urlencoding::encode(repo)),
+                _ => return Ok(text_result("Both org and repo are required together.".to_string(), true)),
+            }
+        };
+        self.proxy_get_ignite(&endpoint).await
     }
 
     #[tool(

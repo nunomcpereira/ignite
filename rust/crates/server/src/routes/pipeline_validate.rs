@@ -620,6 +620,39 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             }
         }
 
+        // US-07: sync this run's issues against the repository's tracked
+        // findings — fingerprint-keyed (line-drift-tolerant), not the raw
+        // `category::file::line` id. Only a check whose coverage this run
+        // says `Completed` gets to prove a prior finding for its tool is
+        // gone; everything else (failed/disabled/unavailable/not-run) never
+        // resolves a finding by omission. Wired into this one entry point
+        // first, matching this backlog's established per-story precedent
+        // (see CLAUDE.md's US-07 note).
+        if let Some(rid) = run_id {
+            let repository_id = state.db.resolve_repository(&org, &repo, None);
+            let completed_tools: std::collections::HashSet<String> = phase4_coverage.iter().filter(|c| c.outcome == ignite_policy::CheckOutcome::Completed).filter_map(|c| c.engine.as_deref()).map(|e| e.to_ascii_lowercase()).collect();
+            let observations: Vec<ignite_db_store::FindingObservationInput> = issues
+                .iter()
+                .map(|issue| {
+                    let discriminator = ignite_override_engine::discriminator_from_issue_id(&issue.id);
+                    let fingerprint = ignite_override_engine::stable_fingerprint(&issue.category, issue.file.as_deref(), issue.snippet.as_ref(), issue.line, discriminator.as_deref());
+                    ignite_db_store::FindingObservationInput {
+                        legacy_issue_id: issue.id.clone(),
+                        category: issue.category.clone(),
+                        fingerprint,
+                        file: issue.file.clone(),
+                        line: issue.line,
+                        severity: match issue.severity {
+                            Severity::Error => "error".to_string(),
+                            Severity::Warning => "warning".to_string(),
+                        },
+                        tool: issue.tool.clone(),
+                    }
+                })
+                .collect();
+            state.db.record_finding_observations(repository_id, rid, &completed_tools, &observations);
+        }
+
         // Set *before* `finish_project` — its own internal lifecycle sync
         // is a naive `"success" -> "published"` fallback that doesn't
         // know validate-all never publishes anything; a precise state set

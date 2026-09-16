@@ -90,12 +90,126 @@ fn azure_foundry_target(config: &LlmClientConfig) -> LlmTarget {
     LlmTarget { url, model: config.azure_foundry_deployment.clone(), auth_header: None }
 }
 
-fn provider_label(provider: &Provider) -> &'static str {
+pub fn provider_label(provider: &Provider) -> &'static str {
     match provider {
         Provider::OpenAi => "openai",
         Provider::Anthropic => "anthropic",
         Provider::AzureFoundry => "azure-foundry",
         Provider::Local => "local",
+    }
+}
+
+/// Last 5 characters of whichever key `config.provider` will actually
+/// authenticate with — printed to stderr right before every request so an
+/// operator debugging a provider-side 401 can confirm which of possibly
+/// several configured keys (a stale plist copy vs. a freshly rotated
+/// `.env` value, multiple provider keys configured at once) this process
+/// is actually sending, without ever logging the key itself. `Local` has
+/// no key at all (no auth header sent); every other provider always has
+/// *some* string here (empty when unconfigured, which `llm_available`
+/// already gates on before either of these functions is ever called).
+pub fn active_key_suffix(config: &LlmClientConfig) -> String {
+    let key = match config.provider {
+        Provider::OpenAi => &config.openai_api_key,
+        Provider::Anthropic => &config.anthropic_api_key,
+        Provider::AzureFoundry => &config.azure_foundry_api_key,
+        Provider::Local => return "n/a (no auth)".to_string(),
+    };
+    if key.is_empty() {
+        return "<empty>".to_string();
+    }
+    let tail: String = key.chars().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("...{tail}")
+}
+
+/// Printed to stderr (never the `log` closure — that's the UI-visible
+/// phase-log stream, and several call sites pass a no-op closure there,
+/// e.g. `routes/issues.rs`'s explain/suggest-fix handlers) right before
+/// every request, and again with more detail whenever the provider comes
+/// back with a non-2xx — every field named here is either non-secret by
+/// construction (a URL, a model name, a boolean) or already reduced to a
+/// safe suffix, so this is safe to always emit rather than gating on log
+/// level. Purpose: when a request 401s, an operator can tell from stderr
+/// alone which of possibly several configured keys/providers/base URLs
+/// this process actually used, without needing to guess or re-derive it
+/// from `config.json`/`.env`/the plist by hand.
+fn log_request_context(config: &LlmClientConfig, target: &LlmTarget, provider_label: &str) {
+    eprintln!(
+        "[llm] {provider_label} provider={} url={} model={} key_suffix={}",
+        self::provider_label(&config.provider),
+        target.url,
+        target.model,
+        active_key_suffix(config),
+    );
+}
+
+/// Extra non-secret context dumped only on an actual HTTP error response —
+/// every field that could plausibly explain a 401/403 (wrong base URL,
+/// empty/whitespace key, mismatched model/deployment, missing Azure
+/// endpoint/api-version) without ever printing a key's own value.
+fn log_error_context(config: &LlmClientConfig, target: &LlmTarget, provider_label: &str, status: u16) {
+    let key_len = match config.provider {
+        Provider::OpenAi => config.openai_api_key.len(),
+        Provider::Anthropic => config.anthropic_api_key.len(),
+        Provider::AzureFoundry => config.azure_foundry_api_key.len(),
+        Provider::Local => 0,
+    };
+    let key_has_surrounding_whitespace = match config.provider {
+        Provider::OpenAi => config.openai_api_key.trim() != config.openai_api_key,
+        Provider::Anthropic => config.anthropic_api_key.trim() != config.anthropic_api_key,
+        Provider::AzureFoundry => config.azure_foundry_api_key.trim() != config.azure_foundry_api_key,
+        Provider::Local => false,
+    };
+    eprintln!(
+        "[llm] {provider_label} HTTP {status} debug context: provider={} url={} model={} key_suffix={} key_len={} key_has_surrounding_whitespace={}{}",
+        self::provider_label(&config.provider),
+        target.url,
+        target.model,
+        active_key_suffix(config),
+        key_len,
+        key_has_surrounding_whitespace,
+        if matches!(config.provider, Provider::AzureFoundry) {
+            format!(" azure_endpoint_set={} azure_deployment={} azure_api_version={}", !config.azure_foundry_endpoint.is_empty(), config.azure_foundry_deployment, config.azure_foundry_api_version)
+        } else {
+            String::new()
+        },
+    );
+}
+
+#[cfg(test)]
+mod key_suffix_tests {
+    use super::*;
+
+    fn openai_config_with_key(key: &str) -> LlmClientConfig {
+        LlmClientConfig { provider: Provider::OpenAi, openai_api_key: key.to_string(), openai_base_url: "https://api.openai.com/v1/".to_string(), openai_model: "gpt-4o-mini".to_string(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: String::new(), scan_model: String::new() }
+    }
+
+    fn local_config_for_key_suffix() -> LlmClientConfig {
+        LlmClientConfig { provider: Provider::Local, openai_api_key: String::new(), openai_base_url: String::new(), openai_model: String::new(), anthropic_api_key: String::new(), anthropic_base_url: String::new(), anthropic_model: String::new(), azure_foundry_api_key: String::new(), azure_foundry_endpoint: String::new(), azure_foundry_deployment: String::new(), azure_foundry_api_version: String::new(), scan_url: "http://127.0.0.1:9999".to_string(), scan_model: "test-model".to_string() }
+    }
+
+    #[test]
+    fn active_key_suffix_reports_only_the_last_five_characters() {
+        let config = openai_config_with_key("sk-abcdefghijklmnop12345");
+        assert_eq!(active_key_suffix(&config), "...12345");
+    }
+
+    #[test]
+    fn active_key_suffix_flags_an_empty_key_explicitly() {
+        let config = openai_config_with_key("");
+        assert_eq!(active_key_suffix(&config), "<empty>");
+    }
+
+    #[test]
+    fn active_key_suffix_reports_no_auth_for_the_local_provider() {
+        assert_eq!(active_key_suffix(&local_config_for_key_suffix()), "n/a (no auth)");
+    }
+
+    #[test]
+    fn active_key_suffix_never_reveals_more_than_the_last_five_characters() {
+        let config = openai_config_with_key("sk-super-secret-value-zzzzz");
+        let suffix = active_key_suffix(&config);
+        assert!(!suffix.contains("super-secret"), "must never leak anything but the trailing 5 chars: {suffix}");
     }
 }
 
@@ -198,6 +312,7 @@ pub async fn llm_chat(client: &reqwest::Client, config: &LlmClientConfig, source
     let target = if is_anthropic { LlmTarget { url: format!("{}/messages", config.anthropic_base_url.trim_end_matches('/')), model: config.anthropic_model.clone(), auth_header: None } } else { llm_target(config) };
     let provider_label = format!("{} [{}]", label, provider_label(&config.provider));
     log(&format!("[llm] → {} POST {} model={} timeout={}ms payload={} chars", provider_label, target.url, target.model, timeout_ms, source_block.len()));
+    log_request_context(config, &target, &provider_label);
     let started_at = std::time::Instant::now();
 
     // Anthropic's Messages API keeps the system prompt in a top-level
@@ -241,6 +356,7 @@ pub async fn llm_chat(client: &reqwest::Client, config: &LlmClientConfig, source
     if !response.status().is_success() {
         let status = response.status().as_u16();
         log(&format!("[llm] ← {} HTTP ERROR in {}ms — {}", provider_label, elapsed, status));
+        log_error_context(config, &target, &provider_label, status);
         return Err(LlmError::HttpError(status));
     }
 
@@ -273,6 +389,7 @@ pub async fn llm_complete(req: &LlmCompleteRequest<'_>, mut log: impl FnMut(&str
     let target = if is_anthropic { LlmTarget { url: format!("{}/messages", req.config.anthropic_base_url.trim_end_matches('/')), model: req.config.anthropic_model.clone(), auth_header: None } } else { llm_target(req.config) };
     let provider_label = format!("{} [{}]", req.label, provider_label(&req.config.provider));
     log(&format!("[llm] → {} POST {} model={} timeout={}ms chars={}", provider_label, target.url, target.model, req.timeout_ms, req.user_content.len()));
+    log_request_context(req.config, &target, &provider_label);
     let started_at = std::time::Instant::now();
 
     let client_req = if is_anthropic {
@@ -310,6 +427,7 @@ pub async fn llm_complete(req: &LlmCompleteRequest<'_>, mut log: impl FnMut(&str
     if !response.status().is_success() {
         let status = response.status().as_u16();
         log(&format!("[llm] ← {} HTTP ERROR in {}ms — {}", provider_label, elapsed, status));
+        log_error_context(req.config, &target, &provider_label, status);
         return Err(LlmError::HttpError(status));
     }
 

@@ -251,10 +251,24 @@ pub fn is_placeholder_license_list(licenses: &[String]) -> bool {
 
 /// Fallback for when deps.dev only offers a placeholder: ask the npm
 /// registry itself for that exact version's declared `license` field.
-pub async fn fetch_npm_registry_license(client: &reqwest::Client, name: &str, version: &str) -> Option<Vec<String>> {
-    let url = format!("https://registry.npmjs.org/{}/{}", urlencoding::encode(name).replace("%40", "@"), urlencoding::encode(version));
+/// Shared across every `fetch_npm_registry_license` call the process makes
+/// (this is a free function, not a `DepsDevClient` method, so it can't
+/// reuse that struct's own `request_limiter` instance — but the failure
+/// mode is identical): a project with dozens/hundreds of npm dependencies
+/// deps.dev didn't resolve previously fired one unbounded concurrent
+/// request per package straight at registry.npmjs.org, no cap at all
+/// (unlike every deps.dev call, which has shared `MAX_CONCURRENT_REQUESTS`
+/// exactly to avoid this). npm rate-limits/slows under that burst, and a
+/// single failed attempt with no retry permanently marked an entirely
+/// legitimate, still-published package (e.g. react@17.0.1) as "not found
+/// upstream" / commercial-risk Red — confirmed live: registry.npmjs.org
+/// itself returns react@17.0.1's MIT license instantly when asked alone.
+static NPM_REGISTRY_LIMITER: Lazy<tokio::sync::Semaphore> = Lazy::new(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS));
+
+async fn fetch_npm_registry_license_once(client: &reqwest::Client, url: &str) -> Option<Vec<String>> {
+    let _permit = NPM_REGISTRY_LIMITER.acquire().await.ok()?;
     tokio::time::timeout(Duration::from_secs(5), async {
-        let res = client.get(&url).send().await.ok()?;
+        let res = client.get(url).send().await.ok()?;
         if !res.status().is_success() {
             return None;
         }
@@ -277,6 +291,28 @@ pub async fn fetch_npm_registry_license(client: &reqwest::Client, name: &str, ve
     .await
     .ok()
     .flatten()
+}
+
+/// Up to 3 attempts with a short backoff (250ms, 750ms) before giving up —
+/// a transient rate-limit/timeout under load shouldn't permanently brand a
+/// real package as commercial-risk. A genuine 404 (package/version truly
+/// doesn't exist) also retries here rather than short-circuiting, since
+/// the failure is opaque past `!res.status().is_success()` — three quick
+/// attempts costs nothing for the genuinely-missing case and is what
+/// rescues the far more common "transiently rate-limited" case.
+pub async fn fetch_npm_registry_license(client: &reqwest::Client, name: &str, version: &str) -> Option<Vec<String>> {
+    let url = format!("https://registry.npmjs.org/{}/{}", urlencoding::encode(name).replace("%40", "@"), urlencoding::encode(version));
+    const BACKOFFS_MS: [u64; 2] = [250, 750];
+    if let Some(result) = fetch_npm_registry_license_once(client, &url).await {
+        return Some(result);
+    }
+    for backoff_ms in BACKOFFS_MS {
+        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+        if let Some(result) = fetch_npm_registry_license_once(client, &url).await {
+            return Some(result);
+        }
+    }
+    None
 }
 
 static SEE_LICENSE_IN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^SEE LICENSE IN\s+(.+)$").unwrap());

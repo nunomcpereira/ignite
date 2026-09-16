@@ -58,7 +58,23 @@ async fn repo_exists_on_github(api: &GithubApi<'_>, owner: &str, name: &str, tok
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, runner: &ToolRunner, github_api: &GithubApi<'_>, config: &ShippingConfig, mut log: impl FnMut(&str) + Send) -> Result<ShipResult, ShippingError> {
+pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, runner: &ToolRunner, github_api: &GithubApi<'_>, config: &ShippingConfig, log: impl FnMut(&str) + Send) -> Result<ShipResult, ShippingError> {
+    ship_to_github_tracked(root, org, repo, gh_token, runner, github_api, config, log, |_, _, _, _| {}).await
+}
+
+/// Same as [`ship_to_github`], plus an `on_stage(stage, repo_url,
+/// commit_sha, pr_url)` callback invoked right before/after each remote
+/// side effect that changes what a `PublicationAttempt` (US-06) needs
+/// recorded — `"repo_resolved"` once the target repo exists on GitHub,
+/// `"pushed"` once the compliant commit has actually landed on a branch,
+/// `"pr_created"` once a PR is open, and a final `"completed"` on every
+/// successful return path (including the two terminal early-returns that
+/// never open a PR). The caller is expected to persist each call
+/// (`DbStore::record_publication_stage`) *before* letting execution
+/// continue — a crash between two stages then leaves a truthful "got this
+/// far" record instead of silence.
+#[allow(clippy::too_many_arguments)]
+pub async fn ship_to_github_tracked(root: &Path, org: &str, repo: &str, gh_token: &str, runner: &ToolRunner, github_api: &GithubApi<'_>, config: &ShippingConfig, mut log: impl FnMut(&str) + Send, mut on_stage: impl FnMut(&str, Option<&str>, Option<&str>, Option<&str>) + Send) -> Result<ShipResult, ShippingError> {
     if gh_token.is_empty() {
         return Err(ShippingError::NoToken);
     }
@@ -126,6 +142,8 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
         }
     }
 
+    on_stage("repo_resolved", Some(&format!("https://github.com/{full_name}")), None, None);
+
     let auto_merge_fields = HashMap::from([("allow_auto_merge".to_string(), json!(true))]);
     match github_api.gh_api_write("PATCH", &format!("repos/{full_name}"), &auto_merge_fields, gh_token).await {
         Ok(_) => log("Enabled auto-merge on the repository."),
@@ -184,6 +202,7 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
     push_args.push(format!("HEAD:{onboard_branch}"));
     git(runner, &push_args, &root_str, gh_token).await?;
     let sha = git(runner, &s(&["rev-parse", "HEAD"]), &root_str, gh_token).await?.stdout.trim().to_string();
+    on_stage("pushed", Some(&format!("https://github.com/{full_name}")), Some(&sha), None);
 
     if !main_exists {
         // Try to create the default branch directly from the compliant
@@ -199,7 +218,9 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
                 Err(_) => log(&format!("⚠ Could not set {default_branch} as the default branch — adjust in repo settings.")),
             }
             log(&format!("✓ Code is live on {default_branch}."));
-            return Ok(ShipResult { repo_url: format!("https://github.com/{full_name}"), pr_url: None });
+            let repo_url = format!("https://github.com/{full_name}");
+            on_stage("completed", Some(&repo_url), Some(&sha), None);
+            return Ok(ShipResult { repo_url, pr_url: None });
         }
         // Deadlock: the ruleset blocks ALL creation of the default branch
         // (even GitHub's auto-init), but the required workflow can only
@@ -210,7 +231,9 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
         log(&format!("⚠ The org ruleset blocks creating \"{default_branch}\" in new repos (bootstrap deadlock: the required workflow can only run on a PR, and a PR needs {default_branch} to exist)."));
         log(&format!("✓ Code shipped to \"{onboard_branch}\", now the repository's default branch."));
         log(&format!("⚠ Once an org admin adds a ruleset bypass so {default_branch} can be bootstrapped, open a PR from \"{onboard_branch}\" into {default_branch}."));
-        return Ok(ShipResult { repo_url: format!("https://github.com/{full_name}/tree/{onboard_branch}"), pr_url: None });
+        let repo_url = format!("https://github.com/{full_name}/tree/{onboard_branch}");
+        on_stage("completed", Some(&repo_url), Some(&sha), None);
+        return Ok(ShipResult { repo_url, pr_url: None });
     }
 
     log(&format!("$ gh pr create --base {default_branch}"));
@@ -225,6 +248,7 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
         )
         .await?;
     log(&format!("✓ Pull request opened: {}", pr.url));
+    on_stage("pr_created", None, Some(&sha), Some(&pr.url));
 
     let pr_number = pr.number.unwrap_or(0);
     match github_api.gh_arm_auto_merge(&full_name, &pr.url, pr_number, pr.node_id.as_deref(), gh_token).await {
@@ -238,7 +262,9 @@ pub async fn ship_to_github(root: &Path, org: &str, repo: &str, gh_token: &str, 
         Err(e) => return Err(ShippingError::ChecksFailed(e.to_string(), pr.url.clone())),
     }
 
-    Ok(ShipResult { repo_url: format!("https://github.com/{full_name}"), pr_url: Some(pr.url) })
+    let repo_url = format!("https://github.com/{full_name}");
+    on_stage("completed", Some(&repo_url), Some(&sha), Some(&pr.url));
+    Ok(ShipResult { repo_url, pr_url: Some(pr.url) })
 }
 
 pub struct ArchivedPayload {

@@ -289,6 +289,7 @@ window.IGNITE_I18N = {
       'issuesView.subtitle': 'Read-only — issue-by-issue detail, updated live as the run progresses.',
       'issuesView.expandAllTitle': "Expand every issue's code snippet inline",
       'issuesView.downloadTitle': 'Download the flagged-issues list',
+      'issuesView.downloadSarifTitle': 'Download this run\'s findings as a .sarif file, to upload to GitHub yourself',
 
       'fixPr.title': 'Generate fix PR',
       'fixPr.subtitle': "AI-suggested fixes for this run's open issues — review each one, then open a PR with the ones you keep.",
@@ -362,6 +363,7 @@ window.IGNITE_I18N = {
       'common.selectAll': 'Select all',
       'common.expandAllCode': 'Expand all code ▸',
       'common.downloadBtn': 'Download ⤓',
+      'common.downloadSarif': 'Download .sarif ⤓',
       'common.downloadSimple': '⬇ Download',
       'common.edit': 'Edit',
       'common.continue': 'Continue',
@@ -596,6 +598,7 @@ window.IGNITE_I18N = {
       'issuesView.subtitle': "Lecture seule — détail problème par problème, mis à jour en direct pendant l'exécution.",
       'issuesView.expandAllTitle': 'Développer les extraits de code de tous les problèmes',
       'issuesView.downloadTitle': 'Télécharger la liste des problèmes signalés',
+      'issuesView.downloadSarifTitle': 'Télécharger les résultats de cette exécution au format .sarif, à téléverser vous-même sur GitHub',
 
       'fixPr.title': 'Générer une PR de correction',
       'fixPr.subtitle': "Corrections suggérées par IA pour les problèmes ouverts de cette exécution — passez en revue chacune, puis ouvrez une PR avec celles que vous conservez.",
@@ -669,6 +672,7 @@ window.IGNITE_I18N = {
       'common.selectAll': 'Tout sélectionner',
       'common.expandAllCode': 'Développer tout le code ▸',
       'common.downloadBtn': 'Télécharger ⤓',
+      'common.downloadSarif': 'Télécharger .sarif ⤓',
       'common.downloadSimple': '⬇ Télécharger',
       'common.edit': 'Modifier',
       'common.continue': 'Continuer',
@@ -903,6 +907,7 @@ window.IGNITE_I18N = {
       'issuesView.subtitle': 'Somente leitura — detalhe problema a problema, atualizado ao vivo conforme a execução avança.',
       'issuesView.expandAllTitle': 'Expandir o trecho de código de todos os problemas',
       'issuesView.downloadTitle': 'Baixar a lista de problemas sinalizados',
+      'issuesView.downloadSarifTitle': 'Baixar os resultados desta execução como um arquivo .sarif, para enviar você mesmo ao GitHub',
 
       'fixPr.title': 'Gerar PR de correção',
       'fixPr.subtitle': 'Correções sugeridas por IA para os problemas em aberto desta execução — revise cada uma e depois abra uma PR com as que você mantiver.',
@@ -976,6 +981,7 @@ window.IGNITE_I18N = {
       'common.selectAll': 'Selecionar tudo',
       'common.expandAllCode': 'Expandir todo o código ▸',
       'common.downloadBtn': 'Baixar ⤓',
+      'common.downloadSarif': 'Baixar .sarif ⤓',
       'common.downloadSimple': '⬇ Baixar',
       'common.edit': 'Editar',
       'common.continue': 'Continuar',
@@ -1210,6 +1216,7 @@ window.IGNITE_I18N = {
       'issuesView.subtitle': 'Schreibgeschützt — Detail je Problem, live aktualisiert während der Lauf fortschreitet.',
       'issuesView.expandAllTitle': 'Code-Ausschnitt jedes Problems einblenden',
       'issuesView.downloadTitle': 'Liste der gemeldeten Probleme herunterladen',
+      'issuesView.downloadSarifTitle': 'Ergebnisse dieses Laufs als .sarif-Datei herunterladen, um sie selbst zu GitHub hochzuladen',
 
       'fixPr.title': 'Fix-PR erstellen',
       'fixPr.subtitle': 'Von KI vorgeschlagene Korrekturen für die offenen Probleme dieses Laufs — jede einzeln prüfen und dann einen PR mit den behaltenen öffnen.',
@@ -1283,6 +1290,7 @@ window.IGNITE_I18N = {
       'common.selectAll': 'Alle auswählen',
       'common.expandAllCode': 'Gesamten Code einblenden ▸',
       'common.downloadBtn': 'Herunterladen ⤓',
+      'common.downloadSarif': '.sarif herunterladen ⤓',
       'common.downloadSimple': '⬇ Herunterladen',
       'common.edit': 'Bearbeiten',
       'common.continue': 'Weiter',

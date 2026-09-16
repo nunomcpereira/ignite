@@ -1,12 +1,15 @@
 //! /api/issues/{explain,suggest-fix} — faithful port of routes/issues.js.
+//! Also /api/ai/health, additive (no Node equivalent): an isolated
+//! provider/key connectivity check for debugging a 401/timeout without
+//! needing a real persisted issue.
 //! `llmAvailableCached`'s process-lifetime cache isn't ported (see
 //! ignite-llm-client's module doc) — every request re-probes availability.
 
 use crate::state::AppState;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use ignite_llm_client::LlmError;
 use once_cell::sync::Lazy;
@@ -17,7 +20,7 @@ use std::sync::Arc;
 
 const ISSUE_EXPLAIN_PROMPT: &str = "You are explaining one single flagged code issue to a non-technical reader (e.g. a project manager), using the exact code snippet shown.\nWrite 2-4 sentences in plain language with no jargon: what is concretely wrong in THIS snippet, why it matters in the real world, and what should change. Do not just restate the technical summary you were given — actually explain it. Do not discuss anything beyond this one issue.";
 
-const ISSUE_SUGGEST_FIX_PROMPT: &str = "You are a senior software engineer proposing a concrete fix for one single flagged code issue, using the exact numbered code snippet shown.\nPropose a corrected replacement for ONLY the exact line range shown in the snippet (from its first to its last numbered line) — do not rewrite the whole file, do not renumber lines, do not add lines outside that range.\nRespond in EXACTLY this plain-text format and nothing else — no JSON, no code fences, no text before or after:\nEXPLANATION: <1-3 sentences: what changed and why it fixes the issue>\nREPLACEMENT:\n<the corrected text for that exact line range, copied verbatim with no escaping, newline-separated, no line-number prefixes>\nIf you cannot safely propose a fix from the snippet alone, respond:\nEXPLANATION: <why not>\nREPLACEMENT: NONE";
+const ISSUE_SUGGEST_FIX_PROMPT: &str = "You are a senior software engineer proposing a concrete fix for one single flagged code issue, using the exact numbered code snippet shown.\nPropose a corrected replacement for ONLY the exact line range shown in the snippet (from its first to its last numbered line) — do not rewrite the whole file, do not renumber lines, do not add lines outside that range, and do not introduce a new import/dependency (there is no mechanism here to add one).\nFor a security-sensitive finding (injection, sanitization, parsing untrusted input, auth, crypto): do not just patch the flagged line's existing approach with extra guards/loops/re-checks bolted onto the same fundamentally weak technique (e.g. wrapping a tag-stripping regex in a do/while loop to catch nested tags) — that pattern-matches 'fixed' without being robust. Prefer replacing it with the correct built-in/standard-library primitive for the job (e.g. a native DOM parser's textContent for HTML-to-text, a real HTML sanitizer already used elsewhere in this codebase, a parameterized query instead of string concatenation) whenever that primitive is available without a new import, and briefly say in EXPLANATION why the replacement approach is actually safe, not just why the old one was patched.\nRespond in EXACTLY this plain-text format and nothing else — no JSON, no code fences, no text before or after:\nEXPLANATION: <1-3 sentences: what changed and why it fixes the issue>\nREPLACEMENT:\n<the corrected text for that exact line range, copied verbatim with no escaping, newline-separated, no line-number prefixes>\nIf you cannot safely propose a fix from the snippet alone, respond:\nEXPLANATION: <why not>\nREPLACEMENT: NONE";
 
 #[derive(Debug, Clone)]
 struct SnippetLine {
@@ -204,7 +207,66 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn explain(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+/// `Err` (a ready-to-return 401) unless a real session/API key resolves,
+/// or `security.allowUnauthenticatedAiAssist` opts out of that
+/// requirement — same bypass shape as
+/// `allow_unauthenticated_validate_all`/`allow_unauthenticated_interactive_dry_run`
+/// (`routes/pipeline_validate.rs`/`pipeline_interactive/handlers.rs`),
+/// checked by hand here rather than via the `RequireAuth` extractor
+/// because that extractor has no way to consult config before rejecting.
+fn require_ai_assist_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
+    if crate::auth::resolve_user(headers, &state.db).is_some() || state.config.security.allow_unauthenticated_ai_assist {
+        return Ok(());
+    }
+    Err((StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response())
+}
+
+/// GET /api/ai/health — an isolated way to test "is the configured LLM
+/// provider/key actually working right now" without going through a real
+/// issue's explain/suggest-fix flow (which needs a persisted issue with a
+/// snippet to hand). Same auth gate as explain/suggest-fix (a genuine
+/// session/API key, or `security.allowUnauthenticatedAiAssist`). Sends one
+/// minimal real completion request — same `llm_complete` path, same stderr
+/// request/error-context logging (`log_request_context`/`log_error_context`
+/// in ignite-llm-client) every other AI-assist call already gets — so a
+/// 401 here and the stderr trace line it just emitted are the same debug
+/// signal an operator already knows how to read, just triggerable on
+/// demand instead of needing to reproduce it through the UI.
+async fn ai_health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(res) = require_ai_assist_auth(&headers, &state) {
+        return res;
+    }
+    let provider = ignite_llm_client::provider_label(&state.llm_config.provider).to_string();
+    let key_suffix = ignite_llm_client::active_key_suffix(&state.llm_config);
+    let http = reqwest::Client::new();
+    if !ignite_llm_client::llm_available(&http, &state.llm_config).await {
+        return Json(json!({ "ok": false, "provider": provider, "keySuffix": key_suffix, "reason": "Provider not configured (missing key/endpoint) or unreachable." })).into_response();
+    }
+    let started_at = std::time::Instant::now();
+    let result = ignite_llm_client::llm_complete(
+        &ignite_llm_client::LlmCompleteRequest {
+            client: &http,
+            config: &state.llm_config,
+            system_prompt: "Reply with exactly one word: OK",
+            user_content: "Health check.",
+            temperature: 0.0,
+            timeout_ms: 15_000,
+            label: "ai-health",
+        },
+        |_| {},
+    )
+    .await;
+    let latency_ms = started_at.elapsed().as_millis();
+    match result {
+        Ok(text) => Json(json!({ "ok": true, "provider": provider, "keySuffix": key_suffix, "latencyMs": latency_ms, "response": text.trim() })).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "ok": false, "provider": provider, "keySuffix": key_suffix, "latencyMs": latency_ms, "error": friendly_llm_error_message(&e) }))).into_response(),
+    }
+}
+
+async fn explain(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err(res) = require_ai_assist_auth(&headers, &state) {
+        return res;
+    }
     let Some(issue) = parse_issue_from_body(&body) else {
         return err(StatusCode::BAD_REQUEST, "category and summary are required.".to_string());
     };
@@ -230,7 +292,10 @@ async fn explain(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_u
     }
 }
 
-async fn suggest_fix(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+async fn suggest_fix(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err(res) = require_ai_assist_auth(&headers, &state) {
+        return res;
+    }
     let Some(issue) = parse_issue_from_body(&body) else {
         return err(StatusCode::BAD_REQUEST, "category and summary are required.".to_string());
     };
@@ -263,7 +328,7 @@ async fn suggest_fix(State(state): State<Arc<AppState>>, crate::auth::RequireAut
 }
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/api/issues/explain", post(explain)).route("/api/issues/suggest-fix", post(suggest_fix))
+    Router::new().route("/api/issues/explain", post(explain)).route("/api/issues/suggest-fix", post(suggest_fix)).route("/api/ai/health", get(ai_health))
 }
 
 #[cfg(test)]
@@ -388,5 +453,38 @@ mod tests {
         assert!(friendly_llm_error_message(&LlmError::NetworkError("boom".to_string())).contains("boom"));
         assert!(friendly_llm_error_message(&LlmError::HttpError(500)).contains("500"));
         assert!(friendly_llm_error_message(&LlmError::EmptyResponse).contains("empty"));
+    }
+
+    fn build_state(allow_unauthenticated_ai_assist: bool) -> (Arc<AppState>, tempfile::TempDir) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let mut config = ignite_config::Config::default();
+        config.security.allow_unauthenticated_ai_assist = allow_unauthenticated_ai_assist;
+        let state = Arc::new(AppState {
+            runner: crate::state::default_runner(),
+            db,
+            running_runs: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            pending_effectivations: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            review_gate: crate::review_gate::ReviewGate::default(),
+            llm_config: crate::state::default_llm_config(),
+            config,
+            package_hallucination_checker: crate::state::default_package_hallucination_checker(),
+            fix_pr_previews: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            audit_http: reqwest::Client::new(),
+        });
+        (state, db_dir)
+    }
+
+    #[test]
+    fn require_ai_assist_auth_401s_with_no_session_and_the_flag_off() {
+        let (state, _dir) = build_state(false);
+        let res = require_ai_assist_auth(&HeaderMap::new(), &state).unwrap_err();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn require_ai_assist_auth_allows_no_session_when_the_flag_is_on() {
+        let (state, _dir) = build_state(true);
+        assert!(require_ai_assist_auth(&HeaderMap::new(), &state).is_ok());
     }
 }

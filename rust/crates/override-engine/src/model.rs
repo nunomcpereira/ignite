@@ -39,6 +39,70 @@ pub fn build_issue_id(args: BuildIssueIdArgs) -> String {
     }
 }
 
+/// The inverse slice of [`build_issue_id`]'s own format — pulls back out
+/// whatever discriminator (if any) was appended after `category::file::line`,
+/// so a caller that only has the finished `id` (not the original
+/// `BuildIssueIdArgs`) can still compute a same-identity
+/// [`stable_fingerprint`] for it. `None` for the overwhelming common case
+/// (no collision, so `build_issue_id` never appended anything).
+pub fn discriminator_from_issue_id(id: &str) -> Option<String> {
+    let mut parts = id.splitn(4, "::");
+    parts.next(); // category
+    parts.next(); // file
+    parts.next(); // line
+    parts.next().map(str::to_string)
+}
+
+/// US-07: a version-tolerant identity for cross-scan finding tracking,
+/// deliberately separate from [`build_issue_id`] — that id (and every
+/// override/SARIF fingerprint/GitHub alert match keyed on it) stays
+/// exactly as it was, so this is purely additive. Content-hashes
+/// `category` + `file` + `discriminator` + the finding's own surrounding
+/// snippet text (trimmed, blank lines dropped, so *inserting* blank lines
+/// above unchanged code — the concrete acceptance-criterion case —
+/// produces the same normalized text and therefore the same fingerprint)
+/// instead of the raw line number, which is exactly the value line drift
+/// changes. Falls back to `line` only when no snippet is available at
+/// all (most Phase 3/advisory-style checks): a strictly weaker but
+/// honest identity for those, not a fabricated one.
+pub fn stable_fingerprint(category: &str, file: Option<&str>, snippet: Option<&serde_json::Value>, line: Option<i64>, discriminator: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let normalized_snippet = snippet.map(|s| normalize_snippet_for_fingerprint(s));
+    let mut hasher = Sha256::new();
+    hasher.update(category.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(file.unwrap_or("unknown").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(discriminator.unwrap_or("").as_bytes());
+    hasher.update(b"\0");
+    match normalized_snippet.as_deref().filter(|s| !s.is_empty()) {
+        Some(text) => hasher.update(text.as_bytes()),
+        None => hasher.update(line.unwrap_or(0).to_string().as_bytes()),
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Same `snippet.lines[].text` shape `collect.rs`'s own `snippet_text`
+/// reads, but trims each line and drops blank ones — the normalization
+/// that makes a pure blank-line insertion above the matched line a no-op
+/// for fingerprinting purposes, instead of shifting every subsequent
+/// line's text into a different position in the joined string.
+fn normalize_snippet_for_fingerprint(snippet: &serde_json::Value) -> String {
+    snippet
+        .get("lines")
+        .and_then(|l| l.as_array())
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(|l| l.get("text").and_then(|t| t.as_str()))
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CweOwaspHint {
     pub cwe: Option<String>,
