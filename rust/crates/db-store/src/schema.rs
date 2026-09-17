@@ -452,6 +452,18 @@ CREATE TABLE IF NOT EXISTS permission_grants (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_permission_grants_unique ON permission_grants(subject_email, permission, COALESCE(org, ''), COALESCE(repo, ''));
 CREATE INDEX IF NOT EXISTS idx_permission_grants_subject ON permission_grants(subject_email);
+
+-- Small generic key/value store for runtime-toggleable settings that
+-- shouldn't need a server restart to change (unlike config.json, which is
+-- only ever read at startup) — first user is the GitHub Org view's
+-- "auto-rescan" toggle. Deliberately not a dedicated typed table: a
+-- boolean UI toggle doesn't warrant its own migration every time one more
+-- of these shows up.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 /// Backfills `repositories`/`source_snapshots`/`scan_runs` from every

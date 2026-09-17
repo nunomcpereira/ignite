@@ -148,6 +148,26 @@ codeql_install() {
 }
 install INSTALL_CODEQL "command -v codeql" "CodeQL" codeql_install
 
+# CodeQL's own Java "autobuild" step (run automatically for any Java repo
+# CodeQL analyzes) shells out to whatever build tool the repo actually
+# uses to compile it first - `ant` for a plain Ant project, on top of a
+# real JDK (not just a JRE - `javac` has to exist) to run it with. Neither
+# is CodeQL's own dependency in any manifest; they're invoked as a
+# subprocess CodeQL assumes is already on PATH, so without this the
+# failure only ever surfaces at scan time, as a `codeql-analysis-failed`
+# finding with no file/line ("Cannot run program 'ant': No such file or
+# directory" / similarly for a missing `javac`) rather than an install-time
+# error here.
+ant_install() {
+  if $HAS_BREW; then
+    brew install ant || return 1
+  else
+    return 1
+  fi
+  command -v javac >/dev/null 2>&1 || log_warn "ant installed, but no javac on PATH - CodeQL's Java autobuild also needs a full JDK, not just a JRE."
+}
+install INSTALL_ANT "command -v ant" "ant (CodeQL Java autobuild)" ant_install
+
 # --- Code metrics / API schema (npm-based) ---
 install INSTALL_JSCPD    "command -v jscpd"    "jscpd"    'jscpd_install() { $HAS_NPM && npm install -g jscpd; }; jscpd_install'
 install INSTALL_GOCLOC   "command -v gocloc"   "gocloc"   'brew_install() { brew install gocloc; }; brew_install'

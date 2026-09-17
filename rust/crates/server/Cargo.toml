@@ -13,6 +13,7 @@ parking_lot = "0.12"
 tempfile = "3"
 futures = "0.3"
 ignite-scheduled-rescan = { path = "../scheduled-rescan" }
+ignite-org-onboard = { path = "../org-onboard" }
 ignite-dependency-license-scan = { path = "../dependency-license-scan" }
 ignite-secrets = { path = "../secrets" }
 ignite-secret-verifier = { path = "../secret-verifier" }

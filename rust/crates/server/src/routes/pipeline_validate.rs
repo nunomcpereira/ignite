@@ -663,6 +663,21 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 tracing::warn!("transition_scan_run({rid}, Completed) failed: {e}");
             }
         }
+        // Persist to the `issues` table validate-all had never written to
+        // before — a real gap this endpoint's own doc comment didn't flag,
+        // found by chasing why a rescan_one-triggered run (the Onboarded
+        // Repos/GitHub Org "Scan now" buttons, `scheduled-rescan`) always
+        // came back with real findings in its HTTP response yet nothing
+        // browsable in "View findings"/Ignite Studio afterward: this
+        // endpoint already writes to the newer fingerprint-tracking
+        // tables via `record_finding_observations` above, but every UI
+        // read path (job_issues, Studio's historical reconstruction,
+        // Onboarded Repos' findings count) still reads the older `issues`
+        // table, which only `pipeline_onboard.rs`/`pipeline_interactive`
+        // ever populated. Reuses `pipeline_onboard`'s own `issue_to_input`
+        // mapping rather than a second copy.
+        let issue_inputs: Vec<ignite_db_store::IssueInput> = issues.iter().map(crate::routes::pipeline_onboard::issue_to_input).collect();
+        state.db.replace_project_issues(project_id, &issue_inputs, &overridden_ids);
         state.db.finish_project("success", None, None, None, project_id);
         Ok(())
     })
@@ -770,6 +785,18 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         Err(e) => {
             logger.log(e.phase, &format!("✗ {}", e.message));
             logger.status(e.phase, "failed", Some(json!({ "error": e.message })));
+            // Same gap as the success path above, but the one that's
+            // actually hit far more often in practice: "N unresolved
+            // blocking finding(s)" is this exact error branch
+            // (`e.issues` is `Some` precisely then), so a scan that
+            // *fails the gate* — the normal outcome for a repo scanned
+            // for the first time with no overrides yet — is exactly the
+            // case someone most wants to open in Studio afterward, and
+            // was exactly the case silently missing every persisted issue.
+            if let Some(failure_issue_list) = &e.issues {
+                let issue_inputs: Vec<ignite_db_store::IssueInput> = failure_issue_list.iter().map(crate::routes::pipeline_onboard::issue_to_input).collect();
+                state.db.replace_project_issues(project_id, &issue_inputs, &overridden_ids);
+            }
             state.db.finish_project("failed", Some(&e.message), None, None, project_id);
 
             let phases = logger.phase_summary();

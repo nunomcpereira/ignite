@@ -132,6 +132,35 @@
       filter: invert(1) hue-rotate(180deg);
     }
     #themeToggleBtn svg { transition: transform .2s ease; }
+
+    /* The org repository list contains several compact controls. Keep the
+       table readable at desktop widths and let the table's own horizontal
+       scroller handle narrower viewports instead of squeezing badges and
+       buttons until their labels wrap. */
+    #orgReposResults table {
+      min-width: 1080px;
+      table-layout: fixed;
+    }
+    #orgReposResults th,
+    #orgReposResults td {
+      vertical-align: middle;
+    }
+    #orgReposResults .org-repo-status-cell {
+      white-space: nowrap;
+    }
+    #orgReposResults .org-repo-action-cell {
+      width: 230px;
+      padding-right: 1.5rem;
+    }
+    #orgReposResults .org-repo-action-cell > div {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .5rem;
+    }
+    #orgReposResults .org-repo-action-cell button {
+      flex: 0 0 auto;
+    }
   </style>
   <script>
     // Applied before first paint (synchronous, in <head>) so the page never
@@ -229,6 +258,9 @@
     </button>
     <button id="governanceNavBtn" type="button" data-i18n-title="header.governance" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+    </button>
+    <button id="orgReposNavBtn" type="button" data-i18n-title="header.orgRepos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.964 0a9 9 0 10-11.964 0m11.964 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
     </button>
     <button id="historyDrawerBtn" type="button" data-i18n-title="header.history" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -512,7 +544,7 @@
       </div>
       <div id="onboardedReposLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
       <div id="onboardedReposEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="onboardedRepos.empty">No repos onboarded yet.</div>
-      <div id="onboardedReposError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="onboardedRepos.loadError">Could not load onboarded repos.</div>
+      <div id="onboardedReposError" class="hidden p-10 text-center text-sm text-rose-500"></div>
     </div>
   </div>
 
@@ -561,7 +593,7 @@
         </div>
         <div id="campaignsLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
         <div id="campaignsEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="governance.campaignsEmpty">No campaigns yet.</div>
-        <div id="campaignsError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="governance.campaignsLoadError">Could not load campaigns.</div>
+        <div id="campaignsError" class="hidden p-10 text-center text-sm text-rose-500"></div>
       </div>
     </div>
 
@@ -580,7 +612,7 @@
         <button id="complianceDownloadBtn" type="button" class="hidden text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="governance.download">⬇ Download</button>
       </div>
       <div id="complianceLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
-      <div id="complianceError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="governance.complianceLoadError">Could not load the audit pack.</div>
+      <div id="complianceError" class="hidden p-10 text-center text-sm text-rose-500"></div>
       <div id="complianceResults" class="hidden space-y-5"></div>
     </div>
 
@@ -642,12 +674,103 @@
         </div>
         <div id="auditLogLoading" class="hidden p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
         <div id="auditLogEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="governance.auditLogEmpty">No audit events match this filter.</div>
-        <div id="auditLogError" class="hidden p-10 text-center text-sm text-rose-500" data-i18n="governance.auditLogLoadError">Could not load the audit log.</div>
+        <div id="auditLogError" class="hidden p-10 text-center text-sm text-rose-500"></div>
       </div>
       <div class="flex justify-center mt-4">
         <button id="auditLogLoadMoreBtn" type="button" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="governance.loadMore">Load more</button>
       </div>
     </div>
+  </div>
+
+  <!-- GitHub Org — explore every repo in a connected GitHub org (paginated
+       GET /api/org-repos/:org) and force a scan on any of them, even one
+       Ignite has never seen before. For an org that migrated repos onto
+       GitHub before Ignite existed, or that's just connecting Ignite for
+       the first time against an already-populated org. Sibling to
+       #dashboardView/#onboardedReposView/#governanceView, same
+       mutually-exclusive show/hide via the lateral nav rail's fourth icon.
+       Scanning a repo here reuses the exact same
+       POST /api/onboarded-repos/:org/:repo/rescan endpoint the Onboarded
+       Repos view's "Scan now" button already calls — a real scan creates
+       a real `projects` row, so a scanned repo shows up in the History
+       drawer's Recent Checks feed (and, once scanned, the Onboarded Repos
+       table) with no extra wiring needed here. -->
+  <div id="orgReposView" class="hidden max-w-6xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+    <div class="flex items-center justify-between mb-6 gap-4 flex-wrap">
+      <div>
+        <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="orgRepos.title">GitHub Org</h2>
+        <p class="text-base text-slate-500 mt-1" data-i18n="orgRepos.subtitle">Connect a GitHub org to explore its repos and force a scan on any of them — for repos onboarded onto GitHub before Ignite existed.</p>
+      </div>
+    </div>
+
+    <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 mb-6">
+      <form id="orgReposConnectForm" class="flex flex-wrap items-end gap-3">
+        <div class="flex-1 min-w-[220px]">
+          <label for="orgReposOrgInput" class="block text-xs font-semibold text-slate-600 mb-1.5" data-i18n="orgRepos.orgLabel">GitHub organization</label>
+          <input type="text" id="orgReposOrgInput" data-i18n-placeholder="orgRepos.orgPlaceholder" placeholder="e.g. acme-corp" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" autocomplete="off" />
+        </div>
+        <label class="flex items-center gap-1.5 text-xs font-medium text-slate-600 pb-2.5">
+          <input type="checkbox" id="orgReposIncludeArchived" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
+          <span data-i18n="orgRepos.includeArchived">Include archived</span>
+        </label>
+        <label class="flex items-center gap-1.5 text-xs font-medium text-slate-600 pb-2.5">
+          <input type="checkbox" id="orgReposIncludeForks" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
+          <span data-i18n="orgRepos.includeForks">Include forks</span>
+        </label>
+        <button type="submit" id="orgReposConnectBtn" class="text-sm font-semibold px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white shadow-card transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <span id="orgReposConnectBtnLabel" data-i18n="orgRepos.connect">Connect</span>
+        </button>
+        <button type="button" id="orgReposScanAllBtn" class="hidden text-sm font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap" data-i18n-title="orgRepos.scanAllTitle">
+          <span id="orgReposScanAllBtnLabel" data-i18n="orgRepos.scanAll">Scan all</span>
+        </button>
+        <button type="button" id="orgReposRefreshBtn" data-i18n-title="orgRepos.refresh" class="hidden text-slate-400 hover:text-brand-600 transition-colors pb-2.5">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+          </svg>
+        </button>
+      </form>
+      <p id="orgReposRepoCount" class="hidden mt-3 text-xs text-slate-400"></p>
+      <div class="flex items-center gap-2 mt-4 pt-4 border-t border-slate-100">
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="orgReposAutoRescanToggle" class="sr-only peer" />
+          <div class="w-9 h-5 bg-slate-200 peer-checked:bg-brand-600 rounded-full transition-colors"></div>
+          <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4"></div>
+        </label>
+        <span class="text-xs font-medium text-slate-600" data-i18n="orgRepos.autoRescanLabel">Auto-rescan</span>
+        <span id="orgReposAutoRescanNote" class="text-[11px] text-slate-400"></span>
+      </div>
+    </div>
+
+    <div id="orgReposNotConnected" class="bg-white border border-slate-200 rounded-2xl shadow-sm p-10 text-center text-sm text-slate-400" data-i18n="orgRepos.notConnected">Enter a GitHub org above and click Connect to list its repositories.</div>
+
+    <div id="orgReposResults" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <colgroup>
+            <col class="w-[27%]" />
+            <col class="w-[16%]" />
+            <col class="w-[10%]" />
+            <col class="w-[16%]" />
+            <col class="w-[15%]" />
+            <col class="w-[230px]" />
+          </colgroup>
+          <thead class="bg-slate-50 border-b border-slate-200">
+            <tr class="text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">
+              <th class="px-5 py-3" data-i18n="orgRepos.colRepo">Repo</th>
+              <th class="px-5 py-3" data-i18n="orgRepos.colStatus">Status</th>
+              <th class="px-5 py-3 text-right" data-i18n="orgRepos.colFindings">Findings</th>
+              <th class="px-5 py-3" data-i18n="orgRepos.colAcks">Acknowledgments</th>
+              <th class="px-5 py-3" data-i18n="orgRepos.colLastScan">Last scan</th>
+              <th class="px-5 py-3" data-i18n="orgRepos.colAction">Action</th>
+            </tr>
+          </thead>
+          <tbody id="orgReposTableBody" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+      <div id="orgReposEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="orgRepos.empty">No repositories found for this org.</div>
+    </div>
+    <div id="orgReposLoading" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
+    <div id="orgReposError" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm p-10 text-center text-sm text-rose-500"></div>
   </div>
 
   <!-- New campaign modal -->
@@ -1050,6 +1173,21 @@
         for (const [k, v] of Object.entries(vars)) str = str.replaceAll(`{${k}}`, v);
       }
       return str;
+    }
+
+    /**
+     * Every data view behind `RequireAuth` (campaigns, onboarded repos,
+     * org repos, history, audit log, ...) 401s identically when there's no
+     * active session — the common, expected reason a load fails, not a
+     * server error. Callers pass the `Response` they got back (or `null`
+     * when the fetch itself threw, e.g. network failure) plus the
+     * fallback i18n key for a genuine load failure; this picks
+     * `common.signInToView` instead whenever the failure is specifically
+     * "not signed in", so the UI stops crying wolf with a generic error
+     * for what's actually just an unauthenticated session.
+     */
+    function loadErrorMessage(res, fallbackKey) {
+      return res && res.status === 401 ? t('common.signInToView') : t(fallbackKey);
     }
 
     /**
@@ -3278,10 +3416,10 @@
       </div>`;
     }
 
-    function renderToolsBar(status) {
+    function renderToolsBar(status, authRequired) {
       const bar = $('toolsBar');
       if (!status) {
-        bar.innerHTML = `<div class="px-0 py-2 text-[10px] font-semibold text-slate-400" data-i18n="tools.loadError">${t('tools.loadError')}</div>`;
+        bar.innerHTML = `<div class="px-0 py-2 text-[10px] font-semibold text-slate-400">${escapeHtml(authRequired ? t('common.signInToView') : t('tools.loadError'))}</div>`;
         return;
       }
       let connectedCount = 0;
@@ -3327,8 +3465,9 @@
     async function loadToolsStatus() {
       const total = Object.keys(TOOLS_META).length;
       renderToolsBarLoading(0, total);
+      let res;
       try {
-        const res = await fetch('/api/tools/status/stream');
+        res = await fetch('/api/tools/status/stream');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -3350,7 +3489,7 @@
         if (!finalStatus) throw new Error('Stream ended without a result.');
         renderToolsBar(finalStatus);
       } catch {
-        renderToolsBar(null);
+        renderToolsBar(null, res && res.status === 401);
       }
     }
 
@@ -3451,9 +3590,20 @@
       let projects = [];
       try {
         projects = await (await fetch('/api/projects')).json();
-      } catch { select.innerHTML = ''; return; }
+      } catch { select.innerHTML = ''; select.classList.add('hidden'); return; }
       const recent = projects.filter((p) => p.retained_tier && p.job_id);
-      if (recent.length === 0) { select.classList.add('hidden'); return; }
+      const activeIsRetained = !!activeJobId && recent.some((p) => p.job_id === activeJobId);
+      // A historical (non-retained) run — `openHistoricalStudio` always
+      // calls this with `activeJobId: null` — never appears in `recent`
+      // at all (it never had a `retained_tier`). Rendering the switcher
+      // anyway used to default to the browser's own "select the first
+      // <option>" behavior, silently making some unrelated retained run
+      // look like the one currently being viewed. Only ever show it when
+      // it can point at something real.
+      if (recent.length === 0 || !activeIsRetained) {
+        select.classList.add('hidden');
+        return;
+      }
       select.classList.remove('hidden');
       select.innerHTML = recent.map((p) => `<option value="${escapeAttr(p.job_id)}" ${p.job_id === activeJobId ? 'selected' : ''}>${escapeHtml(p.org)}/${escapeHtml(p.repo)} — ${p.retained_tier === 'pruned' ? 'flagged files only' : 'full'}</option>`).join('');
       const active = recent.find((p) => p.job_id === activeJobId);
@@ -6518,6 +6668,24 @@
         }
 
         const orgs = cfg.orgs || [];
+        // Same configured org list used to prefill the main upload form's
+        // org field also drives the GitHub Org explorer's input — a
+        // single configured org prefills it, 2+ turns it into a dropdown,
+        // mirroring the main form's own orgInput handling below exactly.
+        if (orgs.length === 1) {
+          const reposOrgField = $('orgReposOrgInput');
+          if (!reposOrgField.value.trim()) reposOrgField.value = orgs[0];
+        } else if (orgs.length > 1) {
+          const reposOrgField = $('orgReposOrgInput');
+          if (reposOrgField.tagName !== 'SELECT') {
+            const reposOrgSelect = document.createElement('select');
+            reposOrgSelect.id = 'orgReposOrgInput';
+            reposOrgSelect.className = reposOrgField.className + ' cursor-pointer';
+            reposOrgSelect.innerHTML = orgs.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+            reposOrgSelect.value = orgs[0];
+            reposOrgField.replaceWith(reposOrgSelect);
+          }
+        }
         if (orgs.length === 0) return;
         if (orgs.length === 1) {
           if (!orgInput.value.trim()) orgInput.value = orgs[0];
@@ -6590,10 +6758,13 @@
 
     async function loadProjects() {
       let projects = [];
+      let res;
       try {
-        projects = await (await fetch('/api/projects')).json();
+        res = await fetch('/api/projects');
+        projects = await res.json();
+        if (!res.ok || !Array.isArray(projects)) throw new Error(`HTTP ${res.status}`);
       } catch {
-        historyList.innerHTML = '<p class="p-5 text-xs text-rose-500">Could not load onboarding history.</p>';
+        historyList.innerHTML = `<p class="p-5 text-xs text-rose-500">${escapeHtml(loadErrorMessage(res, 'history.loadError'))}</p>`;
         return;
       }
       if (projects.length === 0) {
@@ -6745,11 +6916,14 @@
 
     async function loadEffectivated() {
       let projects = [];
+      let res;
       try {
-        const res = await fetch('/api/projects/effectivated');
-        ({ projects } = await res.json());
+        res = await fetch('/api/projects/effectivated');
+        const data = await res.json();
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        ({ projects } = data);
       } catch {
-        effectivatedList.innerHTML = '<p class="p-5 text-xs text-rose-500">Could not load effectivated repos.</p>';
+        effectivatedList.innerHTML = `<p class="p-5 text-xs text-rose-500">${escapeHtml(loadErrorMessage(res, 'history.effectivatedLoadError'))}</p>`;
         return;
       }
       if (!projects || projects.length === 0) {
@@ -6876,7 +7050,7 @@
           ? `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-rose-200 text-rose-700 bg-rose-50" title="${escapeAttr(t('onboardedRepos.slaBreachTitle'))}">⏰ ${r.slaBreaches}</span>`
           : '<span class="text-slate-300">—</span>';
         return `
-        <tr class="align-top">
+        <tr>
           <td class="px-5 py-3.5">${orgCell}</td>
           <td class="px-5 py-3.5">${repoCell}</td>
           <td class="px-5 py-3.5 text-right ${r.licenseProblems > 0 ? 'font-semibold text-amber-600' : 'text-slate-400'}">${r.licenseProblems}</td>
@@ -6935,18 +7109,367 @@
       $('onboardedReposEmpty').classList.add('hidden');
       $('onboardedReposLoading').classList.remove('hidden');
       $('onboardedReposTableBody').innerHTML = '';
+      let res;
       try {
-        const res = await fetch('/api/onboarded-repos');
+        res = await fetch('/api/onboarded-repos');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const repos = await res.json();
         renderOnboardedRepos(repos);
       } catch {
+        $('onboardedReposError').textContent = loadErrorMessage(res, 'onboardedRepos.loadError');
         $('onboardedReposError').classList.remove('hidden');
       } finally {
         $('onboardedReposLoading').classList.add('hidden');
       }
     }
     $('onboardedReposRefreshBtn').addEventListener('click', loadOnboardedRepos);
+
+    // GitHub Org view — GET /api/org-repos/:org (discovery, read-only) +
+    // reuses the existing POST /api/onboarded-repos/:org/:repo/rescan
+    // endpoint to force a scan on any discovered repo, known to Ignite or
+    // not. Not loaded eagerly — there's no default org to show, unlike
+    // Onboarded Repos/Campaigns, so this view only ever fetches once the
+    // user actually submits an org name.
+    let orgReposCache = [];
+    let orgReposCurrentOrg = '';
+    let orgReposPollTimer = null;
+    // "Scan all" bookkeeping — the trigger is a single async call
+    // (sequential or parallel per `config.json`'s `orgRepos.scanAllMode`,
+    // see the route's own doc comment), so there's no one HTTP response
+    // to await for "all done". `orgReposBulkPendingKeys` is this view's
+    // own client-side "still waiting on this one" set or `"org/repo"`
+    // keys, reconciled against each poll response in `reconcileBulkPending`.
+    let orgReposBulkPendingKeys = new Set();
+    let orgReposBulkTriggeredAt = null;
+
+    // Terminal-status badge styling, same palette the history drawer's
+    // HIST_STATUS already uses — a repo scanned from this view and one
+    // scanned any other way should read identically once done.
+    const ORG_REPO_STATUS_BADGE = {
+      running: 'border-brand-200 text-brand-700 bg-brand-50',
+      success: 'border-emerald-200 text-emerald-700 bg-emerald-50',
+      failed: 'border-rose-200 text-rose-700 bg-rose-50',
+      aborted: 'border-slate-200 text-slate-500 bg-slate-100',
+    };
+
+    // A scan triggered from this view is async (see the route's own doc
+    // comment) — there is no single HTTP response to await for
+    // completion, so this view polls its own listing endpoint instead,
+    // which already reports `status` (including `"running"`) off the
+    // latest real `projects` row for each repo. Re-arms itself after every
+    // successful poll as long as at least one row is still running, and
+    // goes quiet the moment none are — no separate WebSocket/SSE channel
+    // needed for this.
+    function scheduleOrgReposPoll() {
+      if (orgReposPollTimer) {
+        clearTimeout(orgReposPollTimer);
+        orgReposPollTimer = null;
+      }
+      if (!orgReposCache.some((r) => r.status === 'running') && orgReposBulkPendingKeys.size === 0) return;
+      orgReposPollTimer = setTimeout(() => {
+        orgReposPollTimer = null;
+        if (!orgReposCurrentOrg) return;
+        // Skip the actual fetch while the tab is elsewhere, but keep
+        // re-arming quietly so polling resumes the moment the user comes
+        // back — cheaper than tearing down/rebuilding the poll loop on
+        // every nav-rail click.
+        if ($('orgReposView').classList.contains('hidden')) {
+          scheduleOrgReposPollAgainQuietly();
+          return;
+        }
+        loadOrgRepos(orgReposCurrentOrg, { quiet: true });
+      }, 8000);
+    }
+    function scheduleOrgReposPollAgainQuietly() {
+      orgReposPollTimer = setTimeout(() => {
+        orgReposPollTimer = null;
+        scheduleOrgReposPoll();
+      }, 8000);
+    }
+
+    // Drops a repo from the pending "scan all" set once its own row shows
+    // it's genuinely finished *since this trigger* — either a fresh
+    // `lastScanAt` newer than when "Scan all" was clicked, or a
+    // `scanError` (a pre-project-row failure has no `lastScanAt` to
+    // compare at all, so its mere presence is itself the "this one's
+    // done" signal). Still-`running` or not-yet-started rows are left in
+    // the set untouched.
+    function reconcileBulkPending() {
+      if (orgReposBulkPendingKeys.size === 0) return;
+      const triggeredMs = orgReposBulkTriggeredAt ? new Date(orgReposBulkTriggeredAt).getTime() : 0;
+      orgReposCache.forEach((r) => {
+        const key = `${r.org}/${r.repo}`;
+        if (!orgReposBulkPendingKeys.has(key) || r.status === 'running') return;
+        if (r.scanError) { orgReposBulkPendingKeys.delete(key); return; }
+        const scannedMs = r.lastScanAt ? new Date(`${r.lastScanAt.replace(' ', 'T')}Z`).getTime() : 0;
+        if (scannedMs > triggeredMs) orgReposBulkPendingKeys.delete(key);
+      });
+      if (orgReposBulkPendingKeys.size === 0) orgReposBulkTriggeredAt = null;
+    }
+
+    function renderOrgRepos(repos) {
+      $('orgReposScanAllBtn').disabled = orgReposAutoRescanEnabled || orgReposBulkPendingKeys.size > 0;
+      $('orgReposEmpty').classList.toggle('hidden', repos.length > 0);
+      $('orgReposRepoCount').classList.remove('hidden');
+      $('orgReposRepoCount').textContent = t('orgRepos.repoCount', { count: repos.length });
+      $('orgReposTableBody').innerHTML = repos.map((r, i) => {
+        const repoUrl = `https://github.com/${encodeURIComponent(r.org)}/${encodeURIComponent(r.repo)}`;
+        const badges = [
+          r.archived ? `<span class="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.archivedBadge')}</span>` : '',
+          r.fork ? `<span class="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.forkBadge')}</span>` : '',
+        ].filter(Boolean).join(' ');
+        const running = r.status === 'running';
+        const bulkQueued = !running && orgReposBulkPendingKeys.has(`${r.org}/${r.repo}`);
+        let statusCell;
+        if (running) {
+          statusCell = `<span class="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${ORG_REPO_STATUS_BADGE.running}"><svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>${t('orgRepos.statusScanning')}</span>`;
+        } else if (bulkQueued) {
+          statusCell = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.statusQueued')}</span>`;
+        } else if (r.scanError) {
+          // No `projects` row exists for this attempt at all (the clone/
+          // auth step itself failed before validate-all ever ran) — the
+          // server-side `list_onboarded_repo_summaries` join has nothing
+          // to report, so this is the one signal that isn't sourced from
+          // there. Full message goes in the title (hover) rather than
+          // inline, since a real git/gh error can be long.
+          statusCell = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${ORG_REPO_STATUS_BADGE.failed}" title="${escapeAttr(r.scanError)}">${t('orgRepos.statusFailed')}</span>`;
+        } else if (r.empty) {
+          statusCell = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-200 text-slate-400 bg-slate-50" title="${escapeAttr(t('orgRepos.emptyRepoMessage'))}">${t('orgRepos.statusEmpty')}</span>`;
+        } else if (r.known) {
+          const cls = ORG_REPO_STATUS_BADGE[r.status] || ORG_REPO_STATUS_BADGE.success;
+          statusCell = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${cls}">${escapeHtml(r.status || t('orgRepos.statusKnown'))}</span>`;
+        } else {
+          statusCell = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.statusNew')}</span>`;
+        }
+        // Colored by the *most critical* tier present — an error anywhere
+        // paints the whole count red even if most findings are just nice-
+        // to-haves, matching the same "worst case wins" semaphore logic
+        // Studio's own severity chips use, just collapsed to one number
+        // here since this table has no room for a per-tier breakdown.
+        let findingsCell;
+        if (running || r.findingsCount == null) {
+          findingsCell = '<span class="text-slate-300">—</span>';
+        } else if (r.findingsCount === 0) {
+          findingsCell = '<span class="text-slate-400">0</span>';
+        } else {
+          const tierColor = (r.errorCount || 0) > 0 ? 'text-rose-600' : (r.warningCount || 0) > 0 ? 'text-amber-600' : 'text-emerald-600';
+          findingsCell = `<button type="button" class="org-repo-view-findings font-semibold ${tierColor} hover:underline" data-i="${i}">${r.findingsCount}</button>`;
+        }
+        const studioBtn = !running && r.latestProjectId
+          ? `<button type="button" class="org-repo-open-studio text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-violet-600 hover:bg-slate-50 whitespace-nowrap" data-i="${i}" title="${escapeAttr(t('orgRepos.openStudioTitle'))}">${t('orgRepos.openStudio')}</button>`
+          : '';
+        const acks = r.acknowledgments || [];
+        const acksCell = acks.length === 0
+          ? '<span class="text-slate-300">—</span>'
+          : `<button type="button" class="org-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.downloadAcksTitle'))}">⬇ ${t('onboardedRepos.acknowledgmentsCount', { count: acks.length })}</button>`;
+        return `
+        <tr class="align-top">
+          <td class="px-5 py-3.5">
+            <a href="${escapeAttr(repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>
+            ${badges ? `<div class="flex gap-1 mt-1">${badges}</div>` : ''}
+          </td>
+          <td class="org-repo-status-cell px-5 py-3.5">
+            ${statusCell}
+            ${r.scanError ? `<button type="button" class="org-repo-show-error block text-left text-[10px] text-rose-500 hover:text-rose-700 hover:underline mt-1 max-w-[220px] truncate" data-i="${i}" title="${escapeAttr(r.scanError)}">${escapeHtml(r.scanError)}</button>` : ''}
+          </td>
+          <td class="px-5 py-3.5 text-right">${findingsCell}</td>
+          <td class="px-5 py-3.5">${acksCell}</td>
+          <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>
+          <td class="org-repo-action-cell px-5 py-3.5">
+            <div>
+              <button type="button" class="org-repo-scan-now text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed" data-i="${i}" title="${escapeAttr(r.empty ? t('orgRepos.emptyRepoMessage') : t('orgRepos.scanNowTitle'))}" ${running || r.empty ? 'disabled' : ''}>
+                <span class="org-repo-scan-now-label">${running ? t('orgRepos.scanning') : t('orgRepos.scanNow')}</span>
+              </button>
+              ${studioBtn}
+            </div>
+          </td>
+        </tr>`;
+      }).join('');
+
+      $('orgReposTableBody').querySelectorAll('.org-repo-show-error').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', () => window.alert(r.scanError));
+      });
+      $('orgReposTableBody').querySelectorAll('.org-repo-download-acks').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', () => downloadAcknowledgments(r.org, r.repo, r.acknowledgments));
+      });
+      $('orgReposTableBody').querySelectorAll('.org-repo-view-findings').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', async () => {
+          try {
+            const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
+            const data = await res.json();
+            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId });
+          } catch {
+            openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
+          }
+        });
+      });
+      $('orgReposTableBody').querySelectorAll('.org-repo-open-studio').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', () => openHistoricalStudio(r.latestProjectId, r.org, r.repo));
+      });
+      $('orgReposTableBody').querySelectorAll('.org-repo-scan-now').forEach((btn) => {
+        const r = repos[Number(btn.dataset.i)];
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          const label = btn.querySelector('.org-repo-scan-now-label');
+          const originalText = label.textContent;
+          label.textContent = t('orgRepos.scanning');
+          try {
+            const res = await fetch(`/api/org-repos/${encodeURIComponent(r.org)}/${encodeURIComponent(r.repo)}/scan`, { method: 'POST' });
+            const data = await res.json();
+            if (data.empty) {
+              // Not an error — the server already checked and never even
+              // attempted a doomed clone. `r.empty` should already be
+              // true from discovery, but setting it here too covers a
+              // repo that went from non-empty to empty between the last
+              // poll and this click (its very first commit reverted, in
+              // practice vanishingly rare, but still cheap to handle).
+              r.empty = true;
+              renderOrgRepos(orgReposCache);
+              return;
+            }
+            if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+            r.status = 'running';
+            renderOrgRepos(orgReposCache);
+            scheduleOrgReposPoll();
+          } catch (e) {
+            window.alert(t('orgRepos.scanFailed', { error: e.message }));
+            btn.disabled = false;
+            label.textContent = originalText;
+          }
+        });
+      });
+    }
+
+    async function loadOrgRepos(org, opts = {}) {
+      const quiet = opts.quiet === true;
+      orgReposCurrentOrg = org;
+      if (!quiet) {
+        $('orgReposNotConnected').classList.add('hidden');
+        $('orgReposError').classList.add('hidden');
+        $('orgReposResults').classList.add('hidden');
+        $('orgReposLoading').classList.remove('hidden');
+        $('orgReposRepoCount').classList.add('hidden');
+      }
+      const includeArchived = $('orgReposIncludeArchived').checked;
+      const includeForks = $('orgReposIncludeForks').checked;
+      let res;
+      try {
+        const params = new URLSearchParams({ includeArchived: String(includeArchived), includeForks: String(includeForks) });
+        res = await fetch(`/api/org-repos/${encodeURIComponent(org)}?${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        orgReposCache = data;
+        $('orgReposResults').classList.remove('hidden');
+        $('orgReposRefreshBtn').classList.remove('hidden');
+        $('orgReposScanAllBtn').classList.remove('hidden');
+        reconcileBulkPending();
+        renderOrgRepos(orgReposCache);
+        scheduleOrgReposPoll();
+      } catch (e) {
+        if (!quiet) {
+          $('orgReposError').textContent = res && res.status === 401 ? t('common.signInToView') : t('orgRepos.loadError') + (e.message ? ` (${e.message})` : '');
+          $('orgReposError').classList.remove('hidden');
+        }
+      } finally {
+        if (!quiet) $('orgReposLoading').classList.add('hidden');
+      }
+    }
+
+    $('orgReposConnectForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const org = $('orgReposOrgInput').value.trim();
+      if (!org) return;
+      $('orgReposConnectBtn').disabled = true;
+      $('orgReposConnectBtnLabel').textContent = t('orgRepos.connecting');
+      try {
+        await loadOrgRepos(org);
+      } finally {
+        $('orgReposConnectBtn').disabled = false;
+        $('orgReposConnectBtnLabel').textContent = t('orgRepos.connect');
+      }
+    });
+    $('orgReposRefreshBtn').addEventListener('click', () => {
+      if (orgReposCurrentOrg) loadOrgRepos(orgReposCurrentOrg);
+    });
+    $('orgReposScanAllBtn').addEventListener('click', async () => {
+      if (!orgReposCurrentOrg) return;
+      const btn = $('orgReposScanAllBtn');
+      const label = $('orgReposScanAllBtnLabel');
+      const originalText = label.textContent;
+      btn.disabled = true;
+      label.textContent = t('orgRepos.scanAllStarting');
+      try {
+        const includeArchived = $('orgReposIncludeArchived').checked;
+        const includeForks = $('orgReposIncludeForks').checked;
+        const params = new URLSearchParams({ includeArchived: String(includeArchived), includeForks: String(includeForks) });
+        const res = await fetch(`/api/org-repos/${encodeURIComponent(orgReposCurrentOrg)}/scan-all?${params}`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (!data.queued) {
+          window.alert(t('orgRepos.scanAllNothingToScan'));
+          return;
+        }
+        orgReposBulkTriggeredAt = new Date().toISOString();
+        orgReposBulkPendingKeys = new Set(orgReposCache.filter((r) => !r.empty).map((r) => `${r.org}/${r.repo}`));
+        renderOrgRepos(orgReposCache);
+        scheduleOrgReposPoll();
+        window.alert(t('orgRepos.scanAllStarted', { count: data.count, mode: data.mode }));
+      } catch (e) {
+        window.alert(t('orgRepos.scanAllFailed', { error: e.message }));
+      } finally {
+        label.textContent = originalText;
+        // Left disabled while a bulk run is genuinely still in flight —
+        // `renderOrgRepos` (via the next poll) re-enables it once
+        // `orgReposBulkPendingKeys` empties out; only reset it here on an
+        // outright failure/no-op, where nothing was actually queued.
+        if (orgReposBulkPendingKeys.size === 0) btn.disabled = false;
+      }
+    });
+
+    // Auto-rescan toggle — a runtime-toggleable setting persisted server-
+    // side (`app_settings`, not `config.json`, specifically so this
+    // doesn't need a restart to flip), independent of any one connected
+    // org. The actual hourly check runs outside this page entirely (an
+    // external OS-level timer hitting `POST /api/org-repos/auto-rescan/run`
+    // — see that route's own doc comment for why); this toggle only ever
+    // controls whether that endpoint does anything when it's next called,
+    // not a live scheduler running in this tab.
+    let orgReposAutoRescanEnabled = false;
+    async function loadAutoRescanState() {
+      try {
+        const res = await fetch('/api/org-repos/auto-rescan');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        orgReposAutoRescanEnabled = !!data.enabled;
+        $('orgReposAutoRescanToggle').checked = orgReposAutoRescanEnabled;
+        $('orgReposAutoRescanNote').textContent = t('orgRepos.autoRescanNote', { hours: data.staleAfterHours });
+        $('orgReposScanAllBtn').disabled = orgReposAutoRescanEnabled || orgReposBulkPendingKeys.size > 0;
+      } catch {
+        $('orgReposAutoRescanNote').textContent = '';
+      }
+    }
+    $('orgReposAutoRescanToggle').addEventListener('change', async (e) => {
+      const toggle = e.target;
+      const desired = toggle.checked;
+      toggle.disabled = true;
+      try {
+        const res = await fetch('/api/org-repos/auto-rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: desired }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        orgReposAutoRescanEnabled = !!data.enabled;
+        toggle.checked = orgReposAutoRescanEnabled;
+        $('orgReposScanAllBtn').disabled = orgReposAutoRescanEnabled || orgReposBulkPendingKeys.size > 0;
+      } catch (e2) {
+        toggle.checked = !desired; // revert on failure
+        window.alert(t('orgRepos.autoRescanToggleFailed', { error: e2.message }));
+      } finally {
+        toggle.disabled = false;
+      }
+    });
 
     // Governance — Campaigns tab. Loaded lazily the first time the nav icon
     // is opened, same posture as Onboarded Repos above.
@@ -7031,11 +7554,13 @@
       $('campaignsEmpty').classList.add('hidden');
       $('campaignsLoading').classList.remove('hidden');
       $('campaignsTableBody').innerHTML = '';
+      let res;
       try {
-        const res = await fetch('/api/campaigns');
+        res = await fetch('/api/campaigns');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         renderCampaigns(await res.json());
       } catch {
+        $('campaignsError').textContent = loadErrorMessage(res, 'governance.campaignsLoadError');
         $('campaignsError').classList.remove('hidden');
       } finally {
         $('campaignsLoading').classList.add('hidden');
@@ -7152,14 +7677,16 @@
         return;
       }
       $('complianceLoading').classList.remove('hidden');
+      let res;
       try {
-        const res = await fetch(`/api/compliance/audit-pack?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+        res = await fetch(`/api/compliance/audit-pack?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         complianceCache = data;
         renderCompliance(data);
         $('complianceDownloadBtn').classList.remove('hidden');
       } catch {
+        $('complianceError').textContent = loadErrorMessage(res, 'governance.complianceLoadError');
         $('complianceError').classList.remove('hidden');
       } finally {
         $('complianceLoading').classList.add('hidden');
@@ -7228,6 +7755,7 @@
       }
       $('auditLogLoading').classList.remove('hidden');
       $('auditLogLoadMoreBtn').classList.add('hidden');
+      let res;
       try {
         const params = new URLSearchParams();
         const org = $('auditLogOrgInput').value.trim();
@@ -7243,13 +7771,14 @@
         if (from) params.set('from', from);
         if (to) params.set('to', to);
         if (append && auditLogNextCursor != null) params.set('cursor', String(auditLogNextCursor));
-        const res = await fetch(`/api/audit-log?${params.toString()}`);
+        res = await fetch(`/api/audit-log?${params.toString()}`);
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         renderAuditLog(data.items || [], { append });
         auditLogNextCursor = data.nextCursor ?? null;
         $('auditLogLoadMoreBtn').classList.toggle('hidden', auditLogNextCursor == null);
       } catch {
+        $('auditLogError').textContent = loadErrorMessage(res, 'governance.auditLogLoadError');
         $('auditLogError').classList.remove('hidden');
       } finally {
         $('auditLogLoading').classList.add('hidden');
@@ -7453,14 +7982,15 @@
       if (e.key === 'Escape' && !$('historyDrawer').classList.contains('hidden')) closeHistoryDrawer();
     });
 
-    // Nav rail view switch — Dashboard, Onboarded Repos and Governance are
-    // this app's three "screens" (mutually exclusive, active-icon styling
-    // swaps with the visible one), unlike the history drawer above which is
-    // an overlay on top of whichever screen is showing.
+    // Nav rail view switch — Dashboard, Onboarded Repos, Governance and
+    // GitHub Org are this app's four "screens" (mutually exclusive,
+    // active-icon styling swaps with the visible one), unlike the history
+    // drawer above which is an overlay on top of whichever screen is
+    // showing.
     const NAV_ACTIVE = ['bg-brand-50', 'text-brand-600'];
     const NAV_INACTIVE = ['text-slate-400', 'hover:text-brand-600', 'hover:bg-slate-100'];
-    const NAV_VIEWS = ['dashboardView', 'onboardedReposView', 'governanceView'];
-    const NAV_BTNS = ['dashboardNavBtn', 'onboardedReposNavBtn', 'governanceNavBtn'];
+    const NAV_VIEWS = ['dashboardView', 'onboardedReposView', 'governanceView', 'orgReposView'];
+    const NAV_BTNS = ['dashboardNavBtn', 'onboardedReposNavBtn', 'governanceNavBtn', 'orgReposNavBtn'];
     function setActiveNavBtn(activeBtn, ...inactiveBtns) {
       inactiveBtns.forEach((btn) => {
         btn.classList.remove(...NAV_ACTIVE);
@@ -7492,9 +8022,18 @@
         loadCampaigns();
       }
     }
+    let orgReposAutoRescanLoaded = false;
+    function showOrgReposView() {
+      showView('orgReposView', 'orgReposNavBtn');
+      if (!orgReposAutoRescanLoaded) {
+        orgReposAutoRescanLoaded = true;
+        loadAutoRescanState();
+      }
+    }
     $('dashboardNavBtn').addEventListener('click', showDashboardView);
     $('onboardedReposNavBtn').addEventListener('click', showOnboardedReposView);
     $('governanceNavBtn').addEventListener('click', showGovernanceView);
+    $('orgReposNavBtn').addEventListener('click', showOrgReposView);
 
     // Language picker — same show/hide popover pattern as accountMenuBtn/accountMenu above.
     $('localeMenuBtn').addEventListener('click', (e) => {

@@ -54,6 +54,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::issues::router())
         .merge(routes::history::router())
         .merge(routes::onboarded_repos::router())
+        .merge(routes::org_repos::router())
         .merge(routes::pipeline_validate::router())
         .merge(routes::config::router())
         .merge(routes::pipeline_onboard::router())

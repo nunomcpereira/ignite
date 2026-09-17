@@ -156,4 +156,26 @@ impl DbStore {
         conn.query_row("SELECT id FROM projects WHERE job_id = ?", params![job_id], |row| row.get(0)).optional().unwrap()
     }
 
+    /// Same three-tier split the frontend already computes client-side
+    /// from a full issues array (`public/index.html`'s own
+    /// `niceToHaveCount`/`errorCount`/`warningCount` — "nice to have" is
+    /// specifically the `code-duplication` category, not a real severity
+    /// level; everything else splits on the `severity` column as-is) —
+    /// done here as one SQL query instead, for a view (the GitHub Org
+    /// table) that only ever has a per-repo summary row, never the full
+    /// issue list, to color a single findings badge by its most critical
+    /// tier without shipping every issue's JSON down just for that.
+    pub fn issue_tier_counts(&self, project_id: i64) -> (i64, i64, i64) {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT
+               SUM(CASE WHEN category != 'code-duplication' AND severity = 'error' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN category != 'code-duplication' AND severity != 'error' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN category = 'code-duplication' THEN 1 ELSE 0 END)
+             FROM issues WHERE project_id = ? AND status = 'open'",
+            params![project_id],
+            |row| Ok((row.get::<_, Option<i64>>(0)?.unwrap_or(0), row.get::<_, Option<i64>>(1)?.unwrap_or(0), row.get::<_, Option<i64>>(2)?.unwrap_or(0))),
+        )
+        .unwrap_or((0, 0, 0))
+    }
 }

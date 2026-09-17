@@ -115,6 +115,19 @@ ENV PATH="/opt/pipx/bin:${PATH}"
 # comment for why installing them in this early, permanent layer (as this
 # file used to) would make the later purge unable to reclaim their size.
 #
+# `ant` IS installed here (unconditionally, unlike the rest of this file's
+# opt-in-via-ARG tools): it's not something Ignite itself invokes as a
+# check - it's CodeQL's own Java "autobuild" step shelling out to it as a
+# subprocess it assumes is already on PATH. Without it, a Java repo's
+# CodeQL analysis fails at scan time with a file/line-less
+# `codeql-analysis-failed` finding ("Cannot run program 'ant'") instead of
+# ever actually analyzing the code - confirmed against a real repo hitting
+# exactly that while diagnosing this. Debian's `ant` package pulls in
+# `default-jdk-headless` (a real JDK, `javac` included) as a transitive
+# dependency automatically, which the autobuild also needs and which the
+# Adoptium JRE installed below for ORT doesn't provide (JRE-only, no
+# `javac`) - so this one package closes both gaps at once.
+#
 # `apt-get upgrade` runs first: the node:24-bookworm-slim base layer is
 # built once and then sits in registries/caches, so by the time this image
 # gets built its already-installed OS packages (bsdutils, curl, gzip, glibc,
@@ -127,7 +140,7 @@ ENV PATH="/opt/pipx/bin:${PATH}"
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
       curl ca-certificates gnupg git unzip \
       python3 python3-pip python3-venv pipx \
-      ruby-full \
+      ruby-full ant \
     && rm -rf /var/lib/apt/lists/*
 # `gnupg`/`unzip` are deliberately never purged (unlike the build-only
 # packages below) - CodeQL's install still needs `unzip` well after this

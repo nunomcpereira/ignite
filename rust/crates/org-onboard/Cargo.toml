@@ -1,0 +1,25 @@
+[package]
+name = "ignite-org-onboard"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "org-onboard"
+path = "src/main.rs"
+
+[dependencies]
+ignite-github-api = { path = "../github-api" }
+ignite-tool-runner = { path = "../tool-runner" }
+ignite-db-store = { path = "../db-store" }
+ignite-scheduled-rescan = { path = "../scheduled-rescan" }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

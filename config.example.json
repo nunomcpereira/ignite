@@ -228,6 +228,10 @@
   "policy": {
     "strict": false
   },
+  "orgRepos": {
+    "scanAllMode": "sequential",
+    "autoRescanStaleAfterHours": 24
+  },
   "auditLog": {
     "enabled": false,
     "sinks": [

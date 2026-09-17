@@ -63,6 +63,7 @@ pub struct Config {
     pub sla: SlaConfig,
     pub audit_log: AuditLogConfig,
     pub policy: PolicyConfig,
+    pub org_repos: OrgReposConfig,
 }
 
 impl Default for Config {
@@ -88,8 +89,40 @@ impl Default for Config {
             sla: SlaConfig::default(),
             audit_log: AuditLogConfig::default(),
             policy: PolicyConfig::default(),
+            org_repos: OrgReposConfig::default(),
         }
     }
+}
+
+/// GitHub Org view's "Scan all" — one click, every currently-listed repo
+/// in the connected org. `scanAllMode: "sequential"` (the default) runs
+/// them one at a time, a single background worker moving to the next
+/// repo only once the previous one's full `rescan_one` (clone ->
+/// validate-all -> github-check, 5-16+ minutes each per
+/// `rust/MIGRATION_STATUS.md`'s own benchmark) has finished — the safe
+/// default for an org with hundreds of repos, where "parallel" would mean
+/// hundreds of concurrent clones/scans landing on this one machine at
+/// once. `"parallel"` opts into exactly that (one spawned task per repo,
+/// same as the single-repo "Scan now" button, just looped) — a deliberate
+/// per-deployment choice, not something a UI toggle should default to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgReposConfig {
+    pub scan_all_mode: String,
+    /// How stale a repo's last scan has to be before the auto-rescan sweep
+    /// (`POST /api/org-repos/auto-rescan/run`, meant to be hit hourly by
+    /// an external cron/launchd timer — deliberately not a live in-process
+    /// scheduler, matching `scheduled-rescan`'s own "run by hand/cron/
+    /// systemd" posture) re-triggers it. A repo never scanned at all is
+    /// always considered stale regardless of this value. Whether the
+    /// sweep does anything at all on a given hour is a separate, runtime-
+    /// toggleable flag (`DbStore::get_bool_setting("auto_rescan_enabled")`)
+    /// — not this static config value — since that's meant to be flipped
+    /// live from the UI without a server restart.
+    pub auto_rescan_stale_after_hours: u32,
+}
+impl Default for OrgReposConfig {
+    fn default() -> Self { OrgReposConfig { scan_all_mode: "sequential".to_string(), auto_rescan_stale_after_hours: 24 } }
 }
 
 /// GHAS-parity SIEM/audit-log streaming (`ignite-audit-log`): where to
@@ -1300,6 +1333,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }
     if let Some(v) = env_num::<u32>("SLA_MEDIUM_DAYS") { merged.sla.medium_days = v; }
     if let Some(v) = env_bool("AUDIT_LOG_ENABLED") { merged.audit_log.enabled = v; }
+    if let Some(v) = env_str("ORG_REPOS_SCAN_ALL_MODE") { merged.org_repos.scan_all_mode = v; }
+    if let Some(v) = env_num::<u32>("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS") { merged.org_repos.auto_rescan_stale_after_hours = v; }
     if let Some(v) = env_str("AUDIT_LOG_SINKS") {
         if let Ok(sinks) = serde_json::from_str::<Vec<AuditSinkConfig>>(&v) {
             merged.audit_log.sinks = sinks;

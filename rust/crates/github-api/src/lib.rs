@@ -116,6 +116,30 @@ pub fn git_extraheader_token_env(token: &str) -> HashMap<String, String> {
     ])
 }
 
+/// `gh repo clone <owner>/<repo>` lets `gh` pick the transport itself —
+/// SSH or HTTPS — based on the *host machine's* `gh config get
+/// git_protocol` setting, entirely independent of the `GH_TOKEN` env var
+/// this call also sets. On any host configured for SSH (a normal default
+/// for an interactive `gh auth login`, and exactly what broke a real
+/// clone while diagnosing this: the API calls all succeeded over HTTPS
+/// with the token, but the clone itself silently tried SSH, found no
+/// matching key for the token's account, and failed with GitHub's generic
+/// "Repository not found" — indistinguishable from a real permissions
+/// problem without inspecting `gh auth status` directly), the token this
+/// function was explicitly given would be silently ignored for the one
+/// step that most needs it. Passing `gh repo clone` a literal
+/// `https://github.com/owner/repo` URL instead of the bare `owner/repo`
+/// shorthand sidesteps `gh`'s own protocol resolution entirely — `gh`
+/// just hands that URL straight to `git clone`, deterministically over
+/// HTTPS (where `GH_TOKEN`/`gh_token_env` actually applies), regardless of
+/// how the host's `gh` is configured. Confirmed against the real failing
+/// clone while fixing this: `gh repo clone owner/repo` failed with
+/// "Repository not found" and `gh repo clone https://github.com/owner/repo`
+/// against the identical token/repo succeeded immediately.
+fn gh_clone_url(full_name: &str) -> String {
+    format!("https://github.com/{full_name}")
+}
+
 /// The `id` of the first comment in `comments` (as returned by
 /// `GET .../issues/{n}/comments`) whose `body` contains `marker`, if any
 /// — pulled out of `gh_upsert_pr_sticky_comment` so the "which comment is
@@ -250,6 +274,34 @@ impl<'a> GithubApi<'a> {
             return Ok(if out.stdout.is_empty() { None } else { Some(serde_json::from_str(&out.stdout)?) });
         }
         self.github_api_request(token, "GET", &format!("/{api_path}"), None, None).await
+    }
+
+    /// Every repository in an org, paginated to completion — the org-level
+    /// discovery step `org-onboard` needs to enroll/rescan every repo that
+    /// already exists in a GitHub org instead of relying on each one
+    /// having been onboarded through Ignite's upload/push path first.
+    /// `GET orgs/{org}/repos` caps at 100/page regardless of what's
+    /// requested, so this pages through until a short (or empty) page
+    /// signals the end rather than trusting a single call to return
+    /// everything.
+    pub async fn gh_list_org_repos(&self, org: &str, token: &str) -> Result<Vec<Value>, GithubApiError> {
+        let mut all = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let path = format!("orgs/{org}/repos?per_page=100&page={page}&type=all");
+            let res = self.gh_api_get(&path, token).await?;
+            let batch = match res {
+                Some(Value::Array(items)) => items,
+                _ => Vec::new(),
+            };
+            let got = batch.len();
+            all.extend(batch);
+            if got < 100 {
+                break;
+            }
+            page += 1;
+        }
+        Ok(all)
     }
 
     pub async fn gh_fetch_file_raw(&self, repo_full_name: &str, file_path: &str, token: &str) -> Result<Option<String>, GithubApiError> {
@@ -582,7 +634,7 @@ impl<'a> GithubApi<'a> {
     pub async fn gh_clone_repo_branch(&self, full_name: &str, branch: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
             let env = gh_token_env(token);
-            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), gh_clone_url(full_name), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(());
         }
         if token.is_empty() {
@@ -603,7 +655,7 @@ impl<'a> GithubApi<'a> {
     pub async fn gh_clone_repo_branch_full_history(&self, full_name: &str, branch: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
             let env = gh_token_env(token);
-            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), gh_clone_url(full_name), dest_dir.to_string(), "--".to_string(), "--branch".to_string(), branch.to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(());
         }
         if token.is_empty() {
@@ -618,7 +670,7 @@ impl<'a> GithubApi<'a> {
     pub async fn gh_clone_repo(&self, full_name: &str, dest_dir: &str, token: &str) -> Result<(), GithubApiError> {
         if self.is_gh_cli_available().await {
             let env = gh_token_env(token);
-            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), full_name.to_string(), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
+            self.runner.run_tool("gh", &["repo".to_string(), "clone".to_string(), gh_clone_url(full_name), dest_dir.to_string(), "--".to_string(), "--depth".to_string(), "1".to_string(), "--branch".to_string(), "main".to_string()], &std::env::temp_dir().to_string_lossy(), RunToolOptions { env, ..Default::default() }).await?;
             return Ok(());
         }
         if token.is_empty() {
