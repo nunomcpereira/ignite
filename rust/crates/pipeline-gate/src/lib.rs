@@ -40,7 +40,21 @@ pub fn is_blocking(issue: &Value) -> bool {
 /// already have uncommitted edits on disk, that's the point) and reports
 /// whether it's clean per [`is_blocking`].
 pub async fn scan_checkout(http: &Client, server_base: &str, org: &str, repo: &str, project_path: &str) -> GateResult {
-    let mut req = http.post(format!("{server_base}/api/pipeline/validate-all")).json(&json!({ "org": org, "repo": repo, "projectPath": project_path, "runLocalCi": false }));
+    scan_checkout_with_overrides(http, server_base, org, repo, project_path, &[]).await
+}
+
+/// Same as [`scan_checkout`], but also submits `overrides` (the
+/// `{ "issueId", "justification", "code"? }` shape `validate-all` takes —
+/// e.g. `ignite_acknowledgments::build_overrides`' output) so a finding
+/// the caller has already justified doesn't count as blocking. Used by a
+/// fix PR that also carries `.ignite/acknowledgments.md`: the gate has to
+/// judge the tree the way the merged repo will actually be judged.
+pub async fn scan_checkout_with_overrides(http: &Client, server_base: &str, org: &str, repo: &str, project_path: &str, overrides: &[Value]) -> GateResult {
+    let mut body = json!({ "org": org, "repo": repo, "projectPath": project_path, "runLocalCi": false });
+    if !overrides.is_empty() {
+        body["overrides"] = Value::Array(overrides.to_vec());
+    }
+    let mut req = http.post(format!("{server_base}/api/pipeline/validate-all")).json(&body);
     // `validate-all` itself doesn't require auth today, but a deployment
     // that fronts the Ignite server with `IGNITE_API_KEY`-gated auth
     // (or adds one in the future) would otherwise permanently block every

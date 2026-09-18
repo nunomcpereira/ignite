@@ -21,7 +21,7 @@
 //!   should `git add` it, `commit --amend`, and block this push so the
 //!   amended commit gets sent instead
 
-use crate::acknowledgments::{self, Finding};
+use ignite_acknowledgments::{self as acknowledgments, Finding};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;

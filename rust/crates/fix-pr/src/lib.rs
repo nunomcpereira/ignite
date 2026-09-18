@@ -652,6 +652,12 @@ fn gate_failure_reason(gate: &ignite_pipeline_gate::GateResult) -> String {
     }
 }
 
+/// Repo-relative path of the acknowledgments file `ignite check`/the
+/// pre-push hook already read and write — a fix PR that carries
+/// justifications writes to the very same file, so merging it is what makes
+/// the hook (and `ignite check`) honor them from then on.
+pub const ACKNOWLEDGMENTS_PATH: &str = ".ignite/acknowledgments.md";
+
 /// Same as [`open_fix_pr`]'s previous signature, plus `http`/`llm_config`/
 /// `server_base`: before anything gets committed/pushed, this now runs
 /// Ignite's own gate scan (`ignite-pipeline-gate`) against the edited
@@ -661,11 +667,20 @@ fn gate_failure_reason(gate: &ignite_pipeline_gate::GateResult) -> String {
 /// first pass's edits, and rescanned once. Still unclean after that:
 /// nothing is pushed and no PR is opened — it is not acceptable for
 /// Ignite to propose a PR its own gate would still reject.
+///
+/// `acknowledgments` are findings a human has already justified (and, under
+/// dual custody, had approved): they're merged into
+/// [`ACKNOWLEDGMENTS_PATH`] in the same commit as the fixes, submitted to the
+/// gate as overrides (so a justified finding doesn't count as blocking — the
+/// gate has to judge the tree the way the merged repo will be judged), and
+/// listed in the PR body under their own heading so a reviewer sees each
+/// justification next to the fixes. `candidates` may be empty when
+/// `acknowledgments` isn't — an acknowledgments-only PR.
 #[allow(clippy::too_many_arguments)]
-pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: &reqwest::Client, llm_config: &LlmClientConfig, server_base: &str, full_name: &str, base_branch: &str, job_id: &str, candidates: &[FixCandidate], token: &str) -> FixPrOutcome {
+pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: &reqwest::Client, llm_config: &LlmClientConfig, server_base: &str, full_name: &str, base_branch: &str, job_id: &str, candidates: &[FixCandidate], acknowledgments: &[ignite_acknowledgments::AckInput], token: &str) -> FixPrOutcome {
     let branch = branch_name_for_job(job_id);
-    if candidates.is_empty() {
-        return FixPrOutcome { branch, files_changed: vec![], already_open: false, pr_url: None, error: Some("no candidates to apply".to_string()) };
+    if candidates.is_empty() && acknowledgments.is_empty() {
+        return FixPrOutcome { branch, files_changed: vec![], already_open: false, pr_url: None, error: Some("no candidates or acknowledgments to apply".to_string()) };
     }
 
     let staging = match tempfile::tempdir() {
@@ -688,8 +703,30 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
         Ok(f) => f,
         Err(e) => return FixPrOutcome { branch, files_changed: vec![], already_open: false, pr_url: None, error: Some(format!("failed to apply fixes: {e}")) },
     };
-    if files_changed.is_empty() {
+    if !candidates.is_empty() && files_changed.is_empty() && acknowledgments.is_empty() {
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some("none of the candidates' line ranges matched the current file contents".to_string()) };
+    }
+
+    // Merge the justified acknowledgments into the repo's own file, and
+    // keep the resulting entries as the overrides the gate scan below
+    // submits — including any a human had already committed there.
+    let ack_path = clone_dir.join(ACKNOWLEDGMENTS_PATH);
+    let existing_ack_text = std::fs::read_to_string(&ack_path).unwrap_or_default();
+    let mut gate_overrides = ignite_acknowledgments::build_overrides(&ignite_acknowledgments::parse_blocks(&existing_ack_text));
+    if let Some(merged) = ignite_acknowledgments::merge_acknowledgments(&existing_ack_text, acknowledgments) {
+        if let Some(parent) = ack_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("failed to create {}: {e}", parent.display())) };
+            }
+        }
+        if let Err(e) = std::fs::write(&ack_path, &merged) {
+            return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("failed to write {ACKNOWLEDGMENTS_PATH}: {e}")) };
+        }
+        gate_overrides = ignite_acknowledgments::build_overrides(&ignite_acknowledgments::parse_blocks(&merged));
+        files_changed.push(ACKNOWLEDGMENTS_PATH.to_string());
+    }
+    if files_changed.is_empty() {
+        return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some("nothing to change — every acknowledgment is already in the repo's file and no fix matched".to_string()) };
     }
 
     if let Err(e) = runner.run_tool("git", &["checkout".to_string(), "-B".to_string(), branch.clone(), base_branch.to_string()], &clone_dir_str, RunToolOptions::default()).await {
@@ -700,7 +737,7 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
     // still reject. One remediation attempt (LLM re-fix on the blocking
     // issues, applied on top of the first pass) before abandoning.
     let (gate_org, gate_repo) = full_name.split_once('/').unwrap_or((full_name, ""));
-    let mut gate_result = ignite_pipeline_gate::scan_checkout(http, server_base, gate_org, gate_repo, &clone_dir_str).await;
+    let mut gate_result = ignite_pipeline_gate::scan_checkout_with_overrides(http, server_base, gate_org, gate_repo, &clone_dir_str, &gate_overrides).await;
     if !gate_result.clean {
         let remediation_inputs: Vec<FixIssueInput> = gate_result.blocking_issues.iter().filter_map(issue_input_from_gate_value).collect();
         let mut remediated = false;
@@ -715,7 +752,7 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
                             }
                         }
                         files_changed.sort();
-                        let retry_gate = ignite_pipeline_gate::scan_checkout(http, server_base, gate_org, gate_repo, &clone_dir_str).await;
+                        let retry_gate = ignite_pipeline_gate::scan_checkout_with_overrides(http, server_base, gate_org, gate_repo, &clone_dir_str, &gate_overrides).await;
                         remediated = retry_gate.clean;
                         gate_result = retry_gate;
                     }
@@ -733,7 +770,11 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("git add: {e}")) };
     }
 
-    let commit_message = format!("fix: apply {} AI-suggested fix(es) from Ignite scan {job_id}", candidates.len());
+    let commit_message = if acknowledgments.is_empty() {
+        format!("fix: apply {} AI-suggested fix(es) from Ignite scan {job_id}", candidates.len())
+    } else {
+        format!("fix: apply {} AI-suggested fix(es) and record {} justified acknowledgment(s) from Ignite scan {job_id}", candidates.len(), acknowledgments.len())
+    };
     let commit_args = vec!["-c".to_string(), "user.email=ignite-bot@localhost".to_string(), "-c".to_string(), "user.name=Ignite Auto-Fix".to_string(), "commit".to_string(), "-m".to_string(), commit_message];
     if let Err(e) = runner.run_tool("git", &commit_args, &clone_dir_str, RunToolOptions::default()).await {
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("git commit: {e}")) };
@@ -750,8 +791,8 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("git push: {e}")) };
     }
 
-    let pr_title = format!("Ignite: fix {} finding(s)", candidates.len());
-    let pr_body = pr_body_for(candidates, job_id);
+    let pr_title = pr_title_for(candidates.len(), acknowledgments.len());
+    let pr_body = pr_body_for(candidates, acknowledgments, job_id);
     match github_api.gh_create_pr(full_name, base_branch, &branch, &pr_title, &pr_body, token).await {
         Ok(pr) => FixPrOutcome { branch, files_changed, already_open: false, pr_url: Some(pr.url), error: None },
         Err(e) => FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("branch pushed but PR creation failed: {e}")) },
@@ -860,12 +901,43 @@ pub fn build_pr_suggestions(candidates: &[FixCandidate]) -> Vec<PrSuggestion> {
         .collect()
 }
 
-fn pr_body_for(candidates: &[FixCandidate], job_id: &str) -> String {
-    let mut body = format!("Applies {} AI-suggested fix(es) from Ignite scan `{job_id}`.\n\n", candidates.len());
-    for c in candidates {
-        body.push_str(&format!("- **{}** `{}:{}-{}` — {}\n", c.category, c.file, c.start_line, c.end_line, c.explanation));
+fn pr_title_for(fix_count: usize, ack_count: usize) -> String {
+    match (fix_count, ack_count) {
+        (f, 0) => format!("Ignite: fix {f} finding(s)"),
+        (0, a) => format!("Ignite: acknowledge {a} finding(s)"),
+        (f, a) => format!("Ignite: fix {f} and acknowledge {a} finding(s)"),
     }
-    body.push_str("\nGenerated by Ignite's bulk fix-PR feature. Review each change before merging — AI-suggested fixes are not a substitute for human review.");
+}
+
+/// Markdown-safe single line: PR bodies render GitHub-flavored markdown, so
+/// a justification must not be able to open its own heading/list/HTML.
+fn md_inline(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").replace('`', "'").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn pr_body_for(candidates: &[FixCandidate], acknowledgments: &[ignite_acknowledgments::AckInput], job_id: &str) -> String {
+    let mut body = String::new();
+    if !candidates.is_empty() {
+        body.push_str(&format!("Applies {} AI-suggested fix(es) from Ignite scan `{job_id}`.\n\n", candidates.len()));
+        for c in candidates {
+            body.push_str(&format!("- **{}** `{}:{}-{}` — {}\n", c.category, c.file, c.start_line, c.end_line, c.explanation));
+        }
+        body.push('\n');
+    }
+    if !acknowledgments.is_empty() {
+        body.push_str(&format!("### Acknowledged, not fixed ({})\n\nRecorded in `{ACKNOWLEDGMENTS_PATH}` from Ignite scan `{job_id}`. Merging this PR is what makes each justification take effect in this repo — review the wording, not just the code.\n\n", acknowledgments.len()));
+        for a in acknowledgments {
+            let loc = match (&a.file, a.line) {
+                (Some(f), Some(l)) => format!(" `{}:{l}`", md_inline(f)),
+                (Some(f), None) => format!(" `{}`", md_inline(f)),
+                _ => String::new(),
+            };
+            let who = a.justified_by.as_deref().map(|w| format!(" (justified by {})", md_inline(w))).unwrap_or_default();
+            body.push_str(&format!("- **{}**{loc} — {}: _{}_{who}\n", md_inline(&a.category), md_inline(&a.summary), md_inline(&a.justification)));
+        }
+        body.push('\n');
+    }
+    body.push_str("Generated by Ignite's bulk fix-PR feature. Review each change before merging — AI-suggested fixes are not a substitute for human review.");
     body
 }
 
@@ -875,6 +947,41 @@ mod tests {
 
     fn candidate(file: &str, start_line: i64, end_line: i64, original: &str, replacement: &str) -> FixCandidate {
         FixCandidate { issue_id: "i1".to_string(), file: file.to_string(), category: "secret".to_string(), severity: "error".to_string(), summary: "s".to_string(), start_line, end_line, explanation: "e".to_string(), original: original.to_string(), replacement: replacement.to_string() }
+    }
+
+    fn ack(id: &str, justification: &str) -> ignite_acknowledgments::AckInput {
+        ignite_acknowledgments::AckInput { id: id.to_string(), category: "secret".to_string(), severity: "error".to_string(), summary: "Hardcoded token".to_string(), file: Some("a.rs".to_string()), line: Some(10), justification: justification.to_string(), justified_by: Some("dev@example.com".to_string()) }
+    }
+
+    #[test]
+    fn pr_title_names_fixes_acknowledgments_or_both() {
+        assert_eq!(pr_title_for(3, 0), "Ignite: fix 3 finding(s)");
+        assert_eq!(pr_title_for(0, 2), "Ignite: acknowledge 2 finding(s)");
+        assert_eq!(pr_title_for(3, 2), "Ignite: fix 3 and acknowledge 2 finding(s)");
+    }
+
+    #[test]
+    fn pr_body_lists_each_acknowledgment_with_its_justification_and_author() {
+        let body = pr_body_for(&[], &[ack("secret::a.rs::10", "test fixture, not a real token")], "job1");
+        assert!(body.contains("### Acknowledged, not fixed (1)"));
+        assert!(body.contains("test fixture, not a real token"));
+        assert!(body.contains("justified by dev@example.com"));
+        assert!(body.contains(ACKNOWLEDGMENTS_PATH));
+        assert!(!body.contains("AI-suggested fix(es)"));
+    }
+
+    #[test]
+    fn pr_body_cannot_be_hijacked_by_markdown_in_a_justification() {
+        let body = pr_body_for(&[], &[ack("secret::a.rs::10", "ok\n\n# Fake heading\n<script>x</script> `code`")], "job1");
+        assert!(!body.contains("\n# Fake heading"));
+        assert!(!body.contains("<script>"));
+    }
+
+    #[test]
+    fn pr_body_without_acknowledgments_is_unchanged_in_shape() {
+        let body = pr_body_for(&[candidate("a.rs", 1, 1, "x", "y")], &[], "job1");
+        assert!(body.starts_with("Applies 1 AI-suggested fix(es) from Ignite scan `job1`."));
+        assert!(!body.contains("Acknowledged"));
     }
 
     #[test]

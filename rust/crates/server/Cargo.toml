@@ -36,6 +36,7 @@ ignite-github-api = { path = "../github-api" }
 ignite-llm-client = { path = "../llm-client" }
 ignite-llm-deep-scan = { path = "../llm-deep-scan" }
 ignite-fix-pr = { path = "../fix-pr" }
+ignite-acknowledgments = { path = "../acknowledgments" }
 ignite-enforce-gate-branch-protection = { path = "../enforce-gate-branch-protection" }
 ignite-config = { path = "../config" }
 ignite-notifications = { path = "../notifications" }

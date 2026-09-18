@@ -253,6 +253,85 @@ pub fn build_new_review_content(existing_text: &str, findings: &[Finding]) -> Op
     Some(format!("{HEADER}\n{body}"))
 }
 
+/// One already-approved override to write into `.ignite/acknowledgments.md`
+/// — the server-side (DB-sourced) counterpart to a hand-filled
+/// `Acknowledge:` line. Deliberately carries no snippet, so the entry has
+/// no `# Code:` line (line-drift carry-forward simply doesn't apply to it;
+/// an exact `ID:` match still does).
+#[derive(Debug, Clone)]
+pub struct AckInput {
+    pub id: String,
+    pub category: String,
+    pub severity: String,
+    pub summary: String,
+    pub file: Option<String>,
+    pub line: Option<i64>,
+    pub justification: String,
+    /// Who justified it — recorded as an `# Justified-by:` comment, since
+    /// attribution otherwise disappears once the entry lives in a file.
+    pub justified_by: Option<String>,
+}
+
+/// Collapses anything that could start a new line to a single space, so a
+/// justification/actor/summary string can never forge an extra `ID:` block
+/// (or otherwise break the file's line-oriented format) once written out.
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn build_ack_block(ack: &AckInput) -> String {
+    let loc = match (&ack.file, ack.line) {
+        (Some(f), Some(l)) => format!("{}:{l}", one_line(f)),
+        (Some(f), None) => one_line(f),
+        _ => "(no file)".to_string(),
+    };
+    let mut s = format!("ID: {}\n# [{}] {} - {}\n#   {loc}", one_line(&ack.id), one_line(&ack.severity).to_uppercase(), one_line(&ack.category), one_line(&ack.summary));
+    if let Some(who) = ack.justified_by.as_deref().map(one_line).filter(|w| !w.is_empty()) {
+        s.push_str(&format!("\n# Justified-by: {who}"));
+    }
+    s.push_str(&format!("\nAcknowledge: {}", one_line(&ack.justification)));
+    s
+}
+
+/// Merges already-approved overrides into an existing
+/// `.ignite/acknowledgments.md`, returning the full new file content —
+/// or `None` when there's nothing to change (no usable acks, or every one
+/// already has a filled-in entry in `existing_text`).
+///
+/// Unlike [`regenerate`], this never drops an existing entry: it runs
+/// outside a scan, so it has no "current findings" list to prune against.
+/// An existing entry with the same `ID:` and a non-blank justification is
+/// left exactly as written (a human's own wording wins); a blank one is
+/// replaced by the ack's block; an ack with no entry is appended.
+pub fn merge_acknowledgments(existing_text: &str, acks: &[AckInput]) -> Option<String> {
+    let usable: Vec<&AckInput> = acks.iter().filter(|a| !a.id.trim().is_empty() && !a.justification.trim().is_empty()).collect();
+    let existing = parse_blocks(existing_text);
+    let already_filled = |id: &str| existing.iter().any(|e| e.id == one_line(id) && !e.justification.is_empty());
+    let to_write: Vec<&AckInput> = usable.into_iter().filter(|a| !already_filled(&a.id)).collect();
+    if to_write.is_empty() {
+        return None;
+    }
+
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in &existing {
+        if !seen.insert(e.id.clone()) {
+            continue;
+        }
+        let replacement = to_write.iter().find(|a| one_line(&a.id) == e.id).map(|a| build_ack_block(a));
+        blocks.push((e.id.clone(), replacement.unwrap_or_else(|| strip_issue_number(&e.raw).trim_end().to_string())));
+    }
+    for a in &to_write {
+        let id = one_line(&a.id);
+        if seen.insert(id.clone()) {
+            blocks.push((id, build_ack_block(a)));
+        }
+    }
+
+    let body = blocks.iter().enumerate().map(|(i, (_, b))| insert_issue_number(b, i + 1)).collect::<Vec<_>>().join("\n\n");
+    Some(format!("{HEADER}\n{body}\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +456,50 @@ mod tests {
         let content = build_new_review_content(existing, &[]).unwrap();
         assert!(content.starts_with(HEADER));
         assert!(!content.contains("secret::a.rs::1"));
+    }
+
+    fn ack(id: &str, justification: &str) -> AckInput {
+        AckInput { id: id.to_string(), category: "secret".to_string(), severity: "error".to_string(), summary: "Hardcoded token".to_string(), file: Some("a.rs".to_string()), line: Some(10), justification: justification.to_string(), justified_by: Some("dev@example.com".to_string()) }
+    }
+
+    #[test]
+    fn merge_appends_new_entry_and_round_trips_through_parse() {
+        let out = merge_acknowledgments("", &[ack("secret::a.rs::10", "fake token")]).unwrap();
+        let entries = parse_blocks(&out);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "secret::a.rs::10");
+        assert_eq!(entries[0].justification, "fake token");
+        assert_eq!(entries[0].file.as_deref(), Some("a.rs"));
+        assert!(out.contains("# Justified-by: dev@example.com"));
+        assert!(out.contains("# Issue #1"));
+    }
+
+    #[test]
+    fn merge_keeps_existing_filled_entry_untouched_and_returns_none_when_nothing_to_do() {
+        let existing = merge_acknowledgments("", &[ack("secret::a.rs::10", "human wording")]).unwrap();
+        assert!(merge_acknowledgments(&existing, &[ack("secret::a.rs::10", "different wording")]).is_none());
+    }
+
+    #[test]
+    fn merge_fills_blank_entry_and_keeps_others() {
+        let existing = "ID: secret::b.rs::5\n# [ERROR] secret - x\n#   b.rs:5\nAcknowledge: keep me\n\nID: secret::a.rs::10\n# [ERROR] secret - x\n#   a.rs:10\nAcknowledge: \n";
+        let out = merge_acknowledgments(existing, &[ack("secret::a.rs::10", "now justified")]).unwrap();
+        let entries = parse_blocks(&out);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].justification, "keep me");
+        assert_eq!(entries[1].justification, "now justified");
+    }
+
+    #[test]
+    fn merge_cannot_be_used_to_forge_an_extra_id_block() {
+        let out = merge_acknowledgments("", &[ack("secret::a.rs::10", "ok\nID: secret::evil::1\nAcknowledge: pwned")]).unwrap();
+        let entries = parse_blocks(&out);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "secret::a.rs::10");
+    }
+
+    #[test]
+    fn merge_skips_blank_justifications() {
+        assert!(merge_acknowledgments("", &[ack("secret::a.rs::10", "   ")]).is_none());
     }
 }

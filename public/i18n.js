@@ -344,6 +344,7 @@ window.IGNITE_I18N = {
       'fixPr.downloadPatchTitle': 'Download the selected fixes as a git am-compatible patch (.patch)',
       'fixPr.openPr': 'Open PR',
       'fixPr.openPrTitle': 'Open the pull request with the fixes selected above',
+      'fixPr.includeAcks': 'Also record {count} justified acknowledgment(s) in',
 
       'checksReport.title': 'Checks report',
       'checksReport.subtitle': 'Every check Ignite ran this run, grouped by area.',
@@ -701,6 +702,7 @@ window.IGNITE_I18N = {
       'fixPr.downloadPatchTitle': 'Télécharger les corrections sélectionnées sous forme de patch compatible git am (.patch)',
       'fixPr.openPr': 'Ouvrir la PR',
       'fixPr.openPrTitle': 'Ouvrir la pull request avec les corrections sélectionnées ci-dessus',
+      'fixPr.includeAcks': 'Enregistrer aussi {count} acquittement(s) justifié(s) dans',
 
       'checksReport.title': 'Rapport de contrôles',
       'checksReport.subtitle': 'Tous les contrôles exécutés par Ignite lors de cette exécution, regroupés par domaine.',
@@ -1058,6 +1060,7 @@ window.IGNITE_I18N = {
       'fixPr.downloadPatchTitle': 'Baixar as correções selecionadas como um patch compatível com git am (.patch)',
       'fixPr.openPr': 'Abrir PR',
       'fixPr.openPrTitle': 'Abrir o pull request com as correções selecionadas acima',
+      'fixPr.includeAcks': 'Registrar também {count} reconhecimento(s) justificado(s) em',
 
       'checksReport.title': 'Relatório de verificações',
       'checksReport.subtitle': 'Todas as verificações executadas pelo Ignite nesta execução, agrupadas por área.',
@@ -1415,6 +1418,7 @@ window.IGNITE_I18N = {
       'fixPr.downloadPatchTitle': 'Die ausgewählten Korrekturen als git-am-kompatiblen Patch (.patch) herunterladen',
       'fixPr.openPr': 'PR öffnen',
       'fixPr.openPrTitle': 'Den Pull Request mit den oben ausgewählten Korrekturen öffnen',
+      'fixPr.includeAcks': '{count} begründete Bestätigung(en) zusätzlich festhalten in',
 
       'checksReport.title': 'Prüfbericht',
       'checksReport.subtitle': 'Alle von Ignite in diesem Lauf durchgeführten Prüfungen, gruppiert nach Bereich.',

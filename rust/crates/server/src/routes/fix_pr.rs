@@ -219,19 +219,49 @@ async fn cancel_preview(State(state): State<Arc<AppState>>, crate::auth::Require
     Json(job_status_json(job)).into_response()
 }
 
+/// The project's justified overrides, as entries for the repo's own
+/// `.ignite/acknowledgments.md`. Only rows that are currently in force are
+/// eligible: `has_approved_override` excludes a still-`pending` dual-custody
+/// row and an expired one, so a critical finding nobody has second-approved
+/// is never written into the repo as if it were accepted. Overrides the
+/// inbound GitHub dismissal sync created are skipped too — GitHub already
+/// holds that decision, and it isn't a justification a human wrote here.
+fn acknowledgments_for_project(db: &ignite_db_store::DbStore, project_id: i64) -> Vec<ignite_acknowledgments::AckInput> {
+    db.get_project_overrides(project_id)
+        .into_iter()
+        .filter(|o| o.actor_email != ignite_db_store::GITHUB_DISMISSAL_ACTOR_EMAIL)
+        .filter(|o| db.has_approved_override(project_id, &o.issue_id))
+        .map(|o| {
+            let justified_by = match o.actor_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                Some(name) => format!("{name} <{}>", o.actor_email),
+                None => o.actor_email.clone(),
+            };
+            ignite_acknowledgments::AckInput { id: o.issue_id, category: o.category, severity: o.severity, summary: o.summary, file: o.file, line: o.line, justification: o.justification, justified_by: Some(justified_by) }
+        })
+        .collect()
+}
+
 async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
     let Some((project_id, org, repo)) = resolve_org_repo(&state, job_id) else {
         return err(StatusCode::NOT_FOUND, "This job has no associated GitHub repository yet — it must have already shipped before a fix PR can be opened against it.");
     };
 
+    // Opt-in: also record this job's already-justified overrides in the
+    // repo's `.ignite/acknowledgments.md` within the same PR, so an
+    // acknowledgment reaches the org repo through review like any other
+    // change instead of living only in `ignite.db`.
+    let include_acknowledgments = body.get("includeAcknowledgments").and_then(|v| v.as_bool()).unwrap_or(false);
     let candidates: Vec<FixCandidate> = match body.get("candidates").cloned().map(serde_json::from_value) {
         Some(Ok(c)) => c,
         Some(Err(e)) => return err(StatusCode::BAD_REQUEST, format!("Invalid candidates: {e}")),
+        None if include_acknowledgments => Vec::new(),
         None => return err(StatusCode::BAD_REQUEST, "candidates is required — pass back the (possibly trimmed) list from /fix-pr/preview."),
     };
-    if candidates.is_empty() {
-        return err(StatusCode::BAD_REQUEST, "candidates must not be empty.");
+    let acknowledgments = if include_acknowledgments { acknowledgments_for_project(&state.db, project_id) } else { Vec::new() };
+    if candidates.is_empty() && acknowledgments.is_empty() {
+        let msg = if include_acknowledgments { "candidates must not be empty unless this job has approved justifications to record." } else { "candidates must not be empty." };
+        return err(StatusCode::BAD_REQUEST, msg);
     }
 
     let token = crate::auth::resolve_effective_github_token(&headers, &state.db);
@@ -251,7 +281,7 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
     // `config.json` precedence `main.rs` binds with.
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
     let server_base = std::env::var("IGNITE_BASE_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"));
-    let outcome = ignite_fix_pr::open_fix_pr(&state.runner, &github_api, &http, &state.llm_config, &server_base, &full_name, &base_branch, job_id, &candidates, &token).await;
+    let outcome = ignite_fix_pr::open_fix_pr(&state.runner, &github_api, &http, &state.llm_config, &server_base, &full_name, &base_branch, job_id, &candidates, &acknowledgments, &token).await;
     if outcome.already_open {
         return Json(json!({ "ok": true, "alreadyOpen": true, "branch": outcome.branch })).into_response();
     }
@@ -261,7 +291,7 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
     if let Some(pr_url) = &outcome.pr_url {
         state.db.record_pull_request(project_id, "fix-pr", pr_url, Some(&outcome.branch), Some(outcome.files_changed.len() as i64));
     }
-    Json(json!({ "ok": true, "prUrl": outcome.pr_url, "branch": outcome.branch, "filesChanged": outcome.files_changed })).into_response()
+    Json(json!({ "ok": true, "prUrl": outcome.pr_url, "branch": outcome.branch, "filesChanged": outcome.files_changed, "acknowledgmentsIncluded": acknowledgments.len() })).into_response()
 }
 
 /// Builds the `.diff`/`.patch` pair straight from the job's local source
@@ -294,10 +324,27 @@ async fn generate_diff(State(state): State<Arc<AppState>>, crate::auth::RequireA
     }
 }
 
+/// Lists the justified overrides `apply` would record in the repo's
+/// `.ignite/acknowledgments.md` when called with `includeAcknowledgments`,
+/// so the UI can show exactly what will be written before anything is
+/// pushed. Same eligibility as `apply` (it calls the same helper).
+async fn list_acknowledgments(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>) -> Response {
+    let job_id = job_id.trim();
+    let Some((project_id, _org, _repo)) = resolve_org_repo(&state, job_id) else {
+        return Json(json!({ "ok": true, "acknowledgments": [] })).into_response();
+    };
+    let acks: Vec<Value> = acknowledgments_for_project(&state.db, project_id)
+        .into_iter()
+        .map(|a| json!({ "issueId": a.id, "category": a.category, "summary": a.summary, "file": a.file, "line": a.line, "justification": a.justification, "justifiedBy": a.justified_by }))
+        .collect();
+    Json(json!({ "ok": true, "acknowledgments": acks })).into_response()
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/pipeline/:job_id/fix-pr/preview", post(preview).delete(cancel_preview))
         .route("/api/pipeline/:job_id/fix-pr/preview/status", get(preview_status))
         .route("/api/pipeline/:job_id/fix-pr/apply", post(apply))
+        .route("/api/pipeline/:job_id/fix-pr/acknowledgments", get(list_acknowledgments))
         .route("/api/pipeline/:job_id/fix-pr/diff", post(generate_diff))
 }

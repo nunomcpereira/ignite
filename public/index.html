@@ -1060,6 +1060,13 @@
         <button id="fixPrCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0" data-i18n-title="common.close">✕</button>
       </div>
       <div id="fixPrList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
+      <div id="fixPrAckRow" class="hidden px-6 py-3 border-t border-slate-100 text-xs text-slate-600">
+        <label class="flex items-start gap-2 cursor-pointer">
+          <input type="checkbox" id="fixPrAckCheck" class="mt-0.5 shrink-0" checked>
+          <span><span id="fixPrAckLabel"></span> <code class="font-mono text-[11px]">.ignite/acknowledgments.md</code></span>
+        </label>
+        <ul id="fixPrAckList" class="mt-2 ml-6 space-y-1 text-[11px] text-slate-500 max-h-24 overflow-y-auto"></ul>
+      </div>
       <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
         <p id="fixPrStatus" class="text-xs text-slate-500"></p>
         <div class="flex items-center gap-2">
@@ -2689,6 +2696,27 @@
     // Onboarded Projects history row, which doesn't switch the main
     // view's tracked job.
     let fixPrJobId = null;
+    // Justified overrides this job could record in the repo's own
+    // `.ignite/acknowledgments.md` within the same PR (GET .../fix-pr/acknowledgments).
+    let fixPrAcks = [];
+
+    function fixPrAcksIncluded() {
+      return fixPrAcks.length > 0 && $('fixPrAckCheck').checked;
+    }
+
+    async function loadFixPrAcks(jobId) {
+      fixPrAcks = [];
+      try {
+        const res = await fetch(`/api/pipeline/${jobId}/fix-pr/acknowledgments`);
+        const data = await res.json();
+        if (jobId !== fixPrJobId) return;
+        if (data.ok && Array.isArray(data.acknowledgments)) fixPrAcks = data.acknowledgments;
+      } catch { /* optional extra — the PR just goes without it */ }
+      $('fixPrAckRow').classList.toggle('hidden', fixPrAcks.length === 0);
+      $('fixPrAckLabel').textContent = t('fixPr.includeAcks', { count: fixPrAcks.length });
+      $('fixPrAckList').innerHTML = fixPrAcks.map((a) => `<li class="truncate" title="${escapeAttr(a.justification)}"><span class="font-mono">${escapeHtml(a.file || '')}${a.line ? ':' + a.line : ''}</span> — ${escapeHtml(a.justification)}</li>`).join('');
+      updateFixPrOpenBtn();
+    }
 
     function renderFixPrList() {
       const list = $('fixPrList');
@@ -2713,10 +2741,12 @@
 
     function updateFixPrOpenBtn() {
       const anyIncluded = fixPrCandidates.some((c) => c.included);
-      $('fixPrOpenBtn').classList.toggle('hidden', fixPrCandidates.length === 0);
+      // An acknowledgments-only PR is valid: no fixes checked, but justified
+      // overrides to record.
+      $('fixPrOpenBtn').classList.toggle('hidden', fixPrCandidates.length === 0 && !fixPrAcksIncluded());
       $('fixPrDownloadDiffBtn').classList.toggle('hidden', fixPrCandidates.length === 0);
       $('fixPrDownloadPatchBtn').classList.toggle('hidden', fixPrCandidates.length === 0);
-      $('fixPrOpenBtn').disabled = !anyIncluded;
+      $('fixPrOpenBtn').disabled = !anyIncluded && !fixPrAcksIncluded();
       $('fixPrDownloadDiffBtn').disabled = !anyIncluded;
       $('fixPrDownloadPatchBtn').disabled = !anyIncluded;
     }
@@ -2748,6 +2778,7 @@
       $('fixPrStatus').textContent = `${fixPrCandidates.length} of ${data.consideredCount} open issue(s) got a safe AI fix.`;
       renderFixPrList();
       updateFixPrOpenBtn();
+      loadFixPrAcks(fixPrJobId);
 
       $('fixPrNotification').classList.remove('hidden');
     }
@@ -2787,6 +2818,8 @@
       fixPrJobId = jobId || state.jobId;
       if (!fixPrJobId) return;
       fixPrCandidates = [];
+      fixPrAcks = [];
+      $('fixPrAckRow').classList.add('hidden');
 
       // Show progress bar, hide any existing notifications/modals
       $('fixPrProgress').classList.remove('hidden');
@@ -2829,20 +2862,22 @@
         await fetch(`/api/pipeline/${jobId}/fix-pr/preview`, { method: 'DELETE' });
       } catch { /* best-effort — the job is already abandoned client-side */ }
     });
+    $('fixPrAckCheck').addEventListener('change', updateFixPrOpenBtn);
     $('fixPrCloseBtn').addEventListener('click', () => $('fixPrModal').classList.add('hidden'));
     $('fixPrModal').addEventListener('click', (ev) => {
       if (ev.target.id === 'fixPrModal') $('fixPrModal').classList.add('hidden');
     });
     $('fixPrOpenBtn').addEventListener('click', async () => {
       const selected = fixPrCandidates.filter((c) => c.included).map(({ included, ...rest }) => rest);
-      if (selected.length === 0) return;
+      const includeAcknowledgments = fixPrAcksIncluded();
+      if (selected.length === 0 && !includeAcknowledgments) return;
       $('fixPrOpenBtn').disabled = true;
       $('fixPrStatus').textContent = 'Cloning, applying fixes, and opening the PR…';
       try {
         const res = await fetch(`/api/pipeline/${fixPrJobId}/fix-pr/apply`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ candidates: selected }),
+          body: JSON.stringify({ candidates: selected, includeAcknowledgments }),
         });
         const data = await res.json();
         if (!data.ok) {
