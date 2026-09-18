@@ -214,7 +214,7 @@ async fn is_empty_repo(api: &GithubApi<'_>, full_name: &str, token: &str) -> boo
 
 /// Runs one `rescan_one` call and records its outcome in
 /// `RECENT_SCAN_FAILURES` — the one piece of work `scan_org_repo` and
-/// both `scan_all_org_repos` modes (sequential/parallel) all need done
+/// both `scan_selected_org_repos` modes (sequential/parallel) all need done
 /// identically per repo, so it only lives in one place.
 async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner, server_base: &str, token: &str, target: &RescanTarget) {
     let http = reqwest::Client::new();
@@ -265,9 +265,35 @@ async fn scan_org_repo(State(state): State<Arc<AppState>>, RequireAuth(_user): R
     (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "org": org, "repo": repo }))).into_response()
 }
 
-async fn scan_all_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path(org): Path<String>, Query(q): Query<DiscoverQuery>) -> Response {
-    if !ignite_github_api::is_valid_github_owner(&org) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanSelectedBody {
+    #[serde(default)]
+    include_archived: bool,
+    #[serde(default)]
+    include_forks: bool,
+    orgs: Vec<SelectedOrg>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelectedOrg {
+    org: String,
+    /// The repos left checked in the tree view for this org.
+    repos: Vec<String>,
+}
+
+/// `POST /api/org-repos/scan-selected` — the "Scan all" button: scans every
+/// checked repo across every org in the tree view, and saves that selection
+/// (for orgs with auto-rescan on) as the daily auto-rescan set. For each org the server re-discovers its
+/// repos and only ever scans the intersection of the client's list with
+/// what discovery returned (never an arbitrary client-named repo); the
+/// discovered-but-unchecked repos are stored as the org's exclusions, so a
+/// repo created later defaults to checked/included. An org whose discovery
+/// fails is skipped (reported in `failedOrgs`) and left out of the
+/// enrollment, so a typo'd/inaccessible org never lands in the list.
+async fn scan_selected_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Json(body): Json<ScanSelectedBody>) -> Response {
+    if body.orgs.is_empty() || body.orgs.iter().any(|o| !ignite_github_api::is_valid_github_owner(&o.org)) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid or missing GitHub org name." }))).into_response();
     }
     let token = resolve_effective_github_token(&headers, &state.db);
     if token.is_empty() {
@@ -279,28 +305,43 @@ async fn scan_all_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_use
     }
 
     let api = GithubApi::new(&state.runner);
-    let discovered = match discover_org(&api, &org, &token, q.include_archived, q.include_forks).await {
-        Ok(repos) => repos,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": format!("Failed to list repositories for {org}: {e}") }))).into_response(),
-    };
-    let targets: Vec<RescanTarget> = discovered.into_iter().filter(|r| !r.empty).map(|r| RescanTarget { org: r.org, repo: r.repo }).collect();
+    let mut targets: Vec<RescanTarget> = Vec::new();
+    let mut failed_orgs: Vec<serde_json::Value> = Vec::new();
+    for sel in &body.orgs {
+        let discovered = match discover_org(&api, &sel.org, &token, body.include_archived, body.include_forks).await {
+            Ok(repos) => repos,
+            Err(e) => {
+                failed_orgs.push(serde_json::json!({ "org": sel.org, "error": e.to_string() }));
+                continue;
+            }
+        };
+        let checked: std::collections::HashSet<String> = sel.repos.iter().map(|r| r.to_ascii_lowercase()).collect();
+        let mut excluded: Vec<String> = Vec::new();
+        for r in discovered.into_iter().filter(|r| !r.empty) {
+            if checked.contains(&r.repo.to_ascii_lowercase()) {
+                targets.push(RescanTarget { org: r.org, repo: r.repo });
+            } else {
+                excluded.push(r.repo);
+            }
+        }
+        state.db.save_org(&sel.org);
+        // Scan all no longer enrolls an org in auto-rescan (that's the
+        // per-org toggle); it only keeps an already-enrolled org's
+        // exclusions in step with what's checked.
+        if state.db.list_auto_rescan_selection().iter().any(|(o, _)| o.eq_ignore_ascii_case(&sel.org)) {
+            state.db.set_auto_rescan_org_selection(&sel.org, &excluded);
+        }
+    }
     if targets.is_empty() {
-        return (StatusCode::OK, Json(serde_json::json!({ "queued": false, "count": 0 }))).into_response();
+        return (StatusCode::OK, Json(serde_json::json!({ "queued": false, "count": 0, "failedOrgs": failed_orgs }))).into_response();
     }
 
-    for t in &targets {
-        RECENT_SCAN_FAILURES.lock().remove(&(t.org.clone(), t.repo.clone()));
-    }
-
-    let runner = state.runner.clone();
-    let server_base = resolve_server_base(&state);
     let count = targets.len();
-    let parallel = spawn_targets(runner, server_base, token, targets, &state.config.org_repos.scan_all_mode);
-
-    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "count": count, "mode": if parallel { "parallel" } else { "sequential" } }))).into_response()
+    let parallel = spawn_targets(state.runner.clone(), resolve_server_base(&state), token, targets, &state.config.org_repos.scan_all_mode);
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "count": count, "mode": if parallel { "parallel" } else { "sequential" }, "failedOrgs": failed_orgs }))).into_response()
 }
 
-/// Shared by `scan_all_org_repos` and the auto-rescan sweep below —
+/// Shared by `scan_selected_org_repos` and the auto-rescan sweep below —
 /// `"parallel"` is the one recognized opt-in value; anything else (unset,
 /// a typo, `"sequential"` itself) fails safe to sequential, matching this
 /// codebase's standing "a misconfigured config value never silently
@@ -329,24 +370,70 @@ fn spawn_targets(runner: ignite_tool_runner::ToolRunner, server_base: String, to
     parallel
 }
 
-const AUTO_RESCAN_ENABLED_SETTING: &str = "auto_rescan_enabled";
-
 async fn get_auto_rescan_config(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth) -> Response {
     Json(serde_json::json!({
-        "enabled": state.db.get_bool_setting(AUTO_RESCAN_ENABLED_SETTING, false),
+        "orgs": auto_rescan_selection_json(&state),
+        "savedOrgs": state.db.list_saved_orgs(),
         "staleAfterHours": state.config.org_repos.auto_rescan_stale_after_hours,
     }))
     .into_response()
 }
 
-#[derive(Debug, Deserialize)]
-struct SetAutoRescanBody {
-    enabled: bool,
+/// `DELETE /api/org-repos/auto-rescan/orgs/:org` — takes an org back out of
+/// the auto-rescan list (it is added by "Scan all"). An in-flight
+/// sequential sweep notices before its next repo and skips the org's
+/// remaining repos.
+async fn remove_auto_rescan_org(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Path(org): Path<String>) -> Response {
+    let removed = state.db.unenroll_auto_rescan_org(&org);
+    state.db.unsave_org(&org);
+    Json(serde_json::json!({ "removed": removed, "orgs": auto_rescan_selection_json(&state) })).into_response()
 }
 
-async fn set_auto_rescan_config(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Json(body): Json<SetAutoRescanBody>) -> Response {
-    state.db.set_setting(AUTO_RESCAN_ENABLED_SETTING, if body.enabled { "true" } else { "false" });
-    Json(serde_json::json!({ "enabled": body.enabled, "staleAfterHours": state.config.org_repos.auto_rescan_stale_after_hours })).into_response()
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoRescanToggleBody {
+    enabled: bool,
+    /// Repos left unchecked in the tree; only used when enabling.
+    #[serde(default)]
+    excluded_repos: Vec<String>,
+}
+
+/// `PUT /api/org-repos/auto-rescan/orgs/:org` — the per-org "Auto-rescan"
+/// button. Enabling enrolls the org (with the given unchecked repos as
+/// exclusions, replacing any earlier selection) and saves it in the org
+/// list; disabling only takes it out of the sweep, the org stays listed.
+async fn set_auto_rescan_org(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Path(org): Path<String>, Json(body): Json<AutoRescanToggleBody>) -> Response {
+    if !ignite_github_api::is_valid_github_owner(&org) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
+    }
+    if body.enabled {
+        state.db.save_org(&org);
+        state.db.set_auto_rescan_org_selection(&org, &body.excluded_repos);
+    } else {
+        state.db.unenroll_auto_rescan_org(&org);
+    }
+    Json(serde_json::json!({ "orgs": auto_rescan_selection_json(&state) })).into_response()
+}
+
+#[derive(Deserialize)]
+struct SaveOrgBody {
+    org: String,
+}
+
+/// `POST /api/org-repos/saved-orgs` — persists an org in the GitHub Org
+/// view's list so it is still there after a reload (removed again via
+/// `DELETE /api/org-repos/auto-rescan/orgs/:org`).
+async fn save_org(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Json(body): Json<SaveOrgBody>) -> Response {
+    let org = body.org.trim();
+    if !ignite_github_api::is_valid_github_owner(org) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
+    }
+    state.db.save_org(org);
+    Json(serde_json::json!({ "savedOrgs": state.db.list_saved_orgs() })).into_response()
+}
+
+fn auto_rescan_selection_json(state: &AppState) -> Vec<serde_json::Value> {
+    state.db.list_auto_rescan_selection().into_iter().map(|(org, excluded)| serde_json::json!({ "org": org, "excludedRepos": excluded })).collect()
 }
 
 /// `POST /api/org-repos/auto-rescan/run` — meant to be hit once an hour by
@@ -358,19 +445,16 @@ async fn set_auto_rescan_config(State(state): State<Arc<AppState>>, RequireAuth(
 /// pattern every other unattended entry point in this codebase already
 /// uses — no separate token-provisioning story needed for this to work.
 ///
-/// A no-op (200, `{"skipped": true}`) whenever the runtime-toggleable
-/// `auto_rescan_enabled` app-setting is off — safe for the external timer
-/// to call unconditionally every hour regardless of whether the feature
-/// is currently switched on; the UI's own toggle is what actually decides
-/// whether anything happens on a given tick, not the timer's own
-/// schedule. Sweeps every org in `github.orgs` (the same comma-separated
-/// config value that already seeds the main upload form's org field),
-/// always with archived/forked repos excluded — an unattended sweep
-/// should never surprise-scan something a human explicitly excluded by
-/// hand in the GitHub Org view.
+/// A no-op (200, `{"skipped": true}`) whenever no org is enrolled — safe
+/// for the external timer to call unconditionally every hour. Sweeps every
+/// org enrolled by clicking "Scan all" in the GitHub Org view
+/// (`auto_rescan_orgs`, minus the repos left unchecked there), always with archived/forked repos excluded — an
+/// unattended sweep should never surprise-scan something a human
+/// explicitly excluded by hand there.
 async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap) -> Response {
-    if !state.db.get_bool_setting(AUTO_RESCAN_ENABLED_SETTING, false) {
-        return Json(serde_json::json!({ "skipped": true, "reason": "disabled" })).into_response();
+    let selection = state.db.list_auto_rescan_selection();
+    if selection.is_empty() {
+        return Json(serde_json::json!({ "skipped": true, "reason": "no orgs enrolled (click Scan all on an org)" })).into_response();
     }
     let token = resolve_effective_github_token(&headers, &state.db);
     if token.is_empty() {
@@ -380,18 +464,13 @@ async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user):
         )
             .into_response();
     }
-    let orgs: Vec<String> = state.config.github.orgs.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
-    if orgs.is_empty() {
-        return Json(serde_json::json!({ "skipped": true, "reason": "no orgs configured (github.orgs)" })).into_response();
-    }
-
     let api = GithubApi::new(&state.runner);
     let sla = &state.config.sla;
     let stale_before = chrono::Utc::now() - chrono::Duration::hours(state.config.org_repos.auto_rescan_stale_after_hours as i64);
     let stale_before_str = stale_before.format("%Y-%m-%d %H:%M:%S").to_string();
 
     let mut targets: Vec<RescanTarget> = Vec::new();
-    for org in &orgs {
+    for (org, excluded) in &selection {
         let discovered = match discover_org(&api, org, &token, false, false).await {
             Ok(repos) => repos,
             Err(e) => {
@@ -400,9 +479,9 @@ async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user):
             }
         };
         let known: HashMap<String, ignite_db_store::OnboardedRepoSummary> =
-            state.db.list_onboarded_repo_summaries(sla.critical_days, sla.high_days, sla.medium_days).into_iter().filter(|s| &s.org == org).map(|s| (s.repo.clone(), s)).collect();
+            state.db.list_onboarded_repo_summaries(sla.critical_days, sla.high_days, sla.medium_days).into_iter().filter(|s| s.org.eq_ignore_ascii_case(org)).map(|s| (s.repo.clone(), s)).collect();
         for r in discovered {
-            if r.empty {
+            if r.empty || excluded.iter().any(|e| e.eq_ignore_ascii_case(&r.repo)) {
                 continue;
             }
             let stale = match known.get(&r.repo) {
@@ -428,15 +507,15 @@ async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user):
 }
 
 /// Same shape as `spawn_targets`, but specifically for the auto-rescan
-/// sweep, which — unlike `scan_all_org_repos`'s explicit, one-off,
+/// sweep, which — unlike `scan_selected_org_repos`'s explicit, one-off,
 /// user-clicked "Scan all" — can be handed a genuinely large target list
 /// (every stale repo across every configured org) that an operator may
-/// reasonably want to abort mid-run by flipping the toggle back off. The
-/// sequential branch re-checks `auto_rescan_enabled` before *each* repo,
-/// not just once up front — turning the toggle off stops the next repo
-/// from starting; the repo already mid-scan when it's flipped still
-/// finishes normally (a real `rescan_one` in flight isn't cancelled, just
-/// not chained into). Confirmed necessary the hard way while building
+/// reasonably want to abort mid-run by removing an org from the list. The
+/// sequential branch re-checks the org's enrollment before *each* repo,
+/// not just once up front — unchecking a repo or removing its org stops it from
+/// starting; the repo already mid-scan when it's removed still finishes
+/// normally (a real `rescan_one` in flight isn't cancelled, just not
+/// chained into). Confirmed necessary the hard way while building
 /// this: an earlier version had no such check, and disabling the toggle
 /// while a 260-repo sweep was mid-run didn't stop the remaining 258 —
 /// only killing the server process did.
@@ -463,11 +542,10 @@ fn spawn_auto_rescan_targets(state: Arc<AppState>, targets: Vec<RescanTarget>, t
         }
     } else {
         tokio::spawn(async move {
-            let total = targets.len();
-            for (i, target) in targets.iter().enumerate() {
-                if !state.db.get_bool_setting(AUTO_RESCAN_ENABLED_SETTING, false) {
-                    tracing::info!("auto-rescan: sweep aborted — toggle switched off ({} of {total} repo(s) left unscanned)", total - i);
-                    break;
+            for target in &targets {
+                if !state.db.is_auto_rescan_repo_selected(&target.org, &target.repo) {
+                    tracing::info!("auto-rescan: skipping {}/{} — removed from the auto-rescan selection mid-sweep", target.org, target.repo);
+                    continue;
                 }
                 run_and_record_scan(&runner, &server_base, &token, target).await;
             }
@@ -479,8 +557,10 @@ fn spawn_auto_rescan_targets(state: Arc<AppState>, targets: Vec<RescanTarget>, t
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/org-repos/:org", get(list_org_repos))
-        .route("/api/org-repos/:org/scan-all", post(scan_all_org_repos))
+        .route("/api/org-repos/scan-selected", post(scan_selected_org_repos))
         .route("/api/org-repos/:org/:repo/scan", post(scan_org_repo))
-        .route("/api/org-repos/auto-rescan", get(get_auto_rescan_config).post(set_auto_rescan_config))
+        .route("/api/org-repos/saved-orgs", post(save_org))
+        .route("/api/org-repos/auto-rescan", get(get_auto_rescan_config))
+        .route("/api/org-repos/auto-rescan/orgs/:org", axum::routing::delete(remove_auto_rescan_org).put(set_auto_rescan_org))
         .route("/api/org-repos/auto-rescan/run", post(run_auto_rescan))
 }

@@ -287,9 +287,30 @@ impl<'a> GithubApi<'a> {
     pub async fn gh_list_org_repos(&self, org: &str, token: &str) -> Result<Vec<Value>, GithubApiError> {
         let mut all = Vec::new();
         let mut page = 1u32;
+        let mut personal_account = false;
         loop {
-            let path = format!("orgs/{org}/repos?per_page=100&page={page}&type=all");
-            let res = self.gh_api_get(&path, token).await?;
+            let path = if personal_account {
+                format!("users/{org}/repos?per_page=100&page={page}&type=owner")
+            } else {
+                format!("orgs/{org}/repos?per_page=100&page={page}&type=all")
+            };
+            let res = match self.gh_api_get(&path, token).await {
+                Ok(res) => res,
+                // A configured "org" that's really a personal account 404s on
+                // `orgs/{name}/repos`; retry against the user endpoint, which
+                // has the same response shape.
+                Err(e) if page == 1 && !personal_account => {
+                    let user_path = format!("users/{org}/repos?per_page=100&page={page}&type=owner");
+                    match self.gh_api_get(&user_path, token).await {
+                        Ok(res) => {
+                            personal_account = true;
+                            res
+                        }
+                        Err(_) => return Err(e),
+                    }
+                }
+                Err(e) => return Err(e),
+            };
             let batch = match res {
                 Some(Value::Array(items)) => items,
                 _ => Vec::new(),

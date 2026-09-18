@@ -36,7 +36,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20260912"></script>
+  <script src="i18n.js?v=20260919"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -721,7 +721,7 @@
           <span id="orgReposConnectBtnLabel" data-i18n="orgRepos.connect">Connect</span>
         </button>
         <button type="button" id="orgReposScanAllBtn" class="hidden text-sm font-semibold px-4 py-2 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap" data-i18n-title="orgRepos.scanAllTitle">
-          <span id="orgReposScanAllBtnLabel" data-i18n="orgRepos.scanAll">Scan all</span>
+          <span id="orgReposScanAllBtnLabel">Scan all</span>
         </button>
         <button type="button" id="orgReposRefreshBtn" data-i18n-title="orgRepos.refresh" class="hidden text-slate-400 hover:text-brand-600 transition-colors pb-2.5">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -731,13 +731,9 @@
       </form>
       <p id="orgReposRepoCount" class="hidden mt-3 text-xs text-slate-400"></p>
       <div class="flex items-center gap-2 mt-4 pt-4 border-t border-slate-100">
-        <label class="relative inline-flex items-center cursor-pointer">
-          <input type="checkbox" id="orgReposAutoRescanToggle" class="sr-only peer" />
-          <div class="w-9 h-5 bg-slate-200 peer-checked:bg-brand-600 rounded-full transition-colors"></div>
-          <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4"></div>
-        </label>
         <span class="text-xs font-medium text-slate-600" data-i18n="orgRepos.autoRescanLabel">Auto-rescan</span>
         <span id="orgReposAutoRescanNote" class="text-[11px] text-slate-400"></span>
+
       </div>
     </div>
 
@@ -6703,24 +6699,8 @@
         }
 
         const orgs = cfg.orgs || [];
-        // Same configured org list used to prefill the main upload form's
-        // org field also drives the GitHub Org explorer's input — a
-        // single configured org prefills it, 2+ turns it into a dropdown,
-        // mirroring the main form's own orgInput handling below exactly.
-        if (orgs.length === 1) {
-          const reposOrgField = $('orgReposOrgInput');
-          if (!reposOrgField.value.trim()) reposOrgField.value = orgs[0];
-        } else if (orgs.length > 1) {
-          const reposOrgField = $('orgReposOrgInput');
-          if (reposOrgField.tagName !== 'SELECT') {
-            const reposOrgSelect = document.createElement('select');
-            reposOrgSelect.id = 'orgReposOrgInput';
-            reposOrgSelect.className = reposOrgField.className + ' cursor-pointer';
-            reposOrgSelect.innerHTML = orgs.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
-            reposOrgSelect.value = orgs[0];
-            reposOrgField.replaceWith(reposOrgSelect);
-          }
-        }
+        // The GitHub Org view's org list is managed in the UI and saved in
+        // the DB (not seeded from config), so its input stays free-text.
         if (orgs.length === 0) return;
         if (orgs.length === 1) {
           if (!orgInput.value.trim()) orgInput.value = orgs[0];
@@ -7166,7 +7146,23 @@
     // Onboarded Repos/Campaigns, so this view only ever fetches once the
     // user actually submits an org name.
     let orgReposCache = [];
-    let orgReposCurrentOrg = '';
+    // Tree view state: every org added to the view (lowercased keys, in
+    // add order), which repos are *unchecked* (`org/repo`, lowercased — a
+    // repo is checked by default, so a newly-listed one never needs an
+    // entry), collapsed orgs, and per-org load errors.
+    let orgReposOrgs = [];
+    const orgReposUnchecked = new Set();
+    const orgReposCollapsed = new Set();
+    const orgReposAutoRescan = new Set(); // orgs with auto-rescan on (saved server-side)
+    const orgReposLoadErrors = new Map();
+    const orgKey = (org) => String(org).toLowerCase();
+    const orgRepoKey = (r) => `${orgKey(r.org)}/${String(r.repo).toLowerCase()}`;
+    const orgRepoChecked = (r) => !r.empty && !orgReposUnchecked.has(orgRepoKey(r));
+    function orgReposSelectedByOrg() {
+      return orgReposOrgs
+        .filter((o) => !orgReposLoadErrors.has(o))
+        .map((o) => ({ org: o, repos: orgReposCache.filter((r) => orgKey(r.org) === o && orgRepoChecked(r)).map((r) => r.repo) }));
+    }
     let orgReposPollTimer = null;
     // "Scan all" bookkeeping — the trigger is a single async call
     // (sequential or parallel per `config.json`'s `orgRepos.scanAllMode`,
@@ -7203,7 +7199,7 @@
       if (!orgReposCache.some((r) => r.status === 'running') && orgReposBulkPendingKeys.size === 0) return;
       orgReposPollTimer = setTimeout(() => {
         orgReposPollTimer = null;
-        if (!orgReposCurrentOrg) return;
+        if (orgReposOrgs.length === 0) return;
         // Skip the actual fetch while the tab is elsewhere, but keep
         // re-arming quietly so polling resumes the moment the user comes
         // back — cheaper than tearing down/rebuilding the poll loop on
@@ -7212,7 +7208,7 @@
           scheduleOrgReposPollAgainQuietly();
           return;
         }
-        loadOrgRepos(orgReposCurrentOrg, { quiet: true });
+        refreshOrgs(orgReposOrgs, { quiet: true });
       }, 8000);
     }
     function scheduleOrgReposPollAgainQuietly() {
@@ -7242,12 +7238,18 @@
       if (orgReposBulkPendingKeys.size === 0) orgReposBulkTriggeredAt = null;
     }
 
+    function updateScanAllButton() {
+      const selected = orgReposSelectedByOrg().reduce((n, o) => n + o.repos.length, 0);
+      $('orgReposScanAllBtnLabel').textContent = t('orgRepos.scanAllSelected', { count: selected });
+      $('orgReposScanAllBtn').disabled = orgReposBulkPendingKeys.size > 0 || selected === 0;
+    }
+
     function renderOrgRepos(repos) {
-      $('orgReposScanAllBtn').disabled = orgReposAutoRescanEnabled || orgReposBulkPendingKeys.size > 0;
-      $('orgReposEmpty').classList.toggle('hidden', repos.length > 0);
-      $('orgReposRepoCount').classList.remove('hidden');
+      updateScanAllButton();
+      $('orgReposEmpty').classList.toggle('hidden', repos.length > 0 || orgReposOrgs.length === 0);
+      $('orgReposRepoCount').classList.toggle('hidden', orgReposOrgs.length === 0);
       $('orgReposRepoCount').textContent = t('orgRepos.repoCount', { count: repos.length });
-      $('orgReposTableBody').innerHTML = repos.map((r, i) => {
+      const rowHtml = repos.map((r, i) => {
         const repoUrl = `https://github.com/${encodeURIComponent(r.org)}/${encodeURIComponent(r.repo)}`;
         const badges = [
           r.archived ? `<span class="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.archivedBadge')}</span>` : '',
@@ -7299,9 +7301,14 @@
           : `<button type="button" class="org-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.downloadAcksTitle'))}">⬇ ${t('onboardedRepos.acknowledgmentsCount', { count: acks.length })}</button>`;
         return `
         <tr class="align-top">
-          <td class="px-5 py-3.5">
-            <a href="${escapeAttr(repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>
-            ${badges ? `<div class="flex gap-1 mt-1">${badges}</div>` : ''}
+          <td class="px-5 py-3.5 pl-10">
+            <div class="flex items-start gap-2.5">
+              <input type="checkbox" class="org-repo-select mt-1 rounded border-slate-300 text-brand-600 focus:ring-brand-500" data-i="${i}" ${orgRepoChecked(r) ? 'checked' : ''} ${r.empty ? 'disabled' : ''} />
+              <div class="min-w-0">
+                <a href="${escapeAttr(repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>
+                ${badges ? `<div class="flex gap-1 mt-1">${badges}</div>` : ''}
+              </div>
+            </div>
           </td>
           <td class="org-repo-status-cell px-5 py-3.5">
             ${statusCell}
@@ -7319,7 +7326,86 @@
             </div>
           </td>
         </tr>`;
+      });
+
+      // Tree: one header row per org (checkbox = select/deselect all its
+      // repos, chevron = collapse), then that org's repo rows.
+      $('orgReposTableBody').innerHTML = orgReposOrgs.map((o) => {
+        const idx = repos.map((r, i) => (orgKey(r.org) === o ? i : -1)).filter((i) => i >= 0);
+        const selectable = idx.filter((i) => !repos[i].empty).length;
+        const selected = idx.filter((i) => orgRepoChecked(repos[i])).length;
+        const name = idx.length ? repos[idx[0]].org : o;
+        const collapsed = orgReposCollapsed.has(o);
+        const err = orgReposLoadErrors.get(o);
+        const header = `
+        <tr class="org-header bg-slate-50 cursor-pointer" data-org="${escapeAttr(o)}">
+          <td colspan="6" class="px-5 py-2.5">
+            <div class="flex items-center gap-3">
+              <button type="button" class="org-toggle text-slate-500 hover:text-slate-900 w-6 h-6 flex items-center justify-center rounded hover:bg-slate-200" data-org="${escapeAttr(o)}" aria-expanded="${!collapsed}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg class="w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4l6 6-6 6V4z"/></svg></button>
+              <input type="checkbox" class="org-select-all rounded border-slate-300 text-brand-600 focus:ring-brand-500" data-org="${escapeAttr(o)}" ${selectable && selected === selectable ? 'checked' : ''} ${selectable === 0 ? 'disabled' : ''} data-partial="${selected > 0 && selected < selectable}" />
+              <span class="font-bold text-slate-800">${escapeHtml(name)}</span>
+              <span class="text-[11px] text-slate-400">${err ? `<span class="text-rose-500">${escapeHtml(err)}</span>` : escapeHtml(t('orgRepos.orgSelectedCount', { selected, total: selectable }))}</span>
+              <button type="button" class="org-autorescan text-[11px] font-semibold px-2.5 py-1 rounded-full border ${orgReposAutoRescan.has(o) ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}" data-org="${escapeAttr(o)}" aria-pressed="${orgReposAutoRescan.has(o)}" title="${escapeAttr(t('orgRepos.autoRescanToggleTitle'))}">${escapeHtml(t(orgReposAutoRescan.has(o) ? 'orgRepos.autoRescanOn' : 'orgRepos.autoRescanOff'))}</button>
+              <button type="button" class="org-remove shrink-0 w-7 h-7 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:text-rose-600 hover:border-rose-300 hover:bg-rose-50 text-base leading-none" data-org="${escapeAttr(o)}" title="${escapeAttr(t('orgRepos.removeOrg'))}">&times;</button>
+            </div>
+          </td>
+        </tr>`;
+        return header + (collapsed ? '' : idx.map((i) => rowHtml[i]).join(''));
       }).join('');
+
+      $('orgReposTableBody').querySelectorAll('.org-select-all').forEach((cb) => {
+        cb.indeterminate = cb.dataset.partial === 'true';
+        cb.addEventListener('change', () => {
+          const o = cb.dataset.org;
+          repos.filter((r) => orgKey(r.org) === o && !r.empty).forEach((r) => {
+            if (cb.checked) orgReposUnchecked.delete(orgRepoKey(r)); else orgReposUnchecked.add(orgRepoKey(r));
+          });
+          syncAutoRescanSelection(o);
+          renderOrgRepos(orgReposCache);
+        });
+      });
+      // Whole header row toggles expand/collapse (checkbox and remove excluded).
+      $('orgReposTableBody').querySelectorAll('.org-header').forEach((row) => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.org-select-all, .org-remove, .org-autorescan')) return;
+          const o = row.dataset.org;
+          if (orgReposCollapsed.has(o)) orgReposCollapsed.delete(o); else orgReposCollapsed.add(o);
+          renderOrgRepos(orgReposCache);
+        });
+      });
+      $('orgReposTableBody').querySelectorAll('.org-toggle').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const o = btn.dataset.org;
+          if (orgReposCollapsed.has(o)) orgReposCollapsed.delete(o); else orgReposCollapsed.add(o);
+          renderOrgRepos(orgReposCache);
+        });
+      });
+      $('orgReposTableBody').querySelectorAll('.org-autorescan').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const o = btn.dataset.org;
+          const enable = !orgReposAutoRescan.has(o);
+          btn.disabled = true;
+          try {
+            await putAutoRescan(o, enable);
+            if (enable) orgReposAutoRescan.add(o); else orgReposAutoRescan.delete(o);
+          } catch (e) {
+            window.alert(t('orgRepos.autoRescanRemoveFailed', { error: e.message }));
+          }
+          renderOrgRepos(orgReposCache);
+        });
+      });
+      $('orgReposTableBody').querySelectorAll('.org-remove').forEach((btn) => {
+        btn.addEventListener('click', () => removeOrgFromView(btn.dataset.org));
+      });
+      $('orgReposTableBody').querySelectorAll('.org-repo-select').forEach((cb) => {
+        const r = repos[Number(cb.dataset.i)];
+        cb.addEventListener('change', () => {
+          if (cb.checked) orgReposUnchecked.delete(orgRepoKey(r)); else orgReposUnchecked.add(orgRepoKey(r));
+          syncAutoRescanSelection(orgKey(r.org));
+          renderOrgRepos(orgReposCache);
+        });
+      });
 
       $('orgReposTableBody').querySelectorAll('.org-repo-show-error').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
@@ -7379,132 +7465,195 @@
       });
     }
 
-    async function loadOrgRepos(org, opts = {}) {
+    // Fetches each org's repo list in parallel and swaps that org's slice
+    // of `orgReposCache`. A failed org keeps its previous slice; a
+    // non-quiet failure is recorded on the org's tree header. Returns the
+    // per-org settled results so a caller (adding an org) can react.
+    // Saves an org's auto-rescan state (and, when on, its unchecked repos
+    // as exclusions) server-side.
+    async function putAutoRescan(org, enabled) {
+      const prefix = `${org}/`;
+      const excludedRepos = [...orgReposUnchecked].filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length));
+      const res = await fetch(`/api/org-repos/auto-rescan/orgs/${encodeURIComponent(org)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, excludedRepos }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    }
+    const autoRescanSyncTimers = new Map();
+    // Keeps an auto-rescan-enabled org's saved exclusions in step with the
+    // checkboxes (debounced; no-op for orgs with auto-rescan off).
+    function syncAutoRescanSelection(org) {
+      if (!orgReposAutoRescan.has(org)) return;
+      clearTimeout(autoRescanSyncTimers.get(org));
+      autoRescanSyncTimers.set(org, setTimeout(() => putAutoRescan(org, true).catch(() => {}), 400));
+    }
+
+    async function refreshOrgs(orgs, opts = {}) {
       const quiet = opts.quiet === true;
-      orgReposCurrentOrg = org;
       if (!quiet) {
         $('orgReposNotConnected').classList.add('hidden');
         $('orgReposError').classList.add('hidden');
-        $('orgReposResults').classList.add('hidden');
         $('orgReposLoading').classList.remove('hidden');
-        $('orgReposRepoCount').classList.add('hidden');
       }
-      const includeArchived = $('orgReposIncludeArchived').checked;
-      const includeForks = $('orgReposIncludeForks').checked;
-      let res;
-      try {
-        const params = new URLSearchParams({ includeArchived: String(includeArchived), includeForks: String(includeForks) });
-        res = await fetch(`/api/org-repos/${encodeURIComponent(org)}?${params}`);
+      const params = new URLSearchParams({ includeArchived: String($('orgReposIncludeArchived').checked), includeForks: String($('orgReposIncludeForks').checked) });
+      const results = await Promise.allSettled(orgs.map(async (org) => {
+        const res = await fetch(`/api/org-repos/${encodeURIComponent(org)}?${params}`);
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        orgReposCache = data;
-        $('orgReposResults').classList.remove('hidden');
-        $('orgReposRefreshBtn').classList.remove('hidden');
-        $('orgReposScanAllBtn').classList.remove('hidden');
-        reconcileBulkPending();
-        renderOrgRepos(orgReposCache);
-        scheduleOrgReposPoll();
-      } catch (e) {
-        if (!quiet) {
-          $('orgReposError').textContent = res && res.status === 401 ? t('common.signInToView') : t('orgRepos.loadError') + (e.message ? ` (${e.message})` : '');
-          $('orgReposError').classList.remove('hidden');
+        if (!res.ok) {
+          const err = new Error(data.error || `HTTP ${res.status}`);
+          err.status = res.status;
+          throw err;
         }
-      } finally {
-        if (!quiet) $('orgReposLoading').classList.add('hidden');
-      }
+        return data;
+      }));
+      results.forEach((res, i) => {
+        const org = orgs[i];
+        if (res.status === 'fulfilled') {
+          orgReposCache = orgReposCache.filter((r) => orgKey(r.org) !== org).concat(res.value);
+          orgReposLoadErrors.delete(org);
+        } else if (!quiet) {
+          orgReposLoadErrors.set(org, res.reason.message);
+        }
+      });
+      if (!quiet) $('orgReposLoading').classList.add('hidden');
+      showOrgReposTree();
+      reconcileBulkPending();
+      renderOrgRepos(orgReposCache);
+      scheduleOrgReposPoll();
+      return results;
     }
 
+    function showOrgReposTree() {
+      const has = orgReposOrgs.length > 0;
+      $('orgReposResults').classList.toggle('hidden', !has);
+      $('orgReposRefreshBtn').classList.toggle('hidden', !has);
+      $('orgReposScanAllBtn').classList.toggle('hidden', !has);
+      $('orgReposNotConnected').classList.toggle('hidden', has);
+    }
+
+    async function removeOrgFromView(org) {
+      if (!window.confirm(t('orgRepos.removeOrgConfirm', { org }))) return;
+      try {
+        const res = await fetch(`/api/org-repos/auto-rescan/orgs/${encodeURIComponent(org)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (e) {
+        window.alert(t('orgRepos.autoRescanRemoveFailed', { error: e.message }));
+        return;
+      }
+      orgReposOrgs = orgReposOrgs.filter((o) => o !== org);
+      orgReposCache = orgReposCache.filter((r) => orgKey(r.org) !== org);
+      [...orgReposUnchecked].filter((k) => k.startsWith(`${org}/`)).forEach((k) => orgReposUnchecked.delete(k));
+      [...orgReposBulkPendingKeys].filter((k) => orgKey(k).startsWith(`${org}/`)).forEach((k) => orgReposBulkPendingKeys.delete(k));
+      orgReposCollapsed.delete(org);
+      orgReposAutoRescan.delete(org);
+      orgReposLoadErrors.delete(org);
+      showOrgReposTree();
+      renderOrgRepos(orgReposCache);
+    }
+
+    // Adding an org lists its repos, all checked by default (nothing is
+    // added to `orgReposUnchecked`). A failed first load drops the org
+    // again instead of leaving a dead entry in the tree.
     $('orgReposConnectForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const org = $('orgReposOrgInput').value.trim();
+      const org = orgKey($('orgReposOrgInput').value.trim());
       if (!org) return;
       $('orgReposConnectBtn').disabled = true;
       $('orgReposConnectBtnLabel').textContent = t('orgRepos.connecting');
       try {
-        await loadOrgRepos(org);
+        const isNew = !orgReposOrgs.includes(org);
+        if (isNew) orgReposOrgs.push(org);
+        const [result] = await refreshOrgs([org]);
+        if (result.status === 'fulfilled' && isNew) {
+          fetch('/api/org-repos/saved-orgs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ org }) }).catch(() => {});
+        }
+        if (result.status === 'rejected') {
+          if (isNew) {
+            orgReposOrgs = orgReposOrgs.filter((o) => o !== org);
+            orgReposLoadErrors.delete(org);
+            showOrgReposTree();
+            renderOrgRepos(orgReposCache);
+          }
+          $('orgReposNotConnected').classList.toggle('hidden', orgReposOrgs.length > 0);
+          $('orgReposError').textContent = result.reason.status === 401 ? t('common.signInToView') : t('orgRepos.loadError') + (result.reason.message ? ` (${result.reason.message})` : '');
+          $('orgReposError').classList.remove('hidden');
+        } else {
+          $('orgReposOrgInput').value = '';
+        }
       } finally {
         $('orgReposConnectBtn').disabled = false;
         $('orgReposConnectBtnLabel').textContent = t('orgRepos.connect');
       }
     });
-    $('orgReposRefreshBtn').addEventListener('click', () => {
-      if (orgReposCurrentOrg) loadOrgRepos(orgReposCurrentOrg);
-    });
+    $('orgReposRefreshBtn').addEventListener('click', () => refreshOrgs(orgReposOrgs));
+    // "Scan all" scans every *checked* repo across every org in the tree
+    // and saves that selection server-side as the daily auto-rescan set.
     $('orgReposScanAllBtn').addEventListener('click', async () => {
-      if (!orgReposCurrentOrg) return;
+      const selection = orgReposSelectedByOrg();
+      const total = selection.reduce((n, o) => n + o.repos.length, 0);
+      if (total === 0) return;
       const btn = $('orgReposScanAllBtn');
-      const label = $('orgReposScanAllBtnLabel');
-      const originalText = label.textContent;
       btn.disabled = true;
-      label.textContent = t('orgRepos.scanAllStarting');
+      $('orgReposScanAllBtnLabel').textContent = t('orgRepos.scanAllStarting');
       try {
-        const includeArchived = $('orgReposIncludeArchived').checked;
-        const includeForks = $('orgReposIncludeForks').checked;
-        const params = new URLSearchParams({ includeArchived: String(includeArchived), includeForks: String(includeForks) });
-        const res = await fetch(`/api/org-repos/${encodeURIComponent(orgReposCurrentOrg)}/scan-all?${params}`, { method: 'POST' });
+        const res = await fetch('/api/org-repos/scan-selected', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ includeArchived: $('orgReposIncludeArchived').checked, includeForks: $('orgReposIncludeForks').checked, orgs: selection }),
+        });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const failed = (data.failedOrgs || []).map((f) => f.org).join(', ');
         if (!data.queued) {
-          window.alert(t('orgRepos.scanAllNothingToScan'));
+          window.alert(t('orgRepos.scanAllNothingToScan') + (failed ? `\n${t('orgRepos.scanAllOrgsFailed', { orgs: failed })}` : ''));
           return;
         }
         orgReposBulkTriggeredAt = new Date().toISOString();
-        orgReposBulkPendingKeys = new Set(orgReposCache.filter((r) => !r.empty).map((r) => `${r.org}/${r.repo}`));
+        orgReposBulkPendingKeys = new Set(orgReposCache.filter((r) => orgRepoChecked(r) && orgReposOrgs.includes(orgKey(r.org))).map((r) => `${r.org}/${r.repo}`));
         renderOrgRepos(orgReposCache);
         scheduleOrgReposPoll();
-        window.alert(t('orgRepos.scanAllStarted', { count: data.count, mode: data.mode }));
+        window.alert(t('orgRepos.scanAllStarted', { count: data.count, mode: data.mode }) + (failed ? `\n${t('orgRepos.scanAllOrgsFailed', { orgs: failed })}` : ''));
       } catch (e) {
         window.alert(t('orgRepos.scanAllFailed', { error: e.message }));
       } finally {
-        label.textContent = originalText;
-        // Left disabled while a bulk run is genuinely still in flight —
-        // `renderOrgRepos` (via the next poll) re-enables it once
-        // `orgReposBulkPendingKeys` empties out; only reset it here on an
-        // outright failure/no-op, where nothing was actually queued.
-        if (orgReposBulkPendingKeys.size === 0) btn.disabled = false;
+        // A bulk run still in flight keeps the button disabled until
+        // `reconcileBulkPending` empties the pending set on a later poll.
+        updateScanAllButton();
       }
     });
 
-    // Auto-rescan toggle — a runtime-toggleable setting persisted server-
-    // side (`app_settings`, not `config.json`, specifically so this
-    // doesn't need a restart to flip), independent of any one connected
-    // org. The actual hourly check runs outside this page entirely (an
-    // external OS-level timer hitting `POST /api/org-repos/auto-rescan/run`
-    // — see that route's own doc comment for why); this toggle only ever
-    // controls whether that endpoint does anything when it's next called,
-    // not a live scheduler running in this tab.
-    let orgReposAutoRescanEnabled = false;
+    // The server keeps the orgs (and unchecked repos) saved by the last
+    // "Scan all" — the daily check itself runs outside this page (an
+    // external OS-level timer hitting `POST /api/org-repos/auto-rescan/run`,
+    // see that route's doc comment). Loading them here restores the tree.
     async function loadAutoRescanState() {
       try {
         const res = await fetch('/api/org-repos/auto-rescan');
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        orgReposAutoRescanEnabled = !!data.enabled;
-        $('orgReposAutoRescanToggle').checked = orgReposAutoRescanEnabled;
         $('orgReposAutoRescanNote').textContent = t('orgRepos.autoRescanNote', { hours: data.staleAfterHours });
-        $('orgReposScanAllBtn').disabled = orgReposAutoRescanEnabled || orgReposBulkPendingKeys.size > 0;
+        const added = [];
+        (data.orgs || []).forEach(({ org, excludedRepos }) => {
+          const o = orgKey(org);
+          orgReposAutoRescan.add(o);
+          if (orgReposOrgs.includes(o)) return;
+          orgReposOrgs.push(o);
+          added.push(o);
+          (excludedRepos || []).forEach((repo) => orgReposUnchecked.add(`${o}/${orgKey(repo)}`));
+        });
+        (data.savedOrgs || []).forEach((org) => {
+          const o = orgKey(org);
+          if (orgReposOrgs.includes(o)) return;
+          orgReposOrgs.push(o);
+          added.push(o);
+        });
+        if (added.length) await refreshOrgs(added);
       } catch {
         $('orgReposAutoRescanNote').textContent = '';
       }
     }
-    $('orgReposAutoRescanToggle').addEventListener('change', async (e) => {
-      const toggle = e.target;
-      const desired = toggle.checked;
-      toggle.disabled = true;
-      try {
-        const res = await fetch('/api/org-repos/auto-rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: desired }) });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        orgReposAutoRescanEnabled = !!data.enabled;
-        toggle.checked = orgReposAutoRescanEnabled;
-        $('orgReposScanAllBtn').disabled = orgReposAutoRescanEnabled || orgReposBulkPendingKeys.size > 0;
-      } catch (e2) {
-        toggle.checked = !desired; // revert on failure
-        window.alert(t('orgRepos.autoRescanToggleFailed', { error: e2.message }));
-      } finally {
-        toggle.disabled = false;
-      }
-    });
 
     // Governance — Campaigns tab. Loaded lazily the first time the nav icon
     // is opened, same posture as Onboarded Repos above.

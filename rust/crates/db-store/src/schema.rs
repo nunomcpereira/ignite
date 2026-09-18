@@ -590,4 +590,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // pass one), meaning "never expires" exactly like before this
     // migration, so no existing override's behavior changes.
     (28, "ALTER TABLE overrides ADD COLUMN expires_at TEXT; ALTER TABLE overrides ADD COLUMN policy_version TEXT;"),
+    // GitHub Org view: orgs whose repos the hourly auto-rescan sweep keeps
+    // fresh (enrolled by "Scan all"), plus the repos the user unchecked in
+    // the tree view. Selection is stored as *exclusions* so a repo created
+    // in an enrolled org later is included by default, matching the UI's
+    // "everything checked by default". Names are stored lowercased (GitHub
+    // logins/repo names are case-insensitive).
+    (29, "CREATE TABLE IF NOT EXISTS auto_rescan_orgs (org TEXT PRIMARY KEY, added_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE TABLE IF NOT EXISTS auto_rescan_excluded_repos (org TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY (org, repo));"),
+    // GitHub Org view: the orgs the user added in the UI (persisted so the
+    // tree survives reloads independent of the config file or of whether
+    // "Scan all" was ever clicked). Names stored lowercased.
+    (30, "CREATE TABLE IF NOT EXISTS saved_orgs (org TEXT PRIMARY KEY, added_at TEXT NOT NULL DEFAULT (datetime('now')));"),
 ];
