@@ -384,6 +384,129 @@ pub fn build_api_key_created_email(details: &ApiKeyCreatedDetails) -> Email {
     Email { subject, html }
 }
 
+/// One source line shown under a finding; `flagged` marks the line the
+/// finding actually points at (the rest is surrounding context).
+pub struct DailyReportCodeLine {
+    pub number: i64,
+    pub text: String,
+    pub flagged: bool,
+}
+
+pub struct DailyReportFinding<'a> {
+    pub severity: &'a str,
+    pub category: &'a str,
+    pub file: Option<&'a str>,
+    pub line: Option<i64>,
+    pub summary: &'a str,
+    pub score: Option<i64>,
+    /// The line before, the flagged line(s) and the line after. Empty when
+    /// the finding has no source snippet (e.g. a repo-level finding).
+    pub code: Vec<DailyReportCodeLine>,
+}
+
+/// Longest source line rendered as-is; a minified bundle's single
+/// multi-megabyte line would otherwise blow up the email.
+const MAX_CODE_LINE_CHARS: usize = 160;
+
+fn render_code_block(code: &[DailyReportCodeLine]) -> String {
+    if code.is_empty() {
+        return String::new();
+    }
+    let width = code.iter().map(|l| l.number.to_string().len()).max().unwrap_or(1);
+    let lines: String = code
+        .iter()
+        .map(|l| {
+            let text: String = if l.text.chars().count() > MAX_CODE_LINE_CHARS { l.text.chars().take(MAX_CODE_LINE_CHARS).chain("…".chars()).collect() } else { l.text.clone() };
+            let (bg, marker) = if l.flagged { ("background:#fee2e2;color:#7f1d1d;", "&gt;") } else { ("color:#475569;", "&nbsp;") };
+            format!("<div style=\"{bg}padding:0 8px;white-space:pre-wrap;word-break:break-all;\">{marker} {:>width$} | {}</div>", l.number, escape_html_mail(&text))
+        })
+        .collect();
+    format!("\n        <tr>\n          <td colspan=\"5\" style=\"padding:0 12px 10px;border-bottom:1px solid #e2e8f0;\">\n            <div style=\"background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;\">{lines}</div>\n          </td>\n        </tr>")
+}
+
+pub struct DailyReportRepo<'a> {
+    pub repo: &'a str,
+    pub status: &'a str,
+    pub last_scan_at: &'a str,
+    /// Already ordered most-severe first by the caller.
+    pub findings: &'a [DailyReportFinding<'a>],
+}
+
+pub struct DailyReportDetails<'a> {
+    pub org: &'a str,
+    /// Calendar date the report covers, `YYYY-MM-DD`.
+    pub date: &'a str,
+    pub repos: &'a [DailyReportRepo<'a>],
+}
+
+/// Per-repo cap on rendered finding rows, for the same reason as
+/// `MAX_LOG_LINES`: an org-wide digest of a repo with thousands of open
+/// findings would otherwise balloon past what some SMTP relays accept.
+/// The repo's true count is still shown in its heading and the summary.
+const MAX_DAILY_REPORT_FINDINGS_PER_REPO: usize = 50;
+
+pub fn build_daily_report_email(details: &DailyReportDetails) -> Email {
+    let total: usize = details.repos.iter().map(|r| r.findings.len()).sum();
+    let blocking: usize = details.repos.iter().flat_map(|r| r.findings.iter()).filter(|f| f.severity == "error").count();
+    let with_findings: Vec<&DailyReportRepo> = details.repos.iter().filter(|r| !r.findings.is_empty()).collect();
+    let clean: Vec<&DailyReportRepo> = details.repos.iter().filter(|r| r.findings.is_empty()).collect();
+
+    let sections: String = with_findings
+        .iter()
+        .map(|r| {
+            let rows: String = r
+                .findings
+                .iter()
+                .take(MAX_DAILY_REPORT_FINDINGS_PER_REPO)
+                .map(|f| {
+                    let color = if f.severity == "error" { "#e11d48" } else { "#b45309" };
+                    let location = format!("{}{}", escape_html_mail(f.file.unwrap_or("")), f.line.map(|l| format!(":{l}")).unwrap_or_default());
+                    let score = f.score.map(|s| s.to_string()).unwrap_or_default();
+                    format!(
+                        "\n        <tr>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;text-transform:uppercase;font-weight:600;color:{color};\">{}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{score}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;font-family:monospace;\">{location}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{}</td>\n        </tr>",
+                        escape_html_mail(f.severity),
+                        escape_html_mail(f.category),
+                        escape_html_mail(f.summary),
+                    ) + &render_code_block(&f.code)
+                })
+                .collect();
+            let omitted = r.findings.len().saturating_sub(MAX_DAILY_REPORT_FINDINGS_PER_REPO);
+            let omitted_note = if omitted > 0 { format!("\n      <p style=\"color:#94a3b8;font-size:12px;\">… and {omitted} more finding(s) not shown — open this repo in Ignite for the full list.</p>") } else { String::new() };
+            format!(
+                "\n      <h3 style=\"margin:24px 0 4px;color:#0f172a;\">{}/{} — {} unjustified</h3>\n      <p style=\"margin:0 0 8px;color:#64748b;font-size:12px;\">Last scan: {} ({})</p>\n      <table style=\"border-collapse:collapse;width:100%;font-size:13px;\">\n        <tr style=\"background:#f1f5f9;\">\n          <th style=\"padding:6px 12px;text-align:left;\">Severity</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Score</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Category</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Location</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Finding</th>\n        </tr>\n        {rows}\n      </table>{omitted_note}",
+                escape_html_mail(details.org),
+                escape_html_mail(r.repo),
+                r.findings.len(),
+                escape_html_mail(r.last_scan_at),
+                escape_html_mail(r.status),
+            )
+        })
+        .collect();
+
+    let clean_block = if clean.is_empty() {
+        String::new()
+    } else {
+        let names = clean.iter().map(|r| escape_html_mail(r.repo)).collect::<Vec<_>>().join(", ");
+        format!("\n      <h3 style=\"margin:24px 0 8px;color:#059669;\">No unjustified findings ({})</h3>\n      <p style=\"font-size:13px;\">{names}</p>", clean.len())
+    };
+    let empty_block = if total == 0 { "\n      <p style=\"font-size:14px;\">Nothing to justify — every repo's latest scan is clean or fully justified.</p>" } else { "" };
+
+    let subject = format!(
+        "[Ignite] \u{1f4cb} Daily findings report — {} — {}: {total} unjustified across {} repo(s)",
+        strip_crlf(details.org),
+        strip_crlf(details.date),
+        with_findings.len()
+    );
+    let html = format!(
+        "\n    <div style=\"font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:860px;margin:0 auto;color:#334155;\">\n      <h2 style=\"color:#0f172a;\">Ignite daily findings report</h2>\n      <p><strong>Organization:</strong> {}<br/>\n         <strong>Date:</strong> {}<br/>\n         <strong>Repositories:</strong> {} ({} with unjustified findings)<br/>\n         <strong>Unjustified findings:</strong> {total} ({blocking} blocking)</p>\n      <p style=\"font-size:13px;color:#64748b;\">Findings from each repository's most recent scan that no approved override or justification covers yet.</p>{empty_block}{sections}{clean_block}\n      <p style=\"color:#94a3b8;font-size:12px;margin-top:24px;\">Sent by Ignite — daily digest, one report per organization.</p>\n    </div>",
+        escape_html_mail(details.org),
+        escape_html_mail(details.date),
+        details.repos.len(),
+        with_findings.len(),
+    );
+    Email { subject, html }
+}
+
 // ---------------------------------------------------------------------------
 // Send functions — the new transport-wired counterparts
 // ---------------------------------------------------------------------------
@@ -483,6 +606,26 @@ pub async fn send_scheduled_check_failure_notification(
     let message = build_message(&config.from, to, &subject, &html)?;
     send_message(config, message).await?;
     tracing::info!(%to, "scheduled-recheck failure notification email sent");
+    Ok(NotificationResult::sent(to))
+}
+
+/// Send one org's daily findings report to `to` (the caller resolves
+/// `dailyReport.to` vs. the `notifications.to` fallback — an empty `to`
+/// skips rather than errors, same as every other send here).
+pub async fn send_daily_report_notification(
+    config: &NotificationsConfig,
+    to: &str,
+    details: &DailyReportDetails<'_>,
+) -> Result<NotificationResult, NotificationError> {
+    if !config.enabled || to.trim().is_empty() {
+        return Ok(NotificationResult::skipped(
+            "notifications disabled or no recipient configured",
+        ));
+    }
+    let email = build_daily_report_email(details);
+    let message = build_message(&config.from, to, &email.subject, &email.html)?;
+    send_message(config, message).await?;
+    tracing::info!(%to, org = details.org, repos = details.repos.len(), "daily report email sent");
     Ok(NotificationResult::sent(to))
 }
 
@@ -649,5 +792,91 @@ mod tests {
         let state = phase_records_to_state(&records);
         assert_eq!(state[&1].state, "success");
         assert_eq!(state[&2].logs, vec!["err"]);
+    }
+
+    fn finding<'a>(severity: &'a str, summary: &'a str, score: i64) -> DailyReportFinding<'a> {
+        DailyReportFinding { severity, category: "secret", file: Some("a.js"), line: Some(3), summary, score: Some(score), code: vec![] }
+    }
+
+    fn code(n: i64, text: &str, flagged: bool) -> DailyReportCodeLine {
+        DailyReportCodeLine { number: n, text: text.to_string(), flagged }
+    }
+
+    #[test]
+    fn daily_report_renders_code_context_escaped_with_flagged_line_marked() {
+        let mut f = finding("error", "hardcoded key", 9);
+        f.code = vec![code(9, "const a = 1;", false), code(10, "const k = \"<AKIA>\";", true), code(11, "run(k);", false)];
+        let findings = [f];
+        let repos = [DailyReportRepo { repo: "w", status: "success", last_scan_at: "t", findings: &findings }];
+        let email = build_daily_report_email(&DailyReportDetails { org: "acme", date: "d", repos: &repos });
+        assert!(email.html.contains("&gt; 10 | const k = \"&lt;AKIA&gt;\";"));
+        assert!(email.html.contains("&nbsp;  9 | const a = 1;"));
+        assert!(email.html.contains("&nbsp; 11 | run(k);"));
+        assert!(!email.html.contains("<AKIA>"));
+        assert_eq!(email.html.matches("background:#fee2e2").count(), 1, "only the flagged line is highlighted");
+    }
+
+    #[test]
+    fn daily_report_truncates_very_long_code_lines() {
+        let mut f = finding("error", "x", 9);
+        f.code = vec![code(1, &"a".repeat(5000), true)];
+        let findings = [f];
+        let repos = [DailyReportRepo { repo: "w", status: "success", last_scan_at: "t", findings: &findings }];
+        let email = build_daily_report_email(&DailyReportDetails { org: "acme", date: "d", repos: &repos });
+        assert!(email.html.contains('…'));
+        assert!(email.html.len() < 5000);
+    }
+
+    #[test]
+    fn daily_report_summarizes_counts_and_lists_clean_repos_separately() {
+        let findings = [finding("error", "hardcoded key", 9), finding("warning", "old dep", 4)];
+        let repos = [
+            DailyReportRepo { repo: "widgets", status: "success", last_scan_at: "2026-09-18 10:00:00", findings: &findings },
+            DailyReportRepo { repo: "tidy", status: "success", last_scan_at: "2026-09-18 09:00:00", findings: &[] },
+        ];
+        let email = build_daily_report_email(&DailyReportDetails { org: "acme", date: "2026-09-18", repos: &repos });
+        assert!(email.subject.contains("acme"));
+        assert!(email.subject.contains("2 unjustified across 1 repo(s)"));
+        assert!(email.html.contains("2 (1 blocking)"));
+        assert!(email.html.contains("acme/widgets — 2 unjustified"));
+        assert!(email.html.contains("a.js:3"));
+        assert!(email.html.contains("No unjustified findings (1)"));
+        assert!(email.html.contains("tidy"));
+    }
+
+    #[test]
+    fn daily_report_escapes_untrusted_fields_and_strips_subject_newlines() {
+        let findings = [finding("error", "<script>x</script>", 9)];
+        let repos = [DailyReportRepo { repo: "<b>r</b>", status: "success", last_scan_at: "t", findings: &findings }];
+        let email = build_daily_report_email(&DailyReportDetails { org: "ac\nme", date: "2026-09-18", repos: &repos });
+        assert!(!email.subject.contains('\n'));
+        assert!(!email.html.contains("<script>"));
+        assert!(!email.html.contains("<b>r</b>"));
+    }
+
+    #[test]
+    fn daily_report_caps_rows_per_repo_but_reports_true_count() {
+        let owned: Vec<DailyReportFinding> = (0..80).map(|_| finding("warning", "x", 1)).collect();
+        let repos = [DailyReportRepo { repo: "big", status: "success", last_scan_at: "t", findings: &owned }];
+        let email = build_daily_report_email(&DailyReportDetails { org: "acme", date: "d", repos: &repos });
+        assert!(email.html.contains("big — 80 unjustified"));
+        assert!(email.html.contains("and 30 more finding(s)"));
+        assert_eq!(email.html.matches("<td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;text-transform:uppercase").count(), MAX_DAILY_REPORT_FINDINGS_PER_REPO);
+    }
+
+    #[test]
+    fn daily_report_with_no_findings_says_so() {
+        let repos = [DailyReportRepo { repo: "tidy", status: "success", last_scan_at: "t", findings: &[] }];
+        let email = build_daily_report_email(&DailyReportDetails { org: "acme", date: "d", repos: &repos });
+        assert!(email.html.contains("Nothing to justify"));
+    }
+
+    #[tokio::test]
+    async fn send_daily_report_skips_when_disabled_or_no_recipient() {
+        let details = DailyReportDetails { org: "a", date: "d", repos: &[] };
+        let disabled = NotificationsConfig::default();
+        assert!(!send_daily_report_notification(&disabled, "x@y.com", &details).await.unwrap().sent);
+        let enabled = NotificationsConfig { enabled: true, ..NotificationsConfig::default() };
+        assert!(!send_daily_report_notification(&enabled, "  ", &details).await.unwrap().sent);
     }
 }

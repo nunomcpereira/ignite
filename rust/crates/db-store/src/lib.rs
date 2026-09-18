@@ -23,6 +23,7 @@ mod audit_events;
 mod auth;
 mod baseline;
 mod caches;
+mod daily_report;
 mod dependency_and_fixpr;
 mod evidence;
 mod findings;
@@ -48,6 +49,7 @@ mod webhook_deliveries;
 mod settings;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
+pub use daily_report::RepoDailyReport;
 pub use store::DbStore;
 pub use types::*;
 

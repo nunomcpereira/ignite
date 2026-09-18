@@ -232,6 +232,11 @@
     "scanAllMode": "sequential",
     "autoRescanStaleAfterHours": 24
   },
+  "dailyReport": {
+    "enabled": false,
+    "time": "23:59",
+    "to": ""
+  },
   "auditLog": {
     "enabled": false,
     "sinks": [

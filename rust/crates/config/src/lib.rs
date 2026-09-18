@@ -64,6 +64,7 @@ pub struct Config {
     pub audit_log: AuditLogConfig,
     pub policy: PolicyConfig,
     pub org_repos: OrgReposConfig,
+    pub daily_report: DailyReportConfig,
 }
 
 impl Default for Config {
@@ -90,6 +91,7 @@ impl Default for Config {
             audit_log: AuditLogConfig::default(),
             policy: PolicyConfig::default(),
             org_repos: OrgReposConfig::default(),
+            daily_report: DailyReportConfig::default(),
         }
     }
 }
@@ -123,6 +125,27 @@ pub struct OrgReposConfig {
 }
 impl Default for OrgReposConfig {
     fn default() -> Self { OrgReposConfig { scan_all_mode: "sequential".to_string(), auto_rescan_stale_after_hours: 24 } }
+}
+
+/// Org-level daily findings digest: once a day, one email per org listing
+/// every repo's still-unjustified (`status = 'open'`, no approved override)
+/// findings from its most recent scan. Runs on a small in-process timer
+/// (unlike the heavyweight `auto-rescan` sweep, which stays external —
+/// this only reads `ignite.db` and sends one email per org, so there's no
+/// scan load to keep off the server). Off by default. `time` is `HH:MM` in
+/// the server's local timezone; `to` overrides `notifications.to` for this
+/// report only (comma-separated, same as every other notification) and
+/// falls back to it when empty. Sending itself still requires
+/// `notifications.enabled`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyReportConfig {
+    pub enabled: bool,
+    pub time: String,
+    pub to: String,
+}
+impl Default for DailyReportConfig {
+    fn default() -> Self { DailyReportConfig { enabled: false, time: "23:59".to_string(), to: String::new() } }
 }
 
 /// GHAS-parity SIEM/audit-log streaming (`ignite-audit-log`): where to
@@ -1335,6 +1358,9 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("AUDIT_LOG_ENABLED") { merged.audit_log.enabled = v; }
     if let Some(v) = env_str("ORG_REPOS_SCAN_ALL_MODE") { merged.org_repos.scan_all_mode = v; }
     if let Some(v) = env_num::<u32>("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS") { merged.org_repos.auto_rescan_stale_after_hours = v; }
+    if let Some(v) = env_bool("DAILY_REPORT_ENABLED") { merged.daily_report.enabled = v; }
+    if let Some(v) = env_str("DAILY_REPORT_TIME") { merged.daily_report.time = v; }
+    if let Some(v) = env_str("DAILY_REPORT_TO") { merged.daily_report.to = v; }
     if let Some(v) = env_str("AUDIT_LOG_SINKS") {
         if let Ok(sinks) = serde_json::from_str::<Vec<AuditSinkConfig>>(&v) {
             merged.audit_log.sinks = sinks;

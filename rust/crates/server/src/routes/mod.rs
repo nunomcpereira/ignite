@@ -3,6 +3,7 @@ pub mod auto_fix;
 pub mod baseline;
 pub mod campaigns;
 pub mod compliance;
+pub mod daily_report;
 pub mod custom_secret_patterns;
 pub mod push_protection_webhook;
 pub mod code_scanning_webhook;
