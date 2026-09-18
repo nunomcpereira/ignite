@@ -10,8 +10,7 @@
 //! connected session (`crate::auth::resolve_effective_github_token`,
 //! resolved once from the request headers before the run is spawned)
 //! over the `resolve_server_github_token()` env fallback; no
-//! failure-insight (local LLM) generation, no failure-email
-//! notification, no config.json phase-enable
+//! failure-insight (local LLM) generation, no config.json phase-enable
 //! overrides (hardcoded like the sibling routes), and a Phase 5 CI
 //! failure is recorded as one generic issue rather than resolved to
 //! per-line issues (`resolveGovernanceCiLocation`/

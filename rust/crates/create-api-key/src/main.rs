@@ -10,13 +10,6 @@
 //! operator owns it, so attribution + a best-effort owner notification are
 //! how a misuse becomes noticeable after the fact (same reasoning as the
 //! Node original's doc comment).
-//!
-//! Known gap vs. the Node original: no SMTP transport is wired anywhere in
-//! the Rust port yet (see `ignite-notifications`' doc comment) — the
-//! owner-notification email is built (`build_api_key_created_email`, so the
-//! integration point/content is real and tested) but never actually sent;
-//! this binary always reports it as not sent, with that reason, rather than
-//! silently pretending to send it.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::env;
@@ -55,19 +48,38 @@ pub fn mint_api_key(db: &ignite_db_store::DbStore, email: &str, label: Option<&s
     Ok(MintResult { api_key_id, raw_key, operator: operator.to_string(), user_email: user.email, user_name: user.name })
 }
 
-/// Always `sent: false` in this port — see the module doc comment. Kept as
-/// a function (rather than inlined in `main`) so the real
-/// `build_api_key_created_email` integration point is exercised and
-/// tested, not just documented.
+/// Best-effort owner notification — a flaky SMTP endpoint must not fail
+/// key creation, matching Node's own `sendApiKeyCreatedNotification`'s
+/// try/catch pattern. Uses a short-lived tokio runtime (same pattern as
+/// `emit_audit_event_blocking`) since this is a synchronous CLI binary.
 pub fn attempt_owner_notification(result: &MintResult, label: Option<&str>) -> (bool, String) {
-    let _email = ignite_notifications::build_api_key_created_email(&ignite_notifications::ApiKeyCreatedDetails {
+    let config_dir = std::env::var("IGNITE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+    let config = match ignite_config::load_config(&config_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            return (false, format!("could not load config: {e}"));
+        }
+    };
+    let details = ignite_notifications::ApiKeyCreatedDetails {
         owner_email: &result.user_email,
         owner_name: result.user_name.as_deref(),
         label,
         created_by: Some(&result.operator),
         created_via: Some("cli"),
-    });
-    (false, "SMTP transport is not implemented in the Rust port yet".to_string())
+    };
+    let Ok(rt) = tokio::runtime::Runtime::new() else {
+        return (false, "could not create tokio runtime".to_string());
+    };
+    match rt.block_on(ignite_notifications::send_api_key_created_notification(
+        &config.notifications,
+        &details,
+    )) {
+        Ok(r) if r.sent => (true, r.to.unwrap_or_default()),
+        Ok(r) => (false, r.reason.unwrap_or_else(|| "unknown".to_string())),
+        Err(e) => (false, format!("email send failed: {e}")),
+    }
 }
 
 /// GHAS-parity audit-log emission (Milestone 3.3): this is a synchronous,
@@ -208,12 +220,14 @@ mod tests {
     }
 
     #[test]
-    fn notification_is_honestly_reported_as_not_sent() {
+    fn notification_reports_not_sent_when_notifications_disabled() {
         let (db, _dir) = open_test_db();
         db.create_local_user("owner@example.com", None, "hashed-password").unwrap();
         let result = mint_api_key(&db, "owner@example.com", None, "test-operator").unwrap();
-        let (sent, reason) = attempt_owner_notification(&result, None);
+        let (sent, _reason) = attempt_owner_notification(&result, None);
+        // With no config.json in the test working directory, notifications
+        // default to disabled — the email should not be sent, but this is
+        // now a config/runtime reason, not a hardcoded "not implemented".
         assert!(!sent);
-        assert!(reason.contains("SMTP"));
     }
 }

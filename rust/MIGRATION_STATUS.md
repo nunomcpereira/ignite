@@ -750,10 +750,10 @@ this list ever named is ported and tested. What's left is only the
 smaller gaps already noted inline in doc comments across the routes
 above — none of them block correctness or the scan comparison:
 - GxP document persistence as real files (currently in-memory/report-only).
-- No SMTP transport wired anywhere in the Rust port (override-email
-  notifications and the `create-api-key` owner-notification email are
-  both built via `ignite-notifications`'s real HTML builders and honestly
-  reported as unsent, never silently dropped).
+- SMTP transport now fully supported & wired: `ignite-notifications` implements
+  SMTP (via `lettre` with TLS/STARTTLS) and `sendmail` fallback matching Node's
+  `nodemailer` setup, wired into `pipeline_validate`, `pipeline_onboard`,
+  `pipeline_interactive`, `effectivate`, and `create-api-key`.
 - OIDC/GitHub auth: verified end-to-end against a local mock of each
   protocol (see the auth entry above), not against a real third-party
   IdP or GitHub's live OAuth app — no such credential is available in

@@ -7,9 +7,7 @@
 //! per-Phase-4-task timing breakdown (`__taskTimings`) isn't tracked,
 //! only top-level stage timings; GxP (Phase 2) document links are
 //! accepted/validated but not persisted as real documents (no
-//! addUploadDocument wiring yet); overrides never trigger an email
-//! notification (no SMTP transport wired yet — see ignite-notifications'
-//! doc comment).
+//! addUploadDocument wiring yet).
 
 use crate::state::AppState;
 use axum::extract::State;
@@ -455,6 +453,45 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 };
 
                 logger.log(4, &format!("⚠ {} flagged issue(s) overridden by {email}:", auto_applied.len()));
+                let override_email_sent = if !auto_applied.is_empty() {
+                    let notif_applied: Vec<ignite_notifications::AppliedOverride> = auto_applied.iter().map(|(issue, justification)| {
+                        ignite_notifications::AppliedOverride {
+                            issue: ignite_notifications::IssueLike {
+                                severity: match issue.severity { Severity::Error => "error", Severity::Warning => "warning" },
+                                category: &issue.category,
+                                file: issue.file.as_deref(),
+                                line: issue.line,
+                                summary: &issue.summary,
+                            },
+                            justification,
+                        }
+                    }).collect();
+                    let notif_titles = ignite_notifications::phase_titles_map(&logger.meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
+                    match ignite_notifications::send_override_notification(
+                        &state.config.notifications,
+                        &notif_titles,
+                        &ignite_notifications::OverrideEmailDetails {
+                            job_id: &job_id,
+                            org: &org,
+                            repo: &repo,
+                            phase: 4,
+                            actor: ignite_notifications::Actor { name: Some(&name), email: &email },
+                            applied: &notif_applied,
+                        },
+                    ).await {
+                        Ok(r) if r.sent => {
+                            logger.log(4, &format!("📧 Override notification emailed to {}.", r.to.as_deref().unwrap_or("?")));
+                            true
+                        }
+                        Ok(_) => false,
+                        Err(e) => {
+                            tracing::warn!("Could not send override notification email: {e}");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
                 for (issue, justification) in &auto_applied {
                     logger.log(4, &format!("    ⚠ [override] [{:?}] {}:{} — {} — \"{justification}\"", issue.severity, issue.file.as_deref().unwrap_or(""), issue.line.unwrap_or(0), issue.summary));
                     state.db.add_override(ignite_db_store::AddOverrideArgs {
@@ -473,7 +510,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                         justification,
                         actor_email: &email,
                         actor_name: Some(&name),
-                        email_sent: false,
+                        email_sent: override_email_sent,
                     });
                     state.emit_audit_event(
                         ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
@@ -798,6 +835,38 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 state.db.replace_project_issues(project_id, &issue_inputs, &overridden_ids);
             }
             state.db.finish_project("failed", Some(&e.message), None, None, project_id);
+
+            // Best-effort failure notification — never blocks pipeline
+            // response or cleanup.
+            {
+                let record_snapshot: Vec<(i64, String, Vec<String>)> = {
+                    let inner = logger.inner.lock().unwrap();
+                    inner.record.iter().map(|(k, v)| (*k, v.state.clone(), v.logs.clone())).collect()
+                };
+                let notif_record = ignite_notifications::phase_tuples_to_state(&record_snapshot);
+                let notif_titles = ignite_notifications::phase_titles_map(&logger.meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
+                match ignite_notifications::send_failure_notification(
+                    &state.config.notifications,
+                    &notif_titles,
+                    &ignite_notifications::FailureEmailDetails {
+                        job_id: &job_id,
+                        org: &org,
+                        repo: &repo,
+                        error: &e.message,
+                        failed_phase: e.phase,
+                        record: &notif_record,
+                        insight: None,
+                    },
+                ).await {
+                    Ok(r) if r.sent => {
+                        logger.log(e.phase, &format!("📧 Failure report emailed to {}.", r.to.as_deref().unwrap_or("?")));
+                    }
+                    Ok(_) => {}
+                    Err(mail_err) => {
+                        tracing::warn!("Could not send failure email: {mail_err}");
+                    }
+                }
+            }
 
             let phases = logger.phase_summary();
             let events = logger.events();

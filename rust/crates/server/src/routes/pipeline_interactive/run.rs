@@ -530,6 +530,37 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
 
             if applied_count > 0 {
                 log.log(6, &format!("⚠ {applied_count} flagged issue(s) overridden by {}:", decision.actor.email));
+
+                let overrides: Vec<ignite_notifications::AppliedOverride> = auto_applied.iter().map(|(issue, justification)| {
+                    ignite_notifications::AppliedOverride {
+                        issue: ignite_notifications::IssueLike {
+                            severity: match issue.severity {
+                                Severity::Error => "error",
+                                Severity::Warning => "warning",
+                            },
+                            category: &issue.category,
+                            file: issue.file.as_deref(),
+                            line: issue.line,
+                            summary: &issue.summary,
+                        },
+                        justification: justification.as_str(),
+                    }
+                }).collect();
+                
+                let titles = ignite_notifications::phase_titles_map(&log.meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
+                let details = ignite_notifications::OverrideEmailDetails {
+                    job_id: &job_id,
+                    org: &org,
+                    repo: &repo,
+                    phase: 4,
+                    actor: ignite_notifications::Actor {
+                        name: Some(decision.actor.name.as_str()),
+                        email: &decision.actor.email,
+                    },
+                    applied: &overrides,
+                };
+                let email_sent = ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false);
+
                 for (issue, justification) in &auto_applied {
                     let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "unknown location".to_string());
                     log.log(6, &format!("    ⚠ [override] [{:?}] {loc} — {} — \"{justification}\"", issue.severity, issue.summary));
@@ -555,7 +586,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                             justification,
                             actor_email: &decision.actor.email,
                             actor_name: Some(&decision.actor.name),
-                            email_sent: false,
+                            email_sent,
                         });
                     }
                 }
@@ -741,10 +772,25 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
 
     if let Err((phase, message)) = outcome {
         log.log(phase, &format!("✗ {message}"));
-        log.status(phase, "failed", Some(json!({ "error": message })));
+        log.status(phase, "failed", Some(json!({ "error": message.clone() })));
         if let Some(pid) = project_id {
             state.db.finish_project("failed", Some(&message), None, None, pid);
         }
+
+        let all_records = log.all_phase_records();
+        let record = ignite_notifications::phase_records_to_state(&all_records);
+        let titles = ignite_notifications::phase_titles_map(&log.meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
+        let details = ignite_notifications::FailureEmailDetails {
+            job_id: &job_id,
+            org: &org,
+            repo: &repo,
+            error: &message,
+            failed_phase: phase,
+            record: &record,
+            insight: None,
+        };
+        let _ = ignite_notifications::send_failure_notification(&state.config.notifications, &titles, &details).await;
+
         log.send(json!({ "type": "done", "ok": false, "error": message, "phase": phase, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id }));
     }
 

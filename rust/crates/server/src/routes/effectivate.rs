@@ -224,6 +224,38 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
 
     if !auto_apply.is_empty() {
         let (actor_email, actor_name) = actor.clone().unwrap();
+
+        let overrides: Vec<ignite_notifications::AppliedOverride> = auto_apply.iter().map(|(issue, justification)| {
+            ignite_notifications::AppliedOverride {
+                issue: ignite_notifications::IssueLike {
+                    severity: match issue.severity {
+                        Severity::Error => "error",
+                        Severity::Warning => "warning",
+                    },
+                    category: &issue.category,
+                    file: issue.file.as_deref(),
+                    line: issue.line,
+                    summary: &issue.summary,
+                },
+                justification: justification.as_str(),
+            }
+        }).collect();
+        
+        let titles = ignite_notifications::phase_titles_map(&phase_meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
+        let eff_job_id = format!("effectivate-{project_id}");
+        let details = ignite_notifications::OverrideEmailDetails {
+            job_id: &eff_job_id,
+            org: &org,
+            repo: &repo,
+            phase: 4,
+            actor: ignite_notifications::Actor {
+                name: Some(&actor_name),
+                email: &actor_email,
+            },
+            applied: &overrides,
+        };
+        let email_sent = ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false);
+
         for (issue, justification) in &auto_apply {
             state.db.add_override(ignite_db_store::AddOverrideArgs {
                 project_id,
@@ -241,7 +273,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 justification,
                 actor_email: &actor_email,
                 actor_name: Some(&actor_name),
-                email_sent: false,
+                email_sent,
             });
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))

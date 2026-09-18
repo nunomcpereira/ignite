@@ -13,7 +13,7 @@ ignite-db-store = { path = "../db-store" }
 ignite-config = { path = "../config" }
 ignite-notifications = { path = "../notifications" }
 ignite-audit-log = { path = "../audit-log" }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde_json = "1"
 
