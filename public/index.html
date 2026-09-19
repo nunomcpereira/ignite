@@ -1057,6 +1057,10 @@
           <p id="issuesViewSubtitle" class="text-xs text-slate-500 mt-0.5" data-i18n="issuesView.subtitle">Read-only — issue-by-issue detail, updated live as the run progresses.</p>
         </div>
         <div class="flex items-center gap-3 shrink-0">
+          <button id="issuesViewFixPrBtn" type="button"
+                  class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" data-i18n-title="pipeline.generateFixPrTitle">
+            <span data-i18n="pipeline.generateFixPr">✨ Generate fix PR</span>
+          </button>
           <button id="issuesViewExpandAllBtn" type="button"
                   class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="issuesView.expandAllTitle">
             <span data-i18n="common.expandAllCode">Expand all code ▸</span>
@@ -1073,6 +1077,32 @@
         </div>
       </div>
       <div id="issuesViewSeverityBar" class="hidden px-6 py-2 border-b border-slate-100 text-xs"></div>
+      <!-- Justify findings inline, without needing a live review-gate run
+           — shown only when the popup was opened with a job/project id to
+           target (see openIssuesViewer's `meta`). Mirrors reviewBulkBar's
+           select-all + bulk-justification pattern, but posts to
+           /api/{pipeline/:jobId,projects/:projectId}/overrides instead of
+           the review-decision endpoint. -->
+      <div id="issuesViewBulkBar" class="hidden px-6 pt-3 pb-1 border-b border-slate-100 bg-slate-50">
+        <div class="flex items-center gap-2 text-[11px] text-slate-600">
+          <label class="flex items-center gap-1.5 cursor-pointer select-none">
+            <input type="checkbox" id="issuesViewSelectAll" class="accent-brand-600" />
+            <span data-i18n="common.selectAll">Select all</span>
+          </label>
+          <span id="issuesViewSelectedCount" class="font-semibold text-slate-700">0 selected</span>
+        </div>
+        <div class="flex items-start gap-2 mt-2">
+          <textarea id="issuesViewBulkJustification" rows="2" data-i18n-placeholder="review.bulkPlaceholder" placeholder="Justification to apply to all selected issues…"
+                    class="flex-1 text-xs px-3 py-2 rounded-lg border border-slate-200"></textarea>
+          <button type="button" id="issuesViewBulkApplyFillBtn"
+                  class="text-xs font-semibold px-3 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 shrink-0" data-i18n-title="review.applySelectedTitle" data-i18n="review.applySelected">Apply to selected</button>
+        </div>
+        <div class="flex items-center justify-between gap-3 mt-2">
+          <p id="issuesViewJustifyError" class="text-xs text-rose-600 flex-1"></p>
+          <button type="button" id="issuesViewJustifySubmitBtn"
+                  class="text-xs font-semibold px-3 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed" data-i18n="issuesView.submitJustifications">Submit justification(s)</button>
+        </div>
+      </div>
       <div id="issuesViewList" class="px-6 py-4 space-y-3 overflow-y-auto flex-1"></div>
     </div>
   </div>
@@ -2268,7 +2298,7 @@
 
     // Shared by the interactive review-gate modal, the anytime read-only
     // issues viewer, and the per-project history panel.
-    function renderIssueCard(issue, idx, { interactive }) {
+    function renderIssueCard(issue, idx, { interactive, canOverride = interactive }) {
       const loc = `${escapeHtml(issue.file || 'unknown')}${issue.line ? ':' + issue.line : ''}`;
       // code-duplication is always advisory (never blocks a run, always
       // scores 1/10 — see override-engine.js) — badged as a distinct green
@@ -2337,10 +2367,10 @@
       const snippetHtml = hasSnippet
         ? `<div class="code-preview hidden" data-idx="${idx}">${renderSnippet(issue.snippet, issue)}</div>`
         : '';
-      const checkboxHtml = interactive
+      const checkboxHtml = canOverride
         ? `<input type="checkbox" class="override-check mt-1" data-idx="${idx}" ${issue.severity === 'error' ? 'data-required="1"' : ''} />`
         : '';
-      const justificationHtml = interactive
+      const justificationHtml = canOverride
         ? `<textarea class="override-justification hidden mt-2 w-full text-xs px-3 py-2 rounded-lg border border-slate-200"
                     placeholder="Justification for overriding this ${issue.severity === 'error' ? 'blocking finding (required)' : 'warning'}…"
                     data-idx="${idx}"></textarea>`
@@ -2509,16 +2539,108 @@
       return issues.filter((i) => i.severity === severityFilter);
     }
 
+    // A job/project id to target is what makes "justify from this popup"
+    // meaningful at all — without one there's nothing to POST the
+    // override to (e.g. a not-yet-persisted live run with no jobId yet).
+    function issuesViewCanJustify() {
+      return !!(issuesViewState.meta.jobId || issuesViewState.meta.projectId);
+    }
+
     function renderIssuesViewList() {
       const list = $('issuesViewList');
       renderIssuesViewSeverityBar();
       const filtered = filteredIssuesViewIssues();
+      const canJustify = issuesViewCanJustify();
       list.innerHTML = filtered.length
-        ? filtered.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: false })).join('')
+        ? filtered.map((issue, idx) => safeRenderIssueCard(issue, idx, { interactive: false, canOverride: canJustify && issue.status !== 'overridden' })).join('')
         : issuesViewState.issues.length
           ? '<p class="text-xs text-slate-400">No issues match this filter.</p>'
           : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
       wireIssueListInteractions(list, $('issuesViewExpandAllBtn'));
+      wireIssuesViewJustifyBar(list, issuesViewState.issues);
+    }
+
+    // Mirrors handleReviewRequired's own select-all/bulk-fill/submit wiring
+    // for `.override-check`/`.override-justification` (renderIssueCard),
+    // but posts straight to /overrides instead of gating a paused pipeline
+    // run — this list is already final, there's no "Continue" to unblock.
+    function wireIssuesViewJustifyBar(list, issues) {
+      const bar = $('issuesViewBulkBar');
+      const canJustify = issuesViewCanJustify() && list.querySelector('.override-check');
+      bar.classList.toggle('hidden', !canJustify);
+      if (!canJustify) return;
+
+      const selectAllCb = $('issuesViewSelectAll');
+      const selectedCountEl = $('issuesViewSelectedCount');
+      const bulkJustificationEl = $('issuesViewBulkJustification');
+      const errorEl = $('issuesViewJustifyError');
+      const submitBtn = $('issuesViewJustifySubmitBtn');
+      selectAllCb.checked = false;
+      bulkJustificationEl.value = '';
+      errorEl.textContent = '';
+
+      const updateSelectedCount = () => {
+        selectedCountEl.textContent = t('review.selectedCount', { count: list.querySelectorAll('.override-check:checked').length });
+      };
+
+      list.querySelectorAll('.override-check').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          list.querySelector(`.override-justification[data-idx="${cb.dataset.idx}"]`).classList.toggle('hidden', !cb.checked);
+          updateSelectedCount();
+        });
+      });
+      selectAllCb.onclick = () => {
+        visibleOverrideChecks(list).forEach((cb) => {
+          cb.checked = selectAllCb.checked;
+          cb.dispatchEvent(new Event('change'));
+        });
+      };
+      $('issuesViewBulkApplyFillBtn').onclick = () => {
+        const text = bulkJustificationEl.value.trim();
+        const checked = list.querySelectorAll('.override-check:checked');
+        if (!text || checked.length === 0) {
+          errorEl.textContent = !text ? 'Enter a justification to apply to the selected issues.' : 'Select at least one issue to apply the justification to.';
+          return;
+        }
+        errorEl.textContent = '';
+        checked.forEach((cb) => { list.querySelector(`.override-justification[data-idx="${cb.dataset.idx}"]`).value = text; });
+      };
+      updateSelectedCount();
+
+      submitBtn.onclick = async () => {
+        errorEl.textContent = '';
+        const overrides = [];
+        for (const cb of list.querySelectorAll('.override-check:checked')) {
+          const idx = Number(cb.dataset.idx);
+          const justification = list.querySelector(`.override-justification[data-idx="${idx}"]`).value.trim();
+          if (!justification) {
+            errorEl.textContent = 'Every checked issue needs a justification.';
+            return;
+          }
+          overrides.push({ issueId: issues[idx].id, justification });
+        }
+        if (overrides.length === 0) {
+          errorEl.textContent = 'Select at least one issue to justify.';
+          return;
+        }
+        submitBtn.disabled = true;
+        try {
+          const path = issuesViewState.meta.jobId ? `/api/pipeline/${encodeURIComponent(issuesViewState.meta.jobId)}/overrides` : `/api/projects/${encodeURIComponent(issuesViewState.meta.projectId)}/overrides`;
+          const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ overrides }) });
+          const data = await res.json();
+          if (!res.ok) {
+            errorEl.textContent = data.error || `Could not submit justification(s) (HTTP ${res.status}).`;
+            return;
+          }
+          issuesViewState.issues = data.issues || issuesViewState.issues;
+          renderIssuesViewList();
+          if (data.pendingApproval) errorEl.textContent = `${data.pendingApprovalCount} critical finding(s) recorded, awaiting a second reviewer's approval.`;
+        } catch {
+          errorEl.textContent = 'Could not reach the server to submit these justifications.';
+        } finally {
+          submitBtn.disabled = false;
+        }
+      };
     }
 
     function openIssuesViewer(issues, subtitle, meta = {}) {
@@ -2542,6 +2664,16 @@
       const sarifHref = meta.jobId ? `/api/pipeline/${encodeURIComponent(meta.jobId)}/sarif` : meta.projectId ? `/api/projects/${encodeURIComponent(meta.projectId)}/sarif` : null;
       sarifBtn.classList.toggle('hidden', issues.length === 0 || !sarifHref);
       if (sarifHref) sarifBtn.href = sarifHref;
+
+      // "Generate fix PR" needs a real job id (the bulk fix-PR endpoints
+      // are all /api/pipeline/:jobId/fix-pr/*) — a project-id-only context
+      // (e.g. History's older rows) has no equivalent yet.
+      const fixPrBtn = $('issuesViewFixPrBtn');
+      fixPrBtn.classList.toggle('hidden', !meta.jobId);
+      fixPrBtn.onclick = () => {
+        modal.classList.add('hidden');
+        triggerFixPrGeneration(meta.jobId);
+      };
 
       modal.classList.remove('hidden');
     }
@@ -6866,7 +6998,7 @@
               <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.checksBtn')}</button>
               ${p.status !== 'running' ? `<button type="button" class="hist-view-performance text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}">${t('pipeline.performance')}</button>` : ''}
               ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${escapeAttr(p.retained ? t('history.fullStudioTitle') : t('history.readOnlyStudioTitle'))}">${p.retained ? `${t('history.studioBtn')}${p.retained_tier === 'pruned' ? ` (${t('history.flaggedFilesOnly')})` : ` (${t('common.full')})`}` : t('history.studioBtn')}</button>` : ''}
-              ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
+              ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" data-job-id="${escapeAttr(p.job_id || '')}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
               ${p.issue_count > 0 && p.job_id ? `<button type="button" class="hist-fix-pr text-[11px] font-semibold text-brand-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="${escapeAttr(t('pipeline.generateFixPrTitle'))}">${t('history.fixPrBtn')}</button>` : ''}
               <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold ml-auto" data-id="${p.id}" title="${escapeAttr(t('history.deleteProjectTitle'))}">✕</button>
             </div>
@@ -6926,7 +7058,7 @@
             const res = await fetch(`/api/projects/${id}/issues`);
             const data = await res.json();
             openIssuesViewer(data.issues || [], `Read-only — ${data.issues?.length || 0} issue(s) flagged for this project.`,
-              { org: btn.dataset.org, repo: btn.dataset.repo, projectId: id });
+              { org: btn.dataset.org, repo: btn.dataset.repo, projectId: id, jobId: btn.dataset.jobId || undefined });
           } catch {
             openIssuesViewer([], 'Could not load issues for this project.');
           }

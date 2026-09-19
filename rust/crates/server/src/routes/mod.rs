@@ -27,6 +27,7 @@ mod phase_meta;
 pub mod pipeline_interactive;
 pub mod pipeline_onboard;
 pub mod pipeline_validate;
+pub mod project_overrides;
 pub mod reports;
 pub mod runtime_coverage;
 pub mod sarif;

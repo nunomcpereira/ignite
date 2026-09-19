@@ -65,6 +65,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::studio::router())
         .merge(routes::studio::mutating_router().layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware)))
         .merge(routes::effectivate::router())
+        .merge(routes::project_overrides::router())
         .merge(routes::fix_pr::router())
         .with_state(state)
         .fallback_service(ServeDir::new(public_dir))

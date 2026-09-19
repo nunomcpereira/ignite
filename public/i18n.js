@@ -391,6 +391,7 @@ window.IGNITE_I18N = {
       'issuesView.expandAllTitle': "Expand every issue's code snippet inline",
       'issuesView.downloadTitle': 'Download the flagged-issues list',
       'issuesView.downloadSarifTitle': 'Download this run\'s findings as a .sarif file, to upload to GitHub yourself',
+      'issuesView.submitJustifications': 'Submit justification(s)',
 
       'fixPr.title': 'Generate fix PR',
       'fixPr.subtitle': "AI-suggested fixes for this run's open issues — review each one, then open a PR with the ones you keep.",
@@ -803,6 +804,7 @@ window.IGNITE_I18N = {
       'issuesView.expandAllTitle': 'Développer les extraits de code de tous les problèmes',
       'issuesView.downloadTitle': 'Télécharger la liste des problèmes signalés',
       'issuesView.downloadSarifTitle': 'Télécharger les résultats de cette exécution au format .sarif, à téléverser vous-même sur GitHub',
+      'issuesView.submitJustifications': 'Envoyer la/les justification(s)',
 
       'fixPr.title': 'Générer une PR de correction',
       'fixPr.subtitle': "Corrections suggérées par IA pour les problèmes ouverts de cette exécution — passez en revue chacune, puis ouvrez une PR avec celles que vous conservez.",
@@ -1215,6 +1217,7 @@ window.IGNITE_I18N = {
       'issuesView.expandAllTitle': 'Expandir o trecho de código de todos os problemas',
       'issuesView.downloadTitle': 'Baixar a lista de problemas sinalizados',
       'issuesView.downloadSarifTitle': 'Baixar os resultados desta execução como um arquivo .sarif, para enviar você mesmo ao GitHub',
+      'issuesView.submitJustifications': 'Enviar justificativa(s)',
 
       'fixPr.title': 'Gerar PR de correção',
       'fixPr.subtitle': 'Correções sugeridas por IA para os problemas em aberto desta execução — revise cada uma e depois abra uma PR com as que você mantiver.',
@@ -1627,6 +1630,7 @@ window.IGNITE_I18N = {
       'issuesView.expandAllTitle': 'Code-Ausschnitt jedes Problems einblenden',
       'issuesView.downloadTitle': 'Liste der gemeldeten Probleme herunterladen',
       'issuesView.downloadSarifTitle': 'Ergebnisse dieses Laufs als .sarif-Datei herunterladen, um sie selbst zu GitHub hochzuladen',
+      'issuesView.submitJustifications': 'Begründung(en) senden',
 
       'fixPr.title': 'Fix-PR erstellen',
       'fixPr.subtitle': 'Von KI vorgeschlagene Korrekturen für die offenen Probleme dieses Laufs — jede einzeln prüfen und dann einen PR mit den behaltenen öffnen.',

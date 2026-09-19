@@ -107,12 +107,25 @@ fn gh_token_env(token: &str) -> HashMap<String, String> {
 /// variables (supported since Git 2.31) instead of a `-c` command-line
 /// argument — the token never appears in `git`'s own argv, so it isn't
 /// visible to other users on the host via `/proc/<pid>/cmdline` or `ps
-/// aux` the way an inline `-c http.extraheader=...bearer {token}` would be.
+/// aux` the way an inline `-c http.extraheader=...` would be.
+///
+/// HTTP Basic (`x-access-token:<token>` base64-encoded), not a raw
+/// `bearer`/`token` scheme — empirically confirmed against a real classic
+/// OAuth connection token (this codebase's own `github_connections`
+/// table): GitHub's git-over-HTTPS smart endpoint 401s a `bearer` (or
+/// bare `token`) `Authorization` header for that token type, the same
+/// scheme error `curl`ing `.../info/refs?service=git-receive-pack`
+/// directly reproduces outside git entirely, and accepts only `Basic`.
+/// This previously broke every raw-`git`-fallback push/clone (this
+/// codebase's `gh`-CLI-first paths use `GH_TOKEN` instead and were
+/// unaffected, which is why only pushing — there is no `gh push` — ever
+/// hit this).
 pub fn git_extraheader_token_env(token: &str) -> HashMap<String, String> {
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
     HashMap::from([
         ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
         ("GIT_CONFIG_KEY_0".to_string(), "http.extraheader".to_string()),
-        ("GIT_CONFIG_VALUE_0".to_string(), format!("AUTHORIZATION: bearer {token}")),
+        ("GIT_CONFIG_VALUE_0".to_string(), format!("AUTHORIZATION: basic {basic}")),
     ])
 }
 
