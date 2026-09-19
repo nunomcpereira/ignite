@@ -206,6 +206,13 @@
         <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="pt">Português</button>
         <button type="button" class="locale-option w-full text-left text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-slate-700" data-locale="de">Deutsch</button>
       </div>
+      <button id="adminSettingsBtn" type="button" data-i18n-title="header.adminSettings"
+              class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+        <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+      </button>
       <button id="themeToggleBtn" type="button" data-i18n-title="header.themeToggle" data-hint="hint.action.themeToggle"
               class="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-brand-600 hover:bg-slate-100 transition-colors">
         <svg id="themeToggleIconSun" class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -802,6 +809,62 @@
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-100">
         <button id="campaignCancelBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-50" data-i18n="common.cancel">Cancel</button>
         <button id="campaignCreateBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700" data-i18n="governance.create">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin / Integrations modal: daily report delivery settings (saved to ignite.db app_settings) -->
+  <div id="adminSettingsModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" role="dialog" aria-modal="true">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+        <h3 class="text-sm font-bold text-slate-900" data-i18n="admin.title">Admin / Integrations</h3>
+        <button id="adminSettingsCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-5 space-y-4 overflow-y-auto">
+        <p class="text-xs text-slate-500" data-i18n="admin.subtitle">Daily security report delivery. Saved to the database and applied immediately; a blank value falls back to config.json.</p>
+        <label class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <input id="adminEnabledInput" type="checkbox" class="rounded border-slate-300">
+          <span data-i18n="admin.enabled">Daily report enabled</span>
+          <span id="adminEnabledSource" class="text-[10px] font-medium text-slate-400"></span>
+        </label>
+        <div class="flex gap-3">
+          <div class="w-32">
+            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="admin.time">Schedule time</label>
+            <input id="adminTimeInput" type="time" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+          </div>
+          <div class="flex-1">
+            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.to">Default email recipient(s)</span> <span id="adminToSource" class="normal-case font-medium text-slate-400"></span></label>
+            <input id="adminToInput" type="text" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.toPlaceholder" placeholder="security@example.com, appsec@example.com">
+          </div>
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.webhookUrl">Microsoft Sentinel / Webhook URL</span> <span id="adminWebhookSource" class="normal-case font-medium text-slate-400"></span></label>
+          <input id="adminWebhookUrlInput" type="url" autocomplete="off" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" placeholder="https://prod-00.westeurope.logic.azure.com/…">
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 mb-1"><span data-i18n="admin.webhookToken">Webhook auth token (optional)</span> <span id="adminWebhookTokenSource" class="normal-case font-medium text-slate-400"></span></label>
+          <input id="adminWebhookTokenInput" type="password" autocomplete="new-password" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+          <div class="mt-2 flex items-center gap-2">
+            <button id="adminTestWebhookBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="admin.test">Test connection</button>
+            <button id="adminClearWebhookBtn" type="button" class="hidden text-xs font-semibold px-2 py-1.5 rounded-lg text-slate-400 hover:text-rose-500" data-i18n="admin.clearSaved">Clear saved value</button>
+          </div>
+          <p id="adminTestWebhookResult" class="hidden mt-1.5 text-xs break-words"></p>
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.azureUrl">Azure Blob Storage container SAS URL</span> <span id="adminAzureSource" class="normal-case font-medium text-slate-400"></span></label>
+          <input id="adminAzureUrlInput" type="password" autocomplete="new-password" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" placeholder="https://account.blob.core.windows.net/container?sv=…">
+          <div class="mt-2 flex items-center gap-2">
+            <button id="adminTestAzureBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="admin.test">Test connection</button>
+            <button id="adminClearAzureBtn" type="button" class="hidden text-xs font-semibold px-2 py-1.5 rounded-lg text-slate-400 hover:text-rose-500" data-i18n="admin.clearSaved">Clear saved value</button>
+          </div>
+          <p id="adminTestAzureResult" class="hidden mt-1.5 text-xs break-words"></p>
+        </div>
+        <p id="adminNotes" class="hidden text-xs text-amber-600"></p>
+        <p id="adminSettingsStatus" class="hidden text-xs break-words"></p>
+      </div>
+      <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-100">
+        <button id="adminSettingsCancelBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-50" data-i18n="common.cancel">Cancel</button>
+        <button id="adminSettingsSaveBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="admin.save">Save to DB</button>
       </div>
     </div>
   </div>
@@ -7154,6 +7217,10 @@
     const orgReposUnchecked = new Set();
     const orgReposCollapsed = new Set();
     const orgReposAutoRescan = new Set(); // orgs with auto-rescan on (saved server-side)
+    // org -> 'starting' | 'stopping' while its Auto-rescan button is mid-transition
+    // (greyed out): starting = until every stale repo is queued, stopping = until
+    // the org's running scans have finished (the waiting queue is dropped at once).
+    const orgReposAutoRescanBusy = new Map();
     const orgReposLoadErrors = new Map();
     const orgKey = (org) => String(org).toLowerCase();
     const orgRepoKey = (r) => `${orgKey(r.org)}/${String(r.repo).toLowerCase()}`;
@@ -7178,6 +7245,7 @@
     // scanned any other way should read identically once done.
     const ORG_REPO_STATUS_BADGE = {
       running: 'border-brand-200 text-brand-700 bg-brand-50',
+      queued: 'border-amber-200 text-amber-700 bg-amber-50',
       success: 'border-emerald-200 text-emerald-700 bg-emerald-50',
       failed: 'border-rose-200 text-rose-700 bg-rose-50',
       aborted: 'border-slate-200 text-slate-500 bg-slate-100',
@@ -7196,7 +7264,7 @@
         clearTimeout(orgReposPollTimer);
         orgReposPollTimer = null;
       }
-      if (!orgReposCache.some((r) => r.status === 'running') && orgReposBulkPendingKeys.size === 0) return;
+      if (!orgReposCache.some((r) => r.status === 'running' || r.status === 'queued') && orgReposBulkPendingKeys.size === 0) return;
       orgReposPollTimer = setTimeout(() => {
         orgReposPollTimer = null;
         if (orgReposOrgs.length === 0) return;
@@ -7230,7 +7298,7 @@
       const triggeredMs = orgReposBulkTriggeredAt ? new Date(orgReposBulkTriggeredAt).getTime() : 0;
       orgReposCache.forEach((r) => {
         const key = `${r.org}/${r.repo}`;
-        if (!orgReposBulkPendingKeys.has(key) || r.status === 'running') return;
+        if (!orgReposBulkPendingKeys.has(key) || r.status === 'running' || r.status === 'queued') return;
         if (r.scanError) { orgReposBulkPendingKeys.delete(key); return; }
         const scannedMs = r.lastScanAt ? new Date(`${r.lastScanAt.replace(' ', 'T')}Z`).getTime() : 0;
         if (scannedMs > triggeredMs) orgReposBulkPendingKeys.delete(key);
@@ -7256,11 +7324,12 @@
           r.fork ? `<span class="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.forkBadge')}</span>` : '',
         ].filter(Boolean).join(' ');
         const running = r.status === 'running';
+        const queuedSrv = r.status === 'queued';
         const bulkQueued = !running && orgReposBulkPendingKeys.has(`${r.org}/${r.repo}`);
         let statusCell;
         if (running) {
           statusCell = `<span class="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${ORG_REPO_STATUS_BADGE.running}"><svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>${t('orgRepos.statusScanning')}</span>`;
-        } else if (bulkQueued) {
+        } else if (queuedSrv || bulkQueued) {
           statusCell = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.statusQueued')}</span>`;
         } else if (r.scanError) {
           // No `projects` row exists for this attempt at all (the clone/
@@ -7305,7 +7374,7 @@
             <div class="flex items-start gap-2.5">
               <input type="checkbox" class="org-repo-select mt-1 rounded border-slate-300 text-brand-600 focus:ring-brand-500" data-i="${i}" ${orgRepoChecked(r) ? 'checked' : ''} ${r.empty ? 'disabled' : ''} />
               <div class="min-w-0">
-                <a href="${escapeAttr(repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>
+                <a href="${escapeAttr(repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline [overflow-wrap:anywhere]">${escapeHtml(r.repo)}</a>
                 ${badges ? `<div class="flex gap-1 mt-1">${badges}</div>` : ''}
               </div>
             </div>
@@ -7319,8 +7388,8 @@
           <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>
           <td class="org-repo-action-cell px-5 py-3.5">
             <div>
-              <button type="button" class="org-repo-scan-now text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed" data-i="${i}" title="${escapeAttr(r.empty ? t('orgRepos.emptyRepoMessage') : t('orgRepos.scanNowTitle'))}" ${running || r.empty ? 'disabled' : ''}>
-                <span class="org-repo-scan-now-label">${running ? t('orgRepos.scanning') : t('orgRepos.scanNow')}</span>
+              <button type="button" class="org-repo-scan-now text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed" data-i="${i}" title="${escapeAttr(r.empty ? t('orgRepos.emptyRepoMessage') : t('orgRepos.scanNowTitle'))}" ${running || queuedSrv || r.empty ? 'disabled' : ''}>
+                <span class="org-repo-scan-now-label">${running ? t('orgRepos.scanning') : queuedSrv ? t('orgRepos.statusQueued') : t('orgRepos.scanNow')}</span>
               </button>
               ${studioBtn}
             </div>
@@ -7338,14 +7407,16 @@
         const collapsed = orgReposCollapsed.has(o);
         const err = orgReposLoadErrors.get(o);
         const header = `
-        <tr class="org-header bg-slate-50 cursor-pointer" data-org="${escapeAttr(o)}">
+        <tr class="org-header bg-sky-100 hover:bg-sky-200/70 border-y border-sky-200 cursor-pointer transition-colors" data-org="${escapeAttr(o)}">
           <td colspan="6" class="px-5 py-2.5">
             <div class="flex items-center gap-3">
-              <button type="button" class="org-toggle text-slate-500 hover:text-slate-900 w-6 h-6 flex items-center justify-center rounded hover:bg-slate-200" data-org="${escapeAttr(o)}" aria-expanded="${!collapsed}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg class="w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4l6 6-6 6V4z"/></svg></button>
+              <button type="button" class="org-toggle text-sky-700 hover:text-sky-900 w-6 h-6 flex items-center justify-center rounded hover:bg-sky-200" data-org="${escapeAttr(o)}" aria-expanded="${!collapsed}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg class="w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4l6 6-6 6V4z"/></svg></button>
               <input type="checkbox" class="org-select-all rounded border-slate-300 text-brand-600 focus:ring-brand-500" data-org="${escapeAttr(o)}" ${selectable && selected === selectable ? 'checked' : ''} ${selectable === 0 ? 'disabled' : ''} data-partial="${selected > 0 && selected < selectable}" />
               <span class="font-bold text-slate-800">${escapeHtml(name)}</span>
-              <span class="text-[11px] text-slate-400">${err ? `<span class="text-rose-500">${escapeHtml(err)}</span>` : escapeHtml(t('orgRepos.orgSelectedCount', { selected, total: selectable }))}</span>
-              <button type="button" class="org-autorescan text-[11px] font-semibold px-2.5 py-1 rounded-full border ${orgReposAutoRescan.has(o) ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}" data-org="${escapeAttr(o)}" aria-pressed="${orgReposAutoRescan.has(o)}" title="${escapeAttr(t('orgRepos.autoRescanToggleTitle'))}">${escapeHtml(t(orgReposAutoRescan.has(o) ? 'orgRepos.autoRescanOn' : 'orgRepos.autoRescanOff'))}</button>
+              <span class="text-[11px] text-slate-500">${err ? `<span class="text-rose-500">${escapeHtml(err)}</span>` : escapeHtml(t('orgRepos.orgSelectedCount', { selected, total: selectable }))}</span>
+              <button type="button" ${orgReposAutoRescanBusy.has(o) ? 'disabled' : ''} class="org-autorescan text-[11px] font-semibold px-2.5 py-1 rounded-full border disabled:opacity-50 disabled:cursor-not-allowed ${orgReposAutoRescanBusy.has(o) ? 'bg-slate-100 text-slate-400 border-slate-200' : orgReposAutoRescan.has(o) ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}" data-org="${escapeAttr(o)}" aria-pressed="${orgReposAutoRescan.has(o)}" title="${escapeAttr(t('orgRepos.autoRescanToggleTitle'))}">${escapeHtml(t(orgReposAutoRescanBusy.get(o) === 'starting' ? 'orgRepos.autoRescanStarting' : orgReposAutoRescanBusy.get(o) === 'stopping' ? 'orgRepos.autoRescanStopping' : orgReposAutoRescan.has(o) ? 'orgRepos.autoRescanOn' : 'orgRepos.autoRescanOff'))}</button>
+              <button type="button" class="org-report shrink-0 w-7 h-7 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:border-brand-300 disabled:opacity-50 disabled:cursor-not-allowed" data-org="${escapeAttr(o)}" title="${escapeAttr(t('orgRepos.sendReportTitle'))}"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg></button>
+              <button type="button" class="org-refresh shrink-0 w-7 h-7 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:border-brand-300" data-org="${escapeAttr(o)}" title="${escapeAttr(t('orgRepos.refreshOrgTitle', { when: orgReposFetchedAt.has(o) ? new Date(orgReposFetchedAt.get(o)).toLocaleString() : '—' }))}"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg></button>
               <button type="button" class="org-remove shrink-0 w-7 h-7 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:text-rose-600 hover:border-rose-300 hover:bg-rose-50 text-base leading-none" data-org="${escapeAttr(o)}" title="${escapeAttr(t('orgRepos.removeOrg'))}">&times;</button>
             </div>
           </td>
@@ -7367,7 +7438,7 @@
       // Whole header row toggles expand/collapse (checkbox and remove excluded).
       $('orgReposTableBody').querySelectorAll('.org-header').forEach((row) => {
         row.addEventListener('click', (e) => {
-          if (e.target.closest('.org-select-all, .org-remove, .org-autorescan')) return;
+          if (e.target.closest('.org-select-all, .org-remove, .org-autorescan, .org-refresh, .org-report')) return;
           const o = row.dataset.org;
           if (orgReposCollapsed.has(o)) orgReposCollapsed.delete(o); else orgReposCollapsed.add(o);
           renderOrgRepos(orgReposCache);
@@ -7384,15 +7455,45 @@
       $('orgReposTableBody').querySelectorAll('.org-autorescan').forEach((btn) => {
         btn.addEventListener('click', async () => {
           const o = btn.dataset.org;
+          if (orgReposAutoRescanBusy.has(o)) return;
           const enable = !orgReposAutoRescan.has(o);
-          btn.disabled = true;
+          orgReposAutoRescanBusy.set(o, enable ? 'starting' : 'stopping');
+          renderOrgRepos(orgReposCache);
           try {
-            await putAutoRescan(o, enable);
-            if (enable) orgReposAutoRescan.add(o); else orgReposAutoRescan.delete(o);
+            // Enabling: the server discovers the org's stale/never-scanned
+            // repos and queues them all before answering, so the button
+            // stays greyed out until then. Disabling: the server drops the
+            // still-waiting queue at once; the running scans finish, and
+            // `settleAutoRescanStops` re-enables the button once they have.
+            const data = await putAutoRescan(o, enable, { triggerScan: true });
+            if (enable) {
+              orgReposAutoRescan.add(o);
+              if (data.triggered > 0) await refreshOrgs([o], { quiet: true });
+              orgReposAutoRescanBusy.delete(o);
+            } else {
+              await refreshOrgs([o], { quiet: true });
+            }
           } catch (e) {
+            orgReposAutoRescanBusy.delete(o);
             window.alert(t('orgRepos.autoRescanRemoveFailed', { error: e.message }));
           }
           renderOrgRepos(orgReposCache);
+        });
+      });
+      // The envelope opens a small dialog: email the org's report, or
+      // download the same report as a PDF (server-side headless Chrome).
+      $('orgReposTableBody').querySelectorAll('.org-report').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openOrgReportDialog(btn.dataset.org);
+        });
+      });
+      $('orgReposTableBody').querySelectorAll('.org-refresh').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          btn.disabled = true;
+          btn.querySelector('svg').classList.add('animate-spin');
+          refreshOrgs([btn.dataset.org], { force: true });
         });
       });
       $('orgReposTableBody').querySelectorAll('.org-remove').forEach((btn) => {
@@ -7453,7 +7554,7 @@
               return;
             }
             if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-            r.status = 'running';
+            r.status = data.state === 'running' ? 'running' : 'queued';
             renderOrgRepos(orgReposCache);
             scheduleOrgReposPoll();
           } catch (e) {
@@ -7471,23 +7572,293 @@
     // per-org settled results so a caller (adding an org) can react.
     // Saves an org's auto-rescan state (and, when on, its unchecked repos
     // as exclusions) server-side.
-    async function putAutoRescan(org, enabled) {
+    async function putAutoRescan(org, enabled, opts = {}) {
       const prefix = `${org}/`;
       const excludedRepos = [...orgReposUnchecked].filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length));
       const res = await fetch(`/api/org-repos/auto-rescan/orgs/${encodeURIComponent(org)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled, excludedRepos }),
+        body: JSON.stringify({ enabled, excludedRepos, triggerScan: enabled && opts.triggerScan === true }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
     }
     const autoRescanSyncTimers = new Map();
     // Keeps an auto-rescan-enabled org's saved exclusions in step with the
     // checkboxes (debounced; no-op for orgs with auto-rescan off).
     function syncAutoRescanSelection(org) {
-      if (!orgReposAutoRescan.has(org)) return;
+      if (!orgReposAutoRescan.has(org) || orgReposAutoRescanBusy.get(org) === 'stopping') return;
       clearTimeout(autoRescanSyncTimers.get(org));
-      autoRescanSyncTimers.set(org, setTimeout(() => putAutoRescan(org, true).catch(() => {}), 400));
+      autoRescanSyncTimers.set(org, setTimeout(() => { if (orgReposAutoRescanBusy.get(org) !== 'stopping') putAutoRescan(org, true).catch(() => {}); }, 400));
+    }
+
+    // ---- Org report: email, Sentinel/webhook, Azure Blob, or PDF ----
+    const ORG_REPORT_CHANNELS = {
+      email: { sent: 'emailSent', error: 'emailError', done: 'orgRepos.sendReportDone' },
+      webhook: { sent: 'webhookSent', error: 'webhookError', done: 'orgRepos.reportWebhookDone' },
+      azure_blob: { sent: 'azureBlobSent', error: 'azureBlobError', done: 'orgRepos.reportAzureDone' },
+    };
+    async function sendOrgReport(org, channel) {
+      const spec = ORG_REPORT_CHANNELS[channel];
+      const res = await fetch(`/api/reports/daily/run?org=${encodeURIComponent(org)}&channels=${encodeURIComponent(channel)}`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const rep = (data.reports || [])[0];
+      if (!rep) return t('orgRepos.sendReportNone', { org });
+      if (rep[spec.error]) throw new Error(rep[spec.error]);
+      if (!rep[spec.sent]) return t('orgRepos.sendReportSkipped', { reason: rep.reason || t('orgRepos.reportChannelNotSent') });
+      return t(spec.done, { org: rep.org, repos: rep.repos, findings: rep.unjustifiedFindings });
+    }
+    const sendOrgReportEmail = (org) => sendOrgReport(org, 'email');
+    async function downloadOrgFile(url, fallbackName) {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const m = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = m ? m[1] : fallbackName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }
+    const downloadOrgReportPdf = (org) => downloadOrgFile(`/api/reports/daily/pdf?org=${encodeURIComponent(org)}`, `ignite-report-${org}.pdf`);
+    // Findings in Ignite's .ignite/acknowledgments.md format, one block per repo.
+    const downloadOrgReportMarkdown = (org) => downloadOrgFile(`/api/reports/daily/markdown?org=${encodeURIComponent(org)}`, `ignite-findings-${org}.md`);
+    function openOrgReportDialog(org) {
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4';
+      const primary = 'px-4 py-2.5 rounded-xl text-sm font-semibold bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed';
+      const secondary = 'px-4 py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed';
+      overlay.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-md p-6" role="dialog" aria-modal="true">
+          <h3 class="text-base font-bold text-slate-900">${escapeHtml(t('orgRepos.reportDialogTitle'))}</h3>
+          <p class="mt-1 text-sm text-slate-500">${escapeHtml(t('orgRepos.reportDialogBody', { org }))}</p>
+          <div class="mt-5 grid gap-2">
+            <button type="button" data-act="webhook" class="${primary}">${escapeHtml(t('orgRepos.reportViaWebhook'))}</button>
+            <button type="button" data-act="azure_blob" class="${secondary}">${escapeHtml(t('orgRepos.reportViaAzure'))}</button>
+            <button type="button" data-act="pdf" class="${secondary}">${escapeHtml(t('orgRepos.reportViaPdf'))}</button>
+            <button type="button" data-act="markdown" class="${secondary}">${escapeHtml(t('orgRepos.reportViaMarkdown'))}</button>
+            <button type="button" data-act="email" class="${secondary}">${escapeHtml(t('orgRepos.reportViaEmail'))}</button>
+            <button type="button" data-act="cancel" class="px-4 py-2 rounded-xl text-sm font-semibold text-slate-500 hover:text-slate-700">${escapeHtml(t('common.cancel'))}</button>
+          </div>
+        </div>`;
+      const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+      const onKey = (e) => { if (e.key === 'Escape') close(); };
+      document.addEventListener('keydown', onKey);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+      overlay.querySelector('[data-act="cancel"]').addEventListener('click', close);
+      const run = (act, work, failKey) => async (e) => {
+        const btn = e.currentTarget;
+        overlay.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+        btn.textContent = t('orgRepos.reportWorking');
+        let message = null;
+        try {
+          message = await work();
+        } catch (err) {
+          message = t(failKey, { error: err.message });
+        }
+        close();
+        if (message) window.alert(message);
+      };
+      overlay.querySelector('[data-act="webhook"]').addEventListener('click', run('webhook', () => sendOrgReport(org, 'webhook'), 'orgRepos.sendReportFailed'));
+      overlay.querySelector('[data-act="azure_blob"]').addEventListener('click', run('azure_blob', () => sendOrgReport(org, 'azure_blob'), 'orgRepos.sendReportFailed'));
+      overlay.querySelector('[data-act="email"]').addEventListener('click', run('email', () => sendOrgReportEmail(org), 'orgRepos.sendReportFailed'));
+      overlay.querySelector('[data-act="pdf"]').addEventListener('click', run('pdf', () => downloadOrgReportPdf(org), 'orgRepos.reportPdfFailed'));
+      overlay.querySelector('[data-act="markdown"]').addEventListener('click', run('markdown', () => downloadOrgReportMarkdown(org), 'orgRepos.reportMarkdownFailed'));
+      document.body.appendChild(overlay);
+    }
+
+    // ---- Admin / Integrations: daily report delivery settings ----
+    // GET/POST /api/admin/settings/daily-report. Secrets (webhook URL/token,
+    // Azure SAS URL) are never sent back to the browser: the inputs start
+    // empty, a blank secret input means "keep what's saved", and only a typed
+    // value (or an explicit Clear) is sent on save.
+    const adminClear = { webhookUrl: false, webhookToken: false, azureBlobContainerUrl: false };
+    function adminSourceLabel(src) {
+      return src ? `(${t(src === 'db' ? 'admin.sourceDb' : 'admin.sourceConfig')})` : '';
+    }
+    function adminShowLine(id, text, ok) {
+      const el = $(id);
+      el.textContent = text || '';
+      el.classList.toggle('hidden', !text);
+      el.classList.toggle('text-emerald-600', !!ok);
+      el.classList.toggle('text-rose-500', !ok);
+    }
+    function adminRenderSettings(data) {
+      const st = data.settings || {};
+      const src = data.sources || {};
+      $('adminEnabledInput').checked = !!st.enabled;
+      $('adminTimeInput').value = st.time || '23:59';
+      $('adminToInput').value = st.to || '';
+      $('adminWebhookUrlInput').value = '';
+      $('adminWebhookUrlInput').placeholder = st.webhookUrlSet ? `${st.webhookUrl} — ${t('admin.secretSaved')}` : 'https://prod-00.westeurope.logic.azure.com/…';
+      $('adminWebhookTokenInput').value = '';
+      $('adminWebhookTokenInput').placeholder = st.webhookTokenSet ? `•••••••• — ${t('admin.secretSaved')}` : '';
+      $('adminAzureUrlInput').value = '';
+      $('adminAzureUrlInput').placeholder = st.azureBlobContainerUrlSet ? `${st.azureBlobContainerUrl} — ${t('admin.secretSaved')}` : 'https://account.blob.core.windows.net/container?sv=…';
+      $('adminEnabledSource').textContent = adminSourceLabel(src.enabled);
+      $('adminToSource').textContent = adminSourceLabel(src.to);
+      $('adminWebhookSource').textContent = st.webhookUrlSet ? adminSourceLabel(src.webhookUrl) : '';
+      $('adminWebhookTokenSource').textContent = st.webhookTokenSet ? adminSourceLabel(src.webhookToken) : '';
+      $('adminAzureSource').textContent = st.azureBlobContainerUrlSet ? adminSourceLabel(src.azureBlobContainerUrl) : '';
+      $('adminClearWebhookBtn').classList.toggle('hidden', !(st.webhookUrlSet || st.webhookTokenSet));
+      $('adminClearAzureBtn').classList.toggle('hidden', !st.azureBlobContainerUrlSet);
+      const notes = [];
+      if (data.notificationsEnabled === false) notes.push(t('admin.noteNotifications'));
+      if (data.pdfBrowserAvailable === false) notes.push(t('admin.notePdf'));
+      $('adminNotes').textContent = notes.join(' ');
+      $('adminNotes').classList.toggle('hidden', notes.length === 0);
+      Object.keys(adminClear).forEach((k) => { adminClear[k] = false; });
+    }
+    async function openAdminSettings() {
+      adminShowLine('adminSettingsStatus', '', true);
+      adminShowLine('adminTestWebhookResult', '', true);
+      adminShowLine('adminTestAzureResult', '', true);
+      $('adminSettingsModal').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/admin/settings/daily-report');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        adminRenderSettings(data);
+      } catch (e) {
+        adminShowLine('adminSettingsStatus', t('admin.loadFailed', { error: e.message }), false);
+      }
+    }
+    function closeAdminSettings() { $('adminSettingsModal').classList.add('hidden'); }
+    async function adminTest(target, resultId, btnId) {
+      const btn = $(btnId);
+      const body = { target };
+      if (target === 'webhook') {
+        if ($('adminWebhookUrlInput').value.trim()) body.webhookUrl = $('adminWebhookUrlInput').value.trim();
+        if ($('adminWebhookTokenInput').value.trim()) body.webhookToken = $('adminWebhookTokenInput').value.trim();
+      } else if ($('adminAzureUrlInput').value.trim()) {
+        body.azureBlobContainerUrl = $('adminAzureUrlInput').value.trim();
+      }
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = t('admin.testing');
+      try {
+        const res = await fetch('/api/admin/settings/daily-report/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (data.ok) adminShowLine(resultId, data.message, true);
+        else adminShowLine(resultId, t('admin.testFailed', { error: data.error || '—' }), false);
+      } catch (e) {
+        adminShowLine(resultId, t('admin.testFailed', { error: e.message }), false);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    }
+    async function saveAdminSettings() {
+      const btn = $('adminSettingsSaveBtn');
+      const secret = (inputId, key) => (adminClear[key] ? '' : $(inputId).value.trim() || undefined);
+      const body = {
+        enabled: $('adminEnabledInput').checked,
+        time: $('adminTimeInput').value,
+        to: $('adminToInput').value.trim(),
+        webhookUrl: secret('adminWebhookUrlInput', 'webhookUrl'),
+        webhookToken: secret('adminWebhookTokenInput', 'webhookToken'),
+        azureBlobContainerUrl: secret('adminAzureUrlInput', 'azureBlobContainerUrl'),
+      };
+      btn.disabled = true;
+      btn.textContent = t('admin.saving');
+      try {
+        const res = await fetch('/api/admin/settings/daily-report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        adminRenderSettings(data);
+        adminShowLine('adminSettingsStatus', t('admin.saved'), true);
+      } catch (e) {
+        adminShowLine('adminSettingsStatus', t('admin.saveFailed', { error: e.message }), false);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = t('admin.save');
+      }
+    }
+    $('adminSettingsBtn').addEventListener('click', openAdminSettings);
+    $('adminSettingsCloseBtn').addEventListener('click', closeAdminSettings);
+    $('adminSettingsCancelBtn').addEventListener('click', closeAdminSettings);
+    $('adminSettingsModal').addEventListener('click', (e) => { if (e.target === $('adminSettingsModal')) closeAdminSettings(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('adminSettingsModal').classList.contains('hidden')) closeAdminSettings(); });
+    $('adminSettingsSaveBtn').addEventListener('click', saveAdminSettings);
+    $('adminTestWebhookBtn').addEventListener('click', () => adminTest('webhook', 'adminTestWebhookResult', 'adminTestWebhookBtn'));
+    $('adminTestAzureBtn').addEventListener('click', () => adminTest('azure_blob', 'adminTestAzureResult', 'adminTestAzureBtn'));
+    $('adminClearWebhookBtn').addEventListener('click', () => {
+      adminClear.webhookUrl = true;
+      adminClear.webhookToken = true;
+      $('adminWebhookUrlInput').value = '';
+      $('adminWebhookTokenInput').value = '';
+      $('adminWebhookUrlInput').placeholder = t('admin.willClear');
+      $('adminWebhookTokenInput').placeholder = t('admin.willClear');
+    });
+    $('adminClearAzureBtn').addEventListener('click', () => {
+      adminClear.azureBlobContainerUrl = true;
+      $('adminAzureUrlInput').value = '';
+      $('adminAzureUrlInput').placeholder = t('admin.willClear');
+    });
+
+    // Per-org repo list cache (localStorage): the GitHub-backed discovery
+    // result (org/repo/archived/fork/empty only — scan status is always
+    // fetched live from `/api/org-repos/:org/status`). The key carries the
+    // archived/forks filters so toggling them can't serve the wrong list;
+    // an org's refresh button drops every variant and re-lists from GitHub.
+    const ORG_REPOS_CACHE_PREFIX = 'ignite-org-repos:v1:';
+    const orgReposFetchedAt = new Map();
+    const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null };
+    function orgReposCacheKey(org) {
+      return `${ORG_REPOS_CACHE_PREFIX}${org}|a${$('orgReposIncludeArchived').checked ? 1 : 0}f${$('orgReposIncludeForks').checked ? 1 : 0}`;
+    }
+    function readOrgReposCache(org) {
+      try {
+        const raw = localStorage.getItem(orgReposCacheKey(org));
+        if (!raw) return null;
+        const v = JSON.parse(raw);
+        return Array.isArray(v.repos) ? v : null;
+      } catch { return null; }
+    }
+    function writeOrgReposCache(org, rows) {
+      try {
+        const repos = rows.map(({ org: o, repo, archived, fork, empty }) => ({ org: o, repo, archived, fork, empty }));
+        localStorage.setItem(orgReposCacheKey(org), JSON.stringify({ fetchedAt: Date.now(), repos }));
+      } catch { /* quota/private mode — just no cache */ }
+    }
+    function clearOrgReposCache(org) {
+      try {
+        Object.keys(localStorage).filter((k) => k.startsWith(`${ORG_REPOS_CACHE_PREFIX}${org}|`)).forEach((k) => localStorage.removeItem(k));
+      } catch { /* ignore */ }
+    }
+    async function fetchOrgStatuses(org) {
+      const res = await fetch(`/api/org-repos/${encodeURIComponent(org)}/status`);
+      const data = await res.json();
+      if (!res.ok) {
+        const err = new Error(data.error || `HTTP ${res.status}`);
+        err.status = res.status;
+        throw err;
+      }
+      return new Map(data.map((row) => [String(row.repo).toLowerCase(), row]));
+    }
+    function mergeOrgStatuses(baseRows, statusMap) {
+      return baseRows.map((b) => ({ ...ORG_REPO_STATUS_DEFAULTS, ...(statusMap.get(b.repo.toLowerCase()) || {}), org: b.org, repo: b.repo, archived: b.archived, fork: b.fork, empty: b.empty }));
+    }
+
+    // A "stopping" Auto-rescan button flips to off only once none of the
+    // org's repos is still running or queued.
+    function settleAutoRescanStops() {
+      orgReposAutoRescanBusy.forEach((state, o) => {
+        if (state !== 'stopping') return;
+        const active = orgReposCache.some((r) => orgKey(r.org) === o && (r.status === 'running' || r.status === 'queued'));
+        if (!active) {
+          orgReposAutoRescanBusy.delete(o);
+          orgReposAutoRescan.delete(o);
+        }
+      });
     }
 
     async function refreshOrgs(orgs, opts = {}) {
@@ -7498,7 +7869,23 @@
         $('orgReposLoading').classList.remove('hidden');
       }
       const params = new URLSearchParams({ includeArchived: String($('orgReposIncludeArchived').checked), includeForks: String($('orgReposIncludeForks').checked) });
+      const force = opts.force === true;
       const results = await Promise.allSettled(orgs.map(async (org) => {
+        if (force) clearOrgReposCache(org);
+        // The repo list itself (slow, GitHub-backed) comes from the polled
+        // in-memory rows or localStorage when possible; only scan status
+        // (cheap, DB-only) is re-fetched.
+        let base = null;
+        if (!force) {
+          const live = orgReposCache.filter((r) => orgKey(r.org) === org);
+          if (quiet && live.length) {
+            base = live;
+          } else {
+            const cached = readOrgReposCache(org);
+            if (cached) { base = cached.repos; orgReposFetchedAt.set(org, cached.fetchedAt); }
+          }
+        }
+        if (base) return mergeOrgStatuses(base, await fetchOrgStatuses(org));
         const res = await fetch(`/api/org-repos/${encodeURIComponent(org)}?${params}`);
         const data = await res.json();
         if (!res.ok) {
@@ -7506,6 +7893,8 @@
           err.status = res.status;
           throw err;
         }
+        writeOrgReposCache(org, data);
+        orgReposFetchedAt.set(org, Date.now());
         return data;
       }));
       results.forEach((res, i) => {
@@ -7520,6 +7909,7 @@
       if (!quiet) $('orgReposLoading').classList.add('hidden');
       showOrgReposTree();
       reconcileBulkPending();
+      settleAutoRescanStops();
       renderOrgRepos(orgReposCache);
       scheduleOrgReposPoll();
       return results;
@@ -7548,6 +7938,7 @@
       [...orgReposBulkPendingKeys].filter((k) => orgKey(k).startsWith(`${org}/`)).forEach((k) => orgReposBulkPendingKeys.delete(k));
       orgReposCollapsed.delete(org);
       orgReposAutoRescan.delete(org);
+      orgReposAutoRescanBusy.delete(org);
       orgReposLoadErrors.delete(org);
       showOrgReposTree();
       renderOrgRepos(orgReposCache);
@@ -7587,7 +7978,7 @@
         $('orgReposConnectBtnLabel').textContent = t('orgRepos.connect');
       }
     });
-    $('orgReposRefreshBtn').addEventListener('click', () => refreshOrgs(orgReposOrgs));
+    $('orgReposRefreshBtn').addEventListener('click', () => refreshOrgs(orgReposOrgs, { force: true }));
     // "Scan all" scans every *checked* repo across every org in the tree
     // and saves that selection server-side as the daily auto-rescan set.
     $('orgReposScanAllBtn').addEventListener('click', async () => {
@@ -7614,7 +8005,7 @@
         orgReposBulkPendingKeys = new Set(orgReposCache.filter((r) => orgRepoChecked(r) && orgReposOrgs.includes(orgKey(r.org))).map((r) => `${r.org}/${r.repo}`));
         renderOrgRepos(orgReposCache);
         scheduleOrgReposPoll();
-        window.alert(t('orgRepos.scanAllStarted', { count: data.count, mode: data.mode }) + (failed ? `\n${t('orgRepos.scanAllOrgsFailed', { orgs: failed })}` : ''));
+        window.alert(t('orgRepos.scanAllStarted', { count: data.count, max: data.maxConcurrent }) + (failed ? `\n${t('orgRepos.scanAllOrgsFailed', { orgs: failed })}` : ''));
       } catch (e) {
         window.alert(t('orgRepos.scanAllFailed', { error: e.message }));
       } finally {

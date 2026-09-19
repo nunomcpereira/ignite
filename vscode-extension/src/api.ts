@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { DailyReportOptions, DailyReportResult } from './dailyReport';
 
 export interface IgniteIssue {
   id: string;
@@ -434,4 +435,35 @@ export async function toolsStatus(): Promise<ToolStatus[]> {
     enabled: Boolean(v.enabled),
     detail: v.reason,
   }));
+}
+
+/**
+ * Triggers the org daily findings report on the server (`POST /api/reports/daily/run`) —
+ * email / Sentinel webhook / Azure Blob, per `channels` (omitted = whatever the server has configured).
+ */
+export function runDailyReport(options: DailyReportOptions): Promise<DailyReportResult> {
+  const body: Record<string, unknown> = { dryRun: options.dryRun ?? false, channels: options.channels ?? [] };
+  if (options.org) body.org = options.org;
+  if (options.webhookUrl) body.webhookUrl = options.webhookUrl;
+  if (options.to) body.to = options.to;
+  // Each channel is a network call (and Azure Blob may render a PDF first) — allow a few minutes.
+  return postJson<DailyReportResult>('/api/reports/daily/run', body, 5 * 60 * 1000);
+}
+
+/** The org's daily report rendered as a PDF by the server's headless Chrome (`GET /api/reports/daily/pdf`). */
+export async function downloadDailyReportPdf(org: string): Promise<Uint8Array> {
+  const url = baseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${url}/api/reports/daily/pdf?org=${encodeURIComponent(org)}`, { headers: authHeaders(), signal: AbortSignal.timeout(3 * 60 * 1000) });
+  } catch (e) {
+    throw new IgniteUnreachableError(url, e);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    let detail = text.slice(0, 300);
+    try { detail = (JSON.parse(text) as { error?: string }).error ?? detail; } catch { /* not JSON */ }
+    throw new Error(`PDF export failed (HTTP ${res.status}): ${detail}`);
+  }
+  return new Uint8Array(await res.arrayBuffer());
 }

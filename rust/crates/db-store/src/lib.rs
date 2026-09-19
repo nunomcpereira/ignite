@@ -244,6 +244,46 @@ mod tests {
     }
 
     #[test]
+    fn prune_superseded_scans_keeps_newest_headless_scan_and_preserves_overrides() {
+        let (_dir, store) = open_test_db();
+        let a1 = store.create_project("job-a1", "acme", "widgets", false, "api", None).unwrap();
+        store.add_override(AddOverrideArgs {
+            project_id: a1,
+            job_id: "job-a1",
+            phase: 4,
+            issue_id: "secret::a.js::1",
+            category: "secret",
+            severity: "error",
+            summary: "key",
+            file: Some("a.js"),
+            line: Some(1),
+            justification: "test fixture",
+            actor_email: "dev@acme.example",
+            actor_name: None,
+            email_sent: false,
+        });
+        store.finish_project("success", None, None, None, a1);
+        let a2 = store.create_project("job-a2", "Acme", "Widgets", false, "api", None).unwrap();
+        store.finish_project("success", None, None, None, a2);
+        let ui = store.create_project("job-ui", "acme", "widgets", false, "ui", None).unwrap();
+        store.finish_project("success", None, None, None, ui);
+        let other = store.create_project("job-other", "acme", "gadgets", false, "api", None).unwrap();
+        store.finish_project("success", None, None, None, other);
+        let newest = store.create_project("job-new", "acme", "widgets", false, "api", None).unwrap();
+
+        assert_eq!(store.prune_superseded_scans("job-new"), 2);
+        assert!(!store.project_exists(a1));
+        assert!(!store.project_exists(a2));
+        assert!(store.project_exists(ui), "non-headless projects are never pruned");
+        assert!(store.project_exists(other), "other repos are never pruned");
+        assert!(store.project_exists(newest));
+        let summary = store.list_onboarded_repo_summaries(7, 30, 90).into_iter().find(|s| s.repo == "widgets").unwrap();
+        assert_eq!(summary.acknowledgments.len(), 1, "the override survives the prune");
+        assert_eq!(store.prune_superseded_scans("job-new"), 0);
+        assert_eq!(store.prune_superseded_scans("no-such-job"), 0);
+    }
+
+    #[test]
     fn replace_project_issues_marks_overridden_status_and_round_trips_json_columns() {
         let (_dir, store) = open_test_db();
         let id = store.create_project("job-5", "acme", "widgets", false, "ui", None).unwrap();

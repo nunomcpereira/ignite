@@ -4,6 +4,8 @@
 //! Always dry-run by design (validate-all never ships/pushes).
 //!
 //! Usage: ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL] [--fast]
+//!        ignite report [org] [--channels email,webhook,azure_blob,pdf] [--webhook-url URL]
+//!                      [--output report.pdf] [--markdown findings.md [--repo name]] [--json] [--dry-run] [--base-url URL]   (see `report.rs`)
 //! Exit codes: 0 = passed, 1 = blocking issues / validation failure,
 //! 2 = couldn't reach the Ignite server or bad usage.
 //!
@@ -17,6 +19,7 @@
 
 
 mod check;
+mod report;
 
 use serde_json::Value;
 
@@ -27,16 +30,43 @@ struct Args {
     json: bool,
     base_url: Option<String>,
     fast: bool,
+    channels: Option<String>,
+    webhook_url: Option<String>,
+    output: Option<String>,
+    markdown: Option<String>,
+    repo: Option<String>,
+    dry_run: bool,
 }
 
 fn parse_args(argv: &[String]) -> Args {
-    let mut args = Args { command: None, project_path: None, changed_files: None, json: false, base_url: None, fast: false };
+    let mut args = Args { command: None, project_path: None, changed_files: None, json: false, base_url: None, fast: false, channels: None, webhook_url: None, output: None, markdown: None, repo: None, dry_run: false };
     let mut rest = Vec::new();
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "--json" => args.json = true,
             "--fast" => args.fast = true,
+            "--dry-run" => args.dry_run = true,
+            "--channels" => {
+                i += 1;
+                args.channels = argv.get(i).cloned();
+            }
+            "--webhook-url" => {
+                i += 1;
+                args.webhook_url = argv.get(i).cloned();
+            }
+            "--markdown" => {
+                i += 1;
+                args.markdown = argv.get(i).cloned();
+            }
+            "--repo" => {
+                i += 1;
+                args.repo = argv.get(i).cloned();
+            }
+            "--output" => {
+                i += 1;
+                args.output = argv.get(i).cloned();
+            }
             "--changed-files" => {
                 i += 1;
                 let list = argv.get(i).cloned().unwrap_or_default();
@@ -118,8 +148,25 @@ async fn main() {
         std::process::exit(check::run(check_args).await);
     }
 
+    if args.command.as_deref() == Some("report") {
+        let base_url = args.base_url.or_else(|| std::env::var("IGNITE_BASE_URL").ok()).unwrap_or_else(|| "http://localhost:51337".to_string());
+        let report_args = report::ReportArgs {
+            org: args.project_path,
+            channels: args.channels,
+            webhook_url: args.webhook_url,
+            output: args.output,
+            markdown: args.markdown,
+            repo: args.repo,
+            json: args.json,
+            dry_run: args.dry_run,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        };
+        std::process::exit(report::run(report_args).await);
+    }
+
     if args.command.as_deref() != Some("scan") {
         eprintln!("Usage: ignite scan [path] [--changed-files a.js,b.py] [--json] [--base-url URL] [--fast]");
+        eprintln!("       ignite report [org] [--channels email,webhook,azure_blob,pdf] [--webhook-url URL] [--output report.pdf] [--markdown findings.md [--repo name]] [--json] [--dry-run] [--base-url URL]");
         eprintln!("       ignite check [path] [--json] [--base-url URL] [--fast]");
         std::process::exit(2);
     }

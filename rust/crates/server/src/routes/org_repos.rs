@@ -70,6 +70,45 @@ use std::sync::Arc;
 /// scan is kicked off for that repo, so retrying never shows a stale error.
 static RECENT_SCAN_FAILURES: Lazy<Mutex<HashMap<(String, String), String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Repos whose `rescan_one` is executing right now. The real `projects`
+/// row only appears once `validate-all` starts (after the clone), so
+/// without this a poll landing in that gap reports no status and the UI
+/// flips "Scanning…" back to "Never scanned" (or a stale old status).
+static IN_FLIGHT_SCANS: Lazy<Mutex<std::collections::HashSet<(String, String)>>> = Lazy::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Repos accepted for scanning but still waiting for a free slot (see
+/// `enqueue_scans`); reported as status `"queued"`.
+static QUEUED_SCANS: Lazy<Mutex<std::collections::HashSet<(String, String)>>> = Lazy::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Global cap on concurrently executing scans, sized once from
+/// `orgRepos.maxConcurrentScans`. A tokio `Semaphore` hands out permits
+/// FIFO, so the queue order is the order scans were requested in.
+static SCAN_SLOTS: once_cell::sync::OnceCell<Arc<tokio::sync::Semaphore>> = once_cell::sync::OnceCell::new();
+
+fn scan_slots(max: u32) -> Arc<tokio::sync::Semaphore> {
+    SCAN_SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(max.max(1) as usize))).clone()
+}
+
+fn scan_key(org: &str, repo: &str) -> (String, String) {
+    (org.to_ascii_lowercase(), repo.to_ascii_lowercase())
+}
+
+/// True while a scan of this repo is queued or executing — a second
+/// trigger (double click, overlapping sweep) is dropped instead of stacked.
+fn is_scan_active(org: &str, repo: &str) -> bool {
+    let k = scan_key(org, repo);
+    IN_FLIGHT_SCANS.lock().contains(&k) || QUEUED_SCANS.lock().contains(&k)
+}
+
+/// Removes the repo from `IN_FLIGHT_SCANS` on drop, so a panicking scan
+/// task can't leave it stuck on "Scanning…" forever.
+struct InFlightGuard((String, String));
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        IN_FLIGHT_SCANS.lock().remove(&self.0);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct DiscoverQuery {
     #[serde(default, rename = "includeArchived")]
@@ -78,13 +117,13 @@ struct DiscoverQuery {
     include_forks: bool,
 }
 
-#[derive(Debug, Serialize)]
+/// Everything Ignite itself knows about one repo's scans (as opposed to
+/// what GitHub says exists) — served both inline with discovery and, on its
+/// own, by `GET /api/org-repos/:org/status`, so the browser can cache the
+/// (slow, GitHub-backed) repo list and still keep scan status live.
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct OrgRepoRow {
-    org: String,
-    repo: String,
-    archived: bool,
-    fork: bool,
+struct RepoStatus {
     known: bool,
     status: Option<String>,
     last_scan_at: Option<String>,
@@ -92,12 +131,6 @@ struct OrgRepoRow {
     latest_job_id: Option<String>,
     latest_project_id: Option<i64>,
     scan_error: Option<String>,
-    /// `size == 0` on GitHub's own repo object — surfaced straight from
-    /// discovery (see `ignite_org_onboard::DiscoveredRepo::empty`'s own
-    /// doc), independent of `known`/`scan_error`, so the UI can show
-    /// "Empty" before a scan is ever attempted rather than only after a
-    /// clone fails with a generic "remote branch not found".
-    empty: bool,
     /// Full override/justification history for this repo, across every
     /// past run — same field (and same `OverrideRow` shape, deliberately
     /// still plain-snake_case, unlike this struct's own camelCase — see
@@ -113,6 +146,86 @@ struct OrgRepoRow {
     error_count: Option<i64>,
     warning_count: Option<i64>,
     nice_to_have_count: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrgRepoRow {
+    org: String,
+    repo: String,
+    archived: bool,
+    fork: bool,
+    /// `size == 0` on GitHub's own repo object — surfaced straight from
+    /// discovery (see `ignite_org_onboard::DiscoveredRepo::empty`'s own
+    /// doc), independent of `known`/`scan_error`, so the UI can show
+    /// "Empty" before a scan is ever attempted rather than only after a
+    /// clone fails with a generic "remote branch not found".
+    empty: bool,
+    #[serde(flatten)]
+    status: RepoStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct RepoStatusRow {
+    repo: String,
+    #[serde(flatten)]
+    status: RepoStatus,
+}
+
+/// Scan status for every repo of `org` that Ignite has any record of (a
+/// past scan, a queued/running one, or a recent failure), keyed by
+/// lowercased repo name. One aggregation query, filtered in-process to this
+/// org — cheaper than a per-repo DB lookup for an org with hundreds of
+/// repos, and `list_onboarded_repo_summaries` already does the join work.
+fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoStatusRow> {
+    let sla = &state.config.sla;
+    let mut out: HashMap<String, RepoStatusRow> = HashMap::new();
+    for s in state.db.list_onboarded_repo_summaries(sla.critical_days, sla.high_days, sla.medium_days).into_iter().filter(|s| s.org.eq_ignore_ascii_case(org)) {
+        let (error_count, warning_count, nice_to_have_count) =
+            if s.findings_count > 0 { let (e, w, n) = state.db.issue_tier_counts(s.latest_project_id); (Some(e), Some(w), Some(n)) } else { (None, None, None) };
+        out.insert(
+            s.repo.to_ascii_lowercase(),
+            RepoStatusRow {
+                repo: s.repo.clone(),
+                status: RepoStatus {
+                    known: true,
+                    status: Some(s.status.clone()),
+                    last_scan_at: Some(s.last_scan_at.clone()),
+                    findings_count: Some(s.findings_count),
+                    latest_job_id: Some(s.latest_job_id.clone()),
+                    latest_project_id: Some(s.latest_project_id),
+                    scan_error: None,
+                    acknowledgments: s.acknowledgments.clone(),
+                    error_count,
+                    warning_count,
+                    nice_to_have_count,
+                },
+            },
+        );
+    }
+    let org_lc = org.to_ascii_lowercase();
+    // Live state wins over whatever the last finished scan's row says.
+    for (set, label) in [(QUEUED_SCANS.lock().clone(), "queued"), (IN_FLIGHT_SCANS.lock().clone(), "running")] {
+        for (o, repo) in set.into_iter().filter(|(o, _)| *o == org_lc) {
+            let _ = o;
+            out.entry(repo.clone()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status.status = Some(label.to_string());
+        }
+    }
+    for ((o, repo), err) in RECENT_SCAN_FAILURES.lock().iter() {
+        if o.eq_ignore_ascii_case(org) {
+            out.entry(repo.to_ascii_lowercase()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status.scan_error = Some(err.clone());
+        }
+    }
+    out
+}
+
+/// `GET /api/org-repos/:org/status` — scan status only, no GitHub call.
+/// The browser caches the repo list itself and polls this.
+async fn org_repo_statuses(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Path(org): Path<String>) -> Response {
+    if !ignite_github_api::is_valid_github_owner(&org) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
+    }
+    Json(collect_repo_statuses(&state, &org).into_values().collect::<Vec<_>>()).into_response()
 }
 
 async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path(org): Path<String>, Query(q): Query<DiscoverQuery>) -> Response {
@@ -134,68 +247,14 @@ async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): 
         Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": format!("Failed to list repositories for {org}: {e}") }))).into_response(),
     };
 
-    // One aggregation query, filtered in-process to this org — cheaper
-    // than a per-repo DB lookup for an org with hundreds of repos, and
-    // `list_onboarded_repo_summaries` already does the real join work.
-    let sla = &state.config.sla;
-    let known: HashMap<String, ignite_db_store::OnboardedRepoSummary> = state
-        .db
-        .list_onboarded_repo_summaries(sla.critical_days, sla.high_days, sla.medium_days)
-        .into_iter()
-        .filter(|s| s.org == org)
-        .map(|s| (s.repo.clone(), s))
-        .collect();
-
-    let failures = RECENT_SCAN_FAILURES.lock();
+    let mut statuses = collect_repo_statuses(&state, &org);
     let rows: Vec<OrgRepoRow> = discovered
         .into_iter()
         .map(|r| {
-            let scan_error = failures.get(&(r.org.clone(), r.repo.clone())).cloned();
-            match known.get(&r.repo) {
-                Some(s) => {
-                    let (error_count, warning_count, nice_to_have_count) =
-                        if s.findings_count > 0 { let (e, w, n) = state.db.issue_tier_counts(s.latest_project_id); (Some(e), Some(w), Some(n)) } else { (None, None, None) };
-                    OrgRepoRow {
-                        org: r.org,
-                        repo: r.repo,
-                        archived: r.archived,
-                        fork: r.fork,
-                        known: true,
-                        status: Some(s.status.clone()),
-                        last_scan_at: Some(s.last_scan_at.clone()),
-                        findings_count: Some(s.findings_count),
-                        latest_job_id: Some(s.latest_job_id.clone()),
-                        latest_project_id: Some(s.latest_project_id),
-                        scan_error,
-                        empty: r.empty,
-                        acknowledgments: s.acknowledgments.clone(),
-                        error_count,
-                        warning_count,
-                        nice_to_have_count,
-                    }
-                }
-                None => OrgRepoRow {
-                    org: r.org,
-                    repo: r.repo,
-                    archived: r.archived,
-                    fork: r.fork,
-                    known: false,
-                    status: None,
-                    last_scan_at: None,
-                    findings_count: None,
-                    latest_job_id: None,
-                    latest_project_id: None,
-                    scan_error,
-                    empty: r.empty,
-                    acknowledgments: vec![],
-                    error_count: None,
-                    warning_count: None,
-                    nice_to_have_count: None,
-                },
-            }
+            let status = statuses.remove(&r.repo.to_ascii_lowercase()).map(|row| row.status).unwrap_or_default();
+            OrgRepoRow { org: r.org, repo: r.repo, archived: r.archived, fork: r.fork, empty: r.empty, status }
         })
         .collect();
-    drop(failures);
 
     Json(rows).into_response()
 }
@@ -216,9 +275,18 @@ async fn is_empty_repo(api: &GithubApi<'_>, full_name: &str, token: &str) -> boo
 /// `RECENT_SCAN_FAILURES` — the one piece of work `scan_org_repo` and
 /// both `scan_selected_org_repos` modes (sequential/parallel) all need done
 /// identically per repo, so it only lives in one place.
-async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner, server_base: &str, token: &str, target: &RescanTarget) {
+async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner, server_base: &str, token: &str, target: &RescanTarget, db: &ignite_db_store::DbStore) {
     let http = reqwest::Client::new();
+    let _in_flight = InFlightGuard(scan_key(&target.org, &target.repo));
     let outcome = rescan_one(runner, &http, server_base, token, target, auto_fix_mode_from_env()).await;
+    // Org scans keep only the latest scan per repo — see
+    // `DbStore::prune_superseded_scans` for what is (and isn't) deleted.
+    if let Some(job_id) = &outcome.job_id {
+        let pruned = db.prune_superseded_scans(job_id);
+        if pruned > 0 {
+            tracing::info!("org-repos scan: {}/{} pruned {pruned} superseded scan(s)", target.org, target.repo);
+        }
+    }
     if let Some(e) = &outcome.error {
         tracing::warn!("org-repos scan: {}/{} failed: {e}", target.org, target.repo);
         RECENT_SCAN_FAILURES.lock().insert((target.org.clone(), target.repo.clone()), e.clone());
@@ -260,9 +328,14 @@ async fn scan_org_repo(State(state): State<Arc<AppState>>, RequireAuth(_user): R
     let runner = state.runner.clone();
     let server_base = resolve_server_base(&state);
     let target = RescanTarget { org: org.clone(), repo: repo.clone() };
-    tokio::spawn(async move { run_and_record_scan(&runner, &server_base, &token, &target).await });
+    if is_scan_active(&org, &repo) {
+        return (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "alreadyActive": true, "state": "queued", "org": org, "repo": repo }))).into_response();
+    }
+    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
+    let state_str = if slots.available_permits() == 0 { "queued" } else { "running" };
+    enqueue_scans(runner, server_base, token, vec![target], state.clone(), false, slots);
 
-    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "org": org, "repo": repo }))).into_response()
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "state": state_str, "org": org, "repo": repo }))).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,38 +409,50 @@ async fn scan_selected_org_repos(State(state): State<Arc<AppState>>, RequireAuth
         return (StatusCode::OK, Json(serde_json::json!({ "queued": false, "count": 0, "failedOrgs": failed_orgs }))).into_response();
     }
 
+    targets.retain(|t| !is_scan_active(&t.org, &t.repo));
     let count = targets.len();
-    let parallel = spawn_targets(state.runner.clone(), resolve_server_base(&state), token, targets, &state.config.org_repos.scan_all_mode);
-    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "count": count, "mode": if parallel { "parallel" } else { "sequential" }, "failedOrgs": failed_orgs }))).into_response()
+    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
+    enqueue_scans(state.runner.clone(), resolve_server_base(&state), token, targets, state.clone(), false, slots);
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "count": count, "maxConcurrent": state.config.org_repos.max_concurrent_scans.max(1), "failedOrgs": failed_orgs }))).into_response()
 }
 
-/// Shared by `scan_selected_org_repos` and the auto-rescan sweep below —
-/// `"parallel"` is the one recognized opt-in value; anything else (unset,
-/// a typo, `"sequential"` itself) fails safe to sequential, matching this
-/// codebase's standing "a misconfigured config value never silently
-/// escalates to the more resource-intensive behavior" convention (see
-/// e.g. `auto_fix_mode_from_env`'s own doc comment). Returns whether it
-/// ran parallel, for the caller's own response body.
-fn spawn_targets(runner: ignite_tool_runner::ToolRunner, server_base: String, token: String, targets: Vec<RescanTarget>, mode: &str) -> bool {
+/// Queues every target behind the global `SCAN_SLOTS` cap. All targets are
+/// marked queued synchronously (so the very next poll shows "Queued"), then
+/// one dispatcher task walks them in order: wait for a free slot, move the
+/// repo queued -> in-flight, run it in its own task holding the slot, and
+/// move straight on to waiting for the next slot — so when a scan ends the
+/// next one in the queue starts. When `sweep` is set (auto-rescan),
+/// a repo unchecked/removed from the auto-rescan selection while it waited
+/// is skipped instead of started.
+fn enqueue_scans(runner: ignite_tool_runner::ToolRunner, server_base: String, token: String, targets: Vec<RescanTarget>, state: Arc<AppState>, sweep: bool, slots: Arc<tokio::sync::Semaphore>) {
     for t in &targets {
         RECENT_SCAN_FAILURES.lock().remove(&(t.org.clone(), t.repo.clone()));
+        QUEUED_SCANS.lock().insert(scan_key(&t.org, &t.repo));
     }
-    let parallel = mode == "parallel";
-    if parallel {
+    tokio::spawn(async move {
         for target in targets {
+            let key = scan_key(&target.org, &target.repo);
+            let Ok(permit) = slots.clone().acquire_owned().await else {
+                QUEUED_SCANS.lock().remove(&key);
+                continue;
+            };
+            if sweep && !state.db.is_auto_rescan_repo_selected(&target.org, &target.repo) {
+                tracing::info!("auto-rescan: skipping {}/{} — removed from the auto-rescan selection while queued", target.org, target.repo);
+                QUEUED_SCANS.lock().remove(&key);
+                continue;
+            }
+            IN_FLIGHT_SCANS.lock().insert(key.clone());
+            QUEUED_SCANS.lock().remove(&key);
             let runner = runner.clone();
             let server_base = server_base.clone();
             let token = token.clone();
-            tokio::spawn(async move { run_and_record_scan(&runner, &server_base, &token, &target).await });
+            let state = state.clone();
+            tokio::spawn(async move {
+                run_and_record_scan(&runner, &server_base, &token, &target, &state.db).await;
+                drop(permit);
+            });
         }
-    } else {
-        tokio::spawn(async move {
-            for target in &targets {
-                run_and_record_scan(&runner, &server_base, &token, target).await;
-            }
-        });
-    }
-    parallel
+    });
 }
 
 async fn get_auto_rescan_config(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth) -> Response {
@@ -396,23 +481,40 @@ struct AutoRescanToggleBody {
     /// Repos left unchecked in the tree; only used when enabling.
     #[serde(default)]
     excluded_repos: Vec<String>,
+    /// Set only by the button click that turns auto-rescan on (not by the
+    /// debounced exclusion re-sync a checkbox change sends): queue every
+    /// stale/never-scanned repo of the org right away.
+    #[serde(default)]
+    trigger_scan: bool,
 }
 
 /// `PUT /api/org-repos/auto-rescan/orgs/:org` — the per-org "Auto-rescan"
 /// button. Enabling enrolls the org (with the given unchecked repos as
 /// exclusions, replacing any earlier selection) and saves it in the org
 /// list; disabling only takes it out of the sweep, the org stays listed.
-async fn set_auto_rescan_org(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Path(org): Path<String>, Json(body): Json<AutoRescanToggleBody>) -> Response {
+async fn set_auto_rescan_org(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path(org): Path<String>, Json(body): Json<AutoRescanToggleBody>) -> Response {
     if !ignite_github_api::is_valid_github_owner(&org) {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
     }
+    let mut triggered = 0usize;
     if body.enabled {
         state.db.save_org(&org);
         state.db.set_auto_rescan_org_selection(&org, &body.excluded_repos);
+        if body.trigger_scan {
+            let token = resolve_effective_github_token(&headers, &state.db);
+            if !token.is_empty() {
+                let targets = collect_stale_targets(&state, &token, &[(org.clone(), body.excluded_repos.clone())]).await;
+                triggered = targets.len();
+                if triggered > 0 {
+                    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
+                    enqueue_scans(state.runner.clone(), resolve_server_base(&state), token, targets, state.clone(), true, slots);
+                }
+            }
+        }
     } else {
         state.db.unenroll_auto_rescan_org(&org);
     }
-    Json(serde_json::json!({ "orgs": auto_rescan_selection_json(&state) })).into_response()
+    Json(serde_json::json!({ "orgs": auto_rescan_selection_json(&state), "triggered": triggered, "maxConcurrent": state.config.org_repos.max_concurrent_scans.max(1) })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -434,6 +536,50 @@ async fn save_org(State(state): State<Arc<AppState>>, RequireAuth(_user): Requir
 
 fn auto_rescan_selection_json(state: &AppState) -> Vec<serde_json::Value> {
     state.db.list_auto_rescan_selection().into_iter().map(|(org, excluded)| serde_json::json!({ "org": org, "excludedRepos": excluded })).collect()
+}
+
+/// The repos the auto-rescan should scan right now: for each `(org,
+/// excluded repos)` in `selection`, every non-empty, non-archived,
+/// non-forked repo that isn't excluded, isn't already queued/running, and
+/// was never scanned or last scanned longer ago than
+/// `orgRepos.autoRescanStaleAfterHours`. Shared by the hourly sweep and the
+/// per-org "Auto-rescan on" toggle (which queues these immediately).
+async fn collect_stale_targets(state: &Arc<AppState>, token: &str, selection: &[(String, Vec<String>)]) -> Vec<RescanTarget> {
+    let api = GithubApi::new(&state.runner);
+    let sla = &state.config.sla;
+    let stale_before = chrono::Utc::now() - chrono::Duration::hours(state.config.org_repos.auto_rescan_stale_after_hours as i64);
+    let stale_before_str = stale_before.format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut targets: Vec<RescanTarget> = Vec::new();
+    for (org, excluded) in selection {
+        let discovered = match discover_org(&api, org, token, false, false).await {
+            Ok(repos) => repos,
+            Err(e) => {
+                tracing::warn!("auto-rescan: failed to list repositories for {org}: {e}");
+                continue;
+            }
+        };
+        let known: HashMap<String, ignite_db_store::OnboardedRepoSummary> =
+            state.db.list_onboarded_repo_summaries(sla.critical_days, sla.high_days, sla.medium_days).into_iter().filter(|s| s.org.eq_ignore_ascii_case(org)).map(|s| (s.repo.clone(), s)).collect();
+        for r in discovered {
+            if r.empty || excluded.iter().any(|e| e.eq_ignore_ascii_case(&r.repo)) {
+                continue;
+            }
+            let stale = match known.get(&r.repo) {
+                // Already in flight — never pile a second sweep-triggered
+                // scan onto one a human (or a previous sweep tick) already
+                // started.
+                Some(s) if s.status == "running" => false,
+                _ if is_scan_active(&r.org, &r.repo) => false,
+                Some(s) => s.last_scan_at.as_str() < stale_before_str.as_str(),
+                None => true, // never scanned at all — always stale
+            };
+            if stale {
+                targets.push(RescanTarget { org: r.org, repo: r.repo });
+            }
+        }
+    }
+
+    targets
 }
 
 /// `POST /api/org-repos/auto-rescan/run` — meant to be hit once an hour by
@@ -464,99 +610,21 @@ async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user):
         )
             .into_response();
     }
-    let api = GithubApi::new(&state.runner);
-    let sla = &state.config.sla;
-    let stale_before = chrono::Utc::now() - chrono::Duration::hours(state.config.org_repos.auto_rescan_stale_after_hours as i64);
-    let stale_before_str = stale_before.format("%Y-%m-%d %H:%M:%S").to_string();
-
-    let mut targets: Vec<RescanTarget> = Vec::new();
-    for (org, excluded) in &selection {
-        let discovered = match discover_org(&api, org, &token, false, false).await {
-            Ok(repos) => repos,
-            Err(e) => {
-                tracing::warn!("auto-rescan: failed to list repositories for {org}: {e}");
-                continue;
-            }
-        };
-        let known: HashMap<String, ignite_db_store::OnboardedRepoSummary> =
-            state.db.list_onboarded_repo_summaries(sla.critical_days, sla.high_days, sla.medium_days).into_iter().filter(|s| s.org.eq_ignore_ascii_case(org)).map(|s| (s.repo.clone(), s)).collect();
-        for r in discovered {
-            if r.empty || excluded.iter().any(|e| e.eq_ignore_ascii_case(&r.repo)) {
-                continue;
-            }
-            let stale = match known.get(&r.repo) {
-                // Already in flight — never pile a second sweep-triggered
-                // scan onto one a human (or a previous sweep tick) already
-                // started.
-                Some(s) if s.status == "running" => false,
-                Some(s) => s.last_scan_at.as_str() < stale_before_str.as_str(),
-                None => true, // never scanned at all — always stale
-            };
-            if stale {
-                targets.push(RescanTarget { org: r.org, repo: r.repo });
-            }
-        }
-    }
+    let targets = collect_stale_targets(&state, &token, &selection).await;
 
     if targets.is_empty() {
         return Json(serde_json::json!({ "skipped": false, "triggered": 0 })).into_response();
     }
     let count = targets.len();
-    let parallel = spawn_auto_rescan_targets(state, targets, token);
-    (StatusCode::ACCEPTED, Json(serde_json::json!({ "skipped": false, "triggered": count, "mode": if parallel { "parallel" } else { "sequential" } }))).into_response()
-}
-
-/// Same shape as `spawn_targets`, but specifically for the auto-rescan
-/// sweep, which — unlike `scan_selected_org_repos`'s explicit, one-off,
-/// user-clicked "Scan all" — can be handed a genuinely large target list
-/// (every stale repo across every configured org) that an operator may
-/// reasonably want to abort mid-run by removing an org from the list. The
-/// sequential branch re-checks the org's enrollment before *each* repo,
-/// not just once up front — unchecking a repo or removing its org stops it from
-/// starting; the repo already mid-scan when it's removed still finishes
-/// normally (a real `rescan_one` in flight isn't cancelled, just not
-/// chained into). Confirmed necessary the hard way while building
-/// this: an earlier version had no such check, and disabling the toggle
-/// while a 260-repo sweep was mid-run didn't stop the remaining 258 —
-/// only killing the server process did.
-fn spawn_auto_rescan_targets(state: Arc<AppState>, targets: Vec<RescanTarget>, token: String) -> bool {
-    for t in &targets {
-        RECENT_SCAN_FAILURES.lock().remove(&(t.org.clone(), t.repo.clone()));
-    }
-    let parallel = state.config.org_repos.scan_all_mode == "parallel";
-    let runner = state.runner.clone();
-    let server_base = resolve_server_base(&state);
-    if parallel {
-        // Parallel mode has no natural "check between iterations" point —
-        // everything is already spawned as one generation the moment this
-        // function returns, the same limitation the explicit "Scan all"
-        // button's own parallel mode already has. Choosing "parallel" for
-        // an unattended sweep is a deliberate, documented tradeoff (see
-        // `OrgReposConfig::scan_all_mode`'s own doc comment), not
-        // something this function can retroactively make abortable.
-        for target in targets {
-            let runner = runner.clone();
-            let server_base = server_base.clone();
-            let token = token.clone();
-            tokio::spawn(async move { run_and_record_scan(&runner, &server_base, &token, &target).await });
-        }
-    } else {
-        tokio::spawn(async move {
-            for target in &targets {
-                if !state.db.is_auto_rescan_repo_selected(&target.org, &target.repo) {
-                    tracing::info!("auto-rescan: skipping {}/{} — removed from the auto-rescan selection mid-sweep", target.org, target.repo);
-                    continue;
-                }
-                run_and_record_scan(&runner, &server_base, &token, target).await;
-            }
-        });
-    }
-    parallel
+    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
+    enqueue_scans(state.runner.clone(), resolve_server_base(&state), token, targets, state.clone(), true, slots);
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "skipped": false, "triggered": count, "maxConcurrent": state.config.org_repos.max_concurrent_scans.max(1) }))).into_response()
 }
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/org-repos/:org", get(list_org_repos))
+        .route("/api/org-repos/:org/status", get(org_repo_statuses))
         .route("/api/org-repos/scan-selected", post(scan_selected_org_repos))
         .route("/api/org-repos/:org/:repo/scan", post(scan_org_repo))
         .route("/api/org-repos/saved-orgs", post(save_org))

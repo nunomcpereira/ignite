@@ -49,7 +49,7 @@ impl DbStore {
                  FROM projects p
                  INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects GROUP BY org, repo) latest
                    ON p.org = latest.org AND p.repo = latest.repo AND p.id = latest.max_id
-                 WHERE (?1 IS NULL OR p.org = ?1)
+                 WHERE (?1 IS NULL OR lower(p.org) = lower(?1))
                  ORDER BY p.org, p.repo",
             ) else {
                 return vec![];
