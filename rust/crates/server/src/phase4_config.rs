@@ -137,7 +137,7 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
 
 pub fn runner_from_config(cfg: &ignite_config::Config) -> ignite_tool_runner::ToolRunner {
     let sec = &cfg.security;
-    let binaries: std::collections::HashMap<&'static str, String> = [
+    let mut binaries: std::collections::HashMap<&'static str, String> = [
         ("trivy", sec.trivy.binary.clone()),
         ("checkov", sec.checkov.binary.clone()),
         ("hadolint", sec.hadolint.binary.clone()),
@@ -158,6 +158,9 @@ pub fn runner_from_config(cfg: &ignite_config::Config) -> ignite_tool_runner::To
     ]
     .into_iter()
     .collect();
+    if let Some(browser) = crate::routes::daily_report::detect_pdf_browser(&cfg.daily_report.pdf_browser_binary) {
+        binaries.insert("chrome", browser);
+    }
     ignite_tool_runner::ToolRunner::new(binaries)
 }
 

@@ -481,6 +481,52 @@ impl DbStore {
         }
     }
 
+    /// Keeps only the newest scan of a repo: deletes every *older*
+    /// headless-scan project (`source = 'api'`, i.e. what `validate-all`
+    /// creates) for the same `(org, repo)` as the project with `job_id`,
+    /// so org-wide sweeps that rescan hundreds of repos on a schedule don't
+    /// grow the scan history without bound. Returns how many were deleted.
+    ///
+    /// Deliberately narrow: upload/onboard/interactive projects (they carry
+    /// the shipped repo/PR provenance), still-`running` ones, and any with a
+    /// retained source directory (the retention sweeper owns those) are
+    /// never touched. Justifications and PR records survive: the old
+    /// projects' `overrides` and `pull_requests` are re-pointed at the kept
+    /// project first (carry-forward and the acknowledgments download read
+    /// them by repo across projects, and `ON DELETE CASCADE` would
+    /// otherwise silently drop them with the old rows). Audit events are
+    /// not tied to a project row and are untouched. Cascades clean the
+    /// rest (steps, documents, issues, scan_runs, evidence, ...).
+    pub fn prune_superseded_scans(&self, keep_job_id: &str) -> usize {
+        let mut conn = self.conn.lock();
+        let Some((keep_id, org, repo)) = conn
+            .query_row("SELECT id, org, repo FROM projects WHERE job_id = ?", params![keep_job_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+            .optional()
+            .unwrap()
+        else {
+            return 0;
+        };
+        let Ok(tx) = conn.transaction() else { return 0 };
+        let old_ids: Vec<i64> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id FROM projects
+                     WHERE lower(org) = lower(?1) AND lower(repo) = lower(?2) AND id < ?3
+                       AND source = 'api' AND status != 'running'
+                       AND id NOT IN (SELECT project_id FROM retained_sources)",
+                )
+                .unwrap();
+            stmt.query_map(params![org, repo, keep_id], |row| row.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        for id in &old_ids {
+            tx.execute("UPDATE overrides SET project_id = ?1 WHERE project_id = ?2", params![keep_id, id]).unwrap();
+            tx.execute("UPDATE pull_requests SET project_id = ?1 WHERE project_id = ?2", params![keep_id, id]).unwrap();
+            tx.execute("DELETE FROM projects WHERE id = ?", params![id]).unwrap();
+        }
+        let _ = tx.commit();
+        old_ids.len()
+    }
+
     pub fn delete_all_projects(&self) {
         let conn = self.conn.lock();
         conn.execute_batch(

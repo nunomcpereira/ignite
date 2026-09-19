@@ -445,7 +445,19 @@ pub struct DailyReportDetails<'a> {
 /// The repo's true count is still shown in its heading and the summary.
 const MAX_DAILY_REPORT_FINDINGS_PER_REPO: usize = 50;
 
+/// The emailed digest: findings per repo are capped (`MAX_DAILY_REPORT_FINDINGS_PER_REPO`).
 pub fn build_daily_report_email(details: &DailyReportDetails) -> Email {
+    build_daily_report_html(details, Some(MAX_DAILY_REPORT_FINDINGS_PER_REPO))
+}
+
+/// The same report with every finding listed, for rendering to a PDF file
+/// (which, unlike an email, has no relay size limit to protect).
+pub fn build_daily_report_document(details: &DailyReportDetails) -> Email {
+    build_daily_report_html(details, None)
+}
+
+fn build_daily_report_html(details: &DailyReportDetails, max_per_repo: Option<usize>) -> Email {
+    let limit = max_per_repo.unwrap_or(usize::MAX);
     let total: usize = details.repos.iter().map(|r| r.findings.len()).sum();
     let blocking: usize = details.repos.iter().flat_map(|r| r.findings.iter()).filter(|f| f.severity == "error").count();
     let with_findings: Vec<&DailyReportRepo> = details.repos.iter().filter(|r| !r.findings.is_empty()).collect();
@@ -457,7 +469,7 @@ pub fn build_daily_report_email(details: &DailyReportDetails) -> Email {
             let rows: String = r
                 .findings
                 .iter()
-                .take(MAX_DAILY_REPORT_FINDINGS_PER_REPO)
+                .take(limit)
                 .map(|f| {
                     let color = if f.severity == "error" { "#e11d48" } else { "#b45309" };
                     let location = format!("{}{}", escape_html_mail(f.file.unwrap_or("")), f.line.map(|l| format!(":{l}")).unwrap_or_default());
@@ -470,7 +482,7 @@ pub fn build_daily_report_email(details: &DailyReportDetails) -> Email {
                     ) + &render_code_block(&f.code)
                 })
                 .collect();
-            let omitted = r.findings.len().saturating_sub(MAX_DAILY_REPORT_FINDINGS_PER_REPO);
+            let omitted = r.findings.len().saturating_sub(limit);
             let omitted_note = if omitted > 0 { format!("\n      <p style=\"color:#94a3b8;font-size:12px;\">… and {omitted} more finding(s) not shown — open this repo in Ignite for the full list.</p>") } else { String::new() };
             format!(
                 "\n      <h3 style=\"margin:24px 0 4px;color:#0f172a;\">{}/{} — {} unjustified</h3>\n      <p style=\"margin:0 0 8px;color:#64748b;font-size:12px;\">Last scan: {} ({})</p>\n      <table style=\"border-collapse:collapse;width:100%;font-size:13px;\">\n        <tr style=\"background:#f1f5f9;\">\n          <th style=\"padding:6px 12px;text-align:left;\">Severity</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Score</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Category</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Location</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Finding</th>\n        </tr>\n        {rows}\n      </table>{omitted_note}",
@@ -862,6 +874,15 @@ mod tests {
         assert!(email.html.contains("big — 80 unjustified"));
         assert!(email.html.contains("and 30 more finding(s)"));
         assert_eq!(email.html.matches("<td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;text-transform:uppercase").count(), MAX_DAILY_REPORT_FINDINGS_PER_REPO);
+    }
+
+    #[test]
+    fn the_document_variant_lists_every_finding() {
+        let owned: Vec<DailyReportFinding> = (0..80).map(|_| finding("warning", "x", 1)).collect();
+        let repos = [DailyReportRepo { repo: "big", status: "success", last_scan_at: "t", findings: &owned }];
+        let doc = build_daily_report_document(&DailyReportDetails { org: "acme", date: "d", repos: &repos });
+        assert_eq!(doc.html.matches("<td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;text-transform:uppercase").count(), 80);
+        assert!(!doc.html.contains("not shown"));
     }
 
     #[test]

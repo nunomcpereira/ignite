@@ -233,6 +233,14 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let is_gxp = phase_enabled(&phase_meta, 2) && body.get("gxp").and_then(|v| v.as_bool()).unwrap_or(false);
     let run_local_ci = body.get("runLocalCi").and_then(|v| v.as_bool()).unwrap_or(true);
     let fast = body.get("fast").and_then(|v| v.as_bool()).unwrap_or(false);
+    // Unattended sweeps (`scheduled-rescan`'s `rescan_one`, so the GitHub Org
+    // view / auto-rescan too) scan repos whose own test suite Ignite has no
+    // way to make runnable (missing deps, broken packaging, no Docker). A
+    // failing project test run must not hide every Phase 4 security result
+    // for such a repo, so it is downgraded to a logged warning
+    // (`unitTestWarning` in the response). Off by default: the pre-push
+    // hook/CLI/interactive paths keep it a hard Phase 3 failure.
+    let unit_test_failures_non_blocking = body.get("unitTestFailuresNonBlocking").and_then(|v| v.as_bool()).unwrap_or(false);
     let warning_decision = body.get("warningDecision").and_then(|v| v.as_str()).unwrap_or("continue").to_lowercase();
     let raw_project_path = body.get("projectPath").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let raw_project_path = if raw_project_path.is_empty() { std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned() } else { raw_project_path };
@@ -301,6 +309,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 
     let mut project_root: Option<std::path::PathBuf> = None;
     let mut issues: Vec<Issue> = vec![];
+    let mut unit_test_warning: Option<String> = None;
     let mut phase4_task_timings: Vec<(&'static str, u64)> = vec![];
     let mut phase4_coverage: Vec<ignite_policy::CheckCoverage> = vec![];
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -381,7 +390,15 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         }
         {
             let l3 = logger.clone();
-            time_stage(&timings, "runProjectUnitTests", async { ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| l3.log(3, m)).await }).await.map_err(|e| PipelineError::new(3, e.to_string()))?;
+            match time_stage(&timings, "runProjectUnitTests", async { ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| l3.log(3, m)).await }).await {
+                Ok(_) => {}
+                Err(e) if unit_test_failures_non_blocking => {
+                    let msg = e.to_string();
+                    logger.log(3, &format!("⚠ Project unit tests failed — continuing (non-blocking for this scan): {msg}"));
+                    unit_test_warning = Some(msg);
+                }
+                Err(e) => return Err(PipelineError::new(3, e.to_string())),
+            }
         }
         logger.status(3, "success", None);
 
@@ -806,6 +823,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let obj = response.as_object_mut().unwrap();
             if fast {
                 obj.insert("fastMode".to_string(), json!(true));
+            }
+            if let Some(w) = &unit_test_warning {
+                obj.insert("unitTestWarning".to_string(), json!(w));
             }
             if changed_files.is_some() {
                 obj.insert("totalIssueCount".to_string(), json!(total_issue_count));

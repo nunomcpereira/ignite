@@ -72,6 +72,11 @@
         "icon": "$(git-pull-request)"
       },
       {
+        "command": "ignite.runDailyReport",
+        "title": "Ignite: Run Org Daily Report — send to Sentinel/webhook, Azure Blob, email or PDF",
+        "icon": "$(mail)"
+      },
+      {
         "command": "ignite.installPrePushHook",
         "title": "Ignite: Install Pre-Push Hook"
       },

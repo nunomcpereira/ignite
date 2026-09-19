@@ -161,6 +161,34 @@ mod overrides_to_json_tests {
     fn overrides_to_json_none_becomes_empty_array() {
         assert_eq!(overrides_to_json(&None), serde_json::json!([]));
     }
+
+    #[test]
+    fn daily_report_markdown_reports_each_channel_outcome() {
+        let result = serde_json::json!({ "date": "2026-09-19", "reports": [{
+            "org": "acme", "repos": 2, "unjustifiedFindings": 5, "reason": "notifications disabled",
+            "emailSent": false, "emailError": null,
+            "webhookSent": true, "webhookError": null,
+            "azureBlobSent": false, "azureBlobError": "Azure Blob answered HTTP 403",
+        }]});
+        let md = format_daily_report(&result, false);
+        assert!(md.contains("## acme — 2 repo(s), 5 unjustified finding(s)"));
+        assert!(md.contains("Webhook / Sentinel: ok"));
+        assert!(md.contains("Azure Blob: FAILED — Azure Blob answered HTTP 403"));
+        assert!(md.contains("Email: skipped — notifications disabled"));
+    }
+
+    #[test]
+    fn daily_report_dry_run_markdown_previews_the_sentinel_incident() {
+        let result = serde_json::json!({ "date": "d", "reports": [{
+            "org": "acme", "repos": 1, "unjustifiedFindings": 1, "markdown": "**summary**",
+            "webhookPayload": { "sentinelIncident": { "severity": "High" }, "severityCounts": { "critical": 1 } },
+        }]});
+        let md = format_daily_report(&result, true);
+        assert!(md.contains("dry run"));
+        assert!(md.contains("Sentinel incident severity: **High**"));
+        assert!(md.contains("**summary**"));
+        assert!(format_daily_report(&serde_json::json!({ "date": "d", "reports": [] }), false).contains("nothing to report"));
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -247,6 +275,62 @@ struct ApplyFixPrRequest {
     candidates: Vec<Value>,
     /// Required when this server is reachable over the network (MCP_TRANSPORT=http) — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection.
     api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct RunDailyReportRequest {
+    /// GitHub org to report on. Omit to report on every org with scanned repositories.
+    org: Option<String>,
+    /// Delivery channels: any of "email", "webhook" (Microsoft Sentinel), "azure_blob", "pdf". Omit to use every channel configured on the server.
+    channels: Option<Vec<String>>,
+    /// true to preview only (nothing is sent) — returns the Sentinel payload and incident markdown.
+    dry_run: Option<bool>,
+    /// Absolute or relative path (must end in .pdf) to save the org's PDF report to. Requires `org`.
+    save_pdf_path: Option<String>,
+    /// Required when this server is reachable over the network (MCP_TRANSPORT=http) and the call sends a report or writes a file — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection or a dry run.
+    api_key: Option<String>,
+}
+
+/// Markdown summary of `POST /api/reports/daily/run`'s response.
+fn format_daily_report(result: &Value, dry_run: bool) -> String {
+    let date = result.get("date").and_then(|v| v.as_str()).unwrap_or("?");
+    let mut out = format!("# Ignite daily report — {date}{}\n", if dry_run { " (dry run — nothing sent)" } else { "" });
+    let reports = result.get("reports").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if reports.is_empty() {
+        out.push_str("\nNo scanned repositories — nothing to report.\n");
+        return out;
+    }
+    for r in &reports {
+        let text = |k: &str| r.get(k).and_then(|v| v.as_str());
+        let flag = |k: &str| r.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+        let num = |k: &str| r.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+        out.push_str(&format!("\n## {} — {} repo(s), {} unjustified finding(s)\n\n", text("org").unwrap_or("?"), num("repos"), num("unjustifiedFindings")));
+        if dry_run {
+            if let Some(sev) = r.pointer("/webhookPayload/sentinelIncident/severity").and_then(|v| v.as_str()) {
+                out.push_str(&format!("- Sentinel incident severity: **{sev}**\n"));
+            }
+            if let Some(counts) = r.pointer("/webhookPayload/severityCounts") {
+                out.push_str(&format!("- Severity counts: `{counts}`\n"));
+            }
+            if let Some(md) = text("markdown") {
+                out.push_str(&format!("\n### Incident description preview\n\n{md}\n"));
+            }
+            continue;
+        }
+        for (label, sent_key, err_key) in [("Email", "emailSent", "emailError"), ("Webhook / Sentinel", "webhookSent", "webhookError"), ("Azure Blob", "azureBlobSent", "azureBlobError"), ("PDF", "pdfGenerated", "pdfError")] {
+            if flag(sent_key) {
+                out.push_str(&format!("- {label}: ok\n"));
+            } else if let Some(e) = text(err_key) {
+                out.push_str(&format!("- {label}: FAILED — {e}\n"));
+            }
+        }
+        if let Some(reason) = text("reason") {
+            if !flag("emailSent") && text("emailError").is_none() {
+                out.push_str(&format!("- Email: skipped — {reason}\n"));
+            }
+        }
+    }
+    out
 }
 
 #[tool_router]
@@ -352,6 +436,82 @@ impl IgniteMcp {
             return Ok(text_result(format!("Ignite server returned a non-JSON response (HTTP {status}) from {endpoint}."), true));
         };
         Ok(text_result(serde_json::to_string_pretty(&result).unwrap_or_default(), is_error))
+    }
+
+    #[tool(
+        description = "Run the org-level security findings report: delivers each org's unjustified findings (findings on the latest scan of every repo that nobody has justified) to email, a Microsoft Sentinel webhook, Azure Blob Storage and/or PDF. dry_run previews the Sentinel incident payload without sending anything. Optionally saves the org's PDF report to save_pdf_path. Requires a running Ignite server."
+    )]
+    async fn run_daily_report(&self, Parameters(req): Parameters<RunDailyReportRequest>) -> Result<CallToolResult, McpError> {
+        let dry_run = req.dry_run.unwrap_or(false);
+        let save_path = req.save_pdf_path.as_deref().map(str::trim).filter(|p| !p.is_empty());
+        // Sending to external channels and writing a file are the mutating
+        // parts; a dry run with no file is read-only.
+        if (!dry_run || save_path.is_some()) && !authorized_for_mutation(req.api_key.as_deref()) {
+            return Ok(text_result(MUTATION_AUTH_ERROR.to_string(), true));
+        }
+        if let Some(path) = save_path {
+            if !path.to_ascii_lowercase().ends_with(".pdf") {
+                return Ok(text_result("save_pdf_path must end in .pdf".to_string(), true));
+            }
+            if req.org.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                return Ok(text_result("save_pdf_path needs an org (the PDF is per-org).".to_string(), true));
+            }
+        }
+        let base_url = ignite_base_url();
+        let mut body = serde_json::json!({ "dryRun": dry_run, "channels": req.channels.clone().unwrap_or_default() });
+        if let (Some(obj), Some(org)) = (body.as_object_mut(), req.org.as_deref().map(str::trim).filter(|o| !o.is_empty())) {
+            obj.insert("org".to_string(), serde_json::json!(org));
+        }
+        let mut http = self.http.post(format!("{base_url}/api/reports/daily/run")).header("X-Ignite-Client", "mcp").json(&body);
+        if let Some(key) = ignite_api_key() {
+            http = http.header("Authorization", format!("Bearer {key}"));
+        }
+        let response = match http.send().await {
+            Ok(r) => r,
+            Err(e) => return Ok(text_result(format!("Could not reach Ignite server at {base_url}: {e}. Is it running?"), true)),
+        };
+        let status = response.status();
+        let Some(result): Option<Value> = response.json().await.ok() else {
+            return Ok(text_result(format!("Ignite server returned a non-JSON response (HTTP {status})."), true));
+        };
+        if !status.is_success() {
+            return Ok(text_result(result.get("error").and_then(|v| v.as_str()).unwrap_or("Report request failed.").to_string(), true));
+        }
+        let mut text = format_daily_report(&result, dry_run);
+        let mut is_error = result.get("reports").and_then(|v| v.as_array()).is_some_and(|rs| rs.iter().any(|r| r.get("error").is_some_and(|e| !e.is_null())));
+
+        if let (Some(path), Some(org)) = (save_path, req.org.as_deref().map(str::trim)) {
+            let mut pdf_req = self.http.get(format!("{base_url}/api/reports/daily/pdf")).query(&[("org", org)]).header("X-Ignite-Client", "mcp");
+            if let Some(key) = ignite_api_key() {
+                pdf_req = pdf_req.header("Authorization", format!("Bearer {key}"));
+            }
+            match pdf_req.send().await {
+                Ok(r) if r.status().is_success() => match r.bytes().await {
+                    Ok(bytes) => match std::fs::write(path, &bytes) {
+                        Ok(()) => text.push_str(&format!("\nPDF saved to `{path}` ({} bytes).\n", bytes.len())),
+                        Err(e) => {
+                            is_error = true;
+                            text.push_str(&format!("\nCould not write PDF to `{path}`: {e}\n"));
+                        }
+                    },
+                    Err(e) => {
+                        is_error = true;
+                        text.push_str(&format!("\nPDF download failed: {e}\n"));
+                    }
+                },
+                Ok(r) => {
+                    is_error = true;
+                    let code = r.status();
+                    let detail = r.json::<Value>().await.ok().and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string)).unwrap_or_default();
+                    text.push_str(&format!("\nPDF export failed (HTTP {code}): {detail}\n"));
+                }
+                Err(e) => {
+                    is_error = true;
+                    text.push_str(&format!("\nPDF download failed: {e}\n"));
+                }
+            }
+        }
+        Ok(text_result(text, is_error))
     }
 
     #[tool(description = "List the company AI/security validation guidelines, optionally filtered by category or severity.")]

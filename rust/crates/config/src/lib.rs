@@ -96,21 +96,17 @@ impl Default for Config {
     }
 }
 
-/// GitHub Org view's "Scan all" — one click, every currently-listed repo
-/// in the connected org. `scanAllMode: "sequential"` (the default) runs
-/// them one at a time, a single background worker moving to the next
-/// repo only once the previous one's full `rescan_one` (clone ->
-/// validate-all -> github-check, 5-16+ minutes each per
-/// `rust/MIGRATION_STATUS.md`'s own benchmark) has finished — the safe
-/// default for an org with hundreds of repos, where "parallel" would mean
-/// hundreds of concurrent clones/scans landing on this one machine at
-/// once. `"parallel"` opts into exactly that (one spawned task per repo,
-/// same as the single-repo "Scan now" button, just looped) — a deliberate
-/// per-deployment choice, not something a UI toggle should default to.
+/// GitHub Org view scan scheduling. `maxConcurrentScans` (default 2) caps
+/// how many `rescan_one` runs (clone -> validate-all -> github-check, 5-16+
+/// minutes each per `rust/MIGRATION_STATUS.md`'s own benchmark) execute at
+/// once across "Scan now", "Scan all" and the auto-rescan sweep alike;
+/// every scan beyond the cap waits in a FIFO queue (shown as "Queued" in
+/// the UI) and starts the moment a running one finishes. Read once at
+/// server startup — changing it needs a restart. `0` is treated as `1`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct OrgReposConfig {
-    pub scan_all_mode: String,
+    pub max_concurrent_scans: u32,
     /// How stale a repo's last scan has to be before the auto-rescan sweep
     /// (`POST /api/org-repos/auto-rescan/run`, meant to be hit hourly by
     /// an external cron/launchd timer — deliberately not a live in-process
@@ -124,7 +120,7 @@ pub struct OrgReposConfig {
     pub auto_rescan_stale_after_hours: u32,
 }
 impl Default for OrgReposConfig {
-    fn default() -> Self { OrgReposConfig { scan_all_mode: "sequential".to_string(), auto_rescan_stale_after_hours: 24 } }
+    fn default() -> Self { OrgReposConfig { max_concurrent_scans: 2, auto_rescan_stale_after_hours: 24 } }
 }
 
 /// Org-level daily findings digest: once a day, one email per org listing
@@ -136,16 +132,40 @@ impl Default for OrgReposConfig {
 /// the server's local timezone; `to` overrides `notifications.to` for this
 /// report only (comma-separated, same as every other notification) and
 /// falls back to it when empty. Sending itself still requires
-/// `notifications.enabled`.
+/// `notifications.enabled`. `pdfBrowserBinary` is the Chrome/Chromium/Edge
+/// executable used to render the report as a PDF download (headless
+/// `--print-to-pdf` of the same HTML the email carries); empty auto-detects
+/// (macOS app bundles, then common names on `PATH`), and with none found
+/// the PDF export answers 501 instead of failing obscurely.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct DailyReportConfig {
     pub enabled: bool,
     pub time: String,
     pub to: String,
+    pub pdf_browser_binary: String,
+    /// HTTPS endpoint (e.g. a Microsoft Sentinel Logic App / generic webhook)
+    /// that receives the report as a JSON POST carrying a pre-built Sentinel
+    /// incident object. Empty = webhook channel unconfigured.
+    pub webhook_url: String,
+    /// Optional secret sent as `Authorization: Bearer <token>` with the webhook POST.
+    pub webhook_token: String,
+    /// Azure Blob container SAS URL (`https://<acct>.blob.core.windows.net/<container>?<sas>`)
+    /// the `.json`/`.pdf` report is PUT into. Empty = Azure Blob channel unconfigured.
+    pub azure_blob_container_url: String,
 }
 impl Default for DailyReportConfig {
-    fn default() -> Self { DailyReportConfig { enabled: false, time: "23:59".to_string(), to: String::new() } }
+    fn default() -> Self {
+        DailyReportConfig {
+            enabled: false,
+            time: "23:59".to_string(),
+            to: String::new(),
+            pdf_browser_binary: String::new(),
+            webhook_url: String::new(),
+            webhook_token: String::new(),
+            azure_blob_container_url: String::new(),
+        }
+    }
 }
 
 /// GHAS-parity SIEM/audit-log streaming (`ignite-audit-log`): where to
@@ -1356,11 +1376,14 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }
     if let Some(v) = env_num::<u32>("SLA_MEDIUM_DAYS") { merged.sla.medium_days = v; }
     if let Some(v) = env_bool("AUDIT_LOG_ENABLED") { merged.audit_log.enabled = v; }
-    if let Some(v) = env_str("ORG_REPOS_SCAN_ALL_MODE") { merged.org_repos.scan_all_mode = v; }
+    if let Some(v) = env_num::<u32>("ORG_REPOS_MAX_CONCURRENT_SCANS") { merged.org_repos.max_concurrent_scans = v; }
     if let Some(v) = env_num::<u32>("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS") { merged.org_repos.auto_rescan_stale_after_hours = v; }
     if let Some(v) = env_bool("DAILY_REPORT_ENABLED") { merged.daily_report.enabled = v; }
     if let Some(v) = env_str("DAILY_REPORT_TIME") { merged.daily_report.time = v; }
     if let Some(v) = env_str("DAILY_REPORT_TO") { merged.daily_report.to = v; }
+    if let Some(v) = env_str("DAILY_REPORT_WEBHOOK_URL") { merged.daily_report.webhook_url = v; }
+    if let Some(v) = env_str("DAILY_REPORT_WEBHOOK_TOKEN") { merged.daily_report.webhook_token = v; }
+    if let Some(v) = env_str("DAILY_REPORT_AZURE_BLOB_CONTAINER_URL") { merged.daily_report.azure_blob_container_url = v; }
     if let Some(v) = env_str("AUDIT_LOG_SINKS") {
         if let Ok(sinks) = serde_json::from_str::<Vec<AuditSinkConfig>>(&v) {
             merged.audit_log.sinks = sinks;
@@ -1551,6 +1574,33 @@ mod tests {
         assert_eq!(cfg.security.codeql.languages, vec!["javascript", "python"]);
         env::remove_var("SEMGREP_ENABLED");
         env::remove_var("CODEQL_LANGUAGES");
+    }
+
+    #[test]
+    fn daily_report_delivery_fields_load_from_json_and_env_overrides_win() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_test_env();
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{ "dailyReport": { "webhookUrl": "https://json.example/hook", "webhookToken": "json-token", "azureBlobContainerUrl": "https://a.blob.core.windows.net/c?sig=json" } }"#,
+        )
+        .unwrap();
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.daily_report.webhook_url, "https://json.example/hook");
+        assert_eq!(cfg.daily_report.webhook_token, "json-token");
+        assert_eq!(cfg.daily_report.time, "23:59", "unset keys keep their defaults");
+
+        env::set_var("DAILY_REPORT_WEBHOOK_URL", "https://env.example/hook");
+        env::set_var("DAILY_REPORT_WEBHOOK_TOKEN", "env-token");
+        env::set_var("DAILY_REPORT_AZURE_BLOB_CONTAINER_URL", "https://a.blob.core.windows.net/c?sig=env");
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.daily_report.webhook_url, "https://env.example/hook");
+        assert_eq!(cfg.daily_report.webhook_token, "env-token");
+        assert_eq!(cfg.daily_report.azure_blob_container_url, "https://a.blob.core.windows.net/c?sig=env");
+        env::remove_var("DAILY_REPORT_WEBHOOK_URL");
+        env::remove_var("DAILY_REPORT_WEBHOOK_TOKEN");
+        env::remove_var("DAILY_REPORT_AZURE_BLOB_CONTAINER_URL");
     }
 
     #[test]

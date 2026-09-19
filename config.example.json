@@ -229,13 +229,16 @@
     "strict": false
   },
   "orgRepos": {
-    "scanAllMode": "sequential",
+    "maxConcurrentScans": 2,
     "autoRescanStaleAfterHours": 24
   },
   "dailyReport": {
     "enabled": false,
     "time": "23:59",
-    "to": ""
+    "to": "",
+    "webhookUrl": "",
+    "webhookToken": "",
+    "azureBlobContainerUrl": ""
   },
   "auditLog": {
     "enabled": false,

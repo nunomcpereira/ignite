@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import {
   validateAll, checkReachable, IgniteUnreachableError, type IgniteIssue,
   getLicenseCompliance, getSbom, getLocMetrics, getPosture,
   previewFixPr, applyFixPr, type FixCandidate,
   explainIssue, suggestFix,
+  runDailyReport, downloadDailyReportPdf,
 } from './api';
+import { planForPick, summarizeReports, defaultPdfName, type ChannelPick } from './dailyReport';
 import { publishDiagnostics, DIAGNOSTIC_SOURCE } from './diagnostics';
 import { getActor, getOriginOrgRepo, getRepoRoot, getChangedFiles } from './git';
 import {
@@ -244,6 +247,92 @@ async function runReport<T>(id: string, title: string, fetchReport: (projectPath
  * pushes a branch and opens a real PR — not reversible from here), then
  * apply. Scoped to `lastJobId`, so a scan must have run first.
  */
+/**
+ * Delivers the org's daily findings report. The org comes from the workspace's git
+ * `origin` remote, or a prompt when there isn't one; a QuickPick then chooses the
+ * channels (Sentinel/webhook, Azure Blob, email, PDF download, or everything).
+ */
+async function runOrgDailyReport(): Promise<void> {
+  const folder = activeWorkspaceFolder();
+  let org = '';
+  if (folder) {
+    const repoRoot = (await getRepoRoot(folder.uri.fsPath)) ?? folder.uri.fsPath;
+    org = (await getOriginOrgRepo(repoRoot)).org;
+  }
+  if (!org) {
+    const typed = await vscode.window.showInputBox({
+      title: 'Ignite: Org Daily Report',
+      prompt: 'GitHub org to report on (no git remote found in this workspace)',
+      placeHolder: 'my-org',
+      ignoreFocusOut: true,
+      validateInput: (v) => (/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(v.trim()) ? null : 'Enter a valid GitHub org name'),
+    });
+    if (!typed) return;
+    org = typed.trim();
+  }
+
+  type Item = vscode.QuickPickItem & { pick: ChannelPick };
+  const items: Item[] = [
+    { label: '$(cloud-upload) Sentinel / Webhook', description: 'POST the report + Sentinel incident payload', pick: 'webhook' },
+    { label: '$(database) Azure Blob Storage', description: 'upload the .json (and .pdf) report to the configured container', pick: 'azure_blob' },
+    { label: '$(mail) Email', description: 'send the HTML digest', pick: 'email' },
+    { label: '$(file-pdf) Download PDF', description: 'save the report as a PDF file', pick: 'pdf' },
+    { label: '$(rocket) All channels', description: 'every configured channel, plus a PDF download', pick: 'all' },
+  ];
+  const chosen = await vscode.window.showQuickPick(items, { title: `Ignite: deliver ${org}'s daily security report`, placeHolder: 'Choose a delivery channel', ignoreFocusOut: true });
+  if (!chosen) return;
+  const plan = planForPick(chosen.pick);
+
+  outputChannel.appendLine(`\n=== Org daily report: ${org} ===`);
+  let failed = false;
+  let headline = '';
+  await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Ignite: delivering ${org}'s report…`, cancellable: false }, async () => {
+    if (plan.serverChannels !== null) {
+      try {
+        const result = await runDailyReport({ org, channels: plan.serverChannels });
+        const summary = summarizeReports(result);
+        summary.lines.forEach((l) => outputChannel.appendLine(l));
+        headline = summary.message;
+        failed = failed || summary.hasFailures;
+      } catch (e) {
+        failed = true;
+        headline = `Ignite: report failed — ${e instanceof Error ? e.message : String(e)}`;
+        outputChannel.appendLine(headline);
+      }
+    }
+  });
+
+  let pdfUri: vscode.Uri | undefined;
+  if (plan.downloadPdf) {
+    const target = await vscode.window.showSaveDialog({
+      title: 'Save the Ignite report PDF',
+      defaultUri: vscode.Uri.file(path.join(folder?.uri.fsPath ?? os.homedir(), defaultPdfName(org))),
+      filters: { PDF: ['pdf'] },
+    });
+    if (target) {
+      try {
+        const bytes = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Ignite: rendering PDF…', cancellable: false }, () => downloadDailyReportPdf(org));
+        await vscode.workspace.fs.writeFile(target, bytes);
+        pdfUri = target;
+        outputChannel.appendLine(`pdf saved: ${target.fsPath}`);
+        headline = headline ? `${headline} PDF saved.` : `Ignite: PDF report saved to ${target.fsPath}.`;
+      } catch (e) {
+        failed = true;
+        const message = `Ignite: PDF export failed — ${e instanceof Error ? e.message : String(e)}`;
+        outputChannel.appendLine(message);
+        headline = headline ? `${headline} ${message}` : message;
+      }
+    } else if (!headline) {
+      return; // cancelled the save dialog, nothing else ran
+    }
+  }
+
+  const actions = ['Open Output', ...(pdfUri ? ['Open PDF'] : [])];
+  const action = failed ? await vscode.window.showWarningMessage(headline, ...actions) : await vscode.window.showInformationMessage(headline, ...actions);
+  if (action === 'Open Output') outputChannel.show(true);
+  else if (action === 'Open PDF' && pdfUri) await vscode.env.openExternal(pdfUri);
+}
+
 async function generateFixPr(): Promise<void> {
   if (!lastJobId) {
     vscode.window.showWarningMessage('Ignite: run a scan first — Generate Fix PR works off the most recent scan\'s findings.');
@@ -490,6 +579,9 @@ export function activate(context: vscode.ExtensionContext): void {
       await runReport('posture', 'Ignite: Compliance & Feature Posture', getPosture);
     }),
     vscode.commands.registerCommand('ignite.generateFixPr', () => generateFixPr()),
+    vscode.commands.registerCommand('ignite.runDailyReport', () => runOrgDailyReport()),
+    // Alias (not in the palette): the name the feature was first specced under.
+    vscode.commands.registerCommand('ignite.runOrgDailyReport', () => runOrgDailyReport()),
     vscode.commands.registerCommand('ignite.explainIssue', (node: FindingsNode) => explainFinding(node)),
     vscode.commands.registerCommand('ignite.suggestFixForIssue', (node: FindingsNode) => {
       const workspaceRoot = activeWorkspaceFolder()?.uri.fsPath;

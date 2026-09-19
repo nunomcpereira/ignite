@@ -196,7 +196,7 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
     };
 
     let validate_res = with_ignite_api_key(http.post(format!("{server_base}/api/pipeline/validate-all")))
-        .json(&json!({ "org": target.org, "repo": target.repo, "projectPath": dest.to_string_lossy(), "runLocalCi": false }))
+        .json(&json!({ "org": target.org, "repo": target.repo, "projectPath": dest.to_string_lossy(), "runLocalCi": false, "unitTestFailuresNonBlocking": true }))
         .send()
         .await;
     let body: Value = match validate_res {
