@@ -37,6 +37,7 @@ pub fn skip_dirs() -> &'static HashSet<&'static str> {
             ".angular",
             "dist",
             "build",
+            "target",
             "__pycache__",
             ".venv",
             "venv",
@@ -289,7 +290,15 @@ fn walk_dir(root: &Path, dir: &Path, ignore_patterns: &[IgnorePattern], out: &mu
     let entries = fs::read_dir(dir)?;
     for entry in entries {
         let entry = entry?;
-        let file_type = entry.file_type()?;
+        // A concurrently-running build (e.g. this workspace's own `cargo
+        // build` rewriting `target/`) can remove a file between `read_dir`
+        // listing it and this `stat` — treat that race as "not there
+        // anymore" rather than failing the whole walk.
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
         if file_type.is_symlink() {
             continue; // never follow symlinks out of staging
         }
