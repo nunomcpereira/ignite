@@ -169,6 +169,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        // Release the connection lock before calling another DbStore method,
+        // which locks the same (non-reentrant) mutex.
+        drop(conn);
         assert_eq!(rows, 2);
         assert_eq!(outcome, "incomplete");
         assert_eq!(policy, "strict-publication-v1");

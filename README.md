@@ -970,7 +970,7 @@ Node test suite established: config/env wiring, fake-CLI parsing/dedup/
 soft-fail behavior for every soft-dependency external tool, and a real-binary
 end-to-end case that self-skips when the tool isn't installed on this
 machine rather than failing the suite (checked against the actual installed
-binaries, not just the fallback paths, per `rust/MIGRATION_STATUS.md`).
+binaries, not just the fallback paths).
 Run a single crate's tests with `cargo test -p <crate-name>`.
 
 ### End-to-end (Playwright)
