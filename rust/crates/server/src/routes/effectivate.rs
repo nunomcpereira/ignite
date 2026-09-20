@@ -101,6 +101,25 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "No simulation output available to effectivate for this project (missing, expired, or already effectivated)." }))).into_response();
     };
 
+    // Bind publication to the policy decision recorded for this exact run,
+    // not to mutable current configuration. An incomplete strict assessment
+    // must never reach source staging or a remote GitHub side effect.
+    if let Some(run) = state.db.get_scan_run_for_legacy_project(project_id) {
+        if let Some(decision) = state.db.get_policy_decision(run.id) {
+            if decision.decision == ignite_policy::PolicyDecisionKind::Incomplete {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "This scan has incomplete required coverage and cannot be effectivated. Re-run after restoring the missing checks.",
+                        "incompleteCoverage": true,
+                        "policyDecision": decision,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let issue_rows = state.db.get_project_issues(project_id);
     // Issues already justified at the live review gate (during the
     // simulation itself) are already `status: "overridden"` in the DB —
@@ -110,8 +129,8 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     let requested_overrides: Vec<SubmittedOverride> = body
         .get("overrides")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(|o| SubmittedOverride { 
-            issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(), 
+        .map(|a| a.iter().map(|o| SubmittedOverride {
+            issue_id: o.get("issueId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             justification: o.get("justification").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }).collect())
@@ -240,7 +259,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 justification: justification.as_str(),
             }
         }).collect();
-        
+
         let titles = ignite_notifications::phase_titles_map(&phase_meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
         let eff_job_id = format!("effectivate-{project_id}");
         let details = ignite_notifications::OverrideEmailDetails {
@@ -476,6 +495,50 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/projects/999/effectivate")).header("authorization", auth).json(&json!({})).send().await.unwrap();
         assert_eq!(res.status(), 404);
+        std::env::remove_var("GH_TOKEN");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn returns_409_when_the_persisted_policy_decision_is_incomplete() {
+        let _guard = ENV_GUARD.lock();
+        std::env::set_var("GH_TOKEN", "test-token");
+        let (state, _dir) = build_state();
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
+        let run_id = state.db.get_scan_run_for_legacy_project(project_id).unwrap().id;
+        state.db.save_policy_decision(
+            run_id,
+            &ignite_policy::PolicyDecision {
+                decision: ignite_policy::PolicyDecisionKind::Incomplete,
+                policy_version: "strict-publication-v1".to_string(),
+                reasons: vec!["Semgrep unavailable".to_string()],
+                missing_required_coverage: vec!["semanticSast".to_string()],
+            },
+        );
+        let backup_dir = tempfile::tempdir().unwrap();
+        state.pending_effectivations.lock().insert(
+            project_id,
+            crate::state::PendingEffectivation {
+                org: "acme".into(),
+                repo: "widgets".into(),
+                source_backup_dir: backup_dir.path().to_path_buf(),
+                created_at: Instant::now(),
+            },
+        );
+
+        let auth = auth_header(&state);
+        let base = spawn_test_server(state).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/projects/{project_id}/effectivate"))
+            .header("authorization", auth)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 409);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["incompleteCoverage"], true);
+        assert_eq!(body["policyDecision"]["decision"], "incomplete");
         std::env::remove_var("GH_TOKEN");
     }
 

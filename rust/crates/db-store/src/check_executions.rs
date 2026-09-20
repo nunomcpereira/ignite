@@ -7,6 +7,7 @@
 use crate::store::DbStore;
 use ignite_policy::{CheckCoverage, CheckOutcome, PolicyDecision, PolicyDecisionKind};
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 fn outcome_name(outcome: CheckOutcome) -> &'static str {
     match outcome {
@@ -30,6 +31,40 @@ fn decision_name(decision: PolicyDecisionKind) -> &'static str {
 }
 
 impl DbStore {
+    /// Returns the policy conclusion pinned when this scan completed. This
+    /// intentionally reads persisted state rather than consulting today's
+    /// config: publication must be bound to the policy that reviewed this
+    /// exact snapshot.
+    pub fn get_policy_decision(&self, run_id: i64) -> Option<PolicyDecision> {
+        let conn = self.conn.lock();
+        let row: Option<(String, String, String, String)> = conn
+            .query_row(
+                "SELECT decision, policy_version, reasons_json, missing_checks_json FROM policy_decisions WHERE run_id = ?",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .unwrap_or(None);
+        let (decision, policy_version, reasons_json, missing_checks_json) = row?;
+        let decision = match decision.as_str() {
+            "pass" => PolicyDecisionKind::Pass,
+            "needs_review" => PolicyDecisionKind::NeedsReview,
+            "blocked" => PolicyDecisionKind::Blocked,
+            "incomplete" => PolicyDecisionKind::Incomplete,
+            other => {
+                tracing::error!("get_policy_decision({run_id}) found unknown decision {other:?}");
+                return None;
+            }
+        };
+        Some(PolicyDecision {
+            decision,
+            policy_version,
+            reasons: serde_json::from_str(&reasons_json).unwrap_or_default(),
+            missing_required_coverage: serde_json::from_str(&missing_checks_json)
+                .unwrap_or_default(),
+        })
+    }
+
     /// Replaces coverage for the current attempt. A resumed workflow will
     /// record a later attempt rather than overwriting this historical row;
     /// the initial validate-all adapter always uses attempt 1.
@@ -137,5 +172,8 @@ mod tests {
         assert_eq!(rows, 2);
         assert_eq!(outcome, "incomplete");
         assert_eq!(policy, "strict-publication-v1");
+        let loaded = db.get_policy_decision(run.id).unwrap();
+        assert_eq!(loaded.decision, PolicyDecisionKind::Incomplete);
+        assert_eq!(loaded.missing_required_coverage, vec!["semantic-sast"]);
     }
 }
