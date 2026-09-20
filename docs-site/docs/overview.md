@@ -192,6 +192,13 @@ A second screen in the web UI's lateral nav (next to Dashboard) lists every repo
 
 See the [README](https://github.com/nunomcpereira/ignite#onboarded-repos--every-repo-at-a-glance) for the full column-by-column reference.
 
+## Govern the portfolio after onboarding
+
+Ignite also has dedicated **Governance** and **GitHub Org** workspaces for
+campaigns, evidence exports, audit history, organization backfill, selected
+repository rescans, and daily reports. See [Repository governance](./repository-governance)
+for the operational workflow and the current UI.
+
 ## White-label branding & multi-language UI
 
 The web UI deploys as your own product, not a bolted-on vendor tool:

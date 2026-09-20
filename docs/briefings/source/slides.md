@@ -188,6 +188,23 @@ layout: default
 layout: default
 ---
 
+<div class="eyebrow mono">— 02 · From Gate to Governance</div>
+<h1>The control continues after the first scan</h1>
+<p class="lede">Ignite now gives security teams a working view of the full repository portfolio: backfill the organization, choose continuous coverage, track remediation, and retain evidence for every decision.</p>
+<div style="display:grid;grid-template-columns:1.1fr .9fr;gap:18px;align-items:start;margin-top:8px;">
+  <div class="card" style="padding:10px;"><img src="/screenshots/17-org-repository-portfolio.png" style="width:100%;border-radius:8px;border:1px solid var(--border);" /></div>
+  <div style="display:grid;gap:11px;">
+    <div class="card"><div style="font-weight:700;font-size:13px;">Portfolio coverage</div><div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:4px;">Discover existing repositories, select coverage, and scan one or many repositories without a separate onboarding project.</div></div>
+    <div class="card"><div style="font-weight:700;font-size:13px;">Continuous remediation</div><div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:4px;">Campaigns turn a category of open findings into a measurable, date-bound burn-down goal. Progress reflects the live issue state.</div></div>
+    <div class="card"><div style="font-weight:700;font-size:13px;">Evidence on demand</div><div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:4px;">Daily reports, compliance audit packs, downloadable findings, and a verified audit chain make review evidence a system output.</div></div>
+  </div>
+</div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">04 · CONFIDENTIAL</span></div>
+
+---
+layout: default
+---
+
 <div class="eyebrow mono">— 03 · Engine Detail</div>
 <h1>Static analysis &amp; secret detection</h1>
 <p class="lede">The first line of code-level defense — every one of these engines is a category leader, not an in-house heuristic.</p>
@@ -199,7 +216,7 @@ layout: default
 </div>
 <div class="card" style="margin-top:12px;border-color:color-mix(in srgb, var(--amber) 40%, var(--border));"><div style="font-weight:700;font-size:13px;">📄 Picklescan <span class="tag mono">AI-ERA ADDITION</span></div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Opcode-level scan of ML model artifacts (.pkl/.pt/.bin/.ckpt) for malicious deserialization payloads — a risk vector standard SAST tools were never built to see.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">04 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">05 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -216,7 +233,7 @@ layout: default
 </div>
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🐳 hadolint <span class="tag mono">OPEN-SOURCE STANDARD</span></div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Dockerfile best-practice linting — unpinned base images, missing non-root USER, caught pre-build.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">05 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">06 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -234,7 +251,7 @@ layout: default
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🕸 CodeQL Cross-File Analysis <span class="tag mono">GITHUB / MICROSOFT</span></div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">The <code style="font-family:'JetBrains Mono',monospace;font-size:11px;">security-extended</code> query suite, applied whole-project — closing the gap when a tainted-data chain spans a controller, a service layer, and a template.</div></div>
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">⚙ zizmor <span class="tag mono">TRAIL OF BITS</span></div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Audits every committed GitHub Actions workflow for pwn requests, script injection via untrusted <code style="font-family:'JetBrains Mono',monospace;font-size:11px;">${{ }}</code> expansions, and over-broad permissions — the CI-pipeline supply-chain risk a source-code scanner never sees.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">06 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">07 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -298,7 +315,7 @@ layout: default
 </div>
 <p style="font-size:10.5px;color:var(--faint);text-align:center;margin-top:8px;">Not a replacement for GHAS where it's already licensed — Ignite folds it in as one of twenty-plus engines behind a single go/no-go gate.</p>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">07 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">08 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -314,7 +331,7 @@ layout: default
 </div>
 <div class="card" style="margin-top:12px;border-color:color-mix(in srgb, var(--teal) 40%, var(--border));"><div style="font-weight:700;font-size:13px;">📋 Compliance audit packs</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">One export bundles overrides-by-severity, mean-time-to-resolution, and live SLA-breach status for any date range — ready-made evidence for a SOC 2, ISO 27001, or board review, generated on demand rather than assembled by hand.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">08 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">09 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -329,7 +346,7 @@ layout: default
   <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--purple) 20%, transparent);color:var(--purple);">📝</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">PR dependency review comment</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Every pull request gets a single, self-updating comment summarizing what dependencies were added, removed, or version/license-changed — the same at-a-glance review GitHub's own dependency-review action provides.</div></div>
 </div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">09 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">10 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -344,7 +361,7 @@ layout: default
 </div>
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🧩 Config, not a fork</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Both brand and language are runtime configuration — a customer deployment never diverges from upstream source, so every future Ignite release still applies cleanly on top.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">10 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">11 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -363,4 +380,4 @@ layout: default
   <div class="mono" style="font-size:9.5px;letter-spacing:.14em;color:var(--faint);white-space:nowrap;">END OF BRIEFING</div>
 </div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">11 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">12 · CONFIDENTIAL</span></div>

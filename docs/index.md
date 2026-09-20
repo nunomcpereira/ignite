@@ -231,6 +231,16 @@ Exit code `0` means the run passed, `1` means blocking findings need a justifica
 
 ![ignite scan - terminal output listing blocking findings by file](assets/images/10-cli-scan.png)
 
+### 8. Continue governance after onboarding
+
+Use the GitHub Org view to backfill and select existing repositories for
+continuous coverage. The Governance view tracks remediation campaigns,
+exports compliance evidence, and exposes the verified audit trail.
+
+![Governance - remediation campaign progress](assets/images/16-governance-campaigns.png)
+
+![GitHub Org - repository portfolio and selected scan coverage](assets/images/17-org-repository-portfolio.png)
+
 **Findings can be grouped and acknowledged in bulk.** The Findings tree's title-bar icon (**Ignite: Toggle Findings Grouping**) switches between the original per-phase layout and a per-finding layout - every occurrence of the same (category + summary) finding collapsed under one row, unresolved findings sorted first. Select a group, or multi-select rows with `Cmd`/`Ctrl`-click, and **Ignite: Acknowledge Selected** writes one shared justification to `.ignite/acknowledgments.md` for every unresolved occurrence at once, instead of acknowledging them one at a time.
 
 **The same non-issue reports Studio shows - SBOM, LOC metrics, posture, license compliance - now open right in the editor too**, via **Ignite: Show SBOM** / **Show LOC Metrics** / **Show Compliance & Feature Posture** / **Show License Compliance**: each opens a read-only panel beside the editor with that report's data, backed by new standalone `/api/reports/{sbom,loc-metrics,posture}` endpoints (license compliance reuses the existing dependencies endpoint) - no jobId or web-UI review-gate state required, since the extension only ever drives `validate-all`.

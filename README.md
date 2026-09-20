@@ -388,6 +388,20 @@ A second lateral-nav screen (next to Dashboard, `GET /api/onboarded-repos`) list
 
 Backed by `DbStore::list_onboarded_repo_summaries` (`rust/crates/db-store`) and a new `pull_requests` table that unifies both PR sources - the onboarding PR (`projects.pr_url`) and interactive fix-PRs are recorded into it the moment they're opened, with a one-time startup backfill for any `pr_url` set before this table existed. Note this list is **every repo Ignite has ever run a check against that created a project row** (including headless `validate-all` calls from the CLI/pre-push hook against an already-existing repo), not only ones freshly provisioned through the onboarding flow - a repo can appear here with zero PRs if it's only ever been gate-checked, never (re-)onboarded through Ignite itself.
 
+## Repository governance - coverage, remediation, and evidence after onboarding
+
+The web console extends the onboarding gate with three operational views:
+
+- **GitHub Org** discovers repositories already in a connected organization, including optional archived repositories and forks. Select one or more repositories to scan, retain the selection for the automatic-rescan endpoint, and use the same UI to see current scan state and open findings. Trigger that endpoint from your scheduler; it only rechecks repositories older than the configured scan threshold. This is the backfill path for an organization that adopted Ignite after its repositories already existed.
+- **Governance** provides remediation campaigns, date-bounded compliance audit packs, and a filterable, hash-chain-verified audit trail. Campaign progress is calculated from the live open-finding count, so a fix or a justified override updates the result without manual reconciliation.
+- **Daily reports** collect each organization's latest unjustified findings for email, HTTPS webhook, Microsoft Sentinel, and Azure Blob Storage delivery. `GET /api/reports/daily/pdf?org=<org>` downloads the same report as a PDF; `GET /api/reports/daily/markdown?org=<org>` exports entries in `.ignite/acknowledgments.md` format for review in a repository. PDF export needs Chrome, Chromium, or Edge on the Ignite host (or `dailyReport.pdfBrowserBinary` in `config.json`).
+
+The **Flagged Issues** popup is available from current runs, history, Onboarded Repos, and GitHub Org scans. It can record an attributed justification for an open finding and, for a repository already on GitHub, start **✨ Generate fix PR**. The PR flow shows AI-suggested changes before applying the selected fixes and can include prior acknowledgments in the PR. Critical overrides retain the configured second-reviewer path and every decision is added to the audit trail.
+
+![Governance - remediation campaign progress](docs/assets/images/16-governance-campaigns.png)
+
+![GitHub Org - repository portfolio and selected scan coverage](docs/assets/images/17-org-repository-portfolio.png)
+
 ## Ignite Studio - one place for every connected tool's findings
 
 Studio's top bar (reachable from the review gate, or the "Studio" button on a finished run) has one button per non-issue artifact, each replacing the code pane with a live, on-demand report - the same "recompute against the still-staged project" pattern the existing 📦 Dependencies button uses, backed by `GET /api/pipeline/:jobId/studio/{sbom,loc-metrics,posture}`:

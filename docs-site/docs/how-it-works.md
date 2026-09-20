@@ -186,3 +186,13 @@ files an agent just edited; `--fast` trades coverage for speed the same way
 the pre-push hook's lightning mode does.
 
 ![ignite scan - terminal output listing blocking findings by file](/img/screenshots/10-cli-scan.png)
+
+### 8. Keep governing what has already shipped
+
+After onboarding, use the GitHub Org screen to backfill existing repositories
+and select continuous coverage, and use Governance to track a remediation
+campaign, export compliance evidence, and inspect the tamper-evident audit
+trail. The [repository governance guide](./repository-governance) describes
+the operational flow and daily report exports.
+
+![GitHub organization repository portfolio](/img/screenshots/17-org-repository-portfolio.png)
