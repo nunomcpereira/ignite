@@ -411,6 +411,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
             issues.extend(ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await);
+            phase4_coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
         } else {
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
@@ -433,6 +434,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 Err(e) => return Err(PipelineError::new(4, e.to_string())),
             }
             issues.extend(license_result);
+            phase4_coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
         }
 
         let gated_issues: Vec<&Issue> = match baseline_mode.as_deref() {
@@ -596,9 +598,11 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         if !phase_enabled(&phase_meta, 5) {
             logger.log(5, "Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).");
             logger.status(5, "skipped", None);
+            phase4_coverage.push(ignite_policy::CheckCoverage::disabled("governance-ci"));
         } else if !run_local_ci {
             logger.log(5, "Local CI execution disabled by request (runLocalCi=false).");
             logger.status(5, "skipped", None);
+            phase4_coverage.push(ignite_policy::CheckCoverage::disabled_with_reason("governance-ci", "local CI disabled by request"));
         } else {
             let root = project_root.clone().unwrap();
             let l5 = logger.clone();
@@ -618,12 +622,17 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                     // the one behavioral divergence US-03's shared
                     // extraction surfaced across the three entry points.
                     logger.status(5, "success", None);
+                    phase4_coverage.push(ignite_policy::CheckCoverage::unavailable("governance-ci", reason));
                 }
                 Ok(ignite_pipeline_core::GovernanceCiOutcome::Passed) => {
                     logger.log(5, "✓ All org governance jobs passed locally.");
                     logger.status(5, "success", None);
+                    phase4_coverage.push(ignite_policy::CheckCoverage::completed("governance-ci", "act", false));
                 }
-                Err(e) => return Err(PipelineError::new(5, e)),
+                Err(e) => {
+                    phase4_coverage.push(ignite_policy::CheckCoverage::failed("governance-ci", e.clone()));
+                    return Err(PipelineError::new(5, e));
+                }
             }
         }
 
@@ -800,6 +809,10 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let blocking_unresolved = issues.iter().any(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id));
             let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
             let policy_decision = ignite_policy::evaluate_policy(&phase4_coverage, blocking_unresolved, false, &policy_version);
+            if let Some(rid) = run_id {
+                state.db.replace_check_executions(rid, &phase4_coverage);
+                state.db.save_policy_decision(rid, &policy_decision);
+            }
 
             if baseline_mode.as_deref() == Some("save") {
                 let ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
@@ -907,6 +920,10 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let blocking_unresolved = e.issues.as_ref().map(|list| list.iter().any(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id))).unwrap_or(true);
             let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
             let policy_decision = ignite_policy::evaluate_policy(&phase4_coverage, blocking_unresolved, false, &policy_version);
+            if let Some(rid) = run_id {
+                state.db.replace_check_executions(rid, &phase4_coverage);
+                state.db.save_policy_decision(rid, &policy_decision);
+            }
             let mut response = json!({
                 "ok": false,
                 "mode": "validate-all",

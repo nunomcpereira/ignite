@@ -160,13 +160,12 @@ impl Default for SemanticSastConfig {
 }
 
 pub async fn check_semantic_sast(root: &Path, runner: &ToolRunner, config: &SemanticSastConfig) -> SemanticSastResult {
-    let tooling = if config.enabled {
-        semgrep_tooling(runner).await
-    } else {
-        SemgrepToolingProbe { ok: false, version: None, reason: Some("semgrep is disabled (security.semgrep.enabled=false).".to_string()) }
-    };
-    if !tooling.ok {
+    if !config.enabled {
         return SemanticSastResult { findings: vec![], engine: "disabled" };
+    }
+    let tooling = semgrep_tooling(runner).await;
+    if !tooling.ok {
+        return SemanticSastResult { findings: vec![], engine: "unavailable" };
     }
 
     let config_packs: Vec<String> = config.semgrep_config.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();

@@ -213,7 +213,9 @@ fn coverage_for_engine(check_id: &'static str, engine: &str, finding_count: usiz
     use ignite_policy::CheckCoverage;
     match engine {
         "disabled" => CheckCoverage::disabled(check_id),
+        "unavailable" => CheckCoverage::unavailable(check_id, "required engine was unavailable"),
         "failed" | "error" => CheckCoverage::failed(check_id, "check returned an error result instead of completing"),
+        "timed_out" => CheckCoverage::timed_out(check_id),
         "unconfigured" => CheckCoverage::not_applicable(check_id, "not configured for this project"),
         "fallback" => CheckCoverage::completed(check_id, "built-in-fallback", true),
         other => CheckCoverage::completed(check_id, other, false).with_scope(format!("{finding_count} finding(s)")),
@@ -422,7 +424,7 @@ pub async fn run_phase4_checks(
         // call in below — without it, a hung Semgrep process stalled the
         // entire fast-mode scan indefinitely, defeating the point of
         // "fast" mode existing at all.
-        let semantic_sast_result = with_timeout_or("semanticSast", log, ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast), || ignite_semantic_sast::SemanticSastResult { findings: vec![], engine: "error" }).await;
+        let semantic_sast_result = with_timeout_or("semanticSast", log, ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast), || ignite_semantic_sast::SemanticSastResult { findings: vec![], engine: "timed_out" }).await;
         let ms = __t.elapsed().as_millis() as u64;
         task_timings.push(("semanticSast", ms));
         log(&format!("✓ semanticSast done ({} finding(s), {ms}ms)", semantic_sast_result.findings.len()));
@@ -513,9 +515,9 @@ pub async fn run_phase4_checks(
     // fan-out still completes and still gets reported.
     let manifests = ignite_package_hallucination::default_manifests();
     let semantic_sast_fut = async {
-        with_timeout_or("semanticSast", log, ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast), || ignite_semantic_sast::SemanticSastResult { findings: vec![], engine: "error" }).await
+        with_timeout_or("semanticSast", log, ignite_semantic_sast::check_semantic_sast(root, runner, &config.semantic_sast), || ignite_semantic_sast::SemanticSastResult { findings: vec![], engine: "timed_out" }).await
     };
-    let pii_fut = async { with_timeout_or("pii", log, ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow), || ignite_pii_dataflow::PiiDataFlowResult { findings: vec![], engine: "error" }).await };
+    let pii_fut = async { with_timeout_or("pii", log, ignite_pii_dataflow::check_pii_data_flow(root, runner, &config.pii_data_flow), || ignite_pii_dataflow::PiiDataFlowResult { findings: vec![], engine: "timed_out" }).await };
     let duplication_fut =
         async { with_timeout_or("duplication", log, ignite_code_duplication::check_code_duplication(root, runner, &config.code_duplication), || ignite_code_duplication::CodeDuplicationResult { findings: vec![], engine: "error" }).await };
     let loc_metrics_fut = async { with_timeout_or("locMetrics", log, ignite_loc_metrics::generate_loc_metrics(root, runner, config.loc_metrics_enabled), || ignite_loc_metrics::LocMetricsResult { engine: "error", metrics: None }).await };

@@ -14,6 +14,7 @@ sha2 = "0.10"
 thiserror = "2"
 flate2 = "1"
 ignite-override-engine = { path = "../override-engine" }
+ignite-policy = { path = "../policy" }
 ignite-run-lifecycle = { path = "../run-lifecycle" }
 
 [dev-dependencies]

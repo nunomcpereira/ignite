@@ -334,6 +334,35 @@ CREATE TABLE IF NOT EXISTS pending_reviews (
   decision_json TEXT
 );
 
+-- US-02: durable, per-check coverage and the policy conclusion reached
+-- from it. Findings remain in `issues`; these rows instead answer the
+-- separate question "what actually ran, with which engine and outcome?".
+CREATE TABLE IF NOT EXISTS check_executions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,
+  check_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  outcome TEXT NOT NULL,
+  engine TEXT,
+  engine_version TEXT,
+  is_fallback INTEGER NOT NULL DEFAULT 0,
+  scope TEXT,
+  reason TEXT,
+  from_cache INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_id, check_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS idx_check_executions_run ON check_executions(run_id);
+CREATE TABLE IF NOT EXISTS policy_decisions (
+  run_id INTEGER PRIMARY KEY REFERENCES scan_runs(id) ON DELETE CASCADE,
+  decision TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  reasons_json TEXT NOT NULL,
+  missing_checks_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- US-05: the versioned evidence manifest (source digest, policy/config
 -- digests, check coverage, artifact digests — see `ignite-evidence`) for
 -- one scan run, plus a bounded lease that protects a retained source
@@ -601,4 +630,5 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // tree survives reloads independent of the config file or of whether
     // "Scan all" was ever clicked). Names stored lowercased.
     (30, "CREATE TABLE IF NOT EXISTS saved_orgs (org TEXT PRIMARY KEY, added_at TEXT NOT NULL DEFAULT (datetime('now')));"),
+    (31, "CREATE TABLE IF NOT EXISTS check_executions (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE, check_id TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 1, outcome TEXT NOT NULL, engine TEXT, engine_version TEXT, is_fallback INTEGER NOT NULL DEFAULT 0, scope TEXT, reason TEXT, from_cache INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(run_id, check_id, attempt)); CREATE INDEX IF NOT EXISTS idx_check_executions_run ON check_executions(run_id); CREATE TABLE IF NOT EXISTS policy_decisions (run_id INTEGER PRIMARY KEY REFERENCES scan_runs(id) ON DELETE CASCADE, decision TEXT NOT NULL, policy_version TEXT NOT NULL, reasons_json TEXT NOT NULL, missing_checks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));"),
 ];
