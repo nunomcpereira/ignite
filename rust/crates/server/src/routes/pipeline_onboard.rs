@@ -286,13 +286,16 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
 
         logger.status(4, "running", None);
         let mut issues: Vec<Issue> = license_issues.clone();
+        let mut coverage = vec![ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false)];
         if !phase_enabled(&phase_meta, 4) {
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
+            coverage.push(ignite_policy::CheckCoverage::disabled("phase4"));
         } else {
             let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), Some(project_path.clone()));
             let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| logger.log(4, m))
                 .await
                 .map_err(|e| PipelineError::new(4, e.to_string()))?;
+            coverage.extend(output.coverage);
             issues = output.issues;
             issues.extend(license_issues);
         }
@@ -459,9 +462,11 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             logger.log(5, "Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).");
             logger.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
             logger.status(5, "skipped", None);
+            coverage.push(ignite_policy::CheckCoverage::disabled("governance-ci"));
         } else if !run_local_ci {
             logger.log(5, "Local CI execution disabled by request (runLocalCi=false).");
             logger.status(5, "skipped", None);
+            coverage.push(ignite_policy::CheckCoverage::disabled_with_reason("governance-ci", "local CI disabled by request"));
         } else {
             let l5 = logger.clone();
             let gov = &state.config.governance;
@@ -470,13 +475,28 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                     logger.log(5, &format!("⚠ Local CI skipped: {reason}"));
                     logger.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
                     logger.status(5, "success", None);
+                    coverage.push(ignite_policy::CheckCoverage::unavailable("governance-ci", reason));
                 }
                 Ok(ignite_pipeline_core::GovernanceCiOutcome::Passed) => {
                     logger.log(5, "✓ All org governance jobs passed locally.");
                     logger.status(5, "success", None);
+                    coverage.push(ignite_policy::CheckCoverage::completed("governance-ci", "act", false));
                 }
-                Err(e) => return Err(PipelineError::new(5, e)),
+                Err(e) => {
+                    coverage.push(ignite_policy::CheckCoverage::failed("governance-ci", e.clone()));
+                    return Err(PipelineError::new(5, e));
+                }
             }
+        }
+
+        // Onboarding has already resolved every blocking finding before it
+        // reaches this point. Coverage can still make the decision
+        // incomplete under the explicitly configured strict profile; in
+        // that case stop before Phase 6 rather than publishing an
+        // insufficiently assessed snapshot.
+        let policy_decision = crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &coverage, false, false);
+        if !policy_decision.permits_publication() {
+            return Err(PipelineError::new(5, format!("Policy decision '{:?}' prevents publication: {}", policy_decision.decision, policy_decision.reasons.join("; "))));
         }
 
         if dry_run {

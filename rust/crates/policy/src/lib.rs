@@ -169,7 +169,7 @@ impl PolicyVersion {
     pub fn strict_publication() -> Self {
         PolicyVersion {
             id: "strict-publication-v1".to_string(),
-            required_checks: vec!["secrets".to_string(), "dependency-vulnerability".to_string(), "semantic-sast".to_string(), "governance-ci".to_string()],
+            required_checks: vec!["secrets".to_string(), "dependency-vulnerability".to_string(), "semanticSast".to_string(), "governance-ci".to_string()],
             allow_fallback_for: vec!["secrets".to_string()],
         }
     }
@@ -296,14 +296,14 @@ mod tests {
     fn strict_profile_requiring_an_unavailable_check_yields_incomplete_and_blocks_publication() {
         let policy = PolicyVersion::strict_publication();
         let coverage = vec![
-            CheckCoverage::unavailable("semantic-sast", "semgrep binary missing"),
+            CheckCoverage::unavailable("semanticSast", "semgrep binary missing"),
             CheckCoverage::completed("secrets", "gitleaks", false),
             CheckCoverage::completed("dependency-vulnerability", "osv", false),
             CheckCoverage::completed("governance-ci", "act", false),
         ];
         let decision = evaluate_policy(&coverage, false, false, &policy);
         assert_eq!(decision.decision, PolicyDecisionKind::Incomplete);
-        assert_eq!(decision.missing_required_coverage, vec!["semantic-sast".to_string()]);
+        assert_eq!(decision.missing_required_coverage, vec!["semanticSast".to_string()]);
         assert!(!decision.permits_publication());
     }
 
@@ -318,8 +318,8 @@ mod tests {
 
     #[test]
     fn a_genuinely_inapplicable_required_check_does_not_block_and_records_its_reason() {
-        let policy = PolicyVersion { id: "custom".to_string(), required_checks: vec!["semantic-sast".to_string()], allow_fallback_for: vec![] };
-        let coverage = vec![CheckCoverage::not_applicable("semantic-sast", "no source files in any supported language")];
+        let policy = PolicyVersion { id: "custom".to_string(), required_checks: vec!["semanticSast".to_string()], allow_fallback_for: vec![] };
+        let coverage = vec![CheckCoverage::not_applicable("semanticSast", "no source files in any supported language")];
         let decision = evaluate_policy(&coverage, false, false, &policy);
         assert_eq!(decision.decision, PolicyDecisionKind::Pass);
         assert_eq!(coverage[0].reason.as_deref(), Some("no source files in any supported language"));
@@ -331,7 +331,7 @@ mod tests {
         let coverage = vec![
             CheckCoverage::completed("secrets", "built-in-regex-fallback", true), // fallback, explicitly permitted for "secrets"
             CheckCoverage::completed("dependency-vulnerability", "osv", false),
-            CheckCoverage::completed("semantic-sast", "semgrep", false),
+            CheckCoverage::completed("semanticSast", "semgrep", false),
             CheckCoverage::completed("governance-ci", "act", false),
         ];
         let decision = evaluate_policy(&coverage, false, false, &policy);
@@ -344,7 +344,7 @@ mod tests {
         let coverage = vec![
             CheckCoverage::completed("secrets", "gitleaks", false),
             CheckCoverage::completed("dependency-vulnerability", "built-in-fallback", true), // fallback NOT in allow_fallback_for
-            CheckCoverage::completed("semantic-sast", "semgrep", false),
+            CheckCoverage::completed("semanticSast", "semgrep", false),
             CheckCoverage::completed("governance-ci", "act", false),
         ];
         let decision = evaluate_policy(&coverage, false, false, &policy);
@@ -389,7 +389,7 @@ mod tests {
         let coverage = vec![
             CheckCoverage::completed("secrets", "gitleaks", false),
             CheckCoverage::completed("dependency-vulnerability", "osv", false),
-            CheckCoverage::completed("semantic-sast", "semgrep", false),
+            CheckCoverage::completed("semanticSast", "semgrep", false),
             CheckCoverage::completed("governance-ci", "act", false),
         ];
         let first = evaluate_policy(&coverage, false, false, &pinned);

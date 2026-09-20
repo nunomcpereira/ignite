@@ -807,12 +807,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             // didn't run; a deployment opts into `strict_publication()` via
             // `policy.version` in `config.json` (`ignite_config`).
             let blocking_unresolved = issues.iter().any(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id));
-            let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
-            let policy_decision = ignite_policy::evaluate_policy(&phase4_coverage, blocking_unresolved, false, &policy_version);
-            if let Some(rid) = run_id {
-                state.db.replace_check_executions(rid, &phase4_coverage);
-                state.db.save_policy_decision(rid, &policy_decision);
-            }
+            let policy_decision = crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &phase4_coverage, blocking_unresolved, false);
 
             if baseline_mode.as_deref() == Some("save") {
                 let ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
@@ -918,12 +913,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             // response too — a blocked/incomplete run is exactly the case
             // where knowing what did/didn't run matters most.
             let blocking_unresolved = e.issues.as_ref().map(|list| list.iter().any(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id))).unwrap_or(true);
-            let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
-            let policy_decision = ignite_policy::evaluate_policy(&phase4_coverage, blocking_unresolved, false, &policy_version);
-            if let Some(rid) = run_id {
-                state.db.replace_check_executions(rid, &phase4_coverage);
-                state.db.save_policy_decision(rid, &policy_decision);
-            }
+            let policy_decision = crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &phase4_coverage, blocking_unresolved, false);
             let mut response = json!({
                 "ok": false,
                 "mode": "validate-all",
