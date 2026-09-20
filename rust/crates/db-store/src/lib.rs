@@ -31,6 +31,7 @@ mod github;
 mod issues;
 mod lifecycle;
 mod overrides;
+mod pending_effectivations;
 mod permissions;
 mod projects;
 mod publications;

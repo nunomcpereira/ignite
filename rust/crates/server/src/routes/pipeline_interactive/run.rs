@@ -810,6 +810,9 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             // project's retained source is still "active work" pending a
             // real push.
             state.db.set_snapshot_lease(pid, "pending_effectivation", 24);
+            // Durable counterpart of the in-memory map above, so effectivate
+            // still works after a server restart.
+            state.db.save_pending_effectivation(pid, &org, &repo, &source_backup_dir.to_string_lossy(), 24);
         }
     }
 

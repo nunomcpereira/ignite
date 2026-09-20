@@ -600,7 +600,7 @@ impl IgniteMcp {
     }
 
     #[tool(
-        description = "Run all Ignite onboarding checks against a local project directory, and — if every check passes — provision a private GitHub repo and push the code. Set dryRun=true to run every check without pushing. Requires a running Ignite server with `gh` authenticated."
+        description = "Run all Ignite onboarding checks against a local project directory, and — if every check passes — provision a private GitHub repo and push the code. Set dryRun=true to run every check without pushing; a successful dry run returns `projectId` and `effectivatable: true`, which is what effectivate_project takes. Every response carries `coverage` and `policyDecision`; a refused run carries `blocked`, `blockReason` (unresolved_findings | pending_approval | incomplete_coverage | policy_blocked), `overridable` and `nextAction`. A real (non-dry) run needs a GitHub token on the Ignite server side: one bound to the API key (`create-api-key --github-token-env`), the key owner's connected GitHub account, or the server's GH_TOKEN/GITHUB_TOKEN — the `gh` CLI's own login is NOT used (a 401 with `code: github_token_missing` lists the remedies)."
     )]
     async fn onboard_project(&self, Parameters(req): Parameters<OnboardProjectRequest>) -> Result<CallToolResult, McpError> {
         // Dry runs (checks-only, no provisioning/push) stay frictionless
@@ -645,7 +645,7 @@ impl IgniteMcp {
     }
 
     #[tool(
-        description = "Provision + push the exact snapshot already validated by a prior onboard_project(dryRun: true) call, without re-running phases 1-5. Requires a running Ignite server with `gh` authenticated, and the caller's GitHub account connected."
+        description = "Provision + push the exact snapshot already validated by a prior onboard_project(dryRun: true) call (use its `projectId`), without re-running phases 1-5. The snapshot is kept for 24h and survives a server restart; if it has expired the call returns 404 `no_pending_simulation` — re-run the dry run. Needs a GitHub token on the server side (bound to the API key, the key owner's connected account, or the server's GH_TOKEN/GITHUB_TOKEN; `gh` CLI login is not used). A refused call carries `blocked`, `blockReason`, `overridable` and `nextAction`; `pending_approval` also lists `pendingOverrides` for a different reviewer to approve."
     )]
     async fn effectivate_project(&self, Parameters(req): Parameters<EffectivateProjectRequest>) -> Result<CallToolResult, McpError> {
         if !authorized_for_mutation(req.api_key.as_deref()) {

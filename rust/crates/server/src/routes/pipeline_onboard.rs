@@ -124,11 +124,19 @@ struct PipelineError {
     phase: i64,
     message: String,
     issues: Option<Vec<Issue>>,
+    /// Set when the run stopped because publication is *blocked* (as opposed
+    /// to a crash): the machine-readable reason + details an agent acts on.
+    block: Option<(super::blocked::BlockReason, Value)>,
 }
 
 impl PipelineError {
     fn new(phase: i64, message: impl Into<String>) -> Self {
-        PipelineError { phase, message: message.into(), issues: None }
+        PipelineError { phase, message: message.into(), issues: None, block: None }
+    }
+
+    fn blocked(mut self, reason: super::blocked::BlockReason, details: Value) -> Self {
+        self.block = Some((reason, details));
+        self
     }
 }
 
@@ -182,7 +190,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
     // account — fail fast rather than burning phases 1-5 first.
     let gh_token = if dry_run { String::new() } else { crate::auth::resolve_effective_github_token(&headers, &state.db) };
     if !dry_run && gh_token.is_empty() {
-        return Err((StatusCode::UNAUTHORIZED, json!({ "error": "Log in and connect your GitHub account before onboarding for real, or pass dryRun: true." })));
+        return Err((StatusCode::UNAUTHORIZED, crate::auth::github_token_missing_body("onboard for real")));
     }
 
     let project_path = match ignite_tool_runner::sanitize_absolute_project_path(&raw_project_path) {
@@ -203,6 +211,13 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
     let mut run_id: Option<i64> = None;
     let mut repo_url: Option<String> = None;
     let mut pr_url: Option<String> = None;
+    // Declared outside the pipeline block so a *failed* run can still report
+    // the coverage it collected and the policy decision it reached.
+    let mut coverage: Vec<ignite_policy::CheckCoverage> = Vec::new();
+    let mut policy_out: Option<ignite_policy::PolicyDecision> = None;
+    // Set on a dry run whose validated snapshot is now registered for
+    // `POST /api/projects/:id/effectivate`.
+    let mut effectivatable = false;
 
     // See pipeline_validate.rs's identical comment: without catch_unwind
     // here, a panic anywhere inside this block would skip the staging-dir/
@@ -286,7 +301,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
 
         logger.status(4, "running", None);
         let mut issues: Vec<Issue> = license_issues.clone();
-        let mut coverage = vec![ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false)];
+        coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
         if !phase_enabled(&phase_meta, 4) {
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             coverage.push(ignite_policy::CheckCoverage::disabled("phase4"));
@@ -425,7 +440,18 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                             );
                         }
                     }
-                    return Err(PipelineError::new(4, format!("{} critical finding(s) require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.", needs_approval.len())));
+                    return Err(PipelineError::new(4, format!("{} critical finding(s) require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.", needs_approval.len())).blocked(
+                        super::blocked::BlockReason::PendingApproval,
+                        json!({
+                            "pendingOverrides": state.db.list_pending_overrides(project_id).into_iter().map(|o| json!({
+                                "overrideId": o.id,
+                                "issueId": o.issue_id,
+                                "submittedBy": o.actor_email,
+                                "approveEndpoint": format!("/api/projects/{project_id}/overrides/{}/approve", o.id),
+                            })).collect::<Vec<_>>(),
+                            "approverMustDifferFrom": actor.email,
+                        }),
+                    ));
                 }
             }
             if !result.ok {
@@ -439,7 +465,8 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                         .repo(&org, &repo)
                         .metadata(json!({ "unresolvedCount": result.unresolved_errors.len() })),
                 );
-                let mut e = PipelineError::new(4, format!("Phase 4 has {} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.", result.unresolved_errors.len()));
+                let mut e = PipelineError::new(4, format!("Phase 4 has {} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.", result.unresolved_errors.len()))
+                    .blocked(super::blocked::BlockReason::UnresolvedFindings, json!({ "unresolvedIssueIds": result.unresolved_errors.iter().map(|i| i.id.clone()).collect::<Vec<_>>() }));
                 e.issues = Some(result.unresolved_errors.into_iter().cloned().collect());
                 return Err(e);
             }
@@ -495,8 +522,13 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         // that case stop before Phase 6 rather than publishing an
         // insufficiently assessed snapshot.
         let policy_decision = crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &coverage, false, false);
+        policy_out = Some(policy_decision.clone());
         if !policy_decision.permits_publication() {
-            return Err(PipelineError::new(5, format!("Policy decision '{:?}' prevents publication: {}", policy_decision.decision, policy_decision.reasons.join("; "))));
+            let mut e = PipelineError::new(5, format!("Policy decision '{:?}' prevents publication: {}", policy_decision.decision, policy_decision.reasons.join("; ")));
+            if let Some(reason) = super::blocked::reason_for_policy_decision(&policy_decision) {
+                e = e.blocked(reason, super::blocked::policy_details(&policy_decision));
+            }
+            return Err(e);
         }
 
         if dry_run {
@@ -510,6 +542,30 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                 }
             }
             state.db.finish_project("success", None, None, None, project_id);
+
+            // Keep the exact validated snapshot so `effectivate_project` can
+            // publish it later without re-running phases 1-5 — the MCP tool
+            // is documented to follow `onboard_project(dryRun: true)`, which
+            // previously registered nothing (the backup was deleted below and
+            // no project id was returned). Copied out of the OS temp dir
+            // into the data dir so it survives temp cleanup and a restart.
+            for expired in state.db.take_expired_pending_effectivations() {
+                let _ = std::fs::remove_dir_all(&expired.source_dir);
+            }
+            let durable_dir = super::pipeline_interactive::ignite_data_dir().join("pending-effectivations").join(project_id.to_string());
+            let copied = durable_dir.parent().map(std::fs::create_dir_all).transpose().is_ok() && {
+                let _ = std::fs::remove_dir_all(&durable_dir);
+                ignite_staging::clone_directory_without_symlinks(&source_backup_dir, &durable_dir).is_ok()
+            };
+            if copied {
+                state.pending_effectivations.lock().insert(project_id, crate::state::PendingEffectivation { org: org.clone(), repo: repo.clone(), source_backup_dir: durable_dir.clone(), created_at: std::time::Instant::now() });
+                state.db.set_snapshot_lease(project_id, "pending_effectivation", 24);
+                state.db.save_pending_effectivation(project_id, &org, &repo, &durable_dir.to_string_lossy(), 24);
+                effectivatable = true;
+                logger.log(6, "Validated snapshot kept for 24h — call effectivate to publish exactly this tree without re-running the checks.");
+            } else {
+                logger.log(6, "⚠ Could not keep the validated snapshot for effectivation; re-run without dryRun to publish.");
+            }
         } else {
             logger.status(6, "running", None);
             if !source_backup_dir.is_dir() {
@@ -581,9 +637,17 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             "mode": "onboard",
             "dryRun": dry_run,
             "jobId": job_id,
+            "projectId": project_id,
             "projectPath": project_path,
             "repoUrl": repo_url,
             "prUrl": pr_url,
+            // Present on every pipeline entry point since US-02; onboard used
+            // to omit both, leaving an agent unable to see what was assessed.
+            "coverage": coverage,
+            "policyDecision": policy_out,
+            // `true` only when a dry run's snapshot is registered, i.e. the
+            // `effectivate_project` call the agent would make next can work.
+            "effectivatable": effectivatable,
             "phases": phases,
             "events": events,
         })),
@@ -626,21 +690,28 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
 
             let phases = logger.phase_summary();
             let events = logger.events();
-            Err((
-                StatusCode::BAD_REQUEST,
-                json!({
-                    "ok": false,
-                    "mode": "onboard",
-                    "dryRun": dry_run,
-                    "jobId": job_id,
-                    "projectPath": project_path,
-                    "error": e.message,
-                    "failedPhase": e.phase,
-                    "issues": e.issues.map(|list| list.iter().map(|i| serde_json::to_value(i).unwrap()).collect::<Vec<_>>()),
-                    "phases": phases,
-                    "events": events,
-                }),
-            ))
+            let body = json!({
+                "ok": false,
+                "mode": "onboard",
+                "dryRun": dry_run,
+                "jobId": job_id,
+                "projectId": (project_id != 0).then_some(project_id),
+                "projectPath": project_path,
+                "error": e.message,
+                "failedPhase": e.phase,
+                "issues": e.issues.map(|list| list.iter().map(|i| serde_json::to_value(i).unwrap()).collect::<Vec<_>>()),
+                // Coverage collected up to the failure point; not final when
+                // the run stopped before Phase 5.
+                "coverage": coverage,
+                "policyDecision": policy_out,
+                "phases": phases,
+                "events": events,
+            });
+            let body = match e.block {
+                Some((reason, details)) => super::blocked::with_block_info(body, reason, details),
+                None => body,
+            };
+            Err((StatusCode::BAD_REQUEST, body))
         }
     }
 }

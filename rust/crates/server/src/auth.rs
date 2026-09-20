@@ -73,16 +73,47 @@ pub fn resolve_user(headers: &HeaderMap, db: &ignite_db_store::DbStore) -> Optio
             return Some(AttachedUser { id: session.user_id, email: session.email, name: session.name, provider: session.provider });
         }
     }
-    let auth_header = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let mut parts = auth_header.splitn(2, ' ');
-    let (scheme, token) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-    if scheme == "Bearer" && token.starts_with(ignite_auth::API_KEY_PREFIX) {
+    if let Some(token) = bearer_api_key(headers) {
         if let Some(row) = db.get_active_api_key_by_hash(&ignite_auth::hash_api_key(token)) {
             db.touch_api_key_last_used(row.id);
             return Some(AttachedUser { id: row.user_id, email: row.email, name: row.name, provider: row.provider });
         }
     }
     None
+}
+
+/// The raw `ignite_<key>` from an `Authorization: Bearer` header, if one is present.
+fn bearer_api_key(headers: &HeaderMap) -> Option<&str> {
+    let auth_header = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let mut parts = auth_header.splitn(2, ' ');
+    let (scheme, token) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    (scheme == "Bearer" && token.starts_with(ignite_auth::API_KEY_PREFIX)).then_some(token)
+}
+
+/// Where a resolved GitHub push token came from — surfaced so a failed
+/// publish (and a log line) can say which source actually supplied the token
+/// instead of leaving a caller to guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubTokenSource {
+    /// A token bound to the calling API key itself (`create-api-key --github-token-env`).
+    ApiKey,
+    /// The calling user's browser-connected GitHub OAuth account.
+    UserConnection,
+    /// The server process's own `GH_TOKEN` / `GITHUB_TOKEN`.
+    ServerEnv,
+}
+
+/// The token bound to the calling *API key*. Only consulted when the request
+/// is authenticated by the key itself — a valid session cookie wins in
+/// `resolve_user`, so a browser session must never silently push as a key's
+/// identity.
+fn api_key_bound_github_token(headers: &HeaderMap, db: &ignite_db_store::DbStore) -> Option<String> {
+    let cookies = ignite_auth::parse_cookies(cookie_header(headers));
+    if cookies.get(ignite_auth::SESSION_COOKIE).is_some_and(|id| db.get_session(id).is_some()) {
+        return None;
+    }
+    db.get_active_api_key_github_token(&ignite_auth::hash_api_key(bearer_api_key(headers)?))
 }
 
 /// The connected GitHub push token for a resolved session/API-key user —
@@ -99,14 +130,47 @@ pub fn resolve_user_github_token(user: &AttachedUser, db: &ignite_db_store::DbSt
 /// token should use instead of calling `resolve_server_github_token()`
 /// directly, so a real logged-in session takes priority per `auth.js`.
 pub fn resolve_effective_github_token(headers: &HeaderMap, db: &ignite_db_store::DbStore) -> String {
+    resolve_effective_github_token_with_source(headers, db).map(|(token, _)| token).unwrap_or_default()
+}
+
+/// Same resolution as `resolve_effective_github_token`, in priority order:
+/// the calling API key's own bound token, then the resolved user's connected
+/// GitHub account, then the server's env token. `None` when none supplies a
+/// non-empty token. The `gh` CLI's ambient `gh auth login` credentials are
+/// deliberately *not* a source here.
+pub fn resolve_effective_github_token_with_source(headers: &HeaderMap, db: &ignite_db_store::DbStore) -> Option<(String, GithubTokenSource)> {
+    if let Some(token) = api_key_bound_github_token(headers, db) {
+        return Some((token, GithubTokenSource::ApiKey));
+    }
     if let Some(user) = resolve_user(headers, db) {
         if let Some(token) = resolve_user_github_token(&user, db) {
             if !token.is_empty() {
-                return token;
+                return Some((token, GithubTokenSource::UserConnection));
             }
         }
     }
-    ignite_github_api::resolve_server_github_token()
+    let env_token = ignite_github_api::resolve_server_github_token();
+    (!env_token.is_empty()).then_some((env_token, GithubTokenSource::ServerEnv))
+}
+
+/// The body of the 401 returned when a real (non-dry-run) publish has no
+/// GitHub token — names every source that was tried and how to supply one,
+/// so an agent can fix it without a human reading server code. Includes
+/// `ambientGhAuthUsed: false` because the tool descriptions used to say "`gh`
+/// authenticated", which never satisfied this check.
+pub fn github_token_missing_body(action: &str) -> Value {
+    json!({
+        "error": format!("No GitHub token is available to {action}. Tried, in order: (1) a token bound to the API key used for this request, (2) the calling user's connected GitHub account, (3) the server's GH_TOKEN/GITHUB_TOKEN env var. The `gh` CLI's own `gh auth login` credentials are not used."),
+        "code": "github_token_missing",
+        "triedSources": ["api_key_bound_token", "user_github_connection", "server_env_token"],
+        "ambientGhAuthUsed": false,
+        "remediation": [
+            "Mint a key with a bound token: GITHUB_TOKEN_FOR_KEY=<pat> create-api-key <email> [label] --github-token-env GITHUB_TOKEN_FOR_KEY",
+            "Or connect a GitHub account for the key's owner in the web UI (Settings → connect GitHub)",
+            "Or start ignite-server with GH_TOKEN (or GITHUB_TOKEN) set",
+            "Or pass dryRun: true to run every check without publishing"
+        ],
+    })
 }
 
 /// Axum extractor: 401s with the same body shape as the Node original
@@ -473,5 +537,60 @@ mod tests {
 
         let me_res = app.oneshot(Request::get("/api/auth/me").header("cookie", session_cookie).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(json_body(me_res).await["user"], Value::Null);
+    }
+
+    fn bearer(raw: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::AUTHORIZATION, format!("Bearer {raw}").parse().unwrap());
+        h
+    }
+
+    /// Resolution order for a headless caller: the key's own bound token,
+    /// then its owner's connected account, then the server's env token — and
+    /// a browser session must never push as a key's identity.
+    #[test]
+    fn github_token_resolves_key_then_connection_then_env_and_a_session_ignores_the_keys_token() {
+        let _guard = crate::state::GH_TOKEN_ENV_GUARD.lock();
+        std::env::remove_var("GH_TOKEN");
+        std::env::remove_var("GITHUB_TOKEN");
+        let state = test_state();
+        let uid = state.db.create_local_user("agent@example.com", None, ignite_auth::dummy_hash()).unwrap();
+        let raw = ignite_auth::generate_api_key();
+        let key_id = state.db.create_api_key(uid, &ignite_auth::hash_api_key(&raw), None, None, "test");
+        let headers = bearer(&raw);
+
+        assert_eq!(resolve_effective_github_token_with_source(&headers, &state.db), None, "nothing configured anywhere");
+        assert_eq!(resolve_effective_github_token(&headers, &state.db), "");
+
+        std::env::set_var("GH_TOKEN", "env-token");
+        assert_eq!(resolve_effective_github_token_with_source(&headers, &state.db), Some(("env-token".into(), GithubTokenSource::ServerEnv)));
+
+        state.db.upsert_github_connection(uid, "octocat", "connection-token", None);
+        assert_eq!(resolve_effective_github_token_with_source(&headers, &state.db), Some(("connection-token".into(), GithubTokenSource::UserConnection)));
+
+        state.db.set_api_key_github_token(key_id, Some("key-token"));
+        assert_eq!(resolve_effective_github_token_with_source(&headers, &state.db), Some(("key-token".into(), GithubTokenSource::ApiKey)));
+
+        // A valid session cookie wins over the Bearer key: the key's bound
+        // token must not be used for a browser session.
+        state.db.create_session("sid-1", uid, "2999-01-01 00:00:00");
+        let mut with_session = bearer(&raw);
+        with_session.insert(axum::http::header::COOKIE, format!("{}=sid-1", ignite_auth::SESSION_COOKIE).parse().unwrap());
+        assert_eq!(resolve_effective_github_token_with_source(&with_session, &state.db), Some(("connection-token".into(), GithubTokenSource::UserConnection)));
+
+        // A revoked key yields neither its token nor its user.
+        assert!(state.db.revoke_api_key(key_id, uid));
+        assert_eq!(resolve_effective_github_token_with_source(&headers, &state.db), Some(("env-token".into(), GithubTokenSource::ServerEnv)));
+        std::env::remove_var("GH_TOKEN");
+    }
+
+    #[test]
+    fn the_missing_token_body_names_every_source_and_says_ambient_gh_is_not_used() {
+        let body = github_token_missing_body("onboard for real");
+        assert_eq!(body["code"], "github_token_missing");
+        assert_eq!(body["ambientGhAuthUsed"], false);
+        assert_eq!(body["triedSources"].as_array().unwrap().len(), 3);
+        assert!(body["error"].as_str().unwrap().contains("onboard for real"));
+        assert!(body["remediation"].as_array().unwrap().iter().any(|r| r.as_str().unwrap().contains("--github-token-env")));
     }
 }

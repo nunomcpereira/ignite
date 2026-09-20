@@ -933,13 +933,24 @@ without a session an agent can run dry-run checks but can never actually
 ship. API keys close that gap:
 
 1. Sign up / log in once via the web UI (whichever `AUTH_MODE` is
-   configured) and connect GitHub if you'll need real pushes.
+   configured). For real pushes, give the key a GitHub token one of three
+   ways (checked in this order; the `gh` CLI's own `gh auth login` is
+   **not** used): a token bound to the key itself (step 2), the key owner's
+   connected GitHub account (web UI), or the server's `GH_TOKEN` /
+   `GITHUB_TOKEN`. A publish with none of them returns `401` with
+   `code: github_token_missing` listing these remedies.
 2. Mint a key for that account:
    ```bash
    ./target/release/create-api-key you@example.com "ci-agent"
+   # headless push identity, no browser needed (token read from an env var,
+   # never argv):
+   AGENT_PAT=<pat> ./target/release/create-api-key you@example.com "ci-agent" --github-token-env AGENT_PAT
    ```
    Prints the raw key exactly once (`ignite_<64 hex chars>`) - only its
-   SHA-256 hash is stored, so save it now; it can't be recovered later.
+   SHA-256 hash is stored, so save it now; it can't be recovered later. A
+   bound GitHub token is stored in `ignite.db` the same way a connected
+   account's token is (plaintext) - use a fine-grained PAT scoped to the
+   target org.
 3. Send it as `Authorization: Bearer ignite_<key>` on any request. It
    resolves to the same `req.user` a session cookie would, so it works
    everywhere attribution or `resolve_effective_github_token` is needed -
@@ -953,6 +964,19 @@ both pick this up automatically from an `IGNITE_API_KEY` env var:
 ```bash
 export IGNITE_API_KEY="<the key create-api-key printed>"
 ```
+
+**Agent flow and refusals.** `onboard_project(dryRun: true)` returns
+`projectId`, `coverage`, `policyDecision` and `effectivatable`; pass the
+`projectId` to `effectivate_project` to publish exactly that validated tree
+(kept 24h, survives a server restart). Any refusal (`onboard`,
+`validate-all`, `effectivate`) carries a machine-readable envelope on top of
+its existing fields: `blocked: true`, `blockReason`
+(`unresolved_findings` | `pending_approval` | `incomplete_coverage` |
+`policy_blocked`), `overridable`, `needsHuman`, and `nextAction`
+(`submit_overrides_or_fix_source` | `await_second_reviewer` |
+`restore_missing_checks_and_rescan` | `fix_source_and_rescan`). `pending_approval` also lists
+`pendingOverrides[{overrideId, issueId, approveEndpoint}]` for a different
+reviewer.
 
 There's no revoke endpoint yet - `store.revoke_api_key(id)` in
 `rust/crates/db-store` works from a one-off script against `ignite.db` in

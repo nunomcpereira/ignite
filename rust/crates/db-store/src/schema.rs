@@ -631,4 +631,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // "Scan all" was ever clicked). Names stored lowercased.
     (30, "CREATE TABLE IF NOT EXISTS saved_orgs (org TEXT PRIMARY KEY, added_at TEXT NOT NULL DEFAULT (datetime('now')));"),
     (31, "CREATE TABLE IF NOT EXISTS check_executions (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE, check_id TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 1, outcome TEXT NOT NULL, engine TEXT, engine_version TEXT, is_fallback INTEGER NOT NULL DEFAULT 0, scope TEXT, reason TEXT, from_cache INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(run_id, check_id, attempt)); CREATE INDEX IF NOT EXISTS idx_check_executions_run ON check_executions(run_id); CREATE TABLE IF NOT EXISTS policy_decisions (run_id INTEGER PRIMARY KEY REFERENCES scan_runs(id) ON DELETE CASCADE, decision TEXT NOT NULL, policy_version TEXT NOT NULL, reasons_json TEXT NOT NULL, missing_checks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));"),
+    // Agent-flow gaps: (32) an API key can carry its own GitHub push token,
+    // so a headless caller isn't forced to depend on a human's browser
+    // OAuth connection or the server's ambient GH_TOKEN; (33) a durable
+    // record of a run's "effectivatable" snapshot, so a dry run can still be
+    // effectivated after a server restart (previously an in-memory-only map).
+    (32, "ALTER TABLE api_keys ADD COLUMN github_token TEXT;"),
+    (33, "CREATE TABLE IF NOT EXISTS pending_effectivations (project_id INTEGER PRIMARY KEY, org TEXT NOT NULL, repo TEXT NOT NULL, source_dir TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL);"),
 ];

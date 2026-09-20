@@ -939,6 +939,20 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             } else {
                 obj.insert("issues".to_string(), Value::Null);
             }
+            // Machine-readable "what do I do next" — only for a run that
+            // stopped on findings (`e.issues` set); a crash carries no issue
+            // list and is not a block, so it gets no envelope.
+            let response = match &e.issues {
+                Some(list) if blocking_unresolved => {
+                    let unresolved: Vec<String> = list.iter().filter(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id)).map(|i| i.id.clone()).collect();
+                    crate::routes::blocked::with_block_info(response, crate::routes::blocked::BlockReason::UnresolvedFindings, json!({ "unresolvedIssueIds": unresolved }))
+                }
+                Some(_) => match crate::routes::blocked::reason_for_policy_decision(&policy_decision) {
+                    Some(reason) => crate::routes::blocked::with_block_info(response, reason, crate::routes::blocked::policy_details(&policy_decision)),
+                    None => response,
+                },
+                None => response,
+            };
             Err((response, json!({})))
         }
     }

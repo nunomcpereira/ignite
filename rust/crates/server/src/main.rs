@@ -429,7 +429,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn onboard_dry_run_completes_without_shipping() {
+        // A dry run now keeps its validated snapshot under
+        // `IGNITE_DATA_DIR` — point that at a tempdir, not the real ~/.ignite.
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke"}"#).unwrap();
         std::fs::write(dir.path().join("app.js"), "console.log(1);\n").unwrap();
@@ -634,5 +640,151 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/reports/posture")).bearer_auth(token).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
+    }
+
+    /// Like `spawn_test_server_with_api_key`, but hands back the shared
+    /// `AppState` (to assert on DB rows) and the key's owner email, and can
+    /// bind a GitHub token to the key.
+    async fn spawn_test_server_with_state(owner_email: &str, key_github_token: Option<&str>) -> (String, String, Arc<AppState>) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let user_id = db.create_local_user(owner_email, None, ignite_auth::dummy_hash()).unwrap();
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        let key_id = db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
+        if let Some(gh) = key_github_token {
+            db.set_api_key_github_token(key_id, Some(gh));
+        }
+        let state = Arc::new(AppState {
+            runner: state::default_runner(),
+            db,
+            running_runs: Mutex::new(HashMap::new()),
+            pending_effectivations: Mutex::new(HashMap::new()),
+            review_gate: review_gate::ReviewGate::default(),
+            llm_config: state::default_llm_config(),
+            config: ignite_config::Config::default(),
+            package_hallucination_checker: state::default_package_hallucination_checker(),
+            fix_pr_previews: Mutex::new(HashMap::new()),
+            audit_http: reqwest::Client::new(),
+        });
+        let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
+        let app = build_router(state.clone(), &public_dir);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+        });
+        std::mem::forget(db_dir);
+        (format!("http://{addr}"), token, state)
+    }
+
+    fn agent_test_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke"}"#).unwrap();
+        std::fs::write(dir.path().join("app.js"), "console.log(1);\n").unwrap();
+        dir
+    }
+
+    /// The agent's happy path — `onboard_project(dryRun)` then
+    /// `effectivate_project` — used to be impossible: the dry run returned no
+    /// `projectId` and registered nothing to effectivate. Covers both ways a
+    /// dry run can end (this environment may or may not produce blocking
+    /// findings, e.g. an unreviewed CodeQL pin).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn agent_dry_run_reports_policy_and_registers_a_snapshot_that_survives_a_restart() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+
+        let (base, key, state) = spawn_test_server_with_state("agent@example.com", Some("ghp_bound_to_key")).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let res = client
+            .post(format!("{base}/api/pipeline/onboard"))
+            .bearer_auth(&key)
+            .json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": project.path().to_string_lossy(), "dryRun": true, "runLocalCi": false }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body: Value = res.json().await.unwrap();
+        let project_id = body["projectId"].as_i64().unwrap_or_else(|| panic!("onboard must return projectId ({status}): {body}"));
+        assert!(body["coverage"].is_array(), "coverage must be reported on every onboard response: {body}");
+        assert!(body.get("policyDecision").is_some(), "policyDecision key must always be present: {body}");
+
+        if status == 200 {
+            assert_eq!(body["effectivatable"], true, "a passing dry run must be effectivatable: {body}");
+            assert_eq!(body["policyDecision"]["decision"], "pass");
+            let row = state.db.get_pending_effectivation(project_id).expect("a durable pending-effectivation row");
+            assert!(std::path::Path::new(&row.source_dir).join("app.js").is_file(), "the kept snapshot must hold the validated tree");
+            assert!(row.source_dir.starts_with(&*data_dir.path().to_string_lossy()), "kept under the data dir, not the OS temp dir");
+
+            // Simulate a restart (in-memory map lost) and a vanished snapshot
+            // dir: effectivate must still *find* the run (410 snapshot_gone),
+            // not report it as never having existed (404).
+            state.pending_effectivations.lock().clear();
+            std::fs::remove_dir_all(&row.source_dir).unwrap();
+            let eff = client.post(format!("{base}/api/projects/{project_id}/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap();
+            assert_eq!(eff.status(), 410, "the durable row must be found after a restart");
+            let eff_body: Value = eff.json().await.unwrap();
+            assert_eq!(eff_body["code"], "snapshot_gone");
+        } else {
+            assert_eq!(status, 400, "unexpected status: {body}");
+            assert_eq!(body["blocked"], true, "a refused run must carry the machine-readable envelope: {body}");
+            assert_eq!(body["ok"], false);
+            let reason = body["blockReason"].as_str().unwrap();
+            assert!(["unresolved_findings", "pending_approval", "incomplete_coverage", "policy_blocked"].contains(&reason), "unexpected blockReason {reason}");
+            assert!(body["nextAction"].is_string() && body["overridable"].is_boolean());
+            if reason == "unresolved_findings" {
+                assert_eq!(body["overridable"], true);
+                assert!(!body["unresolvedIssueIds"].as_array().unwrap().is_empty());
+            }
+            assert!(state.db.get_pending_effectivation(project_id).is_none(), "a blocked run must not register a snapshot");
+        }
+        std::env::remove_var("IGNITE_DATA_DIR");
+    }
+
+    /// The three publishing routes resolve "who is this override from"
+    /// differently on purpose (validate-all may take a body actor when
+    /// unauthenticated; onboard never does). For an *authenticated* agent
+    /// they must all agree: the key's owner, never a body-supplied actor.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn an_agents_overrides_are_attributed_to_its_key_owner_on_every_route() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+        let (base, key, state) = spawn_test_server_with_state("owner@example.com", None).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let path = project.path().to_string_lossy().to_string();
+
+        let routes: [(&str, Value); 2] = [
+            ("/api/pipeline/onboard", serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": path, "dryRun": true, "runLocalCi": false })),
+            ("/api/pipeline/validate-all", serde_json::json!({ "projectPath": path, "runLocalCi": false, "fast": true })),
+        ];
+        let mut exercised = 0;
+        for (route, base_body) in routes {
+            let first: Value = client.post(format!("{base}{route}")).bearer_auth(&key).json(&base_body).send().await.unwrap().json().await.unwrap();
+            let Some(issues) = first["issues"].as_array().filter(|i| !i.is_empty()) else {
+                eprintln!("skipping {route}: no findings in this environment, so there is nothing to override");
+                continue;
+            };
+            let overrides: Vec<Value> = issues.iter().map(|i| serde_json::json!({ "issueId": i["id"], "justification": "Reviewed by the agent's owner: accepted risk for this test fixture." })).collect();
+            let mut body = base_body.clone();
+            body["overrides"] = Value::Array(overrides);
+            body["actor"] = serde_json::json!({ "email": "mallory@example.com", "name": "Mallory" });
+            let second: Value = client.post(format!("{base}{route}")).bearer_auth(&key).json(&body).send().await.unwrap().json().await.unwrap();
+            let job_id = second["jobId"].as_str().unwrap_or_else(|| panic!("{route} returned no jobId: {second}"));
+            let project_id = state.db.get_project_id_by_job_id(job_id).unwrap();
+            let recorded = state.db.get_project_overrides(project_id);
+            assert!(!recorded.is_empty(), "{route}: the overrides must have been recorded");
+            for o in recorded {
+                assert_eq!(o.actor_email, "owner@example.com", "{route}: attributed to the key owner, never the body actor");
+            }
+            exercised += 1;
+        }
+        eprintln!("override-attribution checked on {exercised}/2 routes");
+        std::env::remove_var("IGNITE_DATA_DIR");
     }
 }

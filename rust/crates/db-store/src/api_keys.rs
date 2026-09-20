@@ -34,6 +34,30 @@ impl DbStore {
         conn.last_insert_rowid()
     }
 
+    /// Binds a GitHub push token to one API key, so a headless caller using
+    /// that key can publish without a browser-connected OAuth account or the
+    /// server's ambient `GH_TOKEN`. Stored the same way
+    /// `github_connections.access_token` is (plaintext in `ignite.db`).
+    /// `None` clears it.
+    pub fn set_api_key_github_token(&self, id: i64, token: Option<&str>) {
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute("UPDATE api_keys SET github_token = ? WHERE id = ?", params![token, id]) {
+            tracing::error!("set_api_key_github_token failed for key {id}: {e}");
+        }
+    }
+
+    /// The GitHub token bound to an active (non-revoked) key, if any. An
+    /// empty stored value reads as `None`.
+    pub fn get_active_api_key_github_token(&self, key_hash: &str) -> Option<String> {
+        let conn = self.conn.lock();
+        let token: Option<String> = conn
+            .query_row("SELECT github_token FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL", params![key_hash], |row| row.get(0))
+            .optional()
+            .unwrap_or(None)
+            .flatten();
+        token.filter(|t| !t.is_empty())
+    }
+
     pub fn get_active_api_key_by_hash(&self, key_hash: &str) -> Option<ApiKeyIdentity> {
         let conn = self.conn.lock();
         conn.query_row(
@@ -93,4 +117,34 @@ impl DbStore {
         conn.execute("UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND user_id = ? AND revoked_at IS NULL", params![id, user_id]).unwrap() > 0
     }
 
+}
+
+#[cfg(test)]
+mod github_token_tests {
+    use crate::store::DbStore;
+
+    fn open_test_db() -> (DbStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DbStore::open(&dir.path().join("test.db")).unwrap();
+        (db, dir)
+    }
+
+    #[test]
+    fn a_key_bound_github_token_is_returned_only_for_an_active_key() {
+        let (db, _dir) = open_test_db();
+        let user_id = db.create_local_user("agent@example.com", Some("Agent"), "unused-hash").unwrap();
+        let key_id = db.create_api_key(user_id, "hash-1", None, None, "test");
+        assert_eq!(db.get_active_api_key_github_token("hash-1"), None, "no token bound yet");
+
+        db.set_api_key_github_token(key_id, Some("ghp_agent"));
+        assert_eq!(db.get_active_api_key_github_token("hash-1").as_deref(), Some("ghp_agent"));
+        assert_eq!(db.get_active_api_key_github_token("some-other-hash"), None);
+
+        db.set_api_key_github_token(key_id, Some(""));
+        assert_eq!(db.get_active_api_key_github_token("hash-1"), None, "an empty token reads as unbound");
+
+        db.set_api_key_github_token(key_id, Some("ghp_agent"));
+        assert!(db.revoke_api_key(key_id, user_id));
+        assert_eq!(db.get_active_api_key_github_token("hash-1"), None, "a revoked key must not yield its token");
+    }
 }
