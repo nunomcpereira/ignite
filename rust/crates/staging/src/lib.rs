@@ -6,7 +6,7 @@
 //! entries are skipped and never followed, and extracted/staged size is
 //! capped at `MAX_EXTRACTED_BYTES`.
 
-use ignite_fs_utils::{is_env_template_file, is_gitignored, load_gitignore_patterns, walk_files};
+use ignite_fs_utils::{invalidate_walk_cache, is_env_template_file, is_gitignored, load_gitignore_patterns, walk_files};
 use ignite_tool_runner::{sanitize_absolute_project_path, sanitize_upload_relative_path, ToolError};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -107,7 +107,14 @@ pub fn stage_existing_project(source_dir: &str, dest_dir: &Path) -> Result<Stage
 
     let mut total_bytes = 0u64;
     let mut file_count = 0u64;
-    for file in walk_files(&safe_source)? {
+    // The live source tree changes between scans (and during one), unlike a
+    // staged copy — a memoized listing from an earlier scan in this
+    // long-running server would name files that have since been deleted
+    // and fail every later staging with a bare ENOENT.
+    invalidate_walk_cache(&safe_source);
+    let files = walk_files(&safe_source);
+    invalidate_walk_cache(&safe_source);
+    for file in files? {
         let rel = file.strip_prefix(&safe_source).unwrap_or(&file);
         let target = dest_dir.join(rel);
         let normalized = normalize_lexically(&target);
@@ -115,7 +122,13 @@ pub fn stage_existing_project(source_dir: &str, dest_dir: &Path) -> Result<Stage
         if normalized != root_normalized && !normalized.starts_with(&root_normalized) {
             return Err(StagingError::ProjectFilePathTraversal(rel.to_string_lossy().into_owned()));
         }
-        let size = fs::metadata(&file)?.len();
+        // A file deleted between the directory walk and here (build output,
+        // editor temp file, DB journal) is simply not part of the project.
+        let size = match fs::metadata(&file) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
         total_bytes = total_bytes.saturating_add(size);
         if total_bytes > MAX_EXTRACTED_BYTES {
             return Err(StagingError::ProjectTooLarge);
@@ -123,7 +136,11 @@ pub fn stage_existing_project(source_dir: &str, dest_dir: &Path) -> Result<Stage
         if let Some(parent) = normalized.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(&file, &normalized)?;
+        match fs::copy(&file, &normalized) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !file.exists() => continue,
+            Err(e) => return Err(e.into()),
+        }
         file_count += 1;
     }
 
@@ -363,6 +380,20 @@ pub fn check_codeowners(root: &Path) -> CodeownersCheck {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn stage_existing_project_ignores_files_deleted_since_an_earlier_walk() {
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        fs::write(src.path().join("keep.txt"), "a").unwrap();
+        fs::write(src.path().join("gone.txt"), "b").unwrap();
+        // Prime the process-wide walk cache, then delete a file behind its back.
+        walk_files(src.path()).unwrap();
+        fs::remove_file(src.path().join("gone.txt")).unwrap();
+        let res = stage_existing_project(&src.path().to_string_lossy(), dst.path()).unwrap();
+        assert_eq!(res.file_count, 1);
+        assert!(dst.path().join("keep.txt").exists());
+    }
 
     #[test]
     fn resolve_within_root_allows_nested_paths() {
