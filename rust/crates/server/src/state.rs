@@ -210,3 +210,56 @@ pub static IGNITE_DATA_DIR_ENV_GUARD: Mutex<()> = Mutex::new(());
 pub fn default_runner() -> ToolRunner {
     crate::phase4_config::runner_from_config(&ignite_config::Config::default())
 }
+
+#[cfg(test)]
+mod characterization_tests {
+    //! Pins what `AppState::emit_audit_event` guarantees today: the local trail
+    //! is always written, synchronously, whether or not any SIEM sink exists.
+    use super::*;
+
+    fn state_with(config: ignite_config::Config) -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&dir.path().join("test.db")).unwrap();
+        let state = AppState {
+            runner: default_runner(),
+            db,
+            running_runs: Mutex::new(HashMap::new()),
+            pending_effectivations: Mutex::new(HashMap::new()),
+            review_gate: crate::review_gate::ReviewGate::default(),
+            llm_config: default_llm_config(),
+            config,
+            package_hallucination_checker: default_package_hallucination_checker(),
+            fix_pr_previews: Mutex::new(HashMap::new()),
+            audit_http: reqwest::Client::new(),
+        };
+        (state, dir)
+    }
+
+    #[test]
+    fn an_audit_event_is_recorded_locally_at_once_even_with_no_sink_configured() {
+        let (state, _dir) = state_with(ignite_config::Config::default());
+        assert!(!state.config.audit_log.enabled, "sinks are off by default");
+        state.emit_audit_event(
+            ignite_audit_log::AuditEvent::new("override.approved", "info", "override approved for secret: x".to_string())
+                .actor("owner@example.com".to_string())
+                .repo("acme", "widgets")
+                .metadata(serde_json::json!({ "issueId": "secret::a.js::1", "origin": "api_key" })),
+        );
+        let rows = state.db.list_audit_events(Some("acme"), Some("widgets"), Some("override.approved"), None, None, None, None, 10);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].actor.as_deref(), Some("owner@example.com"));
+        assert_eq!(rows[0].severity, "info");
+        let meta: serde_json::Value = serde_json::from_str(rows[0].metadata_json.as_deref().unwrap()).unwrap();
+        assert_eq!(meta["origin"], "api_key");
+        assert!(state.db.verify_audit_chain().is_ok());
+    }
+
+    #[test]
+    fn an_event_without_metadata_stores_no_metadata() {
+        let (state, _dir) = state_with(ignite_config::Config::default());
+        state.emit_audit_event(ignite_audit_log::AuditEvent::new("gate.push_rejected", "critical", "rejected".to_string()));
+        let rows = state.db.list_audit_events(None, None, Some("gate.push_rejected"), None, None, None, None, 10);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].metadata_json.is_none());
+    }
+}

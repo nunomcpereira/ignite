@@ -110,4 +110,26 @@ mod tests {
         let meta = resolve_phase_meta(&cfg);
         assert!(phase_enabled(&meta, 2));
     }
+
+    // ---- characterization: routes decide "is phase N on" through this.
+
+    #[test]
+    fn by_default_five_phases_are_on_gxp_documents_are_off_and_an_unknown_phase_counts_as_on() {
+        let meta = resolve_phase_meta(&ignite_config::Config::default());
+        assert_eq!(meta.len(), 6);
+        let on: Vec<(i64, bool)> = (1..=6).map(|id| (id, phase_enabled(&meta, id))).collect();
+        assert_eq!(on, vec![(1, true), (2, false), (3, true), (4, true), (5, true), (6, true)], "phase 2 (GxP documents) is opt-in");
+        assert!(phase_enabled(&meta, 99), "an unknown phase id defaults to enabled");
+    }
+
+    #[test]
+    fn a_phase_can_be_switched_off_from_config_without_touching_the_others() {
+        let cfg = ignite_config::Config { phases: vec![serde_json::json!({ "id": 4, "enabled": false })], ..Default::default() };
+        let meta = resolve_phase_meta(&cfg);
+        assert!(!phase_enabled(&meta, 4));
+        for id in [1, 3, 5, 6] {
+            assert!(phase_enabled(&meta, id), "phase {id}");
+        }
+        assert!(!phase_enabled(&meta, 2), "phase 2 keeps its own default (off)");
+    }
 }

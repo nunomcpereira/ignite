@@ -196,4 +196,80 @@ mod tests {
         assert_eq!(err, IllegalTransition { from: Published, to: Scanning });
         assert!(check_transition(Queued, Scanning).is_ok());
     }
+
+    // ---- characterization: pins the complete transition table so that moving
+    // ---- persistence/terminal-state ownership into this crate can't change it.
+
+    const ALL_STATES: [RunLifecycleState; 10] = [
+        RunLifecycleState::Queued,
+        RunLifecycleState::Scanning,
+        RunLifecycleState::AwaitingReview,
+        RunLifecycleState::Approved,
+        RunLifecycleState::Publishing,
+        RunLifecycleState::Published,
+        RunLifecycleState::Completed,
+        RunLifecycleState::Blocked,
+        RunLifecycleState::Failed,
+        RunLifecycleState::Cancelled,
+    ];
+
+    #[test]
+    fn the_complete_set_of_legal_moves_between_different_states_is_pinned() {
+        let mut legal: Vec<String> = Vec::new();
+        for from in ALL_STATES {
+            for to in ALL_STATES {
+                if from != to && is_legal_transition(from, to) {
+                    legal.push(format!("{}->{}", from.as_str(), to.as_str()));
+                }
+            }
+        }
+        legal.sort();
+        let mut expected: Vec<&str> = vec![
+            "queued->scanning", "queued->cancelled", "queued->failed",
+            "scanning->awaiting_review", "scanning->completed", "scanning->blocked", "scanning->failed", "scanning->cancelled", "scanning->approved",
+            "awaiting_review->approved", "awaiting_review->blocked", "awaiting_review->failed", "awaiting_review->cancelled",
+            "approved->publishing", "approved->completed", "approved->cancelled", "approved->failed",
+            "publishing->published", "publishing->failed",
+        ];
+        expected.sort();
+        assert_eq!(legal, expected, "the lifecycle table changed: update this pin only if the change is intended");
+    }
+
+    #[test]
+    fn staying_in_a_state_is_legal_only_for_non_terminal_states() {
+        for s in ALL_STATES {
+            assert_eq!(is_legal_transition(s, s), !s.is_terminal(), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn exactly_five_states_are_terminal_and_none_of_them_can_be_left() {
+        let mut terminal: Vec<&str> = ALL_STATES.iter().filter(|s| s.is_terminal()).map(|s| s.as_str()).collect();
+        terminal.sort();
+        assert_eq!(terminal, vec!["blocked", "cancelled", "completed", "failed", "published"]);
+        for from in ALL_STATES.iter().filter(|s| s.is_terminal()) {
+            for to in ALL_STATES {
+                assert!(!is_legal_transition(*from, to), "{from:?} -> {to:?} must be illegal");
+            }
+        }
+    }
+
+    #[test]
+    fn only_published_means_something_was_actually_pushed() {
+        // A dry run / validate-all ends in Completed, never Published.
+        assert!(is_legal_transition(RunLifecycleState::Publishing, RunLifecycleState::Published));
+        for from in ALL_STATES {
+            if from != RunLifecycleState::Publishing {
+                assert!(!is_legal_transition(from, RunLifecycleState::Published), "{from:?} must not reach Published directly");
+            }
+        }
+    }
+
+    #[test]
+    fn every_state_round_trips_through_its_stored_string() {
+        for s in ALL_STATES {
+            assert_eq!(RunLifecycleState::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(RunLifecycleState::parse("nonsense"), None);
+    }
 }
