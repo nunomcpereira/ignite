@@ -85,6 +85,7 @@ fn clear_pending_effectivation(state: &AppState, project_id: i64) {
 async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let phase_meta = super::phase_meta::resolve_phase_meta(&state.config);
     let phase6_title = super::phase_meta::phase_title(&phase_meta, 6);
+    let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
     let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     if gh_token.is_empty() {
         return (StatusCode::UNAUTHORIZED, Json(crate::auth::github_token_missing_body("effectivate this simulation"))).into_response();
@@ -211,7 +212,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
             if state.db.has_pending_override(project_id, &issue.id) {
                 continue;
             }
-            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
                 project_id,
                 job_id: &format!("effectivate-{project_id}"),
                 phase: 4,
@@ -228,12 +229,12 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 actor_email: &actor_email,
                 actor_name: Some(&actor_name),
                 email_sent: false,
-            });
+            }, origin);
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
                     .actor(actor_email.clone())
                     .repo(&org, &repo)
-                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
             );
         }
         return (
@@ -320,7 +321,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         let email_sent = ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false);
 
         for (issue, justification) in &auto_apply {
-            state.db.add_override(ignite_db_store::AddOverrideArgs {
+            state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                 project_id,
                 job_id: &format!("effectivate-{project_id}"),
                 phase: 4,
@@ -337,12 +338,12 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 actor_email: &actor_email,
                 actor_name: Some(&actor_name),
                 email_sent,
-            });
+            }, origin);
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
                     .actor(actor_email.clone())
                     .repo(&org, &repo)
-                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
             );
         }
         let applied_ids: HashSet<String> = auto_apply.iter().map(|(i, _)| i.id.clone()).collect();

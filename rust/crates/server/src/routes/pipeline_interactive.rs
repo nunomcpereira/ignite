@@ -495,7 +495,7 @@ mod tests {
         let resolved = state.review_gate.resolve(
             &job_id,
             TEST_USER_EMAIL,
-            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
+            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() }, origin: "session" },
         );
         assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
 
@@ -629,7 +629,7 @@ mod tests {
             let resolved = state.review_gate.resolve(
                 &job_id,
                 TEST_USER_EMAIL,
-                ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
+                ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() }, origin: "session" },
             );
             assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
         }
@@ -721,7 +721,7 @@ mod tests {
         let resolved = state.review_gate.resolve(
             &job_id,
             TEST_USER_EMAIL,
-            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
+            ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() }, origin: "session" },
         );
         assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
 
@@ -791,7 +791,7 @@ mod tests {
         let resolved = state.review_gate.resolve(
             &job_id,
             TEST_USER_EMAIL,
-            ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() } },
+            ReviewDecisionInput { proceed: true, overrides, actor: Actor { email: TEST_USER_EMAIL.into(), name: "Tester".into() }, origin: "session" },
         );
         assert_eq!(resolved, crate::review_gate::ResolveOutcome::Resolved);
 
@@ -847,7 +847,7 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            state.review_gate.resolve(&job1, TEST_USER_EMAIL, ReviewDecisionInput { proceed: true, overrides: overrides1, actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }),
+            state.review_gate.resolve(&job1, TEST_USER_EMAIL, ReviewDecisionInput { proceed: true, overrides: overrides1, actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() }, origin: "session" }),
             crate::review_gate::ResolveOutcome::Resolved
         );
         let res1 = handle1.await.unwrap();
@@ -863,7 +863,7 @@ mod tests {
         let job2 = wait_for_review_gate(&state, std::time::Duration::from_secs(180)).await;
         assert_ne!(job1, job2);
         assert_eq!(
-            state.review_gate.resolve(&job2, TEST_USER_EMAIL, ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() } }),
+            state.review_gate.resolve(&job2, TEST_USER_EMAIL, ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "human@acme.example".into(), name: "Human Reviewer".into() }, origin: "session" }),
             crate::review_gate::ResolveOutcome::Resolved
         );
         let res2 = handle2.await.unwrap();

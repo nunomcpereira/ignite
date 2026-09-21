@@ -193,6 +193,9 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         return Err((StatusCode::UNAUTHORIZED, crate::auth::github_token_missing_body("onboard for real")));
     }
 
+    // How this caller authenticated, recorded on every override it submits.
+    let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
+
     let project_path = match ignite_tool_runner::sanitize_absolute_project_path(&raw_project_path) {
         Ok(p) => p,
         Err(e) => return Err((StatusCode::BAD_REQUEST, json!({ "error": e.to_string() }))),
@@ -384,7 +387,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                 for (issue, justification) in &auto_applied {
                     logger.log(4, &format!("    ⚠ [override] [{:?}] {}:{} — {} — \"{justification}\"", issue.severity, issue.file.as_deref().unwrap_or(""), issue.line.unwrap_or(0), issue.summary));
                     applied_override_ids.insert(issue.id.clone());
-                    state.db.add_override(ignite_db_store::AddOverrideArgs {
+                    state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                         project_id,
                         job_id: &job_id,
                         phase: 4,
@@ -401,12 +404,12 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                         actor_email: &actor.email,
                         actor_name: Some(&actor.name),
                         email_sent: override_email_sent,
-                    });
+                    }, origin);
                     state.emit_audit_event(
                         ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
                             .actor(actor.email.clone())
                             .repo(&org, &repo)
-                            .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                            .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
                     );
                 }
                 state.db.replace_project_issues(project_id, &issue_inputs, &applied_override_ids);
@@ -414,7 +417,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                 if !needs_approval.is_empty() {
                     for (issue, justification) in &needs_approval {
                         if !state.db.has_pending_override(project_id, &issue.id) {
-                            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+                            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
                                 project_id,
                                 job_id: &job_id,
                                 phase: 4,
@@ -431,12 +434,12 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                                 actor_email: &actor.email,
                                 actor_name: Some(&actor.name),
                                 email_sent: false,
-                            });
+                            }, origin);
                             state.emit_audit_event(
                                 ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
                                     .actor(actor.email.clone())
                                     .repo(&org, &repo)
-                                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
                             );
                         }
                     }

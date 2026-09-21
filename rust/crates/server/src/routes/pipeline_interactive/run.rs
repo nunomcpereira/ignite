@@ -358,7 +358,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             for issue in &all_issues {
                 let Some(prior) = carried_forward.get(&issue.id) else { continue };
                 let justification = format!("Carried forward from a previous scan of {org}/{repo}: {}", prior.justification);
-                state.db.add_override(ignite_db_store::AddOverrideArgs {
+                state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                     project_id: pid,
                     job_id: &job_id,
                     phase: 4,
@@ -375,7 +375,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     actor_email: "carried-forward@ignite.internal",
                     actor_name: Some("Carried forward (previous scan)"),
                     email_sent: false,
-                });
+                }, "system");
                 pre_meta.insert(issue.id.clone(), (justification.clone(), "carried-forward@ignite.internal", "Carried forward (previous scan)"));
                 pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification, code: None });
                 pre_ids.insert(issue.id.clone());
@@ -394,7 +394,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         continue;
                     }
                     let Some(justification) = ai_suggestions.get(&issue.id) else { continue };
-                    state.db.add_override(ignite_db_store::AddOverrideArgs {
+                    state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                         project_id: pid,
                         job_id: &job_id,
                         phase: 4,
@@ -411,7 +411,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         actor_email: "ai-assist@ignite.internal",
                         actor_name: Some("Ignite AI Assist"),
                         email_sent: false,
-                    });
+                    }, "system");
                     pre_meta.insert(issue.id.clone(), (justification.clone(), "ai-assist@ignite.internal", "Ignite AI Assist"));
                     pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification: justification.clone(), code: None });
                     pre_ids.insert(issue.id.clone());
@@ -570,7 +570,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         // already makes) — every override is recorded against
                         // phase 4, the phase most findings actually originate
                         // from.
-                        state.db.add_override(ignite_db_store::AddOverrideArgs {
+                        state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                             project_id: pid,
                             job_id: &job_id,
                             phase: 4,
@@ -587,7 +587,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                             actor_email: &decision.actor.email,
                             actor_name: Some(&decision.actor.name),
                             email_sent,
-                        });
+                        }, decision.origin);
                     }
                 }
             }
@@ -599,7 +599,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     log.log(6, &format!("    ⏳ [pending approval] [{:?}] {loc} — {} — \"{justification}\"", issue.severity, issue.summary));
                     if let Some(pid) = project_id {
                         if !state.db.has_pending_override(pid, &issue.id) {
-                            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+                            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
                                 project_id: pid,
                                 job_id: &job_id,
                                 phase: 4,
@@ -616,7 +616,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                                 actor_email: &decision.actor.email,
                                 actor_name: Some(&decision.actor.name),
                                 email_sent: false,
-                            });
+                            }, decision.origin);
                         }
                     }
                 }

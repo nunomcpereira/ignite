@@ -82,6 +82,43 @@ pub fn resolve_user(headers: &HeaderMap, db: &ignite_db_store::DbStore) -> Optio
     None
 }
 
+/// How a request was authenticated — recorded on overrides so a reviewer can
+/// tell an agent/CI submission from a person's. Informational: nothing gates
+/// on it (that's what API-key scopes are for).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMethod {
+    /// A valid browser session cookie.
+    Session,
+    /// A valid `Authorization: Bearer ignite_<key>` (headless agent/CI).
+    ApiKey,
+    /// Neither (e.g. validate-all's opt-in unauthenticated body-actor path).
+    Unauthenticated,
+}
+
+impl AuthMethod {
+    /// The value stored in `overrides.origin`.
+    pub fn origin(self) -> &'static str {
+        match self {
+            AuthMethod::Session => "session",
+            AuthMethod::ApiKey => "api_key",
+            AuthMethod::Unauthenticated => "unauthenticated",
+        }
+    }
+}
+
+/// Mirrors `resolve_user`'s precedence: a valid session cookie wins over a
+/// Bearer key.
+pub fn resolve_auth_method(headers: &HeaderMap, db: &ignite_db_store::DbStore) -> AuthMethod {
+    let cookies = ignite_auth::parse_cookies(cookie_header(headers));
+    if cookies.get(ignite_auth::SESSION_COOKIE).is_some_and(|id| db.get_session(id).is_some()) {
+        return AuthMethod::Session;
+    }
+    match bearer_api_key(headers) {
+        Some(token) if db.get_active_api_key_by_hash(&ignite_auth::hash_api_key(token)).is_some() => AuthMethod::ApiKey,
+        _ => AuthMethod::Unauthenticated,
+    }
+}
+
 /// The raw `ignite_<key>` from an `Authorization: Bearer` header, if one is present.
 fn bearer_api_key(headers: &HeaderMap) -> Option<&str> {
     let auth_header = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
@@ -592,5 +629,26 @@ mod tests {
         assert_eq!(body["triedSources"].as_array().unwrap().len(), 3);
         assert!(body["error"].as_str().unwrap().contains("onboard for real"));
         assert!(body["remediation"].as_array().unwrap().iter().any(|r| r.as_str().unwrap().contains("--github-token-env")));
+    }
+
+    #[test]
+    fn auth_method_distinguishes_session_api_key_and_neither_with_session_winning() {
+        let state = test_state();
+        let uid = state.db.create_local_user("who@example.com", None, ignite_auth::dummy_hash()).unwrap();
+        let raw = ignite_auth::generate_api_key();
+        state.db.create_api_key(uid, &ignite_auth::hash_api_key(&raw), None, None, "test");
+        state.db.create_session("sid-auth-method", uid, "2999-01-01 00:00:00");
+
+        assert_eq!(resolve_auth_method(&HeaderMap::new(), &state.db), AuthMethod::Unauthenticated);
+        assert_eq!(resolve_auth_method(&bearer(&raw), &state.db), AuthMethod::ApiKey);
+        assert_eq!(resolve_auth_method(&bearer("ignite_not-a-real-key"), &state.db), AuthMethod::Unauthenticated, "an unknown key is not an API-key caller");
+
+        let mut both = bearer(&raw);
+        both.insert(axum::http::header::COOKIE, format!("{}=sid-auth-method", ignite_auth::SESSION_COOKIE).parse().unwrap());
+        assert_eq!(resolve_auth_method(&both, &state.db), AuthMethod::Session, "a valid session wins, same as resolve_user");
+
+        assert_eq!(AuthMethod::Session.origin(), "session");
+        assert_eq!(AuthMethod::ApiKey.origin(), "api_key");
+        assert_eq!(AuthMethod::Unauthenticated.origin(), "unauthenticated");
     }
 }

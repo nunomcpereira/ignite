@@ -62,7 +62,8 @@ async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(
 /// the review gate. Thin enough to live here rather than waiting on the
 /// full routes/review_gate.js port (studio.js's file-browsing endpoints,
 /// which share that file, are the parts still not ported).
-async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, axum::Json(body): axum::Json<Value>) -> Response {
+async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>) -> Response {
+    let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
     let proceed = body.get("proceed").and_then(|v| v.as_bool()).unwrap_or(false);
     let overrides: Vec<SubmittedOverride> = body
         .get("overrides")
@@ -101,7 +102,7 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
     // second layer beyond "must be logged in" (or, here, "must be the
     // one unauthenticated-simulation sentinel"), since without it any
     // caller could still decide any other user's paused run.
-    match state.review_gate.resolve(&job_id, &caller_email, ReviewDecisionInput { proceed, overrides, actor }) {
+    match state.review_gate.resolve(&job_id, &caller_email, ReviewDecisionInput { proceed, overrides, actor, origin: origin }) {
         crate::review_gate::ResolveOutcome::Resolved => (StatusCode::OK, axum::Json(json!({ "ok": true }))).into_response(),
         // US-04: the in-memory oneshot this run's paused task was
         // actually awaiting is gone after every process restart — true

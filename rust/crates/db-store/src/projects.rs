@@ -328,7 +328,7 @@ impl DbStore {
             )),
             conn.prepare_cached(
                 "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification,
-                        o.actor_email, o.actor_name, o.email_sent, o.created_at
+                        o.actor_email, o.actor_name, o.email_sent, o.created_at, o.origin
                  FROM overrides o INNER JOIN projects p ON o.project_id = p.id
                  WHERE p.org = ? AND p.repo = ? ORDER BY o.created_at DESC",
             ),
@@ -363,6 +363,7 @@ impl DbStore {
                             actor_name: row.get(10)?,
                             email_sent: row.get::<_, i64>(11)? != 0,
                             created_at: row.get(12)?,
+                            origin: row.get(13)?,
                         })
                     })
                     .map(|rows| rows.filter_map(|r| r.ok()).collect())

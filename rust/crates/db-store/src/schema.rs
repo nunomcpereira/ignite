@@ -638,4 +638,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // effectivated after a server restart (previously an in-memory-only map).
     (32, "ALTER TABLE api_keys ADD COLUMN github_token TEXT;"),
     (33, "CREATE TABLE IF NOT EXISTS pending_effectivations (project_id INTEGER PRIMARY KEY, org TEXT NOT NULL, repo TEXT NOT NULL, source_dir TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL);"),
+    // How an override reached Ignite: 'session' (a person in the browser, and
+    // every pre-existing row), 'api_key' (a headless agent/CI key),
+    // 'unauthenticated' (validate-all's opt-in body-actor path) or 'github'
+    // (an inbound Security-tab webhook). Recorded so a reviewer can tell an
+    // agent-submitted justification from a human one; nothing gates on it.
+    (34, "ALTER TABLE overrides ADD COLUMN origin TEXT NOT NULL DEFAULT 'session';"),
 ];

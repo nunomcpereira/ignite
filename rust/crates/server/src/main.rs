@@ -781,6 +781,7 @@ mod tests {
             assert!(!recorded.is_empty(), "{route}: the overrides must have been recorded");
             for o in recorded {
                 assert_eq!(o.actor_email, "owner@example.com", "{route}: attributed to the key owner, never the body actor");
+                assert_eq!(o.origin, "api_key", "{route}: an override sent with an API key is labelled as such");
             }
             exercised += 1;
         }

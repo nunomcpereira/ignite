@@ -94,6 +94,10 @@ pub struct OverrideRow {
     pub actor_name: Option<String>,
     pub email_sent: bool,
     pub created_at: String,
+    /// How the override was submitted: 'session' (a person in the browser,
+    /// and every row that predates the column), 'api_key' (a headless
+    /// agent/CI key), 'unauthenticated' or 'github'. Informational only.
+    pub origin: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +130,9 @@ pub struct PendingOverrideRow {
     pub actor_email: String,
     pub actor_name: Option<String>,
     pub created_at: String,
+    /// See [`OverrideRow::origin`] — lets an approver see whether the
+    /// justification came from an agent/CI key or a person.
+    pub origin: String,
 }
 
 pub struct AddOverrideArgs<'a> {
