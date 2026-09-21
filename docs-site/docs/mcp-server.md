@@ -45,6 +45,14 @@ once (`./target/release/create-api-key you@example.com "ci-agent"`) and set
 `IGNITE_API_KEY` — the `mcp-server` binary picks it up automatically and
 attaches it as a `Bearer` token on every proxied call.
 
+Limit what the key can do with `create-api-key --scopes scan,override,publish`
+(default: unrestricted). `onboard_project` also takes an optional
+`idempotency_key` — re-sending the same request with the same key returns the
+run it already started instead of scanning or pushing again — and runs
+asynchronously under the hood (start, then poll), so a single long request
+isn't held open between the MCP server and Ignite. Set `IGNITE_MCP_ASYNC=0`
+to fall back to one blocking request.
+
 There's also a plain CLI (`ignite scan`) and a `hooks/pre-push` git hook
 for agents/CI that would rather not speak MCP at all — see the
 [README](https://github.com/nunomcpereira/ignite#cli-ignite-scan) for both.

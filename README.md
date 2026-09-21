@@ -965,6 +965,34 @@ both pick this up automatically from an `IGNITE_API_KEY` env var:
 export IGNITE_API_KEY="<the key create-api-key printed>"
 ```
 
+**Limiting a key.** By default a key can scan, override findings and publish.
+Restrict it when minting:
+
+```bash
+./target/release/create-api-key ci@example.com "scan-bot" --scopes scan
+./target/release/create-api-key you@example.com "triage-agent" --scopes scan,override
+```
+
+`scan` = run pipelines, `override` = submit/approve/reject overrides,
+`publish` = real onboard, effectivate, fix-PR apply. A refused call returns
+`403` with `code: scope_denied`, `requiredScope` and `keyScopes`. Keys minted
+without `--scopes` (including every existing key) stay unrestricted, and a
+browser session is never limited by a key's scopes. Not covered: the
+`github-check` and org-repos routes, so a scan-only CI key can still post the
+gate status. Every override records how it was submitted (`origin`:
+`session`, `api_key`, `unauthenticated`, `github`, `system`); this is a label
+for reviewers and the audit log, not a gate.
+
+**Retries and long runs.** Send an optional `idempotencyKey` on `onboard` or
+`validate-all`: the identical request under the same key returns the run it
+already started (`idempotent: true`) instead of scanning or pushing again;
+the same key with a different body is a `409` (use a new key for a new
+attempt, e.g. after adding overrides). Add `"async": true` to start the run in
+the background: the call returns `202` with a `jobId` at once, and the result
+is read from `GET /api/pipeline/<jobId>/async-result` (`202` while running,
+`200` with `httpStatus` and `result` when done). The MCP `onboard_project`
+tool does this polling for you.
+
 **Agent flow and refusals.** `onboard_project(dryRun: true)` returns
 `projectId`, `coverage`, `policyDecision` and `effectivatable`; pass the
 `projectId` to `effectivate_project` to publish exactly that validated tree
