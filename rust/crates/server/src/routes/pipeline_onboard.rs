@@ -165,6 +165,19 @@ pub(crate) fn default_phase4_config(state: &AppState, org: &str, repo: &str, pro
     crate::phase4_config::from_config(&state.config, org, repo, project_id, false, igniteignore_git_check_root)
 }
 
+/// The API-key scopes an onboard request needs: it always scans, overrides
+/// need `override`, and a real (non-dry) run publishes.
+fn onboard_scopes(body: &Value, dry_run: bool) -> Vec<crate::auth::Scope> {
+    let mut needed = vec![crate::auth::Scope::Scan];
+    if crate::auth::body_submits_overrides(body) {
+        needed.push(crate::auth::Scope::Override);
+    }
+    if !dry_run {
+        needed.push(crate::auth::Scope::Publish);
+    }
+    needed
+}
+
 async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (StatusCode, Value)> {
     let org = body.get("org").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
@@ -187,14 +200,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         .unwrap_or_default();
 
     // An API key limited to fewer scopes can't run, override or publish beyond them.
-    let mut needed = vec![crate::auth::Scope::Scan];
-    if crate::auth::body_submits_overrides(&body) {
-        needed.push(crate::auth::Scope::Override);
-    }
-    if !dry_run {
-        needed.push(crate::auth::Scope::Publish);
-    }
-    crate::auth::require_scopes(&headers, &state.db, &needed)?;
+    crate::auth::require_scopes(&headers, &state.db, &onboard_scopes(&body, dry_run))?;
 
     // Provisioning (Phase 6) must run as the actual caller's own GitHub
     // account — fail fast rather than burning phases 1-5 first.
@@ -257,7 +263,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         }
     }
 
-    let job_id = uuid::Uuid::new_v4().to_string();
+    let job_id = super::async_jobs::injected_job_id(&body).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting onboard pipeline run");
     let staging_dir = std::env::temp_dir().join("gatekeeper-staging").join(format!("{job_id}-onboard"));
     let source_backup_dir = std::path::PathBuf::from(format!("{}-source-backup", staging_dir.to_string_lossy()));
@@ -786,7 +792,22 @@ fn gh_api_for_ship(state: &AppState) -> ignite_github_api::GithubApi<'_> {
     ignite_github_api::GithubApi::new(&state.runner)
 }
 
-async fn onboard(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn onboard(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(mut body): Json<Value>) -> Response {
+    super::async_jobs::strip_client_job_id(&mut body);
+    if super::async_jobs::wants_async(&body) {
+        // Scopes are checked here too so a rejected key gets its 403 now,
+        // not through a poll; everything else is reported through the result.
+        let dry_run = body.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+        if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &onboard_scopes(&body, dry_run)) {
+            return (status, Json(denied)).into_response();
+        }
+        return super::async_jobs::start(state, "onboard", user.map(|u| u.id), headers, body, |state, headers, body| async move {
+            match run_onboard(state, headers, body).await {
+                Ok(v) => (200, v),
+                Err((status, v)) => (status.as_u16(), v),
+            }
+        });
+    }
     match run_onboard(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err((status, v)) => (status, Json(v)).into_response(),

@@ -61,6 +61,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::pipeline_validate::router())
         .merge(routes::config::router())
         .merge(routes::pipeline_onboard::router())
+        .merge(routes::async_jobs::router())
         .merge(routes::pipeline_interactive::router())
         .merge(routes::studio::router())
         .merge(routes::studio::mutating_router().layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware)))
@@ -117,6 +118,12 @@ async fn main() {
 
     state.db.sweep_expired_sessions();
     state.db.abort_stale_running_projects();
+    // An async run still marked running belongs to the previous process and
+    // can never finish; fail it explicitly so its poller isn't left waiting.
+    let lost_async_jobs = state.db.fail_unfinished_async_jobs(routes::async_jobs::KEEP_FINISHED_JOBS_DAYS);
+    if lost_async_jobs > 0 {
+        tracing::warn!("{lost_async_jobs} async run(s) were still in progress at the last shutdown and were marked failed");
+    }
     {
         let sweep_state = state.clone();
         tokio::spawn(async move {
@@ -887,6 +894,107 @@ mod tests {
         let no_key: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({}))).send().await.unwrap().json().await.unwrap();
         assert!(no_key.get("idempotent").is_none());
         assert_ne!(no_key["jobId"], job_id.as_str());
+        std::env::remove_var("IGNITE_DATA_DIR");
+    }
+
+    async fn poll_async_result(client: &reqwest::Client, base: &str, key: &str, job_id: &str) -> Value {
+        for _ in 0..600 {
+            let res = client.get(format!("{base}/api/pipeline/{job_id}/async-result")).bearer_auth(key).send().await.unwrap();
+            if res.status() == 200 {
+                return res.json().await.unwrap();
+            }
+            assert_eq!(res.status(), 202, "a running job answers 202");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        panic!("async job {job_id} did not finish in time");
+    }
+
+    /// `async: true` returns at once and the finished response is read by
+    /// polling — for both long-running pipeline endpoints — with the same
+    /// idempotency and access rules as the synchronous call.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn async_runs_return_a_job_id_immediately_and_the_result_is_polled() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+        let config = ignite_config::Config { phases: vec![serde_json::json!({ "id": 4, "enabled": false })], ..Default::default() };
+        let (base, key, state) = spawn_test_server_with_state_and_config("async-owner@example.com", None, config).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let path = project.path().to_string_lossy().to_string();
+
+        // ---- onboard (dry run)
+        let onboard_body = serde_json::json!({ "org": "acme", "repo": "async-widgets", "projectPath": path, "dryRun": true, "runLocalCi": false, "async": true, "idempotencyKey": "async-1" });
+        let started = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&onboard_body).send().await.unwrap();
+        assert_eq!(started.status(), 202, "async start answers before the run finishes");
+        let started: Value = started.json().await.unwrap();
+        assert_eq!(started["state"], "running");
+        let job_id = started["jobId"].as_str().unwrap().to_string();
+        assert_eq!(started["pollUrl"], format!("/api/pipeline/{job_id}/async-result"));
+
+        let done = poll_async_result(&client, &base, &key, &job_id).await;
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["httpStatus"], 200);
+        assert_eq!(done["result"]["ok"], true, "{done}");
+        assert_eq!(done["result"]["mode"], "onboard");
+        assert_eq!(done["result"]["jobId"], job_id.as_str(), "the pipeline ran under the async job's id");
+        assert_eq!(done["result"]["effectivatable"], true);
+
+        // Same request again (still async, same key): the replay, not a new run.
+        let again: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&onboard_body).send().await.unwrap().json().await.unwrap();
+        let replay = poll_async_result(&client, &base, &key, again["jobId"].as_str().unwrap()).await;
+        assert_eq!(replay["result"]["idempotent"], true, "{replay}");
+        assert_eq!(replay["result"]["jobId"], job_id.as_str(), "points at the run the key already started");
+        // ...and the same request sent synchronously hashes identically, so it replays too.
+        let mut sync_body = onboard_body.clone();
+        sync_body.as_object_mut().unwrap().remove("async");
+        let sync_replay: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&sync_body).send().await.unwrap().json().await.unwrap();
+        assert_eq!(sync_replay["idempotent"], true, "async is delivery, not part of the request identity: {sync_replay}");
+
+        // ---- access: only the starter can read a job; strangers can't even confirm it exists
+        let other_uid = state.db.create_local_user("stranger@example.com", None, ignite_auth::dummy_hash()).unwrap();
+        let other_key = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        state.db.create_api_key(other_uid, &ignite_auth::hash_api_key(&other_key), None, None, "test");
+        for who in [Some(&other_key), None] {
+            let mut req = client.get(format!("{base}/api/pipeline/{job_id}/async-result"));
+            if let Some(k) = who {
+                req = req.bearer_auth(k);
+            }
+            assert_eq!(req.send().await.unwrap().status(), 404);
+        }
+        assert_eq!(client.get(format!("{base}/api/pipeline/{}/async-result", uuid::Uuid::new_v4())).bearer_auth(&key).send().await.unwrap().status(), 404);
+
+        // A client can't choose the id its run is filed under.
+        let forged = uuid::Uuid::new_v4().to_string();
+        let mut sync_forged = sync_body.clone();
+        sync_forged["repo"] = serde_json::json!("forged-widgets");
+        sync_forged["idempotencyKey"] = serde_json::json!("forge-1");
+        sync_forged["_asyncJobId"] = serde_json::json!(forged);
+        let res: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&sync_forged).send().await.unwrap().json().await.unwrap();
+        assert_ne!(res["jobId"], forged.as_str(), "a client-supplied _asyncJobId is ignored");
+
+        // ---- validate-all
+        let started: Value = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .bearer_auth(&key)
+            .json(&serde_json::json!({ "projectPath": path, "runLocalCi": false, "fast": true, "async": true }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(started["kind"], "validate-all");
+        let done = poll_async_result(&client, &base, &key, started["jobId"].as_str().unwrap()).await;
+        assert_eq!(done["result"]["mode"], "validate-all");
+        assert_eq!(done["result"]["ok"], true, "{done}");
+
+        // ---- a scope-limited key is refused immediately, not via a poll
+        let key_id = state.db.get_active_api_key_by_hash(&ignite_auth::hash_api_key(&key)).unwrap().id;
+        state.db.set_api_key_scopes(key_id, Some(&["scan".to_string()]));
+        let denied = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&serde_json::json!({ "org": "acme", "repo": "w", "projectPath": path, "async": true })).send().await.unwrap();
+        assert_eq!(denied.status(), 403, "a real onboard needs publish; refused before any job is created");
         std::env::remove_var("IGNITE_DATA_DIR");
     }
 }

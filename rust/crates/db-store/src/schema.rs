@@ -647,4 +647,8 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // Per-key permission limits: a comma-separated subset of
     // scan/override/publish. NULL (every pre-existing key) = unrestricted.
     (35, "ALTER TABLE api_keys ADD COLUMN scopes TEXT;"),
+    // Start-then-poll runs (`async: true` on onboard/validate-all): the
+    // caller gets a job id back immediately and reads the finished response
+    // from here. `owner_user_id` is NULL for an unauthenticated caller.
+    (36, "CREATE TABLE IF NOT EXISTS async_jobs (job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, owner_user_id INTEGER, state TEXT NOT NULL DEFAULT 'running', http_status INTEGER, result_json TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT);"),
 ];

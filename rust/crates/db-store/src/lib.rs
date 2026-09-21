@@ -18,6 +18,7 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod ai_explanations;
+mod async_jobs;
 mod api_keys;
 mod audit_events;
 mod auth;
@@ -53,6 +54,7 @@ mod settings;
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
 pub use daily_report::RepoDailyReport;
 pub use api_keys::{parse_api_key_scopes, API_KEY_SCOPES};
+pub use async_jobs::AsyncJobRow;
 pub use store::DbStore;
 pub use types::*;
 

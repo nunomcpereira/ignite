@@ -301,7 +301,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     }
 
     let timings: Mutex<Vec<StageTiming>> = Mutex::new(Vec::new());
-    let job_id = uuid::Uuid::new_v4().to_string();
+    let job_id = super::async_jobs::injected_job_id(&body).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting validate-all pipeline run");
     let staging_dir = std::env::temp_dir().join("gatekeeper-staging").join(format!("{job_id}-api-validation"));
     let workflow_dir_str = format!("{}-workflows", staging_dir.to_string_lossy());
@@ -966,7 +966,14 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 /// identically regardless of the order fields were sent in over the wire.
 pub(crate) fn idempotency_payload_hash(body: &Value) -> String {
     use sha2::{Digest, Sha256};
-    let canonical = serde_json::to_string(body).unwrap_or_default();
+    // `async` and the injected job id change how a request is *delivered*, not
+    // what it asks for, so a retry may flip between sync and async.
+    let mut body = body.clone();
+    if let Some(obj) = body.as_object_mut() {
+        obj.remove("async");
+        obj.remove(super::async_jobs::ASYNC_JOB_ID_KEY);
+    }
+    let canonical = serde_json::to_string(&body).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
@@ -984,7 +991,8 @@ fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Op
     crate::phase4_config::from_config(&state.config, org, repo, project_id, fast, igniteignore_git_check_root)
 }
 
-async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(mut body): Json<Value>) -> Response {
+    super::async_jobs::strip_client_job_id(&mut body);
     if user.is_none() && !state.config.security.allow_unauthenticated_validate_all {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response();
     }
@@ -994,6 +1002,14 @@ async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalU
     }
     if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
         return (status, Json(denied)).into_response();
+    }
+    if super::async_jobs::wants_async(&body) {
+        return super::async_jobs::start(state, "validate-all", user.map(|u| u.id), headers, body, |state, headers, body| async move {
+            match run_validate_all(state, headers, body).await {
+                Ok(v) => (200, v),
+                Err((v, _)) => (400, v),
+            }
+        });
     }
     match run_validate_all(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),

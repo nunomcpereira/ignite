@@ -1,3 +1,4 @@
+pub mod async_jobs;
 pub mod audit_log;
 pub mod auto_fix;
 pub mod baseline;
