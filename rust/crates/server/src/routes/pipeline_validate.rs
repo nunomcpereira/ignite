@@ -1007,13 +1007,24 @@ async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalU
         return super::async_jobs::start(state, "validate-all", user.map(|u| u.id), headers, body, |state, headers, body| async move {
             match run_validate_all(state, headers, body).await {
                 Ok(v) => (200, v),
-                Err((v, _)) => (400, v),
+                Err((v, _)) => (error_status(&v).as_u16(), v),
             }
         });
     }
     match run_validate_all(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-        Err((v, _)) => (StatusCode::BAD_REQUEST, Json(v)).into_response(),
+        Err((v, _)) => (error_status(&v), Json(v)).into_response(),
+    }
+}
+
+/// `run_validate_all`'s error type carries only a body, so every failure used
+/// to be a 400. An idempotency-key conflict (`conflict: true`) is a 409, as it
+/// is on `onboard`; every other failure stays 400.
+fn error_status(body: &Value) -> StatusCode {
+    if body.get("conflict").and_then(|v| v.as_bool()).unwrap_or(false) {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
     }
 }
 
@@ -1222,8 +1233,17 @@ mod phase_gating_tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(second.status(), 400);
+        assert_eq!(second.status(), 409, "an idempotency conflict is a 409, matching onboard");
         let body: Value = second.json().await.unwrap();
         assert_eq!(body["conflict"], true);
+    }
+
+    #[test]
+    fn only_a_conflict_body_is_a_409_every_other_failure_stays_a_400() {
+        use axum::http::StatusCode;
+        assert_eq!(super::error_status(&json!({ "ok": false, "conflict": true })), StatusCode::CONFLICT);
+        assert_eq!(super::error_status(&json!({ "ok": false, "error": "Phase 4 has 1 unresolved blocking finding(s)." })), StatusCode::BAD_REQUEST);
+        assert_eq!(super::error_status(&json!({ "conflict": false })), StatusCode::BAD_REQUEST);
+        assert_eq!(super::error_status(&json!({})), StatusCode::BAD_REQUEST);
     }
 }
