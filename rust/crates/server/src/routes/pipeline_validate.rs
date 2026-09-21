@@ -988,6 +988,13 @@ async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalU
     if user.is_none() && !state.config.security.allow_unauthenticated_validate_all {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response();
     }
+    let mut needed = vec![crate::auth::Scope::Scan];
+    if crate::auth::body_submits_overrides(&body) {
+        needed.push(crate::auth::Scope::Override);
+    }
+    if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
+        return (status, Json(denied)).into_response();
+    }
     match run_validate_all(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err((v, _)) => (StatusCode::BAD_REQUEST, Json(v)).into_response(),

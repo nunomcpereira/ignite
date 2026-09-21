@@ -1,4 +1,4 @@
-//! `create-api-key <email> [label] [--github-token-env VAR]` — faithful port of
+//! `create-api-key <email> [label] [--github-token-env VAR] [--scopes a,b]` — faithful port of
 //! `scripts/create-api-key.js`: mints a headless API key for an *existing*
 //! Ignite user (never creates accounts), printed exactly once. Only its
 //! SHA-256 hash (`ignite_auth::hash_api_key`) is stored, so it can never be
@@ -22,16 +22,23 @@ pub struct CliArgs {
     /// token itself is never taken from argv (it would land in shell history
     /// and `ps` output).
     pub github_token_env: Option<String>,
+    /// Limits the key to a subset of `scan`, `override`, `publish`. `None`
+    /// (the default) mints an unrestricted key, exactly as before.
+    pub scopes: Option<Vec<String>>,
 }
 
-const USAGE: &str = "Usage: create-api-key <email> [label] [--github-token-env VAR]";
+const USAGE: &str = "Usage: create-api-key <email> [label] [--github-token-env VAR] [--scopes scan,override,publish]";
 
 pub fn parse_args(args: &[String]) -> Result<CliArgs, String> {
     let mut positional: Vec<&String> = Vec::new();
     let mut github_token_env = None;
+    let mut scopes = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
-        if arg == "--github-token-env" {
+        if arg == "--scopes" {
+            let raw = iter.next().filter(|n| !n.starts_with("--")).ok_or_else(|| format!("--scopes needs a comma-separated list.\n{USAGE}"))?;
+            scopes = Some(ignite_db_store::parse_api_key_scopes(raw)?);
+        } else if arg == "--github-token-env" {
             let name = iter.next().filter(|n| !n.starts_with("--")).ok_or_else(|| format!("--github-token-env needs an env var name.\n{USAGE}"))?;
             github_token_env = Some(name.clone());
         } else if arg.starts_with("--") {
@@ -44,7 +51,7 @@ pub fn parse_args(args: &[String]) -> Result<CliArgs, String> {
     if positional.len() > 2 {
         return Err(format!("Too many arguments.\n{USAGE}"));
     }
-    Ok(CliArgs { email, label: positional.get(1).map(|l| l.to_string()), github_token_env })
+    Ok(CliArgs { email, label: positional.get(1).map(|l| l.to_string()), github_token_env, scopes })
 }
 
 /// Reads the token out of the named env var and binds it to the key. Errors
@@ -141,9 +148,9 @@ pub fn attempt_owner_notification(result: &MintResult, label: Option<&str>) -> (
 /// deployment's local trail can't depend on a SIEM sink being configured.
 /// Only the external sink dispatch below stays gated on
 /// `audit_log.enabled`/sinks being configured.
-fn emit_audit_event_blocking(db: &ignite_db_store::DbStore, result: &MintResult, github_token_bound: bool) {
+fn emit_audit_event_blocking(db: &ignite_db_store::DbStore, result: &MintResult, github_token_bound: bool, scopes: Option<&[String]>) {
     // Only *whether* a token was bound is recorded — never the token.
-    if let Err(e) = db.record_audit_event("api_key.created", "warning", &format!("headless API key created for {}", result.user_email), Some(&result.operator), None, None, Some(&serde_json::json!({ "apiKeyId": result.api_key_id, "githubTokenBound": github_token_bound }).to_string())) {
+    if let Err(e) = db.record_audit_event("api_key.created", "warning", &format!("headless API key created for {}", result.user_email), Some(&result.operator), None, None, Some(&serde_json::json!({ "apiKeyId": result.api_key_id, "githubTokenBound": github_token_bound, "scopes": scopes }).to_string())) {
         eprintln!("Warning: could not write local audit-trail record for this key creation ({e}).");
     }
 
@@ -175,7 +182,7 @@ fn emit_audit_event_blocking(db: &ignite_db_store::DbStore, result: &MintResult,
         .collect();
     let event = ignite_audit_log::AuditEvent::new("api_key.created", "warning", format!("headless API key created for {}", result.user_email))
         .actor(result.operator.clone())
-        .metadata(serde_json::json!({ "apiKeyId": result.api_key_id, "githubTokenBound": github_token_bound }));
+        .metadata(serde_json::json!({ "apiKeyId": result.api_key_id, "githubTokenBound": github_token_bound, "scopes": scopes }));
     let Ok(rt) = tokio::runtime::Runtime::new() else { return };
     rt.block_on(async {
         let http = reqwest::Client::new();
@@ -200,6 +207,9 @@ fn main() {
     let operator = default_operator();
     match mint_api_key(&db, &email, label.as_deref(), &operator) {
         Ok(result) => {
+            if let Some(scopes) = &cli.scopes {
+                db.set_api_key_scopes(result.api_key_id, Some(scopes));
+            }
             let mut github_token_bound = false;
             if let Some(var) = &cli.github_token_env {
                 match bind_github_token_from_env(&db, result.api_key_id, var) {
@@ -209,6 +219,10 @@ fn main() {
             }
             println!("API key #{} created for {email}{}.", result.api_key_id, label.as_deref().map(|l| format!(" ({l})")).unwrap_or_default());
             println!("Recorded created_by={} in the audit log.", result.operator);
+            match &cli.scopes {
+                Some(scopes) => println!("Limited to scopes: {} (everything else is refused with 403 scope_denied).", scopes.join(", ")),
+                None => println!("Unrestricted: this key can scan, override and publish. Use --scopes to limit it."),
+            }
             if github_token_bound {
                 println!("Bound a GitHub token to this key: publishes made with it push as that token's identity.");
             }
@@ -218,7 +232,7 @@ fn main() {
             println!("Store this now — it will not be shown again. Use it as:");
             println!("  Authorization: Bearer {}", result.raw_key);
 
-            emit_audit_event_blocking(&db, &result, github_token_bound);
+            emit_audit_event_blocking(&db, &result, github_token_bound, cli.scopes.as_deref());
 
             let (sent, reason) = attempt_owner_notification(&result, label.as_deref());
             if sent {
@@ -295,9 +309,9 @@ mod tests {
     #[test]
     fn parse_args_accepts_email_label_and_token_env_in_any_order() {
         let a = parse_args(&args(&["a@b.com", "ci", "--github-token-env", "MY_PAT"])).unwrap();
-        assert_eq!(a, CliArgs { email: "a@b.com".into(), label: Some("ci".into()), github_token_env: Some("MY_PAT".into()) });
+        assert_eq!(a, CliArgs { email: "a@b.com".into(), label: Some("ci".into()), github_token_env: Some("MY_PAT".into()), scopes: None });
         let b = parse_args(&args(&["--github-token-env", "MY_PAT", "a@b.com"])).unwrap();
-        assert_eq!(b, CliArgs { email: "a@b.com".into(), label: None, github_token_env: Some("MY_PAT".into()) });
+        assert_eq!(b, CliArgs { email: "a@b.com".into(), label: None, github_token_env: Some("MY_PAT".into()), scopes: None });
     }
 
     #[test]
@@ -324,5 +338,15 @@ mod tests {
         bind_github_token_from_env(&db, result.api_key_id, "IGNITE_TEST_BOUND_PAT").unwrap();
         std::env::remove_var("IGNITE_TEST_BOUND_PAT");
         assert_eq!(db.get_active_api_key_github_token(&hash).as_deref(), Some("ghp_agent"));
+    }
+
+    #[test]
+    fn scopes_flag_is_validated_before_anything_is_minted() {
+        let a = parse_args(&args(&["a@b.com", "--scopes", "scan, override"])).unwrap();
+        assert_eq!(a.scopes, Some(vec!["scan".to_string(), "override".to_string()]));
+        assert_eq!(parse_args(&args(&["a@b.com"])).unwrap().scopes, None, "no flag = unrestricted, as before");
+        // A typo must fail here rather than mint a key that is less limited than intended.
+        assert!(parse_args(&args(&["a@b.com", "--scopes", "scan,publsh"])).is_err());
+        assert!(parse_args(&args(&["a@b.com", "--scopes"])).is_err());
     }
 }

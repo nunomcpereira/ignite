@@ -788,4 +788,45 @@ mod tests {
         eprintln!("override-attribution checked on {exercised}/2 routes");
         std::env::remove_var("IGNITE_DATA_DIR");
     }
+
+    /// A key limited to `scan` can run pipelines but not override or publish.
+    /// Every refusal happens before any pipeline work, so this is fast.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_scan_only_key_is_refused_override_and_publish_on_every_route_that_needs_them() {
+        let _guard = crate::state::GH_TOKEN_ENV_GUARD.lock();
+        std::env::remove_var("GH_TOKEN");
+        std::env::remove_var("GITHUB_TOKEN");
+        let (base, key, state) = spawn_test_server_with_state("scoped@example.com", None).await;
+        let key_id = state.db.get_active_api_key_by_hash(&ignite_auth::hash_api_key(&key)).unwrap().id;
+        let client = reqwest::Client::new();
+        let denied = |res: reqwest::Response, scope: &'static str| async move {
+            assert_eq!(res.status(), 403);
+            let body: Value = res.json().await.unwrap();
+            assert_eq!(body["code"], "scope_denied", "{body}");
+            assert_eq!(body["requiredScope"], scope, "{body}");
+            assert_eq!(body["keyScopes"], serde_json::json!(["scan"]));
+        };
+        let overrides = serde_json::json!([{ "issueId": "secret::a.js::1", "justification": "reviewed, accepted risk" }]);
+
+        // Unrestricted (the default): the scope layer lets everything through.
+        let res = client.post(format!("{base}/api/projects/999/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap();
+        assert_ne!(res.status(), 403, "an unrestricted key must not be refused by scopes");
+
+        state.db.set_api_key_scopes(key_id, Some(&["scan".to_string()]));
+
+        denied(client.post(format!("{base}/api/pipeline/validate-all")).bearer_auth(&key).json(&serde_json::json!({ "projectPath": "/tmp", "overrides": overrides })).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": "/tmp" })).send().await.unwrap(), "publish").await;
+        denied(client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": "/tmp", "dryRun": true, "overrides": overrides })).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/projects/999/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap(), "publish").await;
+        denied(client.post(format!("{base}/api/projects/999/overrides")).bearer_auth(&key).json(&serde_json::json!({ "overrides": overrides })).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/projects/999/overrides/1/approve")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/pipeline/some-job/fix-pr/apply")).bearer_auth(&key).json(&serde_json::json!({ "candidates": [] })).send().await.unwrap(), "publish").await;
+
+        // Widening the key's scopes lifts exactly that refusal.
+        state.db.set_api_key_scopes(key_id, Some(&["scan".to_string(), "publish".to_string()]));
+        let res = client.post(format!("{base}/api/projects/999/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap();
+        assert_ne!(res.status(), 403, "publish is now allowed");
+        std::env::remove_var("GH_TOKEN");
+    }
 }

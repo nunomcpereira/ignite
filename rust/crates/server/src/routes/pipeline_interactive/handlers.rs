@@ -31,6 +31,14 @@ async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(
         return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Authentication required." }))).into_response();
     }
 
+    let mut needed = vec![crate::auth::Scope::Scan];
+    if !upload.dry_run {
+        needed.push(crate::auth::Scope::Publish);
+    }
+    if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
+        return (status, axum::Json(denied)).into_response();
+    }
+
     let session_gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     let job_id = uuid::Uuid::new_v4().to_string();
     tracing::info!(job_id = %job_id, org = %upload.org, repo = %upload.repo, dry_run = upload.dry_run, "starting interactive pipeline run");
@@ -64,6 +72,11 @@ async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(
 /// which share that file, are the parts still not ported).
 async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String>, State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>) -> Response {
     let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
+    if crate::auth::body_submits_overrides(&body) {
+        if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Override) {
+            return (status, axum::Json(denied)).into_response();
+        }
+    }
     let proceed = body.get("proceed").and_then(|v| v.as_bool()).unwrap_or(false);
     let overrides: Vec<SubmittedOverride> = body
         .get("overrides")

@@ -242,6 +242,9 @@ fn acknowledgments_for_project(db: &ignite_db_store::DbStore, project_id: i64) -
 }
 
 async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Publish) {
+        return (status, Json(denied)).into_response();
+    }
     let job_id = job_id.trim();
     let Some((project_id, org, repo)) = resolve_org_repo(&state, job_id) else {
         return err(StatusCode::NOT_FOUND, "This job has no associated GitHub repository yet — it must have already shipped before a fix PR can be opened against it.");

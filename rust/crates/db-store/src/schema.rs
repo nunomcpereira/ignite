@@ -644,4 +644,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // (an inbound Security-tab webhook). Recorded so a reviewer can tell an
     // agent-submitted justification from a human one; nothing gates on it.
     (34, "ALTER TABLE overrides ADD COLUMN origin TEXT NOT NULL DEFAULT 'session';"),
+    // Per-key permission limits: a comma-separated subset of
+    // scan/override/publish. NULL (every pre-existing key) = unrestricted.
+    (35, "ALTER TABLE api_keys ADD COLUMN scopes TEXT;"),
 ];

@@ -119,6 +119,62 @@ pub fn resolve_auth_method(headers: &HeaderMap, db: &ignite_db_store::DbStore) -
     }
 }
 
+/// A capability an API key can be limited to (see `ignite_db_store::API_KEY_SCOPES`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Run pipelines: validate-all, onboard/interactive runs (including dry runs).
+    Scan,
+    /// Submit, approve or reject overrides.
+    Override,
+    /// Push to GitHub: a real onboard, effectivate, fix-PR apply.
+    Publish,
+}
+
+impl Scope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Scan => "scan",
+            Scope::Override => "override",
+            Scope::Publish => "publish",
+        }
+    }
+}
+
+/// 403s when the request is authenticated by an API key that is restricted to
+/// scopes not including `scope`. Never restricts a browser session, an
+/// unauthenticated request or an unrestricted key (every key minted before
+/// scopes existed) — a session's authority comes from its user, not a key.
+pub fn require_scope(headers: &HeaderMap, db: &ignite_db_store::DbStore, scope: Scope) -> Result<(), (StatusCode, Value)> {
+    if resolve_auth_method(headers, db) != AuthMethod::ApiKey {
+        return Ok(());
+    }
+    let Some(token) = bearer_api_key(headers) else { return Ok(()) };
+    let Some(Some(allowed)) = db.get_active_api_key_scopes(&ignite_auth::hash_api_key(token)) else { return Ok(()) };
+    if allowed.iter().any(|s| s == scope.as_str()) {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        json!({
+            "ok": false,
+            "error": format!("This API key is limited to [{}] and may not use the \"{}\" capability.", allowed.join(", "), scope.as_str()),
+            "code": "scope_denied",
+            "requiredScope": scope.as_str(),
+            "keyScopes": allowed,
+        }),
+    ))
+}
+
+/// Every scope in `scopes` must be allowed; reports the first that isn't.
+pub fn require_scopes(headers: &HeaderMap, db: &ignite_db_store::DbStore, scopes: &[Scope]) -> Result<(), (StatusCode, Value)> {
+    scopes.iter().try_for_each(|s| require_scope(headers, db, *s))
+}
+
+/// True when a request body submits at least one override.
+pub fn body_submits_overrides(body: &Value) -> bool {
+    body.get("overrides").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty())
+}
+
 /// The raw `ignite_<key>` from an `Authorization: Bearer` header, if one is present.
 fn bearer_api_key(headers: &HeaderMap) -> Option<&str> {
     let auth_header = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
@@ -650,5 +706,48 @@ mod tests {
         assert_eq!(AuthMethod::Session.origin(), "session");
         assert_eq!(AuthMethod::ApiKey.origin(), "api_key");
         assert_eq!(AuthMethod::Unauthenticated.origin(), "unauthenticated");
+    }
+
+    #[test]
+    fn scopes_restrict_only_a_restricted_api_key_never_a_session_or_an_unrestricted_key() {
+        let state = test_state();
+        let uid = state.db.create_local_user("scoped@example.com", None, ignite_auth::dummy_hash()).unwrap();
+        let raw = ignite_auth::generate_api_key();
+        let key_id = state.db.create_api_key(uid, &ignite_auth::hash_api_key(&raw), None, None, "test");
+        let headers = bearer(&raw);
+
+        // Unrestricted by default (every key that predates scopes).
+        assert!(require_scopes(&headers, &state.db, &[Scope::Scan, Scope::Override, Scope::Publish]).is_ok());
+
+        state.db.set_api_key_scopes(key_id, Some(&["scan".to_string(), "override".to_string()]));
+        assert!(require_scope(&headers, &state.db, Scope::Scan).is_ok());
+        assert!(require_scope(&headers, &state.db, Scope::Override).is_ok());
+        let (status, body) = require_scope(&headers, &state.db, Scope::Publish).unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "scope_denied");
+        assert_eq!(body["requiredScope"], "publish");
+        assert_eq!(body["keyScopes"], json!(["scan", "override"]));
+        assert!(require_scopes(&headers, &state.db, &[Scope::Scan, Scope::Publish]).is_err(), "every required scope must be allowed");
+
+        // A valid session wins over the Bearer key, so the key's limits don't apply to it.
+        state.db.create_session("sid-scope", uid, "2999-01-01 00:00:00");
+        let mut with_session = bearer(&raw);
+        with_session.insert(axum::http::header::COOKIE, format!("{}=sid-scope", ignite_auth::SESSION_COOKIE).parse().unwrap());
+        assert!(require_scope(&with_session, &state.db, Scope::Publish).is_ok());
+
+        // No credentials at all: not this function's job to reject.
+        assert!(require_scope(&HeaderMap::new(), &state.db, Scope::Publish).is_ok());
+
+        // A revoked key is no longer an API-key caller.
+        assert!(state.db.revoke_api_key(key_id, uid));
+        assert!(require_scope(&headers, &state.db, Scope::Publish).is_ok());
+    }
+
+    #[test]
+    fn body_submits_overrides_only_for_a_non_empty_overrides_array() {
+        assert!(body_submits_overrides(&json!({ "overrides": [{ "issueId": "a" }] })));
+        assert!(!body_submits_overrides(&json!({ "overrides": [] })));
+        assert!(!body_submits_overrides(&json!({})));
+        assert!(!body_submits_overrides(&json!({ "overrides": "nope" })));
     }
 }

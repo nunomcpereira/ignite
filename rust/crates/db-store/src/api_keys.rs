@@ -21,8 +21,58 @@ use std::time::{Duration, Instant};
 static LAST_TOUCHED: Lazy<Mutex<HashMap<i64, Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 const TOUCH_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
 
+/// What an API key can be limited to. A key with no `scopes` is unrestricted.
+///
+/// - `scan`: run pipelines (validate-all, onboard/interactive dry runs)
+/// - `override`: submit, approve or reject overrides
+/// - `publish`: push to GitHub (real onboard, effectivate, fix-PR apply)
+pub const API_KEY_SCOPES: &[&str] = &["scan", "override", "publish"];
+
+/// Parses a comma-separated scope list (`"scan,override"`), lowercasing,
+/// de-duplicating and rejecting unknown or empty input, so a typo can never
+/// silently mint a key that is less restricted than intended.
+pub fn parse_api_key_scopes(raw: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split(',') {
+        let scope = part.trim().to_lowercase();
+        if scope.is_empty() {
+            continue;
+        }
+        if !API_KEY_SCOPES.contains(&scope.as_str()) {
+            return Err(format!("Unknown scope \"{scope}\". Valid scopes: {}.", API_KEY_SCOPES.join(", ")));
+        }
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("No scopes given. Valid scopes: {}.", API_KEY_SCOPES.join(", ")));
+    }
+    Ok(out)
+}
+
 impl DbStore {
     // ---------------- API keys ----------------
+
+    /// Limits a key to the given scopes (`None` = unrestricted again).
+    pub fn set_api_key_scopes(&self, id: i64, scopes: Option<&[String]>) {
+        let joined = scopes.map(|s| s.join(","));
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute("UPDATE api_keys SET scopes = ? WHERE id = ?", params![joined, id]) {
+            tracing::error!("set_api_key_scopes failed for key {id}: {e}");
+        }
+    }
+
+    /// `None` when there is no active key with this hash; `Some(None)` for an
+    /// active, unrestricted key; `Some(Some(scopes))` for a restricted one.
+    pub fn get_active_api_key_scopes(&self, key_hash: &str) -> Option<Option<Vec<String>>> {
+        let conn = self.conn.lock();
+        let row: Option<Option<String>> = conn
+            .query_row("SELECT scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL", params![key_hash], |row| row.get(0))
+            .optional()
+            .unwrap_or(None);
+        row.map(|scopes| scopes.filter(|s| !s.is_empty()).map(|s| s.split(',').map(str::to_string).collect()))
+    }
 
     pub fn create_api_key(&self, user_id: i64, key_hash: &str, label: Option<&str>, created_by: Option<&str>, created_via: &str) -> i64 {
         let conn = self.conn.lock();
@@ -117,6 +167,40 @@ impl DbStore {
         conn.execute("UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND user_id = ? AND revoked_at IS NULL", params![id, user_id]).unwrap() > 0
     }
 
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn scopes_parse_normalise_and_reject_typos() {
+        assert_eq!(parse_api_key_scopes("scan, Override ,scan").unwrap(), vec!["scan", "override"]);
+        assert!(parse_api_key_scopes("scan,publsh").unwrap_err().contains("publsh"));
+        assert!(parse_api_key_scopes("").is_err());
+        assert!(parse_api_key_scopes(" , ").is_err());
+    }
+
+    #[test]
+    fn a_keys_scopes_round_trip_and_null_means_unrestricted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DbStore::open(&dir.path().join("test.db")).unwrap();
+        let uid = db.create_local_user("a@example.com", None, "unused-hash").unwrap();
+        let key_id = db.create_api_key(uid, "hash-1", None, None, "test");
+
+        assert_eq!(db.get_active_api_key_scopes("hash-1"), Some(None), "a new key is unrestricted");
+        assert_eq!(db.get_active_api_key_scopes("nope"), None, "no such key");
+
+        db.set_api_key_scopes(key_id, Some(&["scan".to_string(), "override".to_string()]));
+        assert_eq!(db.get_active_api_key_scopes("hash-1"), Some(Some(vec!["scan".to_string(), "override".to_string()])));
+
+        db.set_api_key_scopes(key_id, None);
+        assert_eq!(db.get_active_api_key_scopes("hash-1"), Some(None));
+
+        db.set_api_key_scopes(key_id, Some(&["scan".to_string()]));
+        assert!(db.revoke_api_key(key_id, uid));
+        assert_eq!(db.get_active_api_key_scopes("hash-1"), None, "a revoked key has no active scopes");
+    }
 }
 
 #[cfg(test)]

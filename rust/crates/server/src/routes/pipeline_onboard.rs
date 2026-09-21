@@ -186,6 +186,16 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         }).collect())
         .unwrap_or_default();
 
+    // An API key limited to fewer scopes can't run, override or publish beyond them.
+    let mut needed = vec![crate::auth::Scope::Scan];
+    if crate::auth::body_submits_overrides(&body) {
+        needed.push(crate::auth::Scope::Override);
+    }
+    if !dry_run {
+        needed.push(crate::auth::Scope::Publish);
+    }
+    crate::auth::require_scopes(&headers, &state.db, &needed)?;
+
     // Provisioning (Phase 6) must run as the actual caller's own GitHub
     // account — fail fast rather than burning phases 1-5 first.
     let gh_token = if dry_run { String::new() } else { crate::auth::resolve_effective_github_token(&headers, &state.db) };

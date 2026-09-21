@@ -199,11 +199,17 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
 }
 
 async fn add_overrides_by_project(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Override) {
+        return (status, Json(denied)).into_response();
+    }
     let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
     add_overrides(project_id, format!("override-{project_id}"), state, user, origin, body).await
 }
 
 async fn add_overrides_by_job(Path(job_id): Path<String>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Override) {
+        return (status, Json(denied)).into_response();
+    }
     let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
     let Some(project_id) = state.db.get_project_id_by_job_id(&job_id) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "Unknown job id." }))).into_response();

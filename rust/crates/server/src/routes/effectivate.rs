@@ -86,6 +86,13 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     let phase_meta = super::phase_meta::resolve_phase_meta(&state.config);
     let phase6_title = super::phase_meta::phase_title(&phase_meta, 6);
     let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
+    let mut needed = vec![crate::auth::Scope::Publish];
+    if crate::auth::body_submits_overrides(&body) {
+        needed.push(crate::auth::Scope::Override);
+    }
+    if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
+        return (status, Json(denied)).into_response();
+    }
     let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     if gh_token.is_empty() {
         return (StatusCode::UNAUTHORIZED, Json(crate::auth::github_token_missing_body("effectivate this simulation"))).into_response();

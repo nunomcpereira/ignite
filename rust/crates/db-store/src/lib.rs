@@ -52,6 +52,7 @@ mod settings;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
 pub use daily_report::RepoDailyReport;
+pub use api_keys::{parse_api_key_scopes, API_KEY_SCOPES};
 pub use store::DbStore;
 pub use types::*;
 
