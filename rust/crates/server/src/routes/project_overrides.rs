@@ -59,7 +59,7 @@ fn issues_json(rows: &[IssueRow]) -> Vec<Value> {
         .collect()
 }
 
-async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, user: crate::auth::AttachedUser, body: Value) -> Response {
+async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, user: crate::auth::AttachedUser, origin: &'static str, body: Value) -> Response {
     let Some(project) = state.db.get_project(project_id) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "Unknown project." }))).into_response();
     };
@@ -103,7 +103,7 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
         if state.db.has_pending_override(project_id, &issue.id) {
             continue;
         }
-        state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+        state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
             project_id,
             job_id: &job_id,
             phase: 4,
@@ -120,12 +120,12 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
             actor_email: &actor_email,
             actor_name: Some(&actor_name),
             email_sent: false,
-        });
+        }, origin);
         state.emit_audit_event(
             ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
                 .actor(actor_email.clone())
                 .repo(&project.org, &project.repo)
-                .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
         );
     }
 
@@ -159,7 +159,7 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
         let email_sent = ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false);
 
         for (issue, justification) in &auto_apply {
-            state.db.add_override(ignite_db_store::AddOverrideArgs {
+            state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                 project_id,
                 job_id: &job_id,
                 phase: 4,
@@ -176,13 +176,13 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
                 actor_email: &actor_email,
                 actor_name: Some(&actor_name),
                 email_sent,
-            });
+            }, origin);
             state.db.set_issue_status(project_id, &issue.id, "overridden");
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
                     .actor(actor_email.clone())
                     .repo(&project.org, &project.repo)
-                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
             );
         }
     }
@@ -198,15 +198,23 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
     .into_response()
 }
 
-async fn add_overrides_by_project(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
-    add_overrides(project_id, format!("override-{project_id}"), state, user, body).await
+async fn add_overrides_by_project(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Override) {
+        return (status, Json(denied)).into_response();
+    }
+    let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
+    add_overrides(project_id, format!("override-{project_id}"), state, user, origin, body).await
 }
 
-async fn add_overrides_by_job(Path(job_id): Path<String>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+async fn add_overrides_by_job(Path(job_id): Path<String>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Override) {
+        return (status, Json(denied)).into_response();
+    }
+    let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
     let Some(project_id) = state.db.get_project_id_by_job_id(&job_id) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "Unknown job id." }))).into_response();
     };
-    add_overrides(project_id, job_id, state, user, body).await
+    add_overrides(project_id, job_id, state, user, origin, body).await
 }
 
 pub fn router() -> Router<Arc<AppState>> {

@@ -13,5 +13,12 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # provider API call in secret-verifier's own tests).
 retries = 0
 
+# These drive several full onboard/validate-all pipeline runs through the real
+# HTTP server (~150s on an idle machine), which is over the 180s default cap
+# as soon as the rest of the suite is running alongside them.
+[[profile.default.overrides]]
+filter = 'test(an_agents_overrides_are_attributed_to_its_key_owner_on_every_route) | test(agent_dry_run_reports_policy_and_registers_a_snapshot_that_survives_a_restart)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 [profile.ci]
 retries = 2

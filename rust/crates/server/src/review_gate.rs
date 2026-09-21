@@ -23,6 +23,9 @@ pub struct ReviewDecisionInput {
     pub proceed: bool,
     pub overrides: Vec<SubmittedOverride>,
     pub actor: Actor,
+    /// How the deciding caller authenticated (`AuthMethod::origin`), recorded
+    /// on any override this decision applies.
+    pub origin: &'static str,
 }
 
 /// Outcome of [`ReviewGate::resolve`] — three distinct cases a caller
@@ -89,7 +92,7 @@ mod tests {
         let resolved = gate.resolve(
             "job-1",
             "owner@example.com",
-            ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "a@example.com".into(), name: "A".into() } },
+            ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "a@example.com".into(), name: "A".into() }, origin: "session" },
         );
         assert_eq!(resolved, ResolveOutcome::Resolved);
         let decision = rx.await.unwrap();
@@ -100,7 +103,7 @@ mod tests {
     fn resolve_returns_not_found_for_unknown_job() {
         let gate = ReviewGate::default();
         assert_eq!(
-            gate.resolve("nope", "a@example.com", ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "a@example.com".into(), name: "A".into() } }),
+            gate.resolve("nope", "a@example.com", ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "a@example.com".into(), name: "A".into() }, origin: "session" }),
             ResolveOutcome::NotFound
         );
     }
@@ -112,7 +115,7 @@ mod tests {
         let resolved = gate.resolve(
             "job-1",
             "attacker@example.com",
-            ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "attacker@example.com".into(), name: "Attacker".into() } },
+            ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "attacker@example.com".into(), name: "Attacker".into() }, origin: "session" },
         );
         assert_eq!(resolved, ResolveOutcome::Forbidden);
     }

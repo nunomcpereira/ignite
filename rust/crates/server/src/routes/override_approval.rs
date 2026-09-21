@@ -71,7 +71,10 @@ async fn list_pending(Path(project_id): Path<i64>, State(state): State<Arc<AppSt
     Json(json!({ "ok": true, "pending": pending })).into_response()
 }
 
-async fn approve(Path((project_id, override_id)): Path<(i64, i64)>, State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth) -> Response {
+async fn approve(Path((project_id, override_id)): Path<(i64, i64)>, State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth, headers: axum::http::HeaderMap) -> Response {
+    if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Override) {
+        return (status, Json(denied)).into_response();
+    }
     if let Err((status, message)) = require_approver(&state, &user, project_id) {
         return err(status, message);
     }
@@ -89,7 +92,10 @@ async fn approve(Path((project_id, override_id)): Path<(i64, i64)>, State(state)
     }
 }
 
-async fn reject(Path((project_id, override_id)): Path<(i64, i64)>, State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth) -> Response {
+async fn reject(Path((project_id, override_id)): Path<(i64, i64)>, State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth, headers: axum::http::HeaderMap) -> Response {
+    if let Err((status, denied)) = crate::auth::require_scope(&headers, &state.db, crate::auth::Scope::Override) {
+        return (status, Json(denied)).into_response();
+    }
     if let Err((status, message)) = require_approver(&state, &user, project_id) {
         return err(status, message);
     }
@@ -211,13 +217,13 @@ mod tests {
         );
         let override_id = state.db.add_pending_override(ignite_db_store::AddOverrideArgs { project_id, job_id: "job-1", phase: 4, issue_id: "secret::a.js::1", category: "secret", severity: "error", summary: "hardcoded key", file: Some("a.js"), line: Some(1), justification: "under review", actor_email: "submitter@acme.example", actor_name: None, email_sent: false });
 
-        let resp = approve(Path((project_id, override_id)), State(state.clone()), RequireAuth(user("approver@acme.example"))).await;
+        let resp = approve(Path((project_id, override_id)), State(state.clone()), RequireAuth(user("approver@acme.example")), axum::http::HeaderMap::new()).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let issues = state.db.get_project_issues(project_id);
         assert_eq!(issues[0].status, "overridden");
 
         let other_project = state.db.create_project("job-2", "acme", "gadgets", false, "ui", None).unwrap();
-        let resp2 = approve(Path((other_project, override_id)), State(state.clone()), RequireAuth(user("approver@acme.example"))).await;
+        let resp2 = approve(Path((other_project, override_id)), State(state.clone()), RequireAuth(user("approver@acme.example")), axum::http::HeaderMap::new()).await;
         assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
     }
 }

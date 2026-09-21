@@ -75,12 +75,27 @@ fn issues_json(rows: &[IssueRow]) -> Vec<Value> {
         .collect()
 }
 
+/// Drops a project's effectivatable snapshot from both the in-memory map and
+/// the durable table.
+fn clear_pending_effectivation(state: &AppState, project_id: i64) {
+    state.pending_effectivations.lock().remove(&project_id);
+    state.db.delete_pending_effectivation(project_id);
+}
+
 async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppState>>, crate::auth::RequireAuth(user): crate::auth::RequireAuth, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let phase_meta = super::phase_meta::resolve_phase_meta(&state.config);
     let phase6_title = super::phase_meta::phase_title(&phase_meta, 6);
+    let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
+    let mut needed = vec![crate::auth::Scope::Publish];
+    if crate::auth::body_submits_overrides(&body) {
+        needed.push(crate::auth::Scope::Override);
+    }
+    if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
+        return (status, Json(denied)).into_response();
+    }
     let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     if gh_token.is_empty() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Log in and connect your GitHub account before effectivating." }))).into_response();
+        return (StatusCode::UNAUTHORIZED, Json(crate::auth::github_token_missing_body("effectivate this simulation"))).into_response();
     }
 
     let pending = {
@@ -96,9 +111,25 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         const PENDING_EFFECTIVATION_TTL: Duration = Duration::from_secs(24 * 3600);
         pending_map.retain(|_, v| v.created_at.elapsed() < PENDING_EFFECTIVATION_TTL);
         pending_map.get(&project_id).map(|p| (p.org.clone(), p.repo.clone(), p.source_backup_dir.clone()))
-    };
+    }
+    // The in-memory map is lost on a server restart; the durable row (same
+    // TTL, checked in SQL) is what lets an agent's dry run survive one.
+    .or_else(|| state.db.get_pending_effectivation(project_id).map(|r| (r.org, r.repo, std::path::PathBuf::from(r.source_dir))));
     let Some((org, repo, source_backup_dir)) = pending else {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "No simulation output available to effectivate for this project (missing, expired, or already effectivated)." }))).into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "No simulation output available to effectivate for this project (missing, expired, or already effectivated).", "code": "no_pending_simulation", "nextAction": "rerun_dry_run" }))).into_response();
+    };
+
+    // The recorded snapshot dir lives under the OS temp dir, which can be
+    // cleaned between a dry run and its effectivation. When it's gone, fall
+    // back to the project's retained-source copy — but only a *full-tier*
+    // one: a pruned copy holds just the flagged files and must never be
+    // published as if it were the whole tree.
+    let (source_backup_dir, using_retained_copy) = if source_backup_dir.is_dir() {
+        (source_backup_dir, false)
+    } else if let Some(full) = state.db.list_retained_sources().into_iter().find(|r| r.project_id == project_id && r.tier == "full").map(|r| std::path::PathBuf::from(r.dir_path)).filter(|p| p.is_dir()) {
+        (full, true)
+    } else {
+        (source_backup_dir, false)
     };
 
     // Bind publication to the policy decision recorded for this exact run,
@@ -109,11 +140,14 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
             if decision.decision == ignite_policy::PolicyDecisionKind::Incomplete {
                 return (
                     StatusCode::CONFLICT,
-                    Json(json!({
-                        "error": "This scan has incomplete required coverage and cannot be effectivated. Re-run after restoring the missing checks.",
-                        "incompleteCoverage": true,
-                        "policyDecision": decision,
-                    })),
+                    Json(super::blocked::with_block_info(
+                        json!({
+                            "error": "This scan has incomplete required coverage and cannot be effectivated. Re-run after restoring the missing checks.",
+                            "incompleteCoverage": true,
+                        }),
+                        super::blocked::BlockReason::IncompleteCoverage,
+                        super::blocked::policy_details(&decision),
+                    )),
                 )
                     .into_response();
             }
@@ -140,11 +174,15 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     if !result.ok {
         return (
             StatusCode::CONFLICT,
-            Json(json!({
-                "error": format!("{} blocking finding(s) still need to be checked + justified before this simulation can be effectivated.", result.unresolved_errors.len()),
-                "needsReview": true,
-                "issues": issues_json(&issue_rows),
-            })),
+            Json(super::blocked::with_block_info(
+                json!({
+                    "error": format!("{} blocking finding(s) still need to be checked + justified before this simulation can be effectivated.", result.unresolved_errors.len()),
+                    "needsReview": true,
+                    "issues": issues_json(&issue_rows),
+                }),
+                super::blocked::BlockReason::UnresolvedFindings,
+                json!({ "unresolvedIssueIds": result.unresolved_errors.iter().map(|i| i.id.clone()).collect::<Vec<_>>() }),
+            )),
         )
             .into_response();
     }
@@ -181,7 +219,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
             if state.db.has_pending_override(project_id, &issue.id) {
                 continue;
             }
-            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
                 project_id,
                 job_id: &format!("effectivate-{project_id}"),
                 phase: 4,
@@ -198,22 +236,36 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 actor_email: &actor_email,
                 actor_name: Some(&actor_name),
                 email_sent: false,
-            });
+            }, origin);
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
                     .actor(actor_email.clone())
                     .repo(&org, &repo)
-                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
             );
         }
         return (
             StatusCode::CONFLICT,
-            Json(json!({
-                "error": format!("{} critical finding(s) require a second reviewer's approval before this can be effectivated.", needs_approval.len()),
-                "pendingApproval": true,
-                "pendingIssueIds": needs_approval.iter().map(|(i, _)| i.id.clone()).collect::<Vec<_>>(),
-                "issues": issues_json(&issue_rows),
-            })),
+            Json(super::blocked::with_block_info(
+                json!({
+                    "error": format!("{} critical finding(s) require a second reviewer's approval before this can be effectivated.", needs_approval.len()),
+                    "pendingApproval": true,
+                    "pendingIssueIds": needs_approval.iter().map(|(i, _)| i.id.clone()).collect::<Vec<_>>(),
+                    "issues": issues_json(&issue_rows),
+                }),
+                super::blocked::BlockReason::PendingApproval,
+                json!({
+                    // Everything an approver (or an agent relaying to one) needs:
+                    // which override, on which issue, and the endpoint to call.
+                    "pendingOverrides": state.db.list_pending_overrides(project_id).into_iter().map(|o| json!({
+                        "overrideId": o.id,
+                        "issueId": o.issue_id,
+                        "submittedBy": o.actor_email,
+                        "approveEndpoint": format!("/api/projects/{project_id}/overrides/{}/approve", o.id),
+                    })).collect::<Vec<_>>(),
+                    "approverMustDifferFrom": actor.as_ref().map(|(email, _)| email.clone()),
+                }),
+            )),
         )
             .into_response();
     }
@@ -237,8 +289,8 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
 
     let backup_ok = source_backup_dir.is_dir();
     if !backup_ok {
-        state.pending_effectivations.lock().remove(&project_id);
-        return (StatusCode::GONE, Json(json!({ "error": "Simulation snapshot is no longer available (expired or already effectivated). Re-run the simulation to try again." }))).into_response();
+        clear_pending_effectivation(&state, project_id);
+        return (StatusCode::GONE, Json(json!({ "error": "Simulation snapshot is no longer available (expired or already effectivated). Re-run the simulation to try again.", "code": "snapshot_gone", "nextAction": "rerun_dry_run" }))).into_response();
     }
 
     if !auto_apply.is_empty() {
@@ -276,7 +328,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         let email_sent = ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false);
 
         for (issue, justification) in &auto_apply {
-            state.db.add_override(ignite_db_store::AddOverrideArgs {
+            state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                 project_id,
                 job_id: &format!("effectivate-{project_id}"),
                 phase: 4,
@@ -293,12 +345,12 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 actor_email: &actor_email,
                 actor_name: Some(&actor_name),
                 email_sent,
-            });
+            }, origin);
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
                     .actor(actor_email.clone())
                     .repo(&org, &repo)
-                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
             );
         }
         let applied_ids: HashSet<String> = auto_apply.iter().map(|(i, _)| i.id.clone()).collect();
@@ -353,7 +405,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
             // the prior result instead of provisioning/pushing again.
             log(&format!("✓ Already effectivated (publication attempt {}) — returning the prior result.", row.id));
             state.db.upsert_step(project_id, 6, &phase6_title, "success", &effectivate_logs.lock().join("\n"));
-            state.pending_effectivations.lock().remove(&project_id);
+            clear_pending_effectivation(&state, project_id);
             let _ = std::fs::remove_dir_all(&publish_dir);
             return (StatusCode::OK, Json(json!({ "ok": true, "repoUrl": row.repo_url, "prUrl": row.pr_url, "idempotentReplay": true }))).into_response();
         }
@@ -382,8 +434,12 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
                 );
             }
             state.db.upsert_step(project_id, 6, &phase6_title, "success", &effectivate_logs.lock().join("\n"));
-            state.pending_effectivations.lock().remove(&project_id);
-            let _ = std::fs::remove_dir_all(&source_backup_dir);
+            clear_pending_effectivation(&state, project_id);
+            // A retained-source fallback copy stays: it's Studio's kept
+            // window for this project, not this endpoint's own scratch dir.
+            if !using_retained_copy {
+                let _ = std::fs::remove_dir_all(&source_backup_dir);
+            }
             let _ = std::fs::remove_dir_all(&publish_dir);
             (StatusCode::OK, Json(json!({ "ok": true, "repoUrl": ship_result.repo_url, "prUrl": ship_result.pr_url }))).into_response()
         }
@@ -484,6 +540,70 @@ mod tests {
         assert_eq!(res.status(), 401);
     }
 
+    /// A caller who is authenticated but has no GitHub token anywhere gets an
+    /// actionable 401 (which sources were tried, and that ambient `gh auth`
+    /// is not one), not a bare "log in" message.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn an_authenticated_caller_without_a_token_gets_an_actionable_401() {
+        let _guard = ENV_GUARD.lock();
+        std::env::remove_var("GH_TOKEN");
+        std::env::remove_var("GITHUB_TOKEN");
+        let (state, _dir) = build_state();
+        let auth = auth_header(&state);
+        let base = spawn_test_server(state).await;
+        let res = reqwest::Client::new().post(format!("{base}/api/projects/1/effectivate")).header("authorization", auth).json(&json!({})).send().await.unwrap();
+        assert_eq!(res.status(), 401);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["code"], "github_token_missing");
+        assert_eq!(body["ambientGhAuthUsed"], false);
+    }
+
+    /// A token bound to the API key satisfies the token gate with no env var
+    /// and no browser-connected account — the whole point of headless agents.
+    /// With nothing pending, the call then reaches the lookup and 404s with a
+    /// machine-readable next step.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_key_bound_token_passes_the_token_gate_and_an_unknown_project_404s_with_a_next_action() {
+        let _guard = ENV_GUARD.lock();
+        std::env::remove_var("GH_TOKEN");
+        std::env::remove_var("GITHUB_TOKEN");
+        let (state, _dir) = build_state();
+        let user_id = state.db.create_local_user("bound@example.com", None, "unused-hash").unwrap();
+        let raw_key = ignite_auth::generate_api_key();
+        let key_id = state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&raw_key), None, None, "test");
+        state.db.set_api_key_github_token(key_id, Some("ghp_bound"));
+        let base = spawn_test_server(state).await;
+        let res = reqwest::Client::new().post(format!("{base}/api/projects/999/effectivate")).header("authorization", format!("Bearer {raw_key}")).json(&json!({})).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["code"], "no_pending_simulation");
+        assert_eq!(body["nextAction"], "rerun_dry_run");
+    }
+
+    /// The in-memory pending map is empty after a restart; the durable row
+    /// must still let effectivate find the run (here its snapshot dir is
+    /// gone, so 410 — distinct from the 404 for a run that never existed).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_persisted_pending_effectivation_is_found_when_the_in_memory_map_is_empty() {
+        let _guard = ENV_GUARD.lock();
+        std::env::set_var("GH_TOKEN", "test-token");
+        let (state, _dir) = build_state();
+        let auth = auth_header(&state);
+        let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
+        state.db.save_pending_effectivation(project_id, "acme", "widgets", "/definitely/not/a/real/snapshot/dir", 24);
+        assert!(state.pending_effectivations.lock().is_empty());
+        let base = spawn_test_server(state.clone()).await;
+        let res = reqwest::Client::new().post(format!("{base}/api/projects/{project_id}/effectivate")).header("authorization", auth).json(&json!({})).send().await.unwrap();
+        assert_eq!(res.status(), 410);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["code"], "snapshot_gone");
+        assert!(state.db.get_pending_effectivation(project_id).is_none(), "a gone snapshot's row is cleared so it isn't retried forever");
+        std::env::remove_var("GH_TOKEN");
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn returns_404_when_no_pending_effectivation() {
@@ -539,6 +659,11 @@ mod tests {
         let body: Value = response.json().await.unwrap();
         assert_eq!(body["incompleteCoverage"], true);
         assert_eq!(body["policyDecision"]["decision"], "incomplete");
+        assert_eq!(body["blocked"], true);
+        assert_eq!(body["blockReason"], "incomplete_coverage");
+        assert_eq!(body["overridable"], false, "missing coverage can't be overridden away");
+        assert_eq!(body["nextAction"], "restore_missing_checks_and_rescan");
+        assert!(body["missingChecks"].is_array());
         std::env::remove_var("GH_TOKEN");
     }
 
@@ -601,6 +726,15 @@ mod tests {
         assert_eq!(res.status(), 409);
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["pendingApproval"], true);
+        assert_eq!(body["blockReason"], "pending_approval");
+        assert_eq!(body["needsHuman"], true);
+        assert_eq!(body["overridable"], false);
+        let pending = body["pendingOverrides"].as_array().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["issueId"], "secret::app.js::1");
+        let override_id = pending[0]["overrideId"].as_i64().unwrap();
+        assert_eq!(pending[0]["approveEndpoint"], format!("/api/projects/{project_id}/overrides/{override_id}/approve"));
+        assert_eq!(body["approverMustDifferFrom"], "tester@example.com");
 
         assert!(state.db.has_pending_override(project_id, "secret::app.js::1"));
         assert!(!state.db.has_approved_override(project_id, "secret::app.js::1"));

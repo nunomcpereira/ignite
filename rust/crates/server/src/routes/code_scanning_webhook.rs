@@ -146,14 +146,14 @@ async fn code_scanning_webhook(State(state): State<Arc<AppState>>, headers: Head
         let score_i32 = i32::try_from(issue.score.unwrap_or(0)).unwrap_or(i32::MAX);
         let is_critical = state.config.security.override_approval.enabled && ignite_override_engine::is_critical_score(score_i32);
         if is_critical {
-            state.db.add_pending_override(override_args);
+            state.db.add_pending_override_with_origin(override_args, "github");
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("code_scanning_alert.dismissed_on_github", "info", format!("alert for {}: {} dismissed on GitHub ({reason}) — critical, held pending a second reviewer's approval", issue.category, issue.summary))
                     .repo(&org, &repo)
                     .metadata(json!({ "issueId": issue_id, "reason": reason, "pendingApproval": true })),
             );
         } else {
-            state.db.add_override(override_args);
+            state.db.add_override_with_origin(override_args, "github");
             state.db.set_issue_status(project_id, &issue_id, "overridden");
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("code_scanning_alert.dismissed_on_github", "info", format!("alert for {}: {} dismissed on GitHub ({reason})", issue.category, issue.summary))

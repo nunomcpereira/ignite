@@ -29,6 +29,52 @@ static BEARER_FORCE_WARNING_TITLES: Lazy<Vec<Regex>> = Lazy::new(|| {
     ]
 });
 
+/// Bearer's rule for DOM HTML injection. It matches any `*.createElement(...)`
+/// call, so it also fires on React's `React.createElement(Component, props)`,
+/// which is not an HTML sink — React escapes props and children.
+const BEARER_DANGEROUS_INSERT_HTML_RULE: &str = "javascript_lang_dangerous_insert_html";
+static REACT_CREATE_ELEMENT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:React|Preact)\s*\.\s*createElement\s*\(").unwrap());
+/// Anything that really does insert raw HTML. If the flagged span contains one
+/// of these, the finding stays even when it also contains `React.createElement`.
+static RAW_HTML_SINK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)dangerouslySetInnerHTML|\binnerHTML\b|\bouterHTML\b|insertAdjacentHTML|document\s*\.\s*write(?:ln)?\b|\bsrcdoc\b").unwrap());
+/// A bound so a malformed `source`/`sink` range can't make us join a whole file.
+const MAX_SPAN_LINES: usize = 300;
+
+/// The 1-based line range Bearer flagged: the union of its `source` and `sink`
+/// ranges and the reported line, so a multi-line call is judged as a whole.
+fn finding_span(entry: &serde_json::Value, line: usize) -> (usize, usize) {
+    let mut start = line;
+    let mut end = line;
+    for key in ["source", "sink"] {
+        let Some(loc) = entry.get(key) else { continue };
+        let get = |k: &str| loc.get(k).and_then(|v| v.as_u64()).map(|n| n as usize).filter(|n| *n >= 1);
+        if let Some(s) = get("start") {
+            start = start.min(s);
+        }
+        if let Some(e) = get("end") {
+            end = end.max(e);
+        }
+    }
+    (start, end.min(start.saturating_add(MAX_SPAN_LINES)))
+}
+
+/// Bearer's `javascript_lang_dangerous_insert_html` on a `React.createElement`
+/// call. Judges the whole flagged span, not one line, so a genuine raw-HTML
+/// sink anywhere inside the same call (`dangerouslySetInnerHTML`, `innerHTML`,
+/// ...) keeps the finding, and `document.createElement` never matches.
+fn is_react_create_element_false_positive(rule_id: &str, content: Option<&str>, start: usize, end: usize) -> bool {
+    if !rule_id.eq_ignore_ascii_case(BEARER_DANGEROUS_INSERT_HTML_RULE) {
+        return false;
+    }
+    let Some(content) = content else { return false };
+    let span: Vec<&str> = content.split('\n').skip(start.saturating_sub(1)).take(end.saturating_sub(start) + 1).collect();
+    if span.is_empty() {
+        return false;
+    }
+    let span = span.join("\n");
+    REACT_CREATE_ELEMENT_RE.is_match(&span) && !RAW_HTML_SINK_RE.is_match(&span)
+}
+
 pub struct PiiDataFlowConfig {
     pub enabled: bool,
 }
@@ -307,6 +353,11 @@ pub async fn check_pii_data_flow(root: &Path, runner: &ToolRunner, config: &PiiD
             if is_firebase_public_api_key_finding(&title, &source_line, content.as_deref(), line) {
                 continue;
             }
+            let rule_id = e.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let (span_start, span_end) = finding_span(e, line);
+            if is_react_create_element_false_positive(rule_id, content.as_deref(), span_start, span_end) {
+                continue;
+            }
             let forced_warning = BEARER_FORCE_WARNING_TITLES.iter().any(|re| re.is_match(&title))
                 || (is_likely_test_or_fixture_path(&rel_file) && HARD_CODED_SECRET_TITLE_RE.is_match(&title))
                 || (DEV_SERVER_FILE_RE.is_match(&rel_file) && INSECURE_HTTP_TITLE_RE.is_match(&title));
@@ -393,6 +444,68 @@ mod tests {
         let line = r#"const apiKey = "AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe";"#;
         assert!(is_firebase_public_api_key_finding("Usage of hard-coded secret", line, None, 1));
         assert!(!is_firebase_public_api_key_finding("Some other finding", line, None, 1));
+    }
+
+    const RULE: &str = "javascript_lang_dangerous_insert_html";
+
+    const REACT_WEB_PART: &str = "import * as React from 'react';
+export default class Web {
+  public render(): void {
+    const element: React.ReactElement<any> = React.createElement(
+      BdTracker,
+      {
+        userDisplayName: this.context.pageContext.user.displayName,
+        currentUserEmail: this.context.pageContext.user.email
+      }
+    );
+    ReactDom.render(element, document.getElementById('root'));
+  }
+}
+";
+
+    #[test]
+    fn a_react_create_element_call_is_not_reported_as_html_injection() {
+        // Bearer flags lines 4-10 (the whole call) as both source and sink.
+        assert!(is_react_create_element_false_positive(RULE, Some(REACT_WEB_PART), 4, 10));
+        assert!(is_react_create_element_false_positive("JAVASCRIPT_LANG_DANGEROUS_INSERT_HTML", Some(REACT_WEB_PART), 4, 10), "rule id is matched case-insensitively");
+    }
+
+    #[test]
+    fn a_raw_html_sink_in_the_same_span_keeps_the_finding() {
+        for sink in ["dangerouslySetInnerHTML: { __html: userInput }", "ref: el => { el.innerHTML = userInput }", "onClick: () => document.write(userInput)"] {
+            let src = format!("const e = React.createElement('div', {{ {sink} }});\n");
+            assert!(!is_react_create_element_false_positive(RULE, Some(&src), 1, 1), "{sink} must still be reported");
+        }
+    }
+
+    #[test]
+    fn document_create_element_and_other_rules_are_unaffected() {
+        let dom = "const el = document.createElement('div');\nel.innerHTML = userInput;\n";
+        assert!(!is_react_create_element_false_positive(RULE, Some(dom), 1, 2));
+        assert!(!is_react_create_element_false_positive("javascript_lang_eval", Some(REACT_WEB_PART), 4, 10), "only the html-insertion rule is suppressed");
+        assert!(!is_react_create_element_false_positive(RULE, None, 4, 10), "no file content means no basis to suppress");
+    }
+
+    #[test]
+    fn only_the_flagged_span_is_judged_not_the_whole_file() {
+        // A React.createElement elsewhere in the file must not excuse a genuine
+        // innerHTML finding on a different line.
+        let src = "const a = React.createElement(A);\nel.innerHTML = userInput;\n";
+        assert!(!is_react_create_element_false_positive(RULE, Some(src), 2, 2));
+        assert!(is_react_create_element_false_positive(RULE, Some(src), 1, 1));
+    }
+
+    #[test]
+    fn finding_span_takes_the_union_of_source_and_sink_and_is_bounded() {
+        // The shape bearer 2.1.0 actually emitted for a multi-line call.
+        let entry = serde_json::json!({
+            "id": RULE, "line_number": 10,
+            "source": { "start": 10, "end": 18, "column": { "start": 46, "end": 6 } },
+            "sink": { "start": 10, "end": 18, "column": { "start": 46, "end": 6 }, "content": "" }
+        });
+        assert_eq!(finding_span(&entry, 10), (10, 18));
+        assert_eq!(finding_span(&serde_json::json!({}), 7), (7, 7), "no ranges falls back to the reported line");
+        assert_eq!(finding_span(&serde_json::json!({ "sink": { "start": 1, "end": 999999 } }), 5), (1, 1 + MAX_SPAN_LINES));
     }
 
     #[test]

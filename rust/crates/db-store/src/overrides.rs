@@ -19,16 +19,23 @@ pub const GITHUB_DISMISSAL_ACTOR_EMAIL: &str = "github-webhook:dismissal-sync";
 impl DbStore {
     // ---------------- audit log: overrides ----------------
 
+    /// Records an approved override submitted by a person in a browser
+    /// session. Use [`Self::add_override_with_origin`] when the caller may
+    /// be an API key or another non-session source.
     pub fn add_override(&self, args: AddOverrideArgs) {
+        self.add_override_with_origin(args, "session")
+    }
+
+    pub fn add_override_with_origin(&self, args: AddOverrideArgs, origin: &str) {
         let conn = self.conn.lock();
         if let Err(e) = conn.execute(
             "INSERT INTO overrides
-              (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')",
+              (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status, origin)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)",
             params![
                 args.project_id, args.job_id, args.phase, args.issue_id, args.category, args.severity,
                 args.summary, args.file, args.line, args.justification, args.actor_email, args.actor_name,
-                args.email_sent as i64,
+                args.email_sent as i64, origin,
             ],
         ) {
             // A transient DB error (lock contention, disk full) must not
@@ -52,15 +59,19 @@ impl DbStore {
     /// contention or a disk error — the caller should treat `0` as
     /// "nothing was recorded" rather than a valid id to look up.
     pub fn add_pending_override(&self, args: AddOverrideArgs) -> i64 {
+        self.add_pending_override_with_origin(args, "session")
+    }
+
+    pub fn add_pending_override_with_origin(&self, args: AddOverrideArgs, origin: &str) -> i64 {
         let conn = self.conn.lock();
         let result = conn.execute(
             "INSERT INTO overrides
-              (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+              (project_id, job_id, phase, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, email_sent, status, origin)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
             params![
                 args.project_id, args.job_id, args.phase, args.issue_id, args.category, args.severity,
                 args.summary, args.file, args.line, args.justification, args.actor_email, args.actor_name,
-                args.email_sent as i64,
+                args.email_sent as i64, origin,
             ],
         );
         match result {
@@ -137,7 +148,7 @@ impl DbStore {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT id, project_id, job_id, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, created_at
+                "SELECT id, project_id, job_id, issue_id, category, severity, summary, file, line, justification, actor_email, actor_name, created_at, origin
                  FROM overrides WHERE project_id = ? AND status = 'pending' ORDER BY id",
             )
             .unwrap();
@@ -156,6 +167,7 @@ impl DbStore {
                 actor_email: row.get(10)?,
                 actor_name: row.get(11)?,
                 created_at: row.get(12)?,
+                origin: row.get(13)?,
             })
         })
         .unwrap()
@@ -228,7 +240,7 @@ impl DbStore {
         let mut stmt = conn
             .prepare_cached(
                 "SELECT id, phase, issue_id, category, severity, summary, file, line, justification,
-                        actor_email, actor_name, email_sent, created_at
+                        actor_email, actor_name, email_sent, created_at, origin
                  FROM overrides WHERE project_id = ? AND status = 'approved' ORDER BY id",
             )
             .unwrap();
@@ -247,6 +259,7 @@ impl DbStore {
                 actor_name: row.get(10)?,
                 email_sent: row.get::<_, i64>(11)? != 0,
                 created_at: row.get(12)?,
+                origin: row.get(13)?,
             })
         })
         .unwrap()
@@ -272,7 +285,7 @@ impl DbStore {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification, o.actor_email, o.actor_name, o.email_sent, o.created_at
+                "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification, o.actor_email, o.actor_name, o.email_sent, o.created_at, o.origin
                  FROM overrides o
                  INNER JOIN projects p ON o.project_id = p.id
                  WHERE p.org = ? AND p.repo = ? AND p.id != ? AND o.status = 'approved'
@@ -295,6 +308,7 @@ impl DbStore {
                     actor_name: row.get(10)?,
                     email_sent: row.get::<_, i64>(11)? != 0,
                     created_at: row.get(12)?,
+                    origin: row.get(13)?,
                 })
             })
             .unwrap();
@@ -355,4 +369,38 @@ impl DbStore {
         })
     }
 
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use crate::store::DbStore;
+    use crate::types::AddOverrideArgs;
+
+    fn args(project_id: i64, issue_id: &str) -> AddOverrideArgs<'_> {
+        AddOverrideArgs { project_id, job_id: "job-1", phase: 4, issue_id, category: "secret", severity: "error", summary: "hardcoded key", file: Some("a.js"), line: Some(1), justification: "reviewed", actor_email: "owner@example.com", actor_name: None, email_sent: false }
+    }
+
+    #[test]
+    fn overrides_record_how_they_were_submitted_and_default_to_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DbStore::open(&dir.path().join("test.db")).unwrap();
+        let pid = db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
+
+        db.add_override(args(pid, "secret::a.js::1"));
+        db.add_override_with_origin(args(pid, "secret::a.js::2"), "api_key");
+        let by_issue: std::collections::HashMap<String, String> = db.get_project_overrides(pid).into_iter().map(|o| (o.issue_id, o.origin)).collect();
+        assert_eq!(by_issue["secret::a.js::1"], "session", "the plain entry point is a person in a browser");
+        assert_eq!(by_issue["secret::a.js::2"], "api_key");
+    }
+
+    #[test]
+    fn a_pending_override_carries_its_origin_to_the_approver() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DbStore::open(&dir.path().join("test.db")).unwrap();
+        let pid = db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
+        db.add_pending_override_with_origin(args(pid, "secret::a.js::1"), "api_key");
+        let pending = db.list_pending_overrides(pid);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].origin, "api_key");
+    }
 }

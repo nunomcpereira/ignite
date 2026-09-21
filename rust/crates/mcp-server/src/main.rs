@@ -28,6 +28,53 @@ fn ignite_base_url() -> String {
     std::env::var("IGNITE_BASE_URL").unwrap_or_else(|_| "http://localhost:51337".to_string()).trim_end_matches('/').to_string()
 }
 
+/// Long pipeline runs (onboard) are started with `async: true` and polled,
+/// rather than held open as one HTTP request that a proxy or idle timeout can
+/// drop. `IGNITE_MCP_ASYNC=0` restores the single blocking request.
+fn async_runs_enabled() -> bool {
+    !matches!(std::env::var("IGNITE_MCP_ASYNC").as_deref(), Ok("0") | Ok("false"))
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+/// What the server answered to an `async: true` start request.
+#[derive(Debug, PartialEq)]
+enum AsyncStart {
+    /// `202` with a job id: poll it.
+    Job(String),
+    /// Anything else — an immediate 401/403/400, or a server that ignored
+    /// `async` and ran synchronously: the body is the final response.
+    Immediate,
+}
+
+fn classify_async_start(http_status: u16, body: &Value) -> AsyncStart {
+    match (http_status, body.get("jobId").and_then(|v| v.as_str())) {
+        (202, Some(job_id)) if body.get("async").and_then(|v| v.as_bool()).unwrap_or(false) => AsyncStart::Job(job_id.to_string()),
+        _ => AsyncStart::Immediate,
+    }
+}
+
+/// One poll of `GET /api/pipeline/:jobId/async-result`.
+#[derive(Debug, PartialEq)]
+enum PollOutcome {
+    Running,
+    /// The finished response, exactly as the synchronous call would have returned it.
+    Done(Value),
+    /// The poll itself failed (unknown job, not the caller's job, non-JSON).
+    Error(String),
+}
+
+fn interpret_poll(http_status: u16, body: Option<&Value>) -> PollOutcome {
+    let Some(body) = body else { return PollOutcome::Error(format!("Ignite server returned a non-JSON response (HTTP {http_status}) while polling the job.")) };
+    match http_status {
+        202 => PollOutcome::Running,
+        200 => PollOutcome::Done(body.get("result").cloned().unwrap_or(Value::Null)),
+        _ => PollOutcome::Error(serde_json::to_string_pretty(body).unwrap_or_default()),
+    }
+}
+
 fn ignite_api_key() -> Option<String> {
     std::env::var("IGNITE_API_KEY").ok()
 }
@@ -219,6 +266,8 @@ struct OnboardProjectRequest {
     overrides: Option<Vec<OverrideEntry>>,
     /// Required if overrides are submitted and the Ignite server has no logged-in session.
     actor: Option<Actor>,
+    /// Optional retry key. Re-sending the identical request with the same key returns the run it already started (`idempotent: true`, with its jobId/projectId/repoUrl) instead of scanning or pushing again; the same key with a different body (e.g. after adding overrides) is a 409 — use a new key for a new attempt.
+    idempotency_key: Option<String>,
     /// Required when this server is reachable over the network (MCP_TRANSPORT=http) and dryRun is not true — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection.
     api_key: Option<String>,
 }
@@ -360,6 +409,75 @@ impl IgniteMcp {
         };
         let is_error = !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
         Ok(text_result(serde_json::to_string_pretty(&result).unwrap_or_default(), is_error))
+    }
+
+    /// `proxy_to_ignite` for the long-running pipeline endpoints: starts the
+    /// run with `async: true` and polls `GET /api/pipeline/:jobId/async-result`
+    /// until it finishes, so one slow run isn't one fragile HTTP request. The
+    /// caller still makes a single tool call and gets the same response the
+    /// blocking call would have produced. A transient network error while
+    /// polling is retried; if the wait budget (`IGNITE_MCP_MAX_WAIT_SECS`,
+    /// default 3600) runs out, the job id is reported and re-sending the same
+    /// request with the same `idempotencyKey` returns the run rather than
+    /// starting another.
+    async fn proxy_to_ignite_polling(&self, endpoint: &str, mut body: Value) -> Result<CallToolResult, McpError> {
+        if !async_runs_enabled() {
+            return self.proxy_to_ignite(endpoint, body).await;
+        }
+        body["async"] = Value::Bool(true);
+        let base_url = ignite_base_url();
+        let with_auth = |req: reqwest::RequestBuilder| match ignite_api_key() {
+            Some(key) => req.header("Authorization", format!("Bearer {key}")),
+            None => req,
+        };
+        let start = match with_auth(self.http.post(format!("{base_url}{endpoint}")).header("Content-Type", "application/json").header("X-Ignite-Client", "mcp").json(&body)).send().await {
+            Ok(r) => r,
+            Err(e) => return Ok(text_result(format!("Could not reach Ignite server at {base_url}: {e}. Is it running?"), true)),
+        };
+        let start_status = start.status().as_u16();
+        let Some(start_body): Option<Value> = start.json().await.ok() else {
+            return Ok(text_result(format!("Ignite server returned a non-JSON response (HTTP {start_status})."), true));
+        };
+        let job_id = match classify_async_start(start_status, &start_body) {
+            AsyncStart::Job(id) => id,
+            AsyncStart::Immediate => {
+                let is_error = !start_body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                return Ok(text_result(serde_json::to_string_pretty(&start_body).unwrap_or_default(), is_error));
+            }
+        };
+
+        let poll_every = std::time::Duration::from_millis(env_u64("IGNITE_MCP_POLL_MS", 2000).max(50));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(env_u64("IGNITE_MCP_MAX_WAIT_SECS", 3600));
+        let poll_url = format!("{base_url}/api/pipeline/{}/async-result", urlencoding::encode(&job_id));
+        let mut consecutive_failures = 0u32;
+        loop {
+            tokio::time::sleep(poll_every).await;
+            let response = match with_auth(self.http.get(&poll_url).header("X-Ignite-Client", "mcp")).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= 5 {
+                        return Ok(text_result(format!("Lost contact with the Ignite server at {base_url} while waiting for job {job_id}: {e}. The run may still be going — re-send the same request with the same idempotency_key to get it back."), true));
+                    }
+                    continue;
+                }
+            };
+            consecutive_failures = 0;
+            let http_status = response.status().as_u16();
+            let body: Option<Value> = response.json().await.ok();
+            match interpret_poll(http_status, body.as_ref()) {
+                PollOutcome::Running => {
+                    if std::time::Instant::now() >= deadline {
+                        return Ok(text_result(format!("Still running after the wait budget. Job id: {job_id}. Re-send the same request with the same idempotency_key to get the run (it reports inProgress while it is still going)."), true));
+                    }
+                }
+                PollOutcome::Done(result) => {
+                    let is_error = !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    return Ok(text_result(serde_json::to_string_pretty(&result).unwrap_or_default(), is_error));
+                }
+                PollOutcome::Error(message) => return Ok(text_result(message, true)),
+            }
+        }
     }
 
     /// Same "POST kicks off, GET .../status reports progress" pattern the
@@ -600,7 +718,7 @@ impl IgniteMcp {
     }
 
     #[tool(
-        description = "Run all Ignite onboarding checks against a local project directory, and — if every check passes — provision a private GitHub repo and push the code. Set dryRun=true to run every check without pushing. Requires a running Ignite server with `gh` authenticated."
+        description = "Run all Ignite onboarding checks against a local project directory, and — if every check passes — provision a private GitHub repo and push the code. Set dryRun=true to run every check without pushing; a successful dry run returns `projectId` and `effectivatable: true`, which is what effectivate_project takes. Every response carries `coverage` and `policyDecision`; a refused run carries `blocked`, `blockReason` (unresolved_findings | pending_approval | incomplete_coverage | policy_blocked), `overridable` and `nextAction`. A real (non-dry) run needs a GitHub token on the Ignite server side: one bound to the API key (`create-api-key --github-token-env`), the key owner's connected GitHub account, or the server's GH_TOKEN/GITHUB_TOKEN — the `gh` CLI's own login is NOT used (a 401 with `code: github_token_missing` lists the remedies)."
     )]
     async fn onboard_project(&self, Parameters(req): Parameters<OnboardProjectRequest>) -> Result<CallToolResult, McpError> {
         // Dry runs (checks-only, no provisioning/push) stay frictionless
@@ -615,7 +733,7 @@ impl IgniteMcp {
         if (!req.dry_run.unwrap_or(false) || has_overrides) && !authorized_for_mutation(req.api_key.as_deref()) {
             return Ok(text_result(MUTATION_AUTH_ERROR.to_string(), true));
         }
-        self.proxy_to_ignite(
+        self.proxy_to_ignite_polling(
             "/api/pipeline/onboard",
             serde_json::json!({
                 "projectPath": req.project_path,
@@ -628,6 +746,7 @@ impl IgniteMcp {
                 "warningDecision": req.warning_decision,
                 "overrides": overrides_to_json(&req.overrides),
                 "actor": req.actor,
+                "idempotencyKey": req.idempotency_key,
             }),
         )
         .await
@@ -645,7 +764,7 @@ impl IgniteMcp {
     }
 
     #[tool(
-        description = "Provision + push the exact snapshot already validated by a prior onboard_project(dryRun: true) call, without re-running phases 1-5. Requires a running Ignite server with `gh` authenticated, and the caller's GitHub account connected."
+        description = "Provision + push the exact snapshot already validated by a prior onboard_project(dryRun: true) call (use its `projectId`), without re-running phases 1-5. The snapshot is kept for 24h and survives a server restart; if it has expired the call returns 404 `no_pending_simulation` — re-run the dry run. Needs a GitHub token on the server side (bound to the API key, the key owner's connected account, or the server's GH_TOKEN/GITHUB_TOKEN; `gh` CLI login is not used). A refused call carries `blocked`, `blockReason`, `overridable` and `nextAction`; `pending_approval` also lists `pendingOverrides` for a different reviewer to approve."
     )]
     async fn effectivate_project(&self, Parameters(req): Parameters<EffectivateProjectRequest>) -> Result<CallToolResult, McpError> {
         if !authorized_for_mutation(req.api_key.as_deref()) {
@@ -1075,5 +1194,25 @@ mod http_transport_tests {
 
         HTTP_TRANSPORT.store(false, std::sync::atomic::Ordering::Relaxed);
         std::env::remove_var("IGNITE_API_KEY");
+    }
+
+    #[test]
+    fn an_async_start_is_only_a_job_when_the_server_says_202_with_a_job_id() {
+        let started = serde_json::json!({ "ok": true, "async": true, "jobId": "abc" });
+        assert_eq!(classify_async_start(202, &started), AsyncStart::Job("abc".to_string()));
+        // An older server ignores `async` and answers synchronously.
+        assert_eq!(classify_async_start(200, &serde_json::json!({ "ok": true, "jobId": "abc" })), AsyncStart::Immediate);
+        // An immediate refusal is the final answer, not a job.
+        assert_eq!(classify_async_start(403, &serde_json::json!({ "ok": false, "code": "scope_denied" })), AsyncStart::Immediate);
+        assert_eq!(classify_async_start(202, &serde_json::json!({ "ok": true })), AsyncStart::Immediate, "no job id, nothing to poll");
+    }
+
+    #[test]
+    fn polling_distinguishes_running_done_and_a_failed_poll() {
+        assert_eq!(interpret_poll(202, Some(&serde_json::json!({ "state": "running" }))), PollOutcome::Running);
+        let done = serde_json::json!({ "ok": true, "state": "done", "httpStatus": 400, "result": { "ok": false, "blocked": true } });
+        assert_eq!(interpret_poll(200, Some(&done)), PollOutcome::Done(serde_json::json!({ "ok": false, "blocked": true })), "the pipeline's own failure is returned as the result, not as a poll error");
+        assert!(matches!(interpret_poll(404, Some(&serde_json::json!({ "code": "unknown_job" }))), PollOutcome::Error(m) if m.contains("unknown_job")));
+        assert!(matches!(interpret_poll(200, None), PollOutcome::Error(_)));
     }
 }

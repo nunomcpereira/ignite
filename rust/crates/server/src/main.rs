@@ -61,6 +61,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::pipeline_validate::router())
         .merge(routes::config::router())
         .merge(routes::pipeline_onboard::router())
+        .merge(routes::async_jobs::router())
         .merge(routes::pipeline_interactive::router())
         .merge(routes::studio::router())
         .merge(routes::studio::mutating_router().layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware)))
@@ -117,6 +118,12 @@ async fn main() {
 
     state.db.sweep_expired_sessions();
     state.db.abort_stale_running_projects();
+    // An async run still marked running belongs to the previous process and
+    // can never finish; fail it explicitly so its poller isn't left waiting.
+    let lost_async_jobs = state.db.fail_unfinished_async_jobs(routes::async_jobs::KEEP_FINISHED_JOBS_DAYS);
+    if lost_async_jobs > 0 {
+        tracing::warn!("{lost_async_jobs} async run(s) were still in progress at the last shutdown and were marked failed");
+    }
     {
         let sweep_state = state.clone();
         tokio::spawn(async move {
@@ -429,7 +436,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn onboard_dry_run_completes_without_shipping() {
+        // A dry run now keeps its validated snapshot under
+        // `IGNITE_DATA_DIR` — point that at a tempdir, not the real ~/.ignite.
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke"}"#).unwrap();
         std::fs::write(dir.path().join("app.js"), "console.log(1);\n").unwrap();
@@ -634,5 +647,354 @@ mod tests {
         let client = reqwest::Client::new();
         let res = client.post(format!("{base}/api/reports/posture")).bearer_auth(token).json(&serde_json::json!({ "projectPath": "/no/such/directory/ignite-test" })).send().await.unwrap();
         assert_eq!(res.status(), 400);
+    }
+
+    /// Like `spawn_test_server_with_api_key`, but hands back the shared
+    /// `AppState` (to assert on DB rows) and the key's owner email, and can
+    /// bind a GitHub token to the key.
+    async fn spawn_test_server_with_state(owner_email: &str, key_github_token: Option<&str>) -> (String, String, Arc<AppState>) {
+        spawn_test_server_with_state_and_config(owner_email, key_github_token, ignite_config::Config::default()).await
+    }
+
+    async fn spawn_test_server_with_state_and_config(owner_email: &str, key_github_token: Option<&str>, config: ignite_config::Config) -> (String, String, Arc<AppState>) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let user_id = db.create_local_user(owner_email, None, ignite_auth::dummy_hash()).unwrap();
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        let key_id = db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
+        if let Some(gh) = key_github_token {
+            db.set_api_key_github_token(key_id, Some(gh));
+        }
+        let state = Arc::new(AppState {
+            runner: state::default_runner(),
+            db,
+            running_runs: Mutex::new(HashMap::new()),
+            pending_effectivations: Mutex::new(HashMap::new()),
+            review_gate: review_gate::ReviewGate::default(),
+            llm_config: state::default_llm_config(),
+            config,
+            package_hallucination_checker: state::default_package_hallucination_checker(),
+            fix_pr_previews: Mutex::new(HashMap::new()),
+            audit_http: reqwest::Client::new(),
+        });
+        let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
+        let app = build_router(state.clone(), &public_dir);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+        });
+        std::mem::forget(db_dir);
+        (format!("http://{addr}"), token, state)
+    }
+
+    fn agent_test_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke"}"#).unwrap();
+        std::fs::write(dir.path().join("app.js"), "console.log(1);\n").unwrap();
+        dir
+    }
+
+    /// The agent's happy path — `onboard_project(dryRun)` then
+    /// `effectivate_project` — used to be impossible: the dry run returned no
+    /// `projectId` and registered nothing to effectivate. Covers both ways a
+    /// dry run can end (this environment may or may not produce blocking
+    /// findings, e.g. an unreviewed CodeQL pin).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn agent_dry_run_reports_policy_and_registers_a_snapshot_that_survives_a_restart() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+
+        let (base, key, state) = spawn_test_server_with_state("agent@example.com", Some("ghp_bound_to_key")).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let res = client
+            .post(format!("{base}/api/pipeline/onboard"))
+            .bearer_auth(&key)
+            .json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": project.path().to_string_lossy(), "dryRun": true, "runLocalCi": false }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body: Value = res.json().await.unwrap();
+        let project_id = body["projectId"].as_i64().unwrap_or_else(|| panic!("onboard must return projectId ({status}): {body}"));
+        assert!(body["coverage"].is_array(), "coverage must be reported on every onboard response: {body}");
+        assert!(body.get("policyDecision").is_some(), "policyDecision key must always be present: {body}");
+
+        if status == 200 {
+            assert_eq!(body["effectivatable"], true, "a passing dry run must be effectivatable: {body}");
+            assert_eq!(body["policyDecision"]["decision"], "pass");
+            let row = state.db.get_pending_effectivation(project_id).expect("a durable pending-effectivation row");
+            assert!(std::path::Path::new(&row.source_dir).join("app.js").is_file(), "the kept snapshot must hold the validated tree");
+            assert!(row.source_dir.starts_with(&*data_dir.path().to_string_lossy()), "kept under the data dir, not the OS temp dir");
+
+            // Simulate a restart (in-memory map lost) and a vanished snapshot
+            // dir: effectivate must still *find* the run (410 snapshot_gone),
+            // not report it as never having existed (404).
+            state.pending_effectivations.lock().clear();
+            std::fs::remove_dir_all(&row.source_dir).unwrap();
+            let eff = client.post(format!("{base}/api/projects/{project_id}/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap();
+            assert_eq!(eff.status(), 410, "the durable row must be found after a restart");
+            let eff_body: Value = eff.json().await.unwrap();
+            assert_eq!(eff_body["code"], "snapshot_gone");
+        } else {
+            assert_eq!(status, 400, "unexpected status: {body}");
+            assert_eq!(body["blocked"], true, "a refused run must carry the machine-readable envelope: {body}");
+            assert_eq!(body["ok"], false);
+            let reason = body["blockReason"].as_str().unwrap();
+            assert!(["unresolved_findings", "pending_approval", "incomplete_coverage", "policy_blocked"].contains(&reason), "unexpected blockReason {reason}");
+            assert!(body["nextAction"].is_string() && body["overridable"].is_boolean());
+            if reason == "unresolved_findings" {
+                assert_eq!(body["overridable"], true);
+                assert!(!body["unresolvedIssueIds"].as_array().unwrap().is_empty());
+            }
+            assert!(state.db.get_pending_effectivation(project_id).is_none(), "a blocked run must not register a snapshot");
+        }
+        std::env::remove_var("IGNITE_DATA_DIR");
+    }
+
+    /// The three publishing routes resolve "who is this override from"
+    /// differently on purpose (validate-all may take a body actor when
+    /// unauthenticated; onboard never does). For an *authenticated* agent
+    /// they must all agree: the key's owner, never a body-supplied actor.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn an_agents_overrides_are_attributed_to_its_key_owner_on_every_route() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+        let (base, key, state) = spawn_test_server_with_state("owner@example.com", None).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let path = project.path().to_string_lossy().to_string();
+
+        let routes: [(&str, Value); 2] = [
+            ("/api/pipeline/onboard", serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": path, "dryRun": true, "runLocalCi": false })),
+            ("/api/pipeline/validate-all", serde_json::json!({ "projectPath": path, "runLocalCi": false, "fast": true })),
+        ];
+        let mut exercised = 0;
+        for (route, base_body) in routes {
+            let first: Value = client.post(format!("{base}{route}")).bearer_auth(&key).json(&base_body).send().await.unwrap().json().await.unwrap();
+            let Some(issues) = first["issues"].as_array().filter(|i| !i.is_empty()) else {
+                eprintln!("skipping {route}: no findings in this environment, so there is nothing to override");
+                continue;
+            };
+            let overrides: Vec<Value> = issues.iter().map(|i| serde_json::json!({ "issueId": i["id"], "justification": "Reviewed by the agent's owner: accepted risk for this test fixture." })).collect();
+            let mut body = base_body.clone();
+            body["overrides"] = Value::Array(overrides);
+            body["actor"] = serde_json::json!({ "email": "mallory@example.com", "name": "Mallory" });
+            let second: Value = client.post(format!("{base}{route}")).bearer_auth(&key).json(&body).send().await.unwrap().json().await.unwrap();
+            let job_id = second["jobId"].as_str().unwrap_or_else(|| panic!("{route} returned no jobId: {second}"));
+            let project_id = state.db.get_project_id_by_job_id(job_id).unwrap();
+            let recorded = state.db.get_project_overrides(project_id);
+            assert!(!recorded.is_empty(), "{route}: the overrides must have been recorded");
+            for o in recorded {
+                assert_eq!(o.actor_email, "owner@example.com", "{route}: attributed to the key owner, never the body actor");
+                assert_eq!(o.origin, "api_key", "{route}: an override sent with an API key is labelled as such");
+            }
+            exercised += 1;
+        }
+        eprintln!("override-attribution checked on {exercised}/2 routes");
+        std::env::remove_var("IGNITE_DATA_DIR");
+    }
+
+    /// A key limited to `scan` can run pipelines but not override or publish.
+    /// Every refusal happens before any pipeline work, so this is fast.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_scan_only_key_is_refused_override_and_publish_on_every_route_that_needs_them() {
+        let _guard = crate::state::GH_TOKEN_ENV_GUARD.lock();
+        std::env::remove_var("GH_TOKEN");
+        std::env::remove_var("GITHUB_TOKEN");
+        let (base, key, state) = spawn_test_server_with_state("scoped@example.com", None).await;
+        let key_id = state.db.get_active_api_key_by_hash(&ignite_auth::hash_api_key(&key)).unwrap().id;
+        let client = reqwest::Client::new();
+        let denied = |res: reqwest::Response, scope: &'static str| async move {
+            assert_eq!(res.status(), 403);
+            let body: Value = res.json().await.unwrap();
+            assert_eq!(body["code"], "scope_denied", "{body}");
+            assert_eq!(body["requiredScope"], scope, "{body}");
+            assert_eq!(body["keyScopes"], serde_json::json!(["scan"]));
+        };
+        let overrides = serde_json::json!([{ "issueId": "secret::a.js::1", "justification": "reviewed, accepted risk" }]);
+
+        // Unrestricted (the default): the scope layer lets everything through.
+        let res = client.post(format!("{base}/api/projects/999/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap();
+        assert_ne!(res.status(), 403, "an unrestricted key must not be refused by scopes");
+
+        state.db.set_api_key_scopes(key_id, Some(&["scan".to_string()]));
+
+        denied(client.post(format!("{base}/api/pipeline/validate-all")).bearer_auth(&key).json(&serde_json::json!({ "projectPath": "/tmp", "overrides": overrides })).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": "/tmp" })).send().await.unwrap(), "publish").await;
+        denied(client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&serde_json::json!({ "org": "acme", "repo": "widgets", "projectPath": "/tmp", "dryRun": true, "overrides": overrides })).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/projects/999/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap(), "publish").await;
+        denied(client.post(format!("{base}/api/projects/999/overrides")).bearer_auth(&key).json(&serde_json::json!({ "overrides": overrides })).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/projects/999/overrides/1/approve")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap(), "override").await;
+        denied(client.post(format!("{base}/api/pipeline/some-job/fix-pr/apply")).bearer_auth(&key).json(&serde_json::json!({ "candidates": [] })).send().await.unwrap(), "publish").await;
+
+        // Widening the key's scopes lifts exactly that refusal.
+        state.db.set_api_key_scopes(key_id, Some(&["scan".to_string(), "publish".to_string()]));
+        let res = client.post(format!("{base}/api/projects/999/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap();
+        assert_ne!(res.status(), 403, "publish is now allowed");
+        std::env::remove_var("GH_TOKEN");
+    }
+
+    /// Agents retry after dropped connections. A repeated `onboard` under the
+    /// same `idempotencyKey` must reference the original run, not scan (and
+    /// for a real onboard, push) a second time.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn onboard_idempotency_key_replays_the_same_run_and_rejects_a_different_payload() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+        // Phase 4 off keeps the run to seconds; idempotency doesn't depend on it.
+        let config = ignite_config::Config { phases: vec![serde_json::json!({ "id": 4, "enabled": false })], ..Default::default() };
+        let (base, key, _state) = spawn_test_server_with_state_and_config("idem@example.com", None, config).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let body = |extra: Value| {
+            let mut b = serde_json::json!({ "org": "acme", "repo": "idem-widgets", "projectPath": project.path().to_string_lossy(), "dryRun": true, "runLocalCi": false });
+            for (k, v) in extra.as_object().unwrap() {
+                b[k] = v.clone();
+            }
+            b
+        };
+
+        let first_res = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-1" }))).send().await.unwrap();
+        assert_eq!(first_res.status(), 200);
+        let first: Value = first_res.json().await.unwrap();
+        assert!(first.get("idempotent").is_none(), "the first call is a real run: {first}");
+        let job_id = first["jobId"].as_str().unwrap().to_string();
+        let project_id = first["projectId"].as_i64().unwrap();
+
+        // Identical retry: same run, no second pipeline.
+        let replay: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-1" }))).send().await.unwrap().json().await.unwrap();
+        assert_eq!(replay["idempotent"], true, "{replay}");
+        assert_eq!(replay["jobId"], job_id.as_str());
+        assert_eq!(replay["projectId"], project_id);
+        assert_eq!(replay["effectivatable"], true, "the replay tells an agent it can still effectivate");
+        assert_eq!(replay["ok"], true);
+
+        // Same key, different request: a conflict that points at the original run.
+        let conflict = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-1", "warningDecision": "stop" }))).send().await.unwrap();
+        assert_eq!(conflict.status(), 409);
+        let conflict: Value = conflict.json().await.unwrap();
+        assert_eq!(conflict["conflict"], true);
+        assert_eq!(conflict["jobId"], job_id.as_str());
+
+        // A different key is a new attempt.
+        let fresh: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-2" }))).send().await.unwrap().json().await.unwrap();
+        assert!(fresh.get("idempotent").is_none());
+        assert_ne!(fresh["jobId"], job_id.as_str());
+
+        // No key at all: never deduplicated.
+        let no_key: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({}))).send().await.unwrap().json().await.unwrap();
+        assert!(no_key.get("idempotent").is_none());
+        assert_ne!(no_key["jobId"], job_id.as_str());
+        std::env::remove_var("IGNITE_DATA_DIR");
+    }
+
+    async fn poll_async_result(client: &reqwest::Client, base: &str, key: &str, job_id: &str) -> Value {
+        for _ in 0..600 {
+            let res = client.get(format!("{base}/api/pipeline/{job_id}/async-result")).bearer_auth(key).send().await.unwrap();
+            if res.status() == 200 {
+                return res.json().await.unwrap();
+            }
+            assert_eq!(res.status(), 202, "a running job answers 202");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        panic!("async job {job_id} did not finish in time");
+    }
+
+    /// `async: true` returns at once and the finished response is read by
+    /// polling — for both long-running pipeline endpoints — with the same
+    /// idempotency and access rules as the synchronous call.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn async_runs_return_a_job_id_immediately_and_the_result_is_polled() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+        let config = ignite_config::Config { phases: vec![serde_json::json!({ "id": 4, "enabled": false })], ..Default::default() };
+        let (base, key, state) = spawn_test_server_with_state_and_config("async-owner@example.com", None, config).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let path = project.path().to_string_lossy().to_string();
+
+        // ---- onboard (dry run)
+        let onboard_body = serde_json::json!({ "org": "acme", "repo": "async-widgets", "projectPath": path, "dryRun": true, "runLocalCi": false, "async": true, "idempotencyKey": "async-1" });
+        let started = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&onboard_body).send().await.unwrap();
+        assert_eq!(started.status(), 202, "async start answers before the run finishes");
+        let started: Value = started.json().await.unwrap();
+        assert_eq!(started["state"], "running");
+        let job_id = started["jobId"].as_str().unwrap().to_string();
+        assert_eq!(started["pollUrl"], format!("/api/pipeline/{job_id}/async-result"));
+
+        let done = poll_async_result(&client, &base, &key, &job_id).await;
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["httpStatus"], 200);
+        assert_eq!(done["result"]["ok"], true, "{done}");
+        assert_eq!(done["result"]["mode"], "onboard");
+        assert_eq!(done["result"]["jobId"], job_id.as_str(), "the pipeline ran under the async job's id");
+        assert_eq!(done["result"]["effectivatable"], true);
+
+        // Same request again (still async, same key): the replay, not a new run.
+        let again: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&onboard_body).send().await.unwrap().json().await.unwrap();
+        let replay = poll_async_result(&client, &base, &key, again["jobId"].as_str().unwrap()).await;
+        assert_eq!(replay["result"]["idempotent"], true, "{replay}");
+        assert_eq!(replay["result"]["jobId"], job_id.as_str(), "points at the run the key already started");
+        // ...and the same request sent synchronously hashes identically, so it replays too.
+        let mut sync_body = onboard_body.clone();
+        sync_body.as_object_mut().unwrap().remove("async");
+        let sync_replay: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&sync_body).send().await.unwrap().json().await.unwrap();
+        assert_eq!(sync_replay["idempotent"], true, "async is delivery, not part of the request identity: {sync_replay}");
+
+        // ---- access: only the starter can read a job; strangers can't even confirm it exists
+        let other_uid = state.db.create_local_user("stranger@example.com", None, ignite_auth::dummy_hash()).unwrap();
+        let other_key = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        state.db.create_api_key(other_uid, &ignite_auth::hash_api_key(&other_key), None, None, "test");
+        for who in [Some(&other_key), None] {
+            let mut req = client.get(format!("{base}/api/pipeline/{job_id}/async-result"));
+            if let Some(k) = who {
+                req = req.bearer_auth(k);
+            }
+            assert_eq!(req.send().await.unwrap().status(), 404);
+        }
+        assert_eq!(client.get(format!("{base}/api/pipeline/{}/async-result", uuid::Uuid::new_v4())).bearer_auth(&key).send().await.unwrap().status(), 404);
+
+        // A client can't choose the id its run is filed under.
+        let forged = uuid::Uuid::new_v4().to_string();
+        let mut sync_forged = sync_body.clone();
+        sync_forged["repo"] = serde_json::json!("forged-widgets");
+        sync_forged["idempotencyKey"] = serde_json::json!("forge-1");
+        sync_forged["_asyncJobId"] = serde_json::json!(forged);
+        let res: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&sync_forged).send().await.unwrap().json().await.unwrap();
+        assert_ne!(res["jobId"], forged.as_str(), "a client-supplied _asyncJobId is ignored");
+
+        // ---- validate-all
+        let started: Value = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .bearer_auth(&key)
+            .json(&serde_json::json!({ "projectPath": path, "runLocalCi": false, "fast": true, "async": true }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(started["kind"], "validate-all");
+        let done = poll_async_result(&client, &base, &key, started["jobId"].as_str().unwrap()).await;
+        assert_eq!(done["result"]["mode"], "validate-all");
+        assert_eq!(done["result"]["ok"], true, "{done}");
+
+        // ---- a scope-limited key is refused immediately, not via a poll
+        let key_id = state.db.get_active_api_key_by_hash(&ignite_auth::hash_api_key(&key)).unwrap().id;
+        state.db.set_api_key_scopes(key_id, Some(&["scan".to_string()]));
+        let denied = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&serde_json::json!({ "org": "acme", "repo": "w", "projectPath": path, "async": true })).send().await.unwrap();
+        assert_eq!(denied.status(), 403, "a real onboard needs publish; refused before any job is created");
+        std::env::remove_var("IGNITE_DATA_DIR");
     }
 }

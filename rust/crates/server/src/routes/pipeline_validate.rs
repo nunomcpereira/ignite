@@ -229,6 +229,8 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let org = if org.is_empty() { "local-validation".to_string() } else { org };
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("local-project").trim().to_string();
     let repo = if repo.is_empty() { "local-project".to_string() } else { repo };
+    // How this caller authenticated, recorded on every override it submits.
+    let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
     let phase_meta = resolve_phase_meta(&state.config);
     let is_gxp = phase_enabled(&phase_meta, 2) && body.get("gxp").and_then(|v| v.as_bool()).unwrap_or(false);
     let run_local_ci = body.get("runLocalCi").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -299,7 +301,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     }
 
     let timings: Mutex<Vec<StageTiming>> = Mutex::new(Vec::new());
-    let job_id = uuid::Uuid::new_v4().to_string();
+    let job_id = super::async_jobs::injected_job_id(&body).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting validate-all pipeline run");
     let staging_dir = std::env::temp_dir().join("gatekeeper-staging").join(format!("{job_id}-api-validation"));
     let workflow_dir_str = format!("{}-workflows", staging_dir.to_string_lossy());
@@ -513,7 +515,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 };
                 for (issue, justification) in &auto_applied {
                     logger.log(4, &format!("    ⚠ [override] [{:?}] {}:{} — {} — \"{justification}\"", issue.severity, issue.file.as_deref().unwrap_or(""), issue.line.unwrap_or(0), issue.summary));
-                    state.db.add_override(ignite_db_store::AddOverrideArgs {
+                    state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
                         project_id,
                         job_id: &job_id,
                         phase: 4,
@@ -530,12 +532,12 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                         actor_email: &email,
                         actor_name: Some(&name),
                         email_sent: override_email_sent,
-                    });
+                    }, origin);
                     state.emit_audit_event(
                         ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
                             .actor(email.clone())
                             .repo(&org, &repo)
-                            .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                            .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
                     );
                 }
 
@@ -543,7 +545,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                     for (issue, justification) in &needs_approval {
                         overridden_ids.remove(&issue.id);
                         if !state.db.has_pending_override(project_id, &issue.id) {
-                            state.db.add_pending_override(ignite_db_store::AddOverrideArgs {
+                            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
                                 project_id,
                                 job_id: &job_id,
                                 phase: 4,
@@ -560,12 +562,12 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                                 actor_email: &email,
                                 actor_name: Some(&name),
                                 email_sent: false,
-                            });
+                            }, origin);
                             state.emit_audit_event(
                                 ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
                                     .actor(email.clone())
                                     .repo(&org, &repo)
-                                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification })),
+                                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
                             );
                         }
                     }
@@ -939,6 +941,20 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             } else {
                 obj.insert("issues".to_string(), Value::Null);
             }
+            // Machine-readable "what do I do next" — only for a run that
+            // stopped on findings (`e.issues` set); a crash carries no issue
+            // list and is not a block, so it gets no envelope.
+            let response = match &e.issues {
+                Some(list) if blocking_unresolved => {
+                    let unresolved: Vec<String> = list.iter().filter(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id)).map(|i| i.id.clone()).collect();
+                    crate::routes::blocked::with_block_info(response, crate::routes::blocked::BlockReason::UnresolvedFindings, json!({ "unresolvedIssueIds": unresolved }))
+                }
+                Some(_) => match crate::routes::blocked::reason_for_policy_decision(&policy_decision) {
+                    Some(reason) => crate::routes::blocked::with_block_info(response, reason, crate::routes::blocked::policy_details(&policy_decision)),
+                    None => response,
+                },
+                None => response,
+            };
             Err((response, json!({})))
         }
     }
@@ -948,9 +964,16 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 /// serializes object keys in sorted order (this workspace never enables
 /// `preserve_order`), so two requests with identical content hash
 /// identically regardless of the order fields were sent in over the wire.
-fn idempotency_payload_hash(body: &Value) -> String {
+pub(crate) fn idempotency_payload_hash(body: &Value) -> String {
     use sha2::{Digest, Sha256};
-    let canonical = serde_json::to_string(body).unwrap_or_default();
+    // `async` and the injected job id change how a request is *delivered*, not
+    // what it asks for, so a retry may flip between sync and async.
+    let mut body = body.clone();
+    if let Some(obj) = body.as_object_mut() {
+        obj.remove("async");
+        obj.remove(super::async_jobs::ASYNC_JOB_ID_KEY);
+    }
+    let canonical = serde_json::to_string(&body).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
@@ -968,13 +991,40 @@ fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Op
     crate::phase4_config::from_config(&state.config, org, repo, project_id, fast, igniteignore_git_check_root)
 }
 
-async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(mut body): Json<Value>) -> Response {
+    super::async_jobs::strip_client_job_id(&mut body);
     if user.is_none() && !state.config.security.allow_unauthenticated_validate_all {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response();
     }
+    let mut needed = vec![crate::auth::Scope::Scan];
+    if crate::auth::body_submits_overrides(&body) {
+        needed.push(crate::auth::Scope::Override);
+    }
+    if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
+        return (status, Json(denied)).into_response();
+    }
+    if super::async_jobs::wants_async(&body) {
+        return super::async_jobs::start(state, "validate-all", user.map(|u| u.id), headers, body, |state, headers, body| async move {
+            match run_validate_all(state, headers, body).await {
+                Ok(v) => (200, v),
+                Err((v, _)) => (error_status(&v).as_u16(), v),
+            }
+        });
+    }
     match run_validate_all(state, headers, body).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-        Err((v, _)) => (StatusCode::BAD_REQUEST, Json(v)).into_response(),
+        Err((v, _)) => (error_status(&v), Json(v)).into_response(),
+    }
+}
+
+/// `run_validate_all`'s error type carries only a body, so every failure used
+/// to be a 400. An idempotency-key conflict (`conflict: true`) is a 409, as it
+/// is on `onboard`; every other failure stays 400.
+fn error_status(body: &Value) -> StatusCode {
+    if body.get("conflict").and_then(|v| v.as_bool()).unwrap_or(false) {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
     }
 }
 
@@ -1183,8 +1233,17 @@ mod phase_gating_tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(second.status(), 400);
+        assert_eq!(second.status(), 409, "an idempotency conflict is a 409, matching onboard");
         let body: Value = second.json().await.unwrap();
         assert_eq!(body["conflict"], true);
+    }
+
+    #[test]
+    fn only_a_conflict_body_is_a_409_every_other_failure_stays_a_400() {
+        use axum::http::StatusCode;
+        assert_eq!(super::error_status(&json!({ "ok": false, "conflict": true })), StatusCode::CONFLICT);
+        assert_eq!(super::error_status(&json!({ "ok": false, "error": "Phase 4 has 1 unresolved blocking finding(s)." })), StatusCode::BAD_REQUEST);
+        assert_eq!(super::error_status(&json!({ "conflict": false })), StatusCode::BAD_REQUEST);
+        assert_eq!(super::error_status(&json!({})), StatusCode::BAD_REQUEST);
     }
 }
