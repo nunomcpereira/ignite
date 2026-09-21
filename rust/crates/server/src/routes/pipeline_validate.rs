@@ -964,7 +964,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 /// serializes object keys in sorted order (this workspace never enables
 /// `preserve_order`), so two requests with identical content hash
 /// identically regardless of the order fields were sent in over the wire.
-fn idempotency_payload_hash(body: &Value) -> String {
+pub(crate) fn idempotency_payload_hash(body: &Value) -> String {
     use sha2::{Digest, Sha256};
     let canonical = serde_json::to_string(body).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))

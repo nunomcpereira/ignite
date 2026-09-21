@@ -211,6 +211,52 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         Err(e) => return Err((StatusCode::BAD_REQUEST, json!({ "error": e.to_string() }))),
     };
 
+    // Scoped idempotency, same contract as validate-all (US-04): a caller
+    // that re-sends the identical request under the same `idempotencyKey`
+    // (an agent retrying after a dropped connection, say) gets a reference to
+    // the run that key already started instead of a second scan and — worse,
+    // for a real onboard — a second provision and push. The same key with a
+    // different body is a 409. Only consulted for well-formed org/repo names,
+    // so garbage names never create a repository row here.
+    let idempotency_key = body.get("idempotencyKey").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    if let Some(key) = idempotency_key.as_deref() {
+        if GITHUB_NAME_RE.is_match(&org) && REPO_NAME_RE.is_match(&repo) && repo != "." && repo != ".." {
+            let repository_id = state.db.resolve_repository(&org, &repo, None);
+            if let Some(existing) = state.db.find_scan_run_by_idempotency(repository_id, key) {
+                if existing.payload_hash != super::pipeline_validate::idempotency_payload_hash(&body) {
+                    return Err((
+                        StatusCode::CONFLICT,
+                        json!({
+                            "ok": false,
+                            "error": "idempotencyKey was already used with a different request payload. Use a new key for a new attempt (for example after adding overrides).",
+                            "conflict": true,
+                            "jobId": existing.legacy_job_id,
+                        }),
+                    ));
+                }
+                if let Some(pid) = existing.legacy_project_id {
+                    if let Some(details) = state.db.get_project_details(pid) {
+                        return Ok(json!({
+                            "ok": details.project.status != "failed",
+                            "mode": "onboard",
+                            "idempotent": true,
+                            "dryRun": dry_run,
+                            "jobId": existing.legacy_job_id,
+                            "projectId": pid,
+                            // The original run may still be going; poll GET /api/pipeline/:jobId/status.
+                            "inProgress": details.project.status == "running",
+                            "repoUrl": details.project.repo_url,
+                            "prUrl": details.project.pr_url,
+                            "effectivatable": state.db.get_pending_effectivation(pid).is_some(),
+                            "project": details.project,
+                            "phases": details.steps,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
     let job_id = uuid::Uuid::new_v4().to_string();
     tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting onboard pipeline run");
     let staging_dir = std::env::temp_dir().join("gatekeeper-staging").join(format!("{job_id}-onboard"));
@@ -258,6 +304,9 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         if let Some(rid) = run_id {
             if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Scanning) {
                 tracing::warn!("transition_scan_run({rid}, Scanning) failed: {e}");
+            }
+            if let Some(key) = idempotency_key.as_deref() {
+                state.db.set_scan_run_idempotency(rid, key, &super::pipeline_validate::idempotency_payload_hash(&body));
             }
         }
         logger.set_project_id(project_id);

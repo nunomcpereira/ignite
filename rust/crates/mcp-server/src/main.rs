@@ -219,6 +219,8 @@ struct OnboardProjectRequest {
     overrides: Option<Vec<OverrideEntry>>,
     /// Required if overrides are submitted and the Ignite server has no logged-in session.
     actor: Option<Actor>,
+    /// Optional retry key. Re-sending the identical request with the same key returns the run it already started (`idempotent: true`, with its jobId/projectId/repoUrl) instead of scanning or pushing again; the same key with a different body (e.g. after adding overrides) is a 409 — use a new key for a new attempt.
+    idempotency_key: Option<String>,
     /// Required when this server is reachable over the network (MCP_TRANSPORT=http) and dryRun is not true — must match the server's own IGNITE_API_KEY. Not needed for a local stdio connection.
     api_key: Option<String>,
 }
@@ -628,6 +630,7 @@ impl IgniteMcp {
                 "warningDecision": req.warning_decision,
                 "overrides": overrides_to_json(&req.overrides),
                 "actor": req.actor,
+                "idempotencyKey": req.idempotency_key,
             }),
         )
         .await

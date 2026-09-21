@@ -646,6 +646,10 @@ mod tests {
     /// `AppState` (to assert on DB rows) and the key's owner email, and can
     /// bind a GitHub token to the key.
     async fn spawn_test_server_with_state(owner_email: &str, key_github_token: Option<&str>) -> (String, String, Arc<AppState>) {
+        spawn_test_server_with_state_and_config(owner_email, key_github_token, ignite_config::Config::default()).await
+    }
+
+    async fn spawn_test_server_with_state_and_config(owner_email: &str, key_github_token: Option<&str>, config: ignite_config::Config) -> (String, String, Arc<AppState>) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         let user_id = db.create_local_user(owner_email, None, ignite_auth::dummy_hash()).unwrap();
@@ -661,7 +665,7 @@ mod tests {
             pending_effectivations: Mutex::new(HashMap::new()),
             review_gate: review_gate::ReviewGate::default(),
             llm_config: state::default_llm_config(),
-            config: ignite_config::Config::default(),
+            config,
             package_hallucination_checker: state::default_package_hallucination_checker(),
             fix_pr_previews: Mutex::new(HashMap::new()),
             audit_http: reqwest::Client::new(),
@@ -828,5 +832,61 @@ mod tests {
         let res = client.post(format!("{base}/api/projects/999/effectivate")).bearer_auth(&key).json(&serde_json::json!({})).send().await.unwrap();
         assert_ne!(res.status(), 403, "publish is now allowed");
         std::env::remove_var("GH_TOKEN");
+    }
+
+    /// Agents retry after dropped connections. A repeated `onboard` under the
+    /// same `idempotencyKey` must reference the original run, not scan (and
+    /// for a real onboard, push) a second time.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn onboard_idempotency_key_replays_the_same_run_and_rejects_a_different_payload() {
+        let _data_guard = crate::state::IGNITE_DATA_DIR_ENV_GUARD.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("IGNITE_DATA_DIR", data_dir.path());
+        let project = agent_test_project();
+        // Phase 4 off keeps the run to seconds; idempotency doesn't depend on it.
+        let config = ignite_config::Config { phases: vec![serde_json::json!({ "id": 4, "enabled": false })], ..Default::default() };
+        let (base, key, _state) = spawn_test_server_with_state_and_config("idem@example.com", None, config).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap();
+        let body = |extra: Value| {
+            let mut b = serde_json::json!({ "org": "acme", "repo": "idem-widgets", "projectPath": project.path().to_string_lossy(), "dryRun": true, "runLocalCi": false });
+            for (k, v) in extra.as_object().unwrap() {
+                b[k] = v.clone();
+            }
+            b
+        };
+
+        let first_res = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-1" }))).send().await.unwrap();
+        assert_eq!(first_res.status(), 200);
+        let first: Value = first_res.json().await.unwrap();
+        assert!(first.get("idempotent").is_none(), "the first call is a real run: {first}");
+        let job_id = first["jobId"].as_str().unwrap().to_string();
+        let project_id = first["projectId"].as_i64().unwrap();
+
+        // Identical retry: same run, no second pipeline.
+        let replay: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-1" }))).send().await.unwrap().json().await.unwrap();
+        assert_eq!(replay["idempotent"], true, "{replay}");
+        assert_eq!(replay["jobId"], job_id.as_str());
+        assert_eq!(replay["projectId"], project_id);
+        assert_eq!(replay["effectivatable"], true, "the replay tells an agent it can still effectivate");
+        assert_eq!(replay["ok"], true);
+
+        // Same key, different request: a conflict that points at the original run.
+        let conflict = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-1", "warningDecision": "stop" }))).send().await.unwrap();
+        assert_eq!(conflict.status(), 409);
+        let conflict: Value = conflict.json().await.unwrap();
+        assert_eq!(conflict["conflict"], true);
+        assert_eq!(conflict["jobId"], job_id.as_str());
+
+        // A different key is a new attempt.
+        let fresh: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({ "idempotencyKey": "attempt-2" }))).send().await.unwrap().json().await.unwrap();
+        assert!(fresh.get("idempotent").is_none());
+        assert_ne!(fresh["jobId"], job_id.as_str());
+
+        // No key at all: never deduplicated.
+        let no_key: Value = client.post(format!("{base}/api/pipeline/onboard")).bearer_auth(&key).json(&body(serde_json::json!({}))).send().await.unwrap().json().await.unwrap();
+        assert!(no_key.get("idempotent").is_none());
+        assert_ne!(no_key["jobId"], job_id.as_str());
+        std::env::remove_var("IGNITE_DATA_DIR");
     }
 }
