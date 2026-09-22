@@ -244,30 +244,19 @@ pub fn github_router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_gate::ReviewGate;
+    
     use axum::body::Body;
     use axum::http::Request;
     use serde_json::Value;
-    use std::collections::HashMap as Map;
-    use parking_lot::Mutex as PlMutex;
+    
+    
     use tower::ServiceExt;
 
     fn test_state(config: ignite_config::Config) -> Arc<AppState> {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         Box::leak(Box::new(db_dir));
-        Arc::new(AppState {
-            runner: crate::state::default_runner(),
-            db,
-            running_runs: PlMutex::new(Map::new()),
-            pending_effectivations: PlMutex::new(Map::new()),
-            review_gate: ReviewGate::default(),
-            llm_config: crate::state::default_llm_config(),
-            config,
-            package_hallucination_checker: crate::state::default_package_hallucination_checker(),
-            fix_pr_previews: PlMutex::new(HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        })
+        Arc::new(crate::state::test_state(db, config))
     }
 
     /// Local mock of `github.com/login/oauth/access_token` +

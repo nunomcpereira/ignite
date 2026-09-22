@@ -931,18 +931,7 @@ mod tests {
     fn state_with_db() -> (tempfile::TempDir, AppState) {
         let dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&dir.path().join("test.db")).unwrap();
-        let state = AppState {
-            runner: crate::state::default_runner(),
-            db,
-            running_runs: Default::default(),
-            pending_effectivations: Default::default(),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: crate::state::default_llm_config(),
-            config: ignite_config::Config::default(),
-            package_hallucination_checker: crate::state::default_package_hallucination_checker(),
-            fix_pr_previews: Default::default(),
-            audit_http: reqwest::Client::new(),
-        };
+        let state = crate::state::test_state(db, ignite_config::Config::default());
         (dir, state)
     }
 

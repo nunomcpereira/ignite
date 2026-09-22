@@ -189,9 +189,9 @@ mod characterization {
     //! sequence is hand-copied in the validate-all, onboard, interactive and
     //! effectivate paths; consolidating them must keep every assertion here true.
     use super::*;
-    use crate::state;
+    
     use ignite_db_store::IssueInput;
-    use parking_lot::Mutex;
+    
     use std::collections::{HashMap, HashSet};
 
     struct Fixture {
@@ -224,18 +224,7 @@ mod characterization {
             ],
             &HashSet::new(),
         );
-        let state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config,
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-            fix_pr_previews: Mutex::new(HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        });
+        let state = Arc::new(crate::state::test_state(db, config));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = Router::new().merge(router()).with_state(state.clone());

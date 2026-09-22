@@ -212,11 +212,11 @@ pub fn oidc_router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_gate::ReviewGate;
+    
     use axum::body::Body;
     use axum::http::Request;
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
-    use parking_lot::Mutex;
+    
     use rsa::pkcs1::EncodeRsaPrivateKey;
     use rsa::traits::PublicKeyParts;
     use rsa::RsaPrivateKey;
@@ -227,18 +227,7 @@ mod tests {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         Box::leak(Box::new(db_dir));
-        Arc::new(AppState {
-            runner: crate::state::default_runner(),
-            db,
-            running_runs: Mutex::new(Map::new()),
-            pending_effectivations: Mutex::new(Map::new()),
-            review_gate: ReviewGate::default(),
-            llm_config: crate::state::default_llm_config(),
-            config,
-            package_hallucination_checker: crate::state::default_package_hallucination_checker(),
-            fix_pr_previews: Mutex::new(HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        })
+        Arc::new(crate::state::test_state(db, config))
     }
 
     fn base64url(bytes: &[u8]) -> String {

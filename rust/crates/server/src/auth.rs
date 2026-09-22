@@ -488,29 +488,18 @@ pub fn router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_gate::ReviewGate;
+    
     use axum::body::Body;
     use axum::http::Request;
-    use parking_lot::Mutex;
-    use std::collections::HashMap;
+    
+    
     use tower::ServiceExt;
 
     fn test_state() -> Arc<AppState> {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         Box::leak(Box::new(db_dir));
-        Arc::new(AppState {
-            runner: crate::state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: ReviewGate::default(),
-            llm_config: crate::state::default_llm_config(),
-            config: ignite_config::Config::default(),
-            package_hallucination_checker: crate::state::default_package_hallucination_checker(),
-            fix_pr_previews: Mutex::new(HashMap::new()),
-        audit_http: reqwest::Client::new(),
-        })
+        Arc::new(crate::state::test_state(db, ignite_config::Config::default()))
     }
 
     fn app() -> Router {
