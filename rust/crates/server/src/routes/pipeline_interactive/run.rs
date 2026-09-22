@@ -84,9 +84,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         project_id = Some(pid);
                         run_id = state.db.get_scan_run_for_legacy_project(pid).map(|r| r.id);
                         if let Some(rid) = run_id {
-                            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Scanning) {
-                                tracing::warn!("transition_scan_run({rid}, Scanning) failed: {e}");
-                            }
+                            state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Scanning);
                         }
                         log.set_project_id(pid);
                         if let Some(live) = state.running_runs.lock().get_mut(&job_id) {
@@ -470,9 +468,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     // forever if the review is simply abandoned.
                     state.db.set_snapshot_lease(pid, "awaiting_review", 72);
                 }
-                if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::AwaitingReview) {
-                    tracing::warn!("transition_scan_run({rid}, AwaitingReview) failed: {e}");
-                }
+                state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::AwaitingReview);
             }
 
             let decision = match rx.await {
@@ -630,9 +626,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             // directly), or the review above just approved proceeding
             // (`AwaitingReview -> Approved`); a same-state call is a legal
             // no-op either way.
-            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Approved) {
-                tracing::warn!("transition_scan_run({rid}, Approved) failed: {e}");
-            }
+            state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Approved);
         }
 
         // ---------------- Phase 6: provisioning + shipping ----------------
@@ -675,9 +669,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             break 'run Err((6, "Immutable source snapshot is missing before phase 6 — an earlier phase failed to produce a publishable project.".to_string()));
         }
         if let Some(rid) = run_id {
-            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Publishing) {
-                tracing::warn!("transition_scan_run({rid}, Publishing) failed: {e}");
-            }
+            state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Publishing);
         }
         let _ = std::fs::remove_dir_all(&publish_dir);
         if let Err(e) = ignite_staging::clone_directory_without_symlinks(&source_backup_dir, &publish_dir) {

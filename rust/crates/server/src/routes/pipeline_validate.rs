@@ -325,9 +325,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy())).map_err(|e| PipelineError::new(1, format!("Failed to create project record: {e}")))?;
         run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
         if let Some(rid) = run_id {
-            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Scanning) {
-                tracing::warn!("transition_scan_run({rid}, Scanning) failed: {e}");
-            }
+            state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Scanning);
             if let Some(key) = body.get("idempotencyKey").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
                 state.db.set_scan_run_idempotency(rid, key, &idempotency_payload_hash(&body));
             }
@@ -661,9 +659,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         // first is never overwritten (terminal states reject any further
         // transition, `sync_scan_run_lifecycle`'s included).
         if let Some(rid) = run_id {
-            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Completed) {
-                tracing::warn!("transition_scan_run({rid}, Completed) failed: {e}");
-            }
+            state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Completed);
         }
         // Persist to the `issues` table validate-all had never written to
         // before — a real gap this endpoint's own doc comment didn't flag,
@@ -714,9 +710,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         // input, a tool crash, a missing snapshot) is a genuine error,
         // not a declined/unresolved review outcome.
         let target = if e.issues.is_some() { ignite_run_lifecycle::RunLifecycleState::Blocked } else { ignite_run_lifecycle::RunLifecycleState::Failed };
-        if let Err(err) = state.db.transition_scan_run(rid, target) {
-            tracing::warn!("transition_scan_run({rid}, {target:?}) failed: {err}");
-        }
+        state.db.transition_scan_run_or_warn(rid, target);
     }
 
     match result {

@@ -45,6 +45,25 @@ impl DbStore {
         Ok(())
     }
 
+    /// Candidate 2/3 of the architecture review: every caller of
+    /// `transition_scan_run` that wants to log-and-continue on failure
+    /// (rather than fail the whole request) hand-wrote the identical
+    /// `if let Err(e) = ... { tracing::warn!(...) }` — 13 copies across
+    /// `pipeline_validate.rs`/`pipeline_onboard.rs`/
+    /// `pipeline_interactive/run.rs`. `{to:?}` prints exactly the same
+    /// text as the bare variant-name literals those copies used (a
+    /// C-like enum's derived `Debug` is just its variant name), so this
+    /// is a pure dedup — the message every caller already produced,
+    /// written once. Deliberately does *not* touch the ~6 separate call
+    /// sites (interactive only) that instead swallow the error with
+    /// `let _ = ...` — that inconsistency was flagged, not fixed, to
+    /// keep this change behavior-preserving.
+    pub fn transition_scan_run_or_warn(&self, run_id: i64, to: RunLifecycleState) {
+        if let Err(e) = self.transition_scan_run(run_id, to) {
+            tracing::warn!("transition_scan_run({run_id}, {to:?}) failed: {e}");
+        }
+    }
+
     fn write_transition(conn: &rusqlite::Connection, run_id: i64, from: &str, to: RunLifecycleState) {
         let finished = to.is_terminal();
         let result = if finished {
@@ -186,6 +205,25 @@ mod tests {
     fn run_id_for(db: &DbStore, job_id: &str, org: &str, repo: &str) -> i64 {
         let project_id = db.create_project(job_id, org, repo, false, "ui", None).unwrap();
         db.get_scan_run_for_legacy_project(project_id).unwrap().id
+    }
+
+    #[test]
+    fn transition_or_warn_applies_a_legal_transition_and_leaves_state_unchanged_on_an_illegal_one() {
+        let (db, _dir) = open_test_db();
+        let run_id = run_id_for(&db, "job-1", "acme", "widgets");
+        db.transition_scan_run_or_warn(run_id, Scanning);
+        assert_eq!(db.get_scan_run_lifecycle(run_id).as_deref(), Some("scanning"), "a legal transition still applies");
+
+        // Queued -> Published is illegal; must not panic, and the state
+        // (already Scanning from above) must be left exactly as it was.
+        db.transition_scan_run_or_warn(run_id, Published);
+        assert_eq!(db.get_scan_run_lifecycle(run_id).as_deref(), Some("scanning"), "an illegal transition is swallowed, not applied");
+    }
+
+    #[test]
+    fn transition_or_warn_on_an_unknown_run_id_does_not_panic() {
+        let (db, _dir) = open_test_db();
+        db.transition_scan_run_or_warn(999_999, Scanning);
     }
 
     #[test]
