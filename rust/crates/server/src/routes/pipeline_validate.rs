@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use futures::FutureExt;
-use ignite_override_engine::{is_critical_score, partition_for_dual_custody, validate_overrides, Issue, Severity, SubmittedOverride};
+use ignite_override_engine::{Issue, Severity, SubmittedOverride};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -451,31 +451,23 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 
         if !issues_requiring_override.is_empty() {
             let owned: Vec<Issue> = issues_requiring_override.iter().map(|i| (*i).clone()).collect();
-            let result = validate_overrides(&owned, &requested_overrides);
-            for (issue, _) in &result.applied {
+            // Dual-custody: a critical-severity override submitted here must
+            // not resolve its issue until a *different* reviewer approves it —
+            // same `security.overrideApproval` gate `routes/effectivate.rs`/
+            // `pipeline_interactive/run.rs` apply, kept in sync here since
+            // this is the other place a human submits a brand-new override.
+            let plan = ignite_pipeline_core::plan_overrides(&state.db, &owned, &requested_overrides, &ignite_pipeline_core::PlanOverridesRequest { project_id, dual_custody_enabled: state.config.security.override_approval.enabled });
+            for (issue, _) in &plan.applied {
                 overridden_ids.insert(issue.id.clone());
             }
-            if !result.applied.is_empty() {
+            if !plan.applied.is_empty() || !plan.needs_approval.is_empty() {
                 let Some((email, name)) = resolve_actor(&headers, &state.db, &body) else {
                     return Err(PipelineError::new(4, "Overrides were submitted but no authenticated user or actor {email,name} was provided — cannot attribute the audit record."));
                 };
 
-                // Dual-custody: a critical-severity override submitted here
-                // must not resolve its issue until a *different* reviewer
-                // approves it — same `security.overrideApproval` gate
-                // `routes/effectivate.rs`/`pipeline_interactive/run.rs`
-                // apply, kept in sync here since this is the other place a
-                // human submits a brand-new override.
-                let (auto_applied, needs_approval): (Vec<ignite_override_engine::AppliedOverride>, Vec<ignite_override_engine::AppliedOverride>) = if state.config.security.override_approval.enabled {
-                    let already_approved: std::collections::HashSet<String> = result.applied.iter().filter(|(i, _)| state.db.has_approved_override(project_id, &i.id)).map(|(i, _)| i.id.clone()).collect();
-                    partition_for_dual_custody(result.applied.clone(), |i| is_critical_score(i.score), &already_approved)
-                } else {
-                    (result.applied.clone(), Vec::new())
-                };
-
-                logger.log(4, &format!("⚠ {} flagged issue(s) overridden by {email}:", auto_applied.len()));
-                let override_email_sent = if !auto_applied.is_empty() {
-                    let notif_applied: Vec<ignite_notifications::AppliedOverride> = auto_applied.iter().map(|(issue, justification)| {
+                logger.log(4, &format!("⚠ {} flagged issue(s) overridden by {email}:", plan.applied.len()));
+                let override_email_sent = if !plan.applied.is_empty() {
+                    let notif_applied: Vec<ignite_notifications::AppliedOverride> = plan.applied.iter().map(|(issue, justification)| {
                         ignite_notifications::AppliedOverride {
                             issue: ignite_notifications::IssueLike {
                                 severity: match issue.severity { Severity::Error => "error", Severity::Warning => "warning" },
@@ -513,26 +505,12 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 } else {
                     false
                 };
-                for (issue, justification) in &auto_applied {
+                for (issue, justification) in &plan.applied {
                     logger.log(4, &format!("    ⚠ [override] [{:?}] {}:{} — {} — \"{justification}\"", issue.severity, issue.file.as_deref().unwrap_or(""), issue.line.unwrap_or(0), issue.summary));
-                    state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
-                        project_id,
-                        job_id: &job_id,
-                        phase: 4,
-                        issue_id: &issue.id,
-                        category: &issue.category,
-                        severity: match issue.severity {
-                            Severity::Error => "error",
-                            Severity::Warning => "warning",
-                        },
-                        summary: &issue.summary,
-                        file: issue.file.as_deref(),
-                        line: issue.line,
-                        justification,
-                        actor_email: &email,
-                        actor_name: Some(&name),
-                        email_sent: override_email_sent,
-                    }, origin);
+                }
+                let persist_req = ignite_pipeline_core::PersistOverridesRequest { project_id, job_id: &job_id, phase: 4, actor_email: &email, actor_name: &name, origin, email_sent: override_email_sent };
+                ignite_pipeline_core::persist_applied_overrides(&state.db, &plan.applied, &persist_req);
+                for (issue, justification) in &plan.applied {
                     state.emit_audit_event(
                         ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
                             .actor(email.clone())
@@ -541,46 +519,26 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                     );
                 }
 
-                if !needs_approval.is_empty() {
-                    for (issue, justification) in &needs_approval {
-                        overridden_ids.remove(&issue.id);
-                        if !state.db.has_pending_override(project_id, &issue.id) {
-                            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
-                                project_id,
-                                job_id: &job_id,
-                                phase: 4,
-                                issue_id: &issue.id,
-                                category: &issue.category,
-                                severity: match issue.severity {
-                                    Severity::Error => "error",
-                                    Severity::Warning => "warning",
-                                },
-                                summary: &issue.summary,
-                                file: issue.file.as_deref(),
-                                line: issue.line,
-                                justification,
-                                actor_email: &email,
-                                actor_name: Some(&name),
-                                email_sent: false,
-                            }, origin);
-                            state.emit_audit_event(
-                                ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
-                                    .actor(email.clone())
-                                    .repo(&org, &repo)
-                                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
-                            );
-                        }
+                if !plan.needs_approval.is_empty() {
+                    ignite_pipeline_core::persist_pending_overrides(&state.db, &plan.newly_pending, &ignite_pipeline_core::PersistOverridesRequest { project_id, job_id: &job_id, phase: 4, actor_email: &email, actor_name: &name, origin, email_sent: false });
+                    for (issue, justification) in &plan.newly_pending {
+                        state.emit_audit_event(
+                            ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
+                                .actor(email.clone())
+                                .repo(&org, &repo)
+                                .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
+                        );
                     }
-                    return Err(PipelineError::new(4, format!("{} critical finding(s) require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.", needs_approval.len())));
+                    return Err(PipelineError::new(4, format!("{} critical finding(s) require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.", plan.needs_approval.len())));
                 }
             }
-            if !result.ok {
-                logger.log(4, &format!("✗ {} blocking finding(s) were not overridden:", result.unresolved_errors.len()));
-                for issue in &result.unresolved_errors {
+            if !plan.ok {
+                logger.log(4, &format!("✗ {} blocking finding(s) were not overridden:", plan.unresolved_errors.len()));
+                for issue in &plan.unresolved_errors {
                     let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "Phase 4".to_string());
                     logger.log(4, &format!("    ✗ [{}] {loc} — {}", issue.category, issue.summary));
                 }
-                let mut e = PipelineError::new(4, format!("Phase 4 has {} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.", result.unresolved_errors.len()));
+                let mut e = PipelineError::new(4, format!("Phase 4 has {} unresolved blocking finding(s). Submit an override with a justification for each, or fix them.", plan.unresolved_errors.len()));
                 // Every error-severity issue the scan found, not just the
                 // still-unresolved ones - a caller (e.g. the pre-push hook)
                 // that regenerates a review file from this response needs
