@@ -267,7 +267,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             // into `root` itself, so that's what `.igniteignore`'s commit
             // status gets checked against too (correctly unverifiable for
             // an upload with no git history in it).
-            let config = default_phase4_config(state.as_ref(), &org, &repo, project_id, None);
+            let config = crate::phase4_config::from_config(&state.config, &org, &repo, project_id, false, None);
             match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| log.log(4, m)).await {
                 Ok(output) => {
                     let issue_count = output.issues.len();

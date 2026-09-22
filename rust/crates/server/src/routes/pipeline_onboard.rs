@@ -140,30 +140,24 @@ impl PipelineError {
     }
 }
 
-/// Best-effort extraction of a panic payload's message — covers the two
-/// shapes `panic!`/`.unwrap()`/`.expect()` actually produce (`&str` for a
-/// string-literal panic message, `String` for a formatted one).
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
-}
+// `panic_message` moved to `ignite_pipeline_core` (candidate 2 of the
+// architecture review): this file and `pipeline_validate.rs` each carried a
+// byte-identical copy.
+use ignite_pipeline_core::panic_message;
 
 pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
     ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone(), owasp: i.owasp.clone(), tool: i.tool.clone(), references: if i.references.is_empty() { None } else { Some(serde_json::to_value(&i.references).unwrap()) }, duplicate_ref: i.duplicate_ref.clone() }
 }
 
-/// Builds the real Phase4Config from `state.config` (config.json + env
-/// overrides) rather than every check's hardcoded `::default()` — see
-/// `crate::phase4_config`. `fast` is always `false` here: onboarding
-/// (unlike validate-all/the pre-push hook) never runs in lightning mode.
-pub(crate) fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>, igniteignore_git_check_root: Option<std::path::PathBuf>) -> ignite_phase4_orchestrator::Phase4Config {
-    crate::phase4_config::from_config(&state.config, org, repo, project_id, false, igniteignore_git_check_root)
-}
+// `default_phase4_config` (this file used to define its own thin wrapper,
+// hardcoding `fast: false`) is gone — candidate 2 of the architecture
+// review. `crate::phase4_config::from_config` is the one real
+// implementation (already deep, already tested); every call site now calls
+// it directly with an explicit `fast` argument instead of going through two
+// near-identical route-level wrappers. Onboarding (unlike validate-all/the
+// pre-push hook) never runs in lightning mode, so its call sites — here and
+// in `pipeline_interactive/run.rs`, which used to import this wrapper —
+// pass `false` explicitly.
 
 /// The API-key scopes an onboard request needs: it always scans, overrides
 /// need `override`, and a real (non-dry) run publishes.
@@ -374,7 +368,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             coverage.push(ignite_policy::CheckCoverage::disabled("phase4"));
         } else {
-            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), Some(project_path.clone()));
+            let config = crate::phase4_config::from_config(&state.config, &org, &repo, Some(project_id), false, Some(project_path.clone()));
             let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| logger.log(4, m))
                 .await
                 .map_err(|e| PipelineError::new(4, e.to_string()))?;

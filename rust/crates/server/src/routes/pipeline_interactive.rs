@@ -21,7 +21,7 @@
 //! `crate::routes::effectivate`.
 
 use crate::review_gate::{Actor, ReviewDecisionInput};
-use crate::routes::pipeline_onboard::{default_phase4_config, issue_to_input};
+use crate::routes::pipeline_onboard::issue_to_input;
 use crate::state::{AppState, LiveRun, PendingEffectivation};
 use axum::body::Body;
 use axum::extract::{Multipart, State};
