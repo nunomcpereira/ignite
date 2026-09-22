@@ -375,6 +375,9 @@ pub async fn run_governance_ci_phase(
     Ok(GovernanceCiOutcome::Passed)
 }
 
+mod override_submission;
+pub use override_submission::{plan_overrides, persist_overrides, submit_overrides, OverridesPlan, PersistOverridesRequest, PlanOverridesRequest};
+
 #[cfg(test)]
 mod tests {
     use super::*;
