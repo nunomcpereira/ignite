@@ -516,7 +516,13 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             // its issue until a *different* reviewer approves it — same
             // `security.overrideApproval` gate `routes/effectivate.rs`
             // applies, kept in sync here since this is the other place a
-            // human submits a brand-new override.
+            // human submits a brand-new override. Not `plan_overrides`
+            // (pipeline-core): the decision here has an extra step no
+            // other site needs — `human_applied` must already exclude the
+            // carried-forward/AI-assist ids before partitioning — plus
+            // `project_id` is optional here (never elsewhere), so the
+            // shared module's persistence halves are reused but its
+            // decision half is not.
             let (auto_applied, needs_approval): (Vec<ignite_override_engine::AppliedOverride>, Vec<ignite_override_engine::AppliedOverride>) = if state.config.security.override_approval.enabled {
                 let already_approved: std::collections::HashSet<String> = match project_id {
                     Some(pid) => human_applied.iter().filter(|(i, _)| state.db.has_approved_override(pid, &i.id)).map(|(i, _)| i.id.clone()).collect(),
@@ -546,7 +552,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         justification: justification.as_str(),
                     }
                 }).collect();
-                
+
                 let titles = ignite_notifications::phase_titles_map(&log.meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
                 let details = ignite_notifications::OverrideEmailDetails {
                     job_id: &job_id,
@@ -564,31 +570,13 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 for (issue, justification) in &auto_applied {
                     let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "unknown location".to_string());
                     log.log(6, &format!("    ⚠ [override] [{:?}] {loc} — {} — \"{justification}\"", issue.severity, issue.summary));
-                    if let Some(pid) = project_id {
-                        // No per-issue phase is tracked on `Issue` itself (same
-                        // simplification pipeline_onboard.rs's `issue_to_input`
-                        // already makes) — every override is recorded against
-                        // phase 4, the phase most findings actually originate
-                        // from.
-                        state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
-                            project_id: pid,
-                            job_id: &job_id,
-                            phase: 4,
-                            issue_id: &issue.id,
-                            category: &issue.category,
-                            severity: match issue.severity {
-                                Severity::Error => "error",
-                                Severity::Warning => "warning",
-                            },
-                            summary: &issue.summary,
-                            file: issue.file.as_deref(),
-                            line: issue.line,
-                            justification,
-                            actor_email: &decision.actor.email,
-                            actor_name: Some(&decision.actor.name),
-                            email_sent,
-                        }, decision.origin);
-                    }
+                }
+                // No per-issue phase is tracked on `Issue` itself (same
+                // simplification pipeline_onboard.rs's `issue_to_input`
+                // already makes) — every override is recorded against
+                // phase 4, the phase most findings actually originate from.
+                if let Some(pid) = project_id {
+                    ignite_pipeline_core::persist_applied_overrides(&state.db, &auto_applied, &ignite_pipeline_core::PersistOverridesRequest { project_id: pid, job_id: &job_id, phase: 4, actor_email: &decision.actor.email, actor_name: &decision.actor.name, origin: decision.origin, email_sent });
                 }
             }
 
@@ -597,28 +585,10 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 for (issue, justification) in &needs_approval {
                     let loc = issue.file.as_deref().map(|f| format!("{f}{}", issue.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_else(|| "unknown location".to_string());
                     log.log(6, &format!("    ⏳ [pending approval] [{:?}] {loc} — {} — \"{justification}\"", issue.severity, issue.summary));
-                    if let Some(pid) = project_id {
-                        if !state.db.has_pending_override(pid, &issue.id) {
-                            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
-                                project_id: pid,
-                                job_id: &job_id,
-                                phase: 4,
-                                issue_id: &issue.id,
-                                category: &issue.category,
-                                severity: match issue.severity {
-                                    Severity::Error => "error",
-                                    Severity::Warning => "warning",
-                                },
-                                summary: &issue.summary,
-                                file: issue.file.as_deref(),
-                                line: issue.line,
-                                justification,
-                                actor_email: &decision.actor.email,
-                                actor_name: Some(&decision.actor.name),
-                                email_sent: false,
-                            }, decision.origin);
-                        }
-                    }
+                }
+                if let Some(pid) = project_id {
+                    let newly_pending: Vec<ignite_override_engine::AppliedOverride> = needs_approval.iter().filter(|(issue, _)| !state.db.has_pending_override(pid, &issue.id)).cloned().collect();
+                    ignite_pipeline_core::persist_pending_overrides(&state.db, &newly_pending, &ignite_pipeline_core::PersistOverridesRequest { project_id: pid, job_id: &job_id, phase: 4, actor_email: &decision.actor.email, actor_name: &decision.actor.name, origin: decision.origin, email_sent: false });
                 }
             }
 
