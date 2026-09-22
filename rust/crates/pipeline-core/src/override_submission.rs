@@ -91,12 +91,36 @@ pub struct PersistOverridesRequest<'a> {
 /// Writes exactly what `plan` says: an approved override flips its issue to
 /// `overridden`; only `plan.newly_pending` (never a `needs_approval` entry
 /// that was already pending) gets a new pending row.
+///
+/// Both halves compose from [`persist_applied_overrides`]/
+/// [`persist_pending_overrides`] — exported separately for a caller like
+/// `routes/effectivate.rs` whose dual-custody early return must persist the
+/// pending half without ever touching the applied half (a request that
+/// hits a pending approval applies *nothing* this call, including
+/// overrides that would otherwise have gone through immediately — a real,
+/// pre-existing difference from `routes/project_overrides.rs`, which
+/// applies its non-critical half unconditionally; see that route's own
+/// characterization tests).
 pub fn persist_overrides(db: &DbStore, plan: &OverridesPlan, req: &PersistOverridesRequest) {
-    for (issue, justification) in &plan.applied {
+    persist_applied_overrides(db, &plan.applied, req);
+    persist_pending_overrides(db, &plan.newly_pending, req);
+}
+
+/// Writes each override as approved (using `req.email_sent`) and flips its
+/// issue to `overridden`.
+pub fn persist_applied_overrides(db: &DbStore, applied: &[AppliedOverride], req: &PersistOverridesRequest) {
+    for (issue, justification) in applied {
         db.add_override_with_origin(override_args(issue, justification, req, req.email_sent), req.origin);
         db.set_issue_status(req.project_id, &issue.id, "overridden");
     }
-    for (issue, justification) in &plan.newly_pending {
+}
+
+/// Writes each override as pending (never records an email for these —
+/// `email_sent` is always `false`). Pass `plan.newly_pending`, not
+/// `plan.needs_approval` — the latter includes rows already pending, which
+/// must not be inserted (or audited) a second time.
+pub fn persist_pending_overrides(db: &DbStore, newly_pending: &[AppliedOverride], req: &PersistOverridesRequest) {
+    for (issue, justification) in newly_pending {
         db.add_pending_override_with_origin(override_args(issue, justification, req, false), req.origin);
     }
 }

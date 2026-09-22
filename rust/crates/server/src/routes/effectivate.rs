@@ -28,7 +28,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use ignite_db_store::{IssueInput, IssueRow};
-use ignite_override_engine::{is_critical_score, partition_for_dual_custody, validate_overrides, Issue, Severity, SubmittedOverride};
+use ignite_override_engine::{Issue, Severity, SubmittedOverride};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use parking_lot::Mutex;
@@ -170,24 +170,6 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         }).collect())
         .unwrap_or_default();
 
-    let result = validate_overrides(&still_open, &requested_overrides);
-    if !result.ok {
-        return (
-            StatusCode::CONFLICT,
-            Json(super::blocked::with_block_info(
-                json!({
-                    "error": format!("{} blocking finding(s) still need to be checked + justified before this simulation can be effectivated.", result.unresolved_errors.len()),
-                    "needsReview": true,
-                    "issues": issues_json(&issue_rows),
-                }),
-                super::blocked::BlockReason::UnresolvedFindings,
-                json!({ "unresolvedIssueIds": result.unresolved_errors.iter().map(|i| i.id.clone()).collect::<Vec<_>>() }),
-            )),
-        )
-            .into_response();
-    }
-
-    let applied: Vec<(&Issue, String)> = result.applied.iter().map(|(i, j)| (*i, j.clone())).collect();
     // Audit-trail attribution must come from the caller's own
     // authenticated session, never a client-supplied `actor` object in
     // the request body — and, per `RequireAuth` above, this whole
@@ -196,47 +178,35 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     // clean simulation with nothing to override was previously reachable
     // by anyone with just a resolvable GitHub token (including the
     // server's own ambient `GH_TOKEN` fallback for unattended callers).
-    let actor: Option<(String, String)> = if applied.is_empty() { None } else { Some((user.email.clone(), user.name.clone().unwrap_or_else(|| user.email.clone()))) };
+    let eff_job_id = format!("effectivate-{project_id}");
+    let plan = ignite_pipeline_core::plan_overrides(&state.db, &still_open, &requested_overrides, &ignite_pipeline_core::PlanOverridesRequest { project_id, dual_custody_enabled: state.config.security.override_approval.enabled });
+    if !plan.ok {
+        return (
+            StatusCode::CONFLICT,
+            Json(super::blocked::with_block_info(
+                json!({
+                    "error": format!("{} blocking finding(s) still need to be checked + justified before this simulation can be effectivated.", plan.unresolved_errors.len()),
+                    "needsReview": true,
+                    "issues": issues_json(&issue_rows),
+                }),
+                super::blocked::BlockReason::UnresolvedFindings,
+                json!({ "unresolvedIssueIds": plan.unresolved_errors.iter().map(|i| i.id.clone()).collect::<Vec<_>>() }),
+            )),
+        )
+            .into_response();
+    }
 
-    // Dual-custody: a critical-severity (score >= CRITICAL_SCORE_THRESHOLD)
-    // override must be approved by a *different* reviewer before it can
-    // actually resolve its issue — off by default
-    // (`security.overrideApproval.enabled`), see that config's own doc
-    // comment. `already_approved` covers the case where this same
-    // critical override was already approved on a prior effectivate
-    // attempt (so re-submitting the exact same override list after
-    // approval doesn't re-block).
-    let (auto_apply, needs_approval): (Vec<ignite_override_engine::AppliedOverride>, Vec<ignite_override_engine::AppliedOverride>) = if state.config.security.override_approval.enabled {
-        let already_approved: HashSet<String> = applied.iter().filter(|(i, _)| state.db.has_approved_override(project_id, &i.id)).map(|(i, _)| i.id.clone()).collect();
-        partition_for_dual_custody(applied.clone(), |i| is_critical_score(i.score), &already_approved)
-    } else {
-        (applied.clone(), Vec::new())
-    };
+    let actor: Option<(String, String)> = if plan.applied.is_empty() && plan.needs_approval.is_empty() { None } else { Some((user.email.clone(), user.name.clone().unwrap_or_else(|| user.email.clone()))) };
 
-    if !needs_approval.is_empty() {
-        let (actor_email, actor_name) = actor.clone().expect("needs_approval implies applied is non-empty, which already required a resolved actor above");
-        for (issue, justification) in &needs_approval {
-            if state.db.has_pending_override(project_id, &issue.id) {
-                continue;
-            }
-            state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
-                project_id,
-                job_id: &format!("effectivate-{project_id}"),
-                phase: 4,
-                issue_id: &issue.id,
-                category: &issue.category,
-                severity: match issue.severity {
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                },
-                summary: &issue.summary,
-                file: issue.file.as_deref(),
-                line: issue.line,
-                justification,
-                actor_email: &actor_email,
-                actor_name: Some(&actor_name),
-                email_sent: false,
-            }, origin);
+    if !plan.needs_approval.is_empty() {
+        let (actor_email, actor_name) = actor.clone().expect("needs_approval implies applied+needs_approval is non-empty, which already required a resolved actor above");
+        // Only the pending half is persisted here — a request that hits a
+        // pending approval applies *nothing* this call, including any
+        // non-critical overrides also submitted this same batch; see
+        // `persist_overrides`'s own doc comment for why that's a real,
+        // pre-existing difference from `routes/project_overrides.rs`.
+        ignite_pipeline_core::persist_pending_overrides(&state.db, &plan.newly_pending, &ignite_pipeline_core::PersistOverridesRequest { project_id, job_id: &eff_job_id, phase: 4, actor_email: &actor_email, actor_name: &actor_name, origin, email_sent: false });
+        for (issue, justification) in &plan.newly_pending {
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
                     .actor(actor_email.clone())
@@ -248,9 +218,9 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
             StatusCode::CONFLICT,
             Json(super::blocked::with_block_info(
                 json!({
-                    "error": format!("{} critical finding(s) require a second reviewer's approval before this can be effectivated.", needs_approval.len()),
+                    "error": format!("{} critical finding(s) require a second reviewer's approval before this can be effectivated.", plan.needs_approval.len()),
                     "pendingApproval": true,
-                    "pendingIssueIds": needs_approval.iter().map(|(i, _)| i.id.clone()).collect::<Vec<_>>(),
+                    "pendingIssueIds": plan.needs_approval.iter().map(|(i, _)| i.id.clone()).collect::<Vec<_>>(),
                     "issues": issues_json(&issue_rows),
                 }),
                 super::blocked::BlockReason::PendingApproval,
@@ -269,6 +239,7 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         )
             .into_response();
     }
+    let auto_apply = &plan.applied;
 
     let publish_dir = {
         let mut p = source_backup_dir.clone().into_os_string();
@@ -313,7 +284,6 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         }).collect();
 
         let titles = ignite_notifications::phase_titles_map(&phase_meta.iter().map(|p| (p.id, p.title.clone())).collect::<Vec<_>>());
-        let eff_job_id = format!("effectivate-{project_id}");
         let details = ignite_notifications::OverrideEmailDetails {
             job_id: &eff_job_id,
             org: &org,
@@ -327,25 +297,13 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         };
         let email_sent = ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false);
 
-        for (issue, justification) in &auto_apply {
-            state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
-                project_id,
-                job_id: &format!("effectivate-{project_id}"),
-                phase: 4,
-                issue_id: &issue.id,
-                category: &issue.category,
-                severity: match issue.severity {
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                },
-                summary: &issue.summary,
-                file: issue.file.as_deref(),
-                line: issue.line,
-                justification,
-                actor_email: &actor_email,
-                actor_name: Some(&actor_name),
-                email_sent,
-            }, origin);
+        // Also flips each issue to `overridden` — the bulk `replace_project_issues`
+        // right below does that too (and is the actually load-bearing write for
+        // it, since it refreshes the whole issue snapshot atomically); the
+        // individual flip here is a harmless redundant write kept for parity
+        // with `routes/project_overrides.rs`'s own persistence path.
+        ignite_pipeline_core::persist_applied_overrides(&state.db, auto_apply, &ignite_pipeline_core::PersistOverridesRequest { project_id, job_id: &eff_job_id, phase: 4, actor_email: &actor_email, actor_name: &actor_name, origin, email_sent });
+        for (issue, justification) in auto_apply {
             state.emit_audit_event(
                 ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
                     .actor(actor_email.clone())
@@ -426,11 +384,11 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
         Ok(ship_result) => {
             state.db.finish_project("success", None, Some(&ship_result.repo_url), ship_result.pr_url.as_deref(), project_id);
             log(&format!("✓ Effectivated — repository live at {}", ship_result.repo_url));
-            if !applied.is_empty() {
+            if !plan.applied.is_empty() {
                 state.emit_audit_event(
-                    ignite_audit_log::AuditEvent::new("gate.passed_with_overrides", "warning", format!("gate passed for {org}/{repo} with {} override(s)", applied.len()))
+                    ignite_audit_log::AuditEvent::new("gate.passed_with_overrides", "warning", format!("gate passed for {org}/{repo} with {} override(s)", plan.applied.len()))
                         .repo(&org, &repo)
-                        .metadata(json!({ "overrideCount": applied.len(), "repoUrl": ship_result.repo_url })),
+                        .metadata(json!({ "overrideCount": plan.applied.len(), "repoUrl": ship_result.repo_url })),
                 );
             }
             state.db.upsert_step(project_id, 6, &phase6_title, "success", &effectivate_logs.lock().join("\n"));
