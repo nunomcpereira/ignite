@@ -375,11 +375,45 @@ pub async fn run_governance_ci_phase(
     Ok(GovernanceCiOutcome::Passed)
 }
 
+/// Candidate 2 of the architecture review: `run_validate_all` and
+/// `run_onboard` each defined their own copy of this (byte-identical body).
+/// Extracts the message out of a `catch_unwind` panic payload — covers the
+/// two shapes `panic!`/`.unwrap()`/`.expect()` actually produce (`&str` for
+/// a string-literal panic message, `String` for a formatted one).
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 mod override_submission;
 pub use override_submission::{plan_overrides, persist_applied_overrides, persist_overrides, persist_pending_overrides, submit_overrides, OverridesPlan, PersistOverridesRequest, PlanOverridesRequest};
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn panic_message_extracts_a_str_literal() {
+        let result = std::panic::catch_unwind(|| panic!("boom")).unwrap_err();
+        assert_eq!(panic_message(&*result), "boom");
+    }
+
+    #[test]
+    fn panic_message_extracts_a_formatted_string() {
+        let detail = "widgets";
+        let result = std::panic::catch_unwind(move || panic!("failed on {detail}")).unwrap_err();
+        assert_eq!(panic_message(&*result), "failed on widgets");
+    }
+
+    #[test]
+    fn panic_message_falls_back_for_an_unrecognized_payload_type() {
+        let result = std::panic::catch_unwind(|| std::panic::panic_any(42_i32)).unwrap_err();
+        assert_eq!(panic_message(&*result), "unknown panic");
+    }
+
     use super::*;
     use std::fs;
     use tempfile::tempdir;

@@ -840,10 +840,10 @@ pub fn mutating_router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_gate::ReviewGate;
-    use crate::state::{self, LiveRun, IGNITE_DATA_DIR_ENV_GUARD as ENV_GUARD};
-    use std::collections::HashMap;
-    use parking_lot::Mutex;
+    
+    use crate::state::{LiveRun, IGNITE_DATA_DIR_ENV_GUARD as ENV_GUARD};
+    
+    
 
     async fn spawn_test_server_with_live_run(root: PathBuf, backup: PathBuf) -> (String, Arc<AppState>, String) {
         let db_dir = tempfile::tempdir().unwrap();
@@ -851,18 +851,7 @@ mod tests {
         let job_id = "studio-test-job".to_string();
         let project_id = db.create_project(&job_id, "acme", "widgets", false, "api", None).unwrap();
 
-        let app_state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config: ignite_config::Config::default(),
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-        fix_pr_previews: Mutex::new(HashMap::new()),
-        audit_http: reqwest::Client::new(),
-        });
+        let app_state = Arc::new(crate::state::test_state(db, ignite_config::Config::default()));
         app_state.running_runs.lock().insert(
             job_id.clone(),
             LiveRun { org: "acme".to_string(), repo: "widgets".to_string(), project_id: Some(project_id), all_issues: vec![], project_root: Some(root), source_backup_dir: Some(backup), review_active: true },

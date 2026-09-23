@@ -149,35 +149,14 @@ impl PipelineError {
     }
 }
 
-/// Best-effort extraction of a panic payload's message — covers the two
-/// shapes `panic!`/`.unwrap()`/`.expect()` actually produce (`&str` for a
-/// string-literal panic message, `String` for a formatted one).
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
-}
+// `panic_message` moved to `ignite_pipeline_core` (candidate 2 of the
+// architecture review): this file and `pipeline_onboard.rs` each carried a
+// byte-identical copy.
+use ignite_pipeline_core::panic_message;
 
 #[cfg(test)]
 mod panic_message_tests {
     use super::panic_message;
-
-    #[test]
-    fn extracts_a_str_literal_panic_message() {
-        let result = std::panic::catch_unwind(|| panic!("boom")).unwrap_err();
-        assert_eq!(panic_message(&*result), "boom");
-    }
-
-    #[test]
-    fn extracts_a_formatted_string_panic_message() {
-        let detail = "widgets";
-        let result = std::panic::catch_unwind(move || panic!("failed on {detail}")).unwrap_err();
-        assert_eq!(panic_message(&*result), "failed on widgets");
-    }
 
     /// Regression test for the actual bug: proves the exact
     /// catch_unwind-then-cleanup pattern used around `run_validate_all`'s
@@ -346,9 +325,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy())).map_err(|e| PipelineError::new(1, format!("Failed to create project record: {e}")))?;
         run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
         if let Some(rid) = run_id {
-            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Scanning) {
-                tracing::warn!("transition_scan_run({rid}, Scanning) failed: {e}");
-            }
+            state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Scanning);
             if let Some(key) = body.get("idempotencyKey").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
                 state.db.set_scan_run_idempotency(rid, key, &idempotency_payload_hash(&body));
             }
@@ -422,7 +399,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let root_b = root.clone();
             let state_a = state.clone();
             let state_b = state.clone();
-            let config = default_phase4_config(state.as_ref(), &org, &repo, Some(project_id), fast, Some(project_path.clone()));
+            let config = crate::phase4_config::from_config(&state.config, &org, &repo, Some(project_id), fast, Some(project_path.clone()));
             let (license_result, phase4_result) = tokio::join!(
                 time_stage(&timings, "licenseAndDependencyScan", async move { ignite_pipeline_core::run_license_and_dependency_scan(&root_a, &state_a.runner, &client, &npm_http, &state_a.db, Some(project_id), move |m| l3a.log(3, m)).await }),
                 time_stage(&timings, "phase4Total", async move { ignite_phase4_orchestrator::run_phase4_checks(&root_b, &state_b.runner, &state_b.db, &config, &state_b.package_hallucination_checker, &|m: &str| l4.log(4, m)).await })
@@ -682,9 +659,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         // first is never overwritten (terminal states reject any further
         // transition, `sync_scan_run_lifecycle`'s included).
         if let Some(rid) = run_id {
-            if let Err(e) = state.db.transition_scan_run(rid, ignite_run_lifecycle::RunLifecycleState::Completed) {
-                tracing::warn!("transition_scan_run({rid}, Completed) failed: {e}");
-            }
+            state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Completed);
         }
         // Persist to the `issues` table validate-all had never written to
         // before — a real gap this endpoint's own doc comment didn't flag,
@@ -735,9 +710,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         // input, a tool crash, a missing snapshot) is a genuine error,
         // not a declined/unresolved review outcome.
         let target = if e.issues.is_some() { ignite_run_lifecycle::RunLifecycleState::Blocked } else { ignite_run_lifecycle::RunLifecycleState::Failed };
-        if let Err(err) = state.db.transition_scan_run(rid, target) {
-            tracing::warn!("transition_scan_run({rid}, {target:?}) failed: {err}");
-        }
+        state.db.transition_scan_run_or_warn(rid, target);
     }
 
     match result {
@@ -942,12 +915,9 @@ fn filter_tagged_by_changed_files(tagged: &[Value], changed_files: Option<&std::
     }
 }
 
-/// Builds the real Phase4Config from `state.config` (config.json + env
-/// overrides) rather than every check's hardcoded `::default()` — see
-/// `crate::phase4_config`.
-fn default_phase4_config(state: &AppState, org: &str, repo: &str, project_id: Option<i64>, fast: bool, igniteignore_git_check_root: Option<std::path::PathBuf>) -> ignite_phase4_orchestrator::Phase4Config {
-    crate::phase4_config::from_config(&state.config, org, repo, project_id, fast, igniteignore_git_check_root)
-}
+// `default_phase4_config` (this file's own thin wrapper, threading `fast`
+// through) is gone — candidate 2 of the architecture review, see the
+// removal note in `pipeline_onboard.rs`.
 
 async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(mut body): Json<Value>) -> Response {
     super::async_jobs::strip_client_job_id(&mut body);
@@ -992,28 +962,17 @@ pub fn router() -> Router<Arc<AppState>> {
 
 #[cfg(test)]
 mod phase_gating_tests {
-    use crate::state::{self, AppState};
+    use crate::state::AppState;
     use axum::Router;
     use serde_json::{json, Value};
-    use std::collections::HashMap;
-    use parking_lot::Mutex;
+    
+    
     use std::sync::Arc;
 
     fn build_state(config: ignite_config::Config) -> (Arc<AppState>, tempfile::TempDir) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        let app_state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config,
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-        fix_pr_previews: Mutex::new(HashMap::new()),
-        audit_http: reqwest::Client::new(),
-        });
+        let app_state = Arc::new(crate::state::test_state(db, config));
         (app_state, db_dir)
     }
 

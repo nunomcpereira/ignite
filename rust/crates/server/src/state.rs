@@ -211,6 +211,31 @@ pub fn default_runner() -> ToolRunner {
     crate::phase4_config::runner_from_config(&ignite_config::Config::default())
 }
 
+/// Candidate 4 of the architecture review (`architecture-review-*.html`):
+/// every route file's test module hand-wrote this same 10-field
+/// `AppState` struct literal (27 occurrences across 20 files, differing
+/// only in `db` and occasionally `config`) — adding a field meant editing
+/// all 27. One place builds a state for tests now; `db`/`config` are the
+/// two things every existing call site actually varied, so they're the
+/// only parameters. A caller needing a non-default `runner`/`llm_config`/
+/// etc. (rare — none currently do) still constructs `AppState` directly,
+/// same as before.
+#[cfg(test)]
+pub fn test_state(db: ignite_db_store::DbStore, config: ignite_config::Config) -> AppState {
+    AppState {
+        runner: default_runner(),
+        db,
+        running_runs: Mutex::new(HashMap::new()),
+        pending_effectivations: Mutex::new(HashMap::new()),
+        review_gate: ReviewGate::default(),
+        llm_config: default_llm_config(),
+        config,
+        package_hallucination_checker: default_package_hallucination_checker(),
+        fix_pr_previews: Mutex::new(HashMap::new()),
+        audit_http: reqwest::Client::new(),
+    }
+}
+
 #[cfg(test)]
 mod characterization_tests {
     //! Pins what `AppState::emit_audit_event` guarantees today: the local trail
@@ -220,19 +245,7 @@ mod characterization_tests {
     fn state_with(config: ignite_config::Config) -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&dir.path().join("test.db")).unwrap();
-        let state = AppState {
-            runner: default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: default_llm_config(),
-            config,
-            package_hallucination_checker: default_package_hallucination_checker(),
-            fix_pr_previews: Mutex::new(HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        };
-        (state, dir)
+        (test_state(db, config), dir)
     }
 
     #[test]

@@ -21,7 +21,7 @@
 //! `crate::routes::effectivate`.
 
 use crate::review_gate::{Actor, ReviewDecisionInput};
-use crate::routes::pipeline_onboard::{default_phase4_config, issue_to_input};
+use crate::routes::pipeline_onboard::issue_to_input;
 use crate::state::{AppState, LiveRun, PendingEffectivation};
 use axum::body::Body;
 use axum::extract::{Multipart, State};
@@ -359,7 +359,7 @@ pub use handlers::router;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state;
+    
     use reqwest::multipart::{Form, Part};
 
     /// Serializes the handful of tests in this file that each drive a real
@@ -402,18 +402,7 @@ mod tests {
     async fn spawn_test_server() -> (String, Arc<AppState>) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        let app_state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config: ignite_config::Config::default(),
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-        fix_pr_previews: Mutex::new(HashMap::new()),
-        audit_http: reqwest::Client::new(),
-        });
+        let app_state = Arc::new(crate::state::test_state(db, ignite_config::Config::default()));
         let router = axum::Router::new().merge(router()).with_state(app_state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

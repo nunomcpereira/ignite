@@ -165,7 +165,7 @@ pub fn router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state;
+    
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -174,18 +174,7 @@ mod tests {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         std::mem::forget(db_dir);
-        Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            pending_effectivations: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config: ignite_config::Config::default(),
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-            fix_pr_previews: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        })
+        Arc::new(crate::state::test_state(db, ignite_config::Config::default()))
     }
 
     async fn body_json(res: Response) -> Value {

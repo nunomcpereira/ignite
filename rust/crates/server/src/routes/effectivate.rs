@@ -419,24 +419,13 @@ pub fn router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state;
-    use std::collections::HashMap;
+    
+    
 
     fn build_state() -> (Arc<AppState>, tempfile::TempDir) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        let app_state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config: ignite_config::Config::default(),
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-        fix_pr_previews: Mutex::new(HashMap::new()),
-        audit_http: reqwest::Client::new(),
-        });
+        let app_state = Arc::new(crate::state::test_state(db, ignite_config::Config::default()));
         (app_state, db_dir)
     }
 
@@ -445,18 +434,7 @@ mod tests {
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
         let mut config = ignite_config::Config::default();
         config.security.override_approval.enabled = true;
-        let app_state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config,
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-            fix_pr_previews: Mutex::new(HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        });
+        let app_state = Arc::new(crate::state::test_state(db, config));
         (app_state, db_dir)
     }
 

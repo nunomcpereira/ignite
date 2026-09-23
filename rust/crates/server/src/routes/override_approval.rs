@@ -141,18 +141,7 @@ mod tests {
     fn state_with_config(config: ignite_config::Config) -> (Arc<AppState>, tempfile::TempDir) {
         let db_dir = tempfile::tempdir().unwrap();
         let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
-        let state = Arc::new(AppState {
-            runner: crate::state::default_runner(),
-            db,
-            running_runs: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            pending_effectivations: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            review_gate: crate::review_gate::ReviewGate::default(),
-            llm_config: crate::state::default_llm_config(),
-            config,
-            package_hallucination_checker: crate::state::default_package_hallucination_checker(),
-            fix_pr_previews: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        });
+        let state = Arc::new(crate::state::test_state(db, config));
         (state, db_dir)
     }
 

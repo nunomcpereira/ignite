@@ -186,6 +186,9 @@ mod tests {
         let user_id = db.create_local_user("llm-test@example.com", None, ignite_auth::dummy_hash()).unwrap();
         let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
         db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
+        // Not `crate::state::test_state`: this is the one call site that
+        // varies `llm_config` itself (that's the whole point of this
+        // function), so it still builds `AppState` directly.
         let state = Arc::new(AppState {
             runner: state::default_runner(),
             db,
@@ -195,8 +198,8 @@ mod tests {
             llm_config,
             config: ignite_config::Config::default(),
             package_hallucination_checker: state::default_package_hallucination_checker(),
-        fix_pr_previews: Mutex::new(HashMap::new()),
-        audit_http: reqwest::Client::new(),
+            fix_pr_previews: Mutex::new(HashMap::new()),
+            audit_http: reqwest::Client::new(),
         });
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state, &public_dir);
@@ -221,18 +224,7 @@ mod tests {
         let user_id = db.create_local_user("apikey-test@example.com", None, ignite_auth::dummy_hash()).unwrap();
         let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
         db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
-        let state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config: ignite_config::Config::default(),
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-        fix_pr_previews: Mutex::new(HashMap::new()),
-        audit_http: reqwest::Client::new(),
-        });
+        let state = Arc::new(crate::state::test_state(db, ignite_config::Config::default()));
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state, &public_dir);
 
@@ -667,18 +659,7 @@ mod tests {
         if let Some(gh) = key_github_token {
             db.set_api_key_github_token(key_id, Some(gh));
         }
-        let state = Arc::new(AppState {
-            runner: state::default_runner(),
-            db,
-            running_runs: Mutex::new(HashMap::new()),
-            pending_effectivations: Mutex::new(HashMap::new()),
-            review_gate: review_gate::ReviewGate::default(),
-            llm_config: state::default_llm_config(),
-            config,
-            package_hallucination_checker: state::default_package_hallucination_checker(),
-            fix_pr_previews: Mutex::new(HashMap::new()),
-            audit_http: reqwest::Client::new(),
-        });
+        let state = Arc::new(crate::state::test_state(db, config));
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state.clone(), &public_dir);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
