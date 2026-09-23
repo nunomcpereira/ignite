@@ -404,3 +404,78 @@ mod origin_tests {
         assert_eq!(pending[0].origin, "api_key");
     }
 }
+
+#[cfg(test)]
+mod characterization_tests {
+    //! Pins the storage semantics every override-submission path relies on, so
+    //! consolidating the five hand-copied submission sequences can't change them.
+    use crate::store::DbStore;
+    use crate::types::AddOverrideArgs;
+
+    fn args<'a>(project_id: i64, issue_id: &'a str, severity: &'a str) -> AddOverrideArgs<'a> {
+        AddOverrideArgs { project_id, job_id: "job-1", phase: 4, issue_id, category: "secret", severity, summary: "hardcoded key", file: Some("a.js"), line: Some(1), justification: "reviewed and accepted", actor_email: "owner@example.com", actor_name: Some("Owner"), email_sent: false }
+    }
+
+    fn db_with_project() -> (DbStore, i64, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DbStore::open(&dir.path().join("test.db")).unwrap();
+        let pid = db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
+        (db, pid, dir)
+    }
+
+    #[test]
+    fn the_listed_overrides_are_only_the_approved_ones_in_insertion_order() {
+        let (db, pid, _dir) = db_with_project();
+        db.add_override(args(pid, "secret::a.js::1", "error"));
+        db.add_pending_override(args(pid, "secret::a.js::2", "error"));
+        db.add_override(args(pid, "secret::a.js::3", "warning"));
+        let listed: Vec<String> = db.get_project_overrides(pid).into_iter().map(|o| o.issue_id).collect();
+        assert_eq!(listed, vec!["secret::a.js::1", "secret::a.js::3"], "a pending row must not read as an approved override");
+        assert_eq!(db.list_pending_overrides(pid).len(), 1);
+    }
+
+    #[test]
+    fn severity_is_stored_exactly_as_given() {
+        // The five submission paths each map Severity -> "error"/"warning" by hand.
+        let (db, pid, _dir) = db_with_project();
+        db.add_override(args(pid, "secret::a.js::1", "error"));
+        db.add_override(args(pid, "secret::a.js::2", "warning"));
+        let by_issue: std::collections::HashMap<String, String> = db.get_project_overrides(pid).into_iter().map(|o| (o.issue_id, o.severity)).collect();
+        assert_eq!(by_issue["secret::a.js::1"], "error");
+        assert_eq!(by_issue["secret::a.js::2"], "warning");
+    }
+
+    #[test]
+    fn a_pending_override_counts_for_has_override_but_not_for_has_approved() {
+        let (db, pid, _dir) = db_with_project();
+        db.add_pending_override(args(pid, "secret::a.js::1", "error"));
+        assert!(db.issue_has_override(pid, "secret::a.js::1"), "a pending row means a human is reviewing it");
+        assert!(db.has_pending_override(pid, "secret::a.js::1"));
+        assert!(!db.has_approved_override(pid, "secret::a.js::1"), "only an approved row may authorize anything");
+        assert!(!db.issue_has_override(pid, "secret::a.js::other"));
+    }
+
+    #[test]
+    fn an_expired_approved_override_stops_authorizing() {
+        let (db, pid, _dir) = db_with_project();
+        db.add_override(args(pid, "secret::a.js::1", "error"));
+        assert!(db.has_approved_override(pid, "secret::a.js::1"));
+        let id = db.get_project_overrides(pid)[0].id;
+        db.set_override_expiry(id, Some("-1 hours"));
+        assert!(!db.has_approved_override(pid, "secret::a.js::1"));
+        db.set_override_expiry(id, None);
+        assert!(db.has_approved_override(pid, "secret::a.js::1"), "clearing the expiry restores it");
+    }
+
+    #[test]
+    fn audit_events_are_chained_and_the_chain_verifies() {
+        let (db, _pid, _dir) = db_with_project();
+        for i in 0..3 {
+            db.record_audit_event("override.approved", "info", &format!("event {i}"), Some("owner@example.com"), Some("acme"), Some("widgets"), Some(r#"{"origin":"api_key"}"#)).unwrap();
+        }
+        assert!(db.verify_audit_chain().is_ok());
+        let rows = db.list_audit_events(Some("acme"), Some("widgets"), Some("override.approved"), None, None, None, None, 50);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r.actor.as_deref() == Some("owner@example.com") && r.metadata_json.as_deref() == Some(r#"{"origin":"api_key"}"#)));
+    }
+}

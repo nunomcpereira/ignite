@@ -1704,4 +1704,212 @@ mod tests {
         env::remove_var("CODEQL_REVIEW_CADENCE_DAYS");
         env::remove_var("CODEQL_LAST_REVIEWED_AT");
     }
+
+    // ---- characterization (generated from `apply_env_overrides`): pins that each
+    // ---- direct env override still lands in the config field it names, so that
+    // ---- reshaping how config reaches the checks can't silently drop one.
+    // ---- When you add an override, add its row here.
+
+    fn load_with_env(name: &str, value: &str) -> Config {
+        clear_test_env();
+        let dir = tempdir().unwrap();
+        env::set_var("IGNITE_CONFIG_PATH", dir.path().join("nonexistent.json"));
+        env::set_var(name, value);
+        let cfg = load_config(dir.path()).unwrap();
+        env::remove_var(name);
+        env::remove_var("IGNITE_CONFIG_PATH");
+        cfg
+    }
+
+    #[test]
+    fn every_direct_env_override_lands_in_the_config_field_it_names() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        assert_eq!(load_with_env("GOVERNANCE_REPO", "pin-GOVERNANCE_REPO").governance.repo, "pin-GOVERNANCE_REPO", "GOVERNANCE_REPO");
+        assert_eq!(load_with_env("GOVERNANCE_WORKFLOW", "pin-GOVERNANCE_WORKFLOW").governance.workflow, "pin-GOVERNANCE_WORKFLOW", "GOVERNANCE_WORKFLOW");
+        assert_eq!(load_with_env("ACT_EVENT", "pin-ACT_EVENT").governance.event, "pin-ACT_EVENT", "ACT_EVENT");
+        assert_eq!(load_with_env("ACT_TIMEOUT_MIN", "7").governance.timeout_minutes.to_string(), "7", "ACT_TIMEOUT_MIN");
+        assert_eq!(load_with_env("AUTH_MODE", "pin-AUTH_MODE").auth.mode, "pin-AUTH_MODE", "AUTH_MODE");
+        assert_eq!(load_with_env("OIDC_CLIENT_ID", "pin-OIDC_CLIENT_ID").auth.oidc.client_id, "pin-OIDC_CLIENT_ID", "OIDC_CLIENT_ID");
+        assert_eq!(load_with_env("OIDC_CLIENT_SECRET", "pin-OIDC_CLIENT_SECRET").auth.oidc.client_secret, "pin-OIDC_CLIENT_SECRET", "OIDC_CLIENT_SECRET");
+        assert_eq!(load_with_env("OIDC_REDIRECT_URI", "pin-OIDC_REDIRECT_URI").auth.oidc.redirect_uri, "pin-OIDC_REDIRECT_URI", "OIDC_REDIRECT_URI");
+        assert_eq!(load_with_env("OIDC_ISSUER", "pin-OIDC_ISSUER").auth.oidc.issuer, "pin-OIDC_ISSUER", "OIDC_ISSUER");
+        assert_eq!(load_with_env("GITHUB_OAUTH_CLIENT_ID", "pin-GITHUB_OAUTH_CLIENT_ID").github.oauth.client_id, "pin-GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_ID");
+        assert_eq!(load_with_env("GITHUB_OAUTH_CLIENT_SECRET", "pin-GITHUB_OAUTH_CLIENT_SECRET").github.oauth.client_secret, "pin-GITHUB_OAUTH_CLIENT_SECRET", "GITHUB_OAUTH_CLIENT_SECRET");
+        assert_eq!(load_with_env("GITHUB_OAUTH_REDIRECT_URI", "pin-GITHUB_OAUTH_REDIRECT_URI").github.oauth.redirect_uri, "pin-GITHUB_OAUTH_REDIRECT_URI", "GITHUB_OAUTH_REDIRECT_URI");
+        assert_eq!(load_with_env("GITHUB_OAUTH_SCOPE", "pin-GITHUB_OAUTH_SCOPE").github.oauth.scope, "pin-GITHUB_OAUTH_SCOPE", "GITHUB_OAUTH_SCOPE");
+        assert!(load_with_env("GITLEAKS_ENABLED", "true").security.gitleaks.enabled, "GITLEAKS_ENABLED=true");
+        assert!(!load_with_env("GITLEAKS_ENABLED", "false").security.gitleaks.enabled, "GITLEAKS_ENABLED=false");
+        assert!(load_with_env("GITLEAKS_SCAN_HISTORY", "true").security.gitleaks.scan_history, "GITLEAKS_SCAN_HISTORY=true");
+        assert!(!load_with_env("GITLEAKS_SCAN_HISTORY", "false").security.gitleaks.scan_history, "GITLEAKS_SCAN_HISTORY=false");
+        assert_eq!(load_with_env("GITLEAKS_BINARY", "pin-GITLEAKS_BINARY").security.gitleaks.binary, "pin-GITLEAKS_BINARY", "GITLEAKS_BINARY");
+        assert_eq!(load_with_env("GITLEAKS_CONFIG_PATH", "pin-GITLEAKS_CONFIG_PATH").security.gitleaks.config_path, "pin-GITLEAKS_CONFIG_PATH", "GITLEAKS_CONFIG_PATH");
+        assert!(load_with_env("TRIVY_ENABLED", "true").security.trivy.enabled, "TRIVY_ENABLED=true");
+        assert!(!load_with_env("TRIVY_ENABLED", "false").security.trivy.enabled, "TRIVY_ENABLED=false");
+        assert_eq!(load_with_env("TRIVY_BINARY", "pin-TRIVY_BINARY").security.trivy.binary, "pin-TRIVY_BINARY", "TRIVY_BINARY");
+        assert!(load_with_env("CHECKOV_ENABLED", "true").security.checkov.enabled, "CHECKOV_ENABLED=true");
+        assert!(!load_with_env("CHECKOV_ENABLED", "false").security.checkov.enabled, "CHECKOV_ENABLED=false");
+        assert_eq!(load_with_env("CHECKOV_BINARY", "pin-CHECKOV_BINARY").security.checkov.binary, "pin-CHECKOV_BINARY", "CHECKOV_BINARY");
+        assert!(load_with_env("HADOLINT_ENABLED", "true").security.hadolint.enabled, "HADOLINT_ENABLED=true");
+        assert!(!load_with_env("HADOLINT_ENABLED", "false").security.hadolint.enabled, "HADOLINT_ENABLED=false");
+        assert_eq!(load_with_env("HADOLINT_BINARY", "pin-HADOLINT_BINARY").security.hadolint.binary, "pin-HADOLINT_BINARY", "HADOLINT_BINARY");
+        assert!(load_with_env("COSIGN_ENABLED", "true").security.cosign.enabled, "COSIGN_ENABLED=true");
+        assert!(!load_with_env("COSIGN_ENABLED", "false").security.cosign.enabled, "COSIGN_ENABLED=false");
+        assert_eq!(load_with_env("COSIGN_BINARY", "pin-COSIGN_BINARY").security.cosign.binary, "pin-COSIGN_BINARY", "COSIGN_BINARY");
+        assert_eq!(load_with_env("COSIGN_IDENTITY_REGEXP", "pin-COSIGN_IDENTITY_REGEXP").security.cosign.identity_regexp, "pin-COSIGN_IDENTITY_REGEXP", "COSIGN_IDENTITY_REGEXP");
+        assert_eq!(load_with_env("COSIGN_ISSUER_REGEXP", "pin-COSIGN_ISSUER_REGEXP").security.cosign.issuer_regexp, "pin-COSIGN_ISSUER_REGEXP", "COSIGN_ISSUER_REGEXP");
+        assert_eq!(load_with_env("COSIGN_CACHE_TTL_SECONDS", "7").security.cosign.cache_ttl_seconds.to_string(), "7", "COSIGN_CACHE_TTL_SECONDS");
+        assert!(load_with_env("PICKLESCAN_ENABLED", "true").security.picklescan.enabled, "PICKLESCAN_ENABLED=true");
+        assert!(!load_with_env("PICKLESCAN_ENABLED", "false").security.picklescan.enabled, "PICKLESCAN_ENABLED=false");
+        assert_eq!(load_with_env("PICKLESCAN_BINARY", "pin-PICKLESCAN_BINARY").security.picklescan.binary, "pin-PICKLESCAN_BINARY", "PICKLESCAN_BINARY");
+        assert!(load_with_env("PACKAGE_HALLUCINATION_ENABLED", "true").security.package_hallucination.enabled, "PACKAGE_HALLUCINATION_ENABLED=true");
+        assert!(!load_with_env("PACKAGE_HALLUCINATION_ENABLED", "false").security.package_hallucination.enabled, "PACKAGE_HALLUCINATION_ENABLED=false");
+        assert!(load_with_env("ZIZMOR_ENABLED", "true").security.zizmor.enabled, "ZIZMOR_ENABLED=true");
+        assert!(!load_with_env("ZIZMOR_ENABLED", "false").security.zizmor.enabled, "ZIZMOR_ENABLED=false");
+        assert!(load_with_env("DEPENDENCY_GRAPH_ENABLED", "true").security.dependency_graph.enabled, "DEPENDENCY_GRAPH_ENABLED=true");
+        assert!(!load_with_env("DEPENDENCY_GRAPH_ENABLED", "false").security.dependency_graph.enabled, "DEPENDENCY_GRAPH_ENABLED=false");
+        assert!(load_with_env("CODE_SCANNING_ENABLED", "true").security.code_scanning.enabled, "CODE_SCANNING_ENABLED=true");
+        assert!(!load_with_env("CODE_SCANNING_ENABLED", "false").security.code_scanning.enabled, "CODE_SCANNING_ENABLED=false");
+        assert!(load_with_env("CODE_SCANNING_SYNC_DISMISSALS", "true").security.code_scanning.sync_dismissals, "CODE_SCANNING_SYNC_DISMISSALS=true");
+        assert!(!load_with_env("CODE_SCANNING_SYNC_DISMISSALS", "false").security.code_scanning.sync_dismissals, "CODE_SCANNING_SYNC_DISMISSALS=false");
+        assert!(load_with_env("DEPENDENCY_REVIEW_ENABLED", "true").security.dependency_review.enabled, "DEPENDENCY_REVIEW_ENABLED=true");
+        assert!(!load_with_env("DEPENDENCY_REVIEW_ENABLED", "false").security.dependency_review.enabled, "DEPENDENCY_REVIEW_ENABLED=false");
+        assert!(load_with_env("PR_SUGGESTIONS_ENABLED", "true").security.pr_suggestions.enabled, "PR_SUGGESTIONS_ENABLED=true");
+        assert!(!load_with_env("PR_SUGGESTIONS_ENABLED", "false").security.pr_suggestions.enabled, "PR_SUGGESTIONS_ENABLED=false");
+        assert!(load_with_env("SECRET_VERIFICATION_ENABLED", "true").security.secret_verification.enabled, "SECRET_VERIFICATION_ENABLED=true");
+        assert!(!load_with_env("SECRET_VERIFICATION_ENABLED", "false").security.secret_verification.enabled, "SECRET_VERIFICATION_ENABLED=false");
+        assert!(load_with_env("PUSH_PROTECTION_AUTO_FILE_ISSUE", "true").security.push_protection.auto_file_issue, "PUSH_PROTECTION_AUTO_FILE_ISSUE=true");
+        assert!(!load_with_env("PUSH_PROTECTION_AUTO_FILE_ISSUE", "false").security.push_protection.auto_file_issue, "PUSH_PROTECTION_AUTO_FILE_ISSUE=false");
+        assert!(load_with_env("REPOSITORY_EVENTS_APPLY_ORG_RULESET", "true").security.repository_events.apply_org_ruleset, "REPOSITORY_EVENTS_APPLY_ORG_RULESET=true");
+        assert!(!load_with_env("REPOSITORY_EVENTS_APPLY_ORG_RULESET", "false").security.repository_events.apply_org_ruleset, "REPOSITORY_EVENTS_APPLY_ORG_RULESET=false");
+        assert!(load_with_env("REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN", "true").security.repository_events.trigger_baseline_scan, "REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN=true");
+        assert!(!load_with_env("REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN", "false").security.repository_events.trigger_baseline_scan, "REPOSITORY_EVENTS_TRIGGER_BASELINE_SCAN=false");
+        assert!(load_with_env("OVERRIDE_APPROVAL_ENABLED", "true").security.override_approval.enabled, "OVERRIDE_APPROVAL_ENABLED=true");
+        assert!(!load_with_env("OVERRIDE_APPROVAL_ENABLED", "false").security.override_approval.enabled, "OVERRIDE_APPROVAL_ENABLED=false");
+        assert!(load_with_env("ALLOW_UNAUTHENTICATED_VALIDATE_ALL", "true").security.allow_unauthenticated_validate_all, "ALLOW_UNAUTHENTICATED_VALIDATE_ALL=true");
+        assert!(!load_with_env("ALLOW_UNAUTHENTICATED_VALIDATE_ALL", "false").security.allow_unauthenticated_validate_all, "ALLOW_UNAUTHENTICATED_VALIDATE_ALL=false");
+        assert!(load_with_env("ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN", "true").security.allow_unauthenticated_interactive_dry_run, "ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN=true");
+        assert!(!load_with_env("ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN", "false").security.allow_unauthenticated_interactive_dry_run, "ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN=false");
+        assert!(load_with_env("ALLOW_UNAUTHENTICATED_AI_ASSIST", "true").security.allow_unauthenticated_ai_assist, "ALLOW_UNAUTHENTICATED_AI_ASSIST=true");
+        assert!(!load_with_env("ALLOW_UNAUTHENTICATED_AI_ASSIST", "false").security.allow_unauthenticated_ai_assist, "ALLOW_UNAUTHENTICATED_AI_ASSIST=false");
+        assert!(load_with_env("POLICY_STRICT", "true").policy.strict, "POLICY_STRICT=true");
+        assert!(!load_with_env("POLICY_STRICT", "false").policy.strict, "POLICY_STRICT=false");
+        assert!(load_with_env("SLA_ENABLED", "true").sla.enabled, "SLA_ENABLED=true");
+        assert!(!load_with_env("SLA_ENABLED", "false").sla.enabled, "SLA_ENABLED=false");
+        assert_eq!(load_with_env("SLA_CRITICAL_DAYS", "7").sla.critical_days.to_string(), "7", "SLA_CRITICAL_DAYS");
+        assert_eq!(load_with_env("SLA_HIGH_DAYS", "7").sla.high_days.to_string(), "7", "SLA_HIGH_DAYS");
+        assert_eq!(load_with_env("SLA_MEDIUM_DAYS", "7").sla.medium_days.to_string(), "7", "SLA_MEDIUM_DAYS");
+        assert!(load_with_env("AUDIT_LOG_ENABLED", "true").audit_log.enabled, "AUDIT_LOG_ENABLED=true");
+        assert!(!load_with_env("AUDIT_LOG_ENABLED", "false").audit_log.enabled, "AUDIT_LOG_ENABLED=false");
+        assert_eq!(load_with_env("ORG_REPOS_MAX_CONCURRENT_SCANS", "7").org_repos.max_concurrent_scans.to_string(), "7", "ORG_REPOS_MAX_CONCURRENT_SCANS");
+        assert_eq!(load_with_env("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS", "7").org_repos.auto_rescan_stale_after_hours.to_string(), "7", "ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS");
+        assert!(load_with_env("DAILY_REPORT_ENABLED", "true").daily_report.enabled, "DAILY_REPORT_ENABLED=true");
+        assert!(!load_with_env("DAILY_REPORT_ENABLED", "false").daily_report.enabled, "DAILY_REPORT_ENABLED=false");
+        assert_eq!(load_with_env("DAILY_REPORT_TIME", "pin-DAILY_REPORT_TIME").daily_report.time, "pin-DAILY_REPORT_TIME", "DAILY_REPORT_TIME");
+        assert_eq!(load_with_env("DAILY_REPORT_TO", "pin-DAILY_REPORT_TO").daily_report.to, "pin-DAILY_REPORT_TO", "DAILY_REPORT_TO");
+        assert_eq!(load_with_env("DAILY_REPORT_WEBHOOK_URL", "pin-DAILY_REPORT_WEBHOOK_URL").daily_report.webhook_url, "pin-DAILY_REPORT_WEBHOOK_URL", "DAILY_REPORT_WEBHOOK_URL");
+        assert_eq!(load_with_env("DAILY_REPORT_WEBHOOK_TOKEN", "pin-DAILY_REPORT_WEBHOOK_TOKEN").daily_report.webhook_token, "pin-DAILY_REPORT_WEBHOOK_TOKEN", "DAILY_REPORT_WEBHOOK_TOKEN");
+        assert_eq!(load_with_env("DAILY_REPORT_AZURE_BLOB_CONTAINER_URL", "pin-DAILY_REPORT_AZURE_BLOB_CONTAINER_URL").daily_report.azure_blob_container_url, "pin-DAILY_REPORT_AZURE_BLOB_CONTAINER_URL", "DAILY_REPORT_AZURE_BLOB_CONTAINER_URL");
+        assert_eq!(load_with_env("ZIZMOR_BINARY", "pin-ZIZMOR_BINARY").security.zizmor.binary, "pin-ZIZMOR_BINARY", "ZIZMOR_BINARY");
+        assert!(load_with_env("SEMGREP_ENABLED", "true").security.semgrep.enabled, "SEMGREP_ENABLED=true");
+        assert!(!load_with_env("SEMGREP_ENABLED", "false").security.semgrep.enabled, "SEMGREP_ENABLED=false");
+        assert_eq!(load_with_env("SEMGREP_BINARY", "pin-SEMGREP_BINARY").security.semgrep.binary, "pin-SEMGREP_BINARY", "SEMGREP_BINARY");
+        assert_eq!(load_with_env("SEMGREP_CONFIG", "pin-SEMGREP_CONFIG").security.semgrep.config, "pin-SEMGREP_CONFIG", "SEMGREP_CONFIG");
+        assert!(load_with_env("BEARER_ENABLED", "true").security.bearer.enabled, "BEARER_ENABLED=true");
+        assert!(!load_with_env("BEARER_ENABLED", "false").security.bearer.enabled, "BEARER_ENABLED=false");
+        assert_eq!(load_with_env("BEARER_BINARY", "pin-BEARER_BINARY").security.bearer.binary, "pin-BEARER_BINARY", "BEARER_BINARY");
+        assert!(load_with_env("GUARDDOG_ENABLED", "true").security.guarddog.enabled, "GUARDDOG_ENABLED=true");
+        assert!(!load_with_env("GUARDDOG_ENABLED", "false").security.guarddog.enabled, "GUARDDOG_ENABLED=false");
+        assert_eq!(load_with_env("GUARDDOG_BINARY", "pin-GUARDDOG_BINARY").security.guarddog.binary, "pin-GUARDDOG_BINARY", "GUARDDOG_BINARY");
+        assert!(load_with_env("CODEQL_ENABLED", "true").security.codeql.enabled, "CODEQL_ENABLED=true");
+        assert!(!load_with_env("CODEQL_ENABLED", "false").security.codeql.enabled, "CODEQL_ENABLED=false");
+        assert_eq!(load_with_env("CODEQL_BINARY", "pin-CODEQL_BINARY").security.codeql.binary, "pin-CODEQL_BINARY", "CODEQL_BINARY");
+        assert_eq!(load_with_env("CODEQL_THREADS", "7").security.codeql.threads.to_string(), "7", "CODEQL_THREADS");
+        assert_eq!(load_with_env("CODEQL_RAM_MB", "7").security.codeql.ram_mb.to_string(), "7", "CODEQL_RAM_MB");
+        assert_eq!(load_with_env("CODEQL_TIMEOUT_MS", "7").security.codeql.timeout_ms.to_string(), "7", "CODEQL_TIMEOUT_MS");
+        assert_eq!(load_with_env("CODEQL_REVIEW_CADENCE_DAYS", "7").security.codeql.review_cadence_days.to_string(), "7", "CODEQL_REVIEW_CADENCE_DAYS");
+        assert!(load_with_env("DEAD_CODE_ENABLED", "true").code_intelligence.dead_code.enabled, "DEAD_CODE_ENABLED=true");
+        assert!(!load_with_env("DEAD_CODE_ENABLED", "false").code_intelligence.dead_code.enabled, "DEAD_CODE_ENABLED=false");
+        assert!(load_with_env("HEALTH_ENABLED", "true").code_intelligence.health.enabled, "HEALTH_ENABLED=true");
+        assert!(!load_with_env("HEALTH_ENABLED", "false").code_intelligence.health.enabled, "HEALTH_ENABLED=false");
+        assert!(load_with_env("CSS_DEAD_CODE_ENABLED", "true").code_intelligence.css_dead_code.enabled, "CSS_DEAD_CODE_ENABLED=true");
+        assert!(!load_with_env("CSS_DEAD_CODE_ENABLED", "false").code_intelligence.css_dead_code.enabled, "CSS_DEAD_CODE_ENABLED=false");
+        assert!(load_with_env("ARCHITECTURE_BOUNDARIES_ENABLED", "true").architecture.boundaries.enabled, "ARCHITECTURE_BOUNDARIES_ENABLED=true");
+        assert!(!load_with_env("ARCHITECTURE_BOUNDARIES_ENABLED", "false").architecture.boundaries.enabled, "ARCHITECTURE_BOUNDARIES_ENABLED=false");
+        assert_eq!(load_with_env("ARCHITECTURE_BOUNDARIES_PRESET", "pin-ARCHITECTURE_BOUNDARIES_PRESET").architecture.boundaries.preset, "pin-ARCHITECTURE_BOUNDARIES_PRESET", "ARCHITECTURE_BOUNDARIES_PRESET");
+        assert!(load_with_env("IGNOREFILE_ENABLED", "true").ignore_file.enabled, "IGNOREFILE_ENABLED=true");
+        assert!(!load_with_env("IGNOREFILE_ENABLED", "false").ignore_file.enabled, "IGNOREFILE_ENABLED=false");
+        assert!(load_with_env("TRIVY_IMAGE_ENABLED", "true").security.trivy_image.enabled, "TRIVY_IMAGE_ENABLED=true");
+        assert!(!load_with_env("TRIVY_IMAGE_ENABLED", "false").security.trivy_image.enabled, "TRIVY_IMAGE_ENABLED=false");
+        assert_eq!(load_with_env("TRIVY_IMAGE_SEVERITY", "pin-TRIVY_IMAGE_SEVERITY").security.trivy_image.severity_threshold, "pin-TRIVY_IMAGE_SEVERITY", "TRIVY_IMAGE_SEVERITY");
+        assert_eq!(load_with_env("TRIVY_IMAGE_BUILD_TIMEOUT_MS", "7").security.trivy_image.build_timeout_ms.to_string(), "7", "TRIVY_IMAGE_BUILD_TIMEOUT_MS");
+        assert!(load_with_env("AI_AUTO_JUSTIFY_ENABLED", "true").ai_auto_justify.enabled, "AI_AUTO_JUSTIFY_ENABLED=true");
+        assert!(!load_with_env("AI_AUTO_JUSTIFY_ENABLED", "false").ai_auto_justify.enabled, "AI_AUTO_JUSTIFY_ENABLED=false");
+        assert!(load_with_env("POSTURE_ENABLED", "true").compliance.posture.enabled, "POSTURE_ENABLED=true");
+        assert!(!load_with_env("POSTURE_ENABLED", "false").compliance.posture.enabled, "POSTURE_ENABLED=false");
+        assert_eq!(load_with_env("POSTURE_RULESET", "pin-POSTURE_RULESET").compliance.posture.ruleset, "pin-POSTURE_RULESET", "POSTURE_RULESET");
+        assert!(load_with_env("EU_AI_ACT_DOCS_ENABLED", "true").compliance.eu_ai_act_documents.enabled, "EU_AI_ACT_DOCS_ENABLED=true");
+        assert!(!load_with_env("EU_AI_ACT_DOCS_ENABLED", "false").compliance.eu_ai_act_documents.enabled, "EU_AI_ACT_DOCS_ENABLED=false");
+        assert!(load_with_env("EU_AI_ACT_REPORT_AS_FINDINGS", "true").compliance.eu_ai_act.report_as_findings, "EU_AI_ACT_REPORT_AS_FINDINGS=true");
+        assert!(!load_with_env("EU_AI_ACT_REPORT_AS_FINDINGS", "false").compliance.eu_ai_act.report_as_findings, "EU_AI_ACT_REPORT_AS_FINDINGS=false");
+        assert!(load_with_env("JSCPD_ENABLED", "true").metrics.jscpd.enabled, "JSCPD_ENABLED=true");
+        assert!(!load_with_env("JSCPD_ENABLED", "false").metrics.jscpd.enabled, "JSCPD_ENABLED=false");
+        assert_eq!(load_with_env("JSCPD_BINARY", "pin-JSCPD_BINARY").metrics.jscpd.binary, "pin-JSCPD_BINARY", "JSCPD_BINARY");
+        assert_eq!(load_with_env("JSCPD_MIN_LINES", "7").metrics.jscpd.min_lines.to_string(), "7", "JSCPD_MIN_LINES");
+        assert_eq!(load_with_env("JSCPD_MIN_TOKENS", "7").metrics.jscpd.min_tokens.to_string(), "7", "JSCPD_MIN_TOKENS");
+        assert!(load_with_env("GOCLOC_ENABLED", "true").metrics.gocloc.enabled, "GOCLOC_ENABLED=true");
+        assert!(!load_with_env("GOCLOC_ENABLED", "false").metrics.gocloc.enabled, "GOCLOC_ENABLED=false");
+        assert_eq!(load_with_env("GOCLOC_BINARY", "pin-GOCLOC_BINARY").metrics.gocloc.binary, "pin-GOCLOC_BINARY", "GOCLOC_BINARY");
+        assert!(load_with_env("FILE_SIZE_ENABLED", "true").metrics.file_size.enabled, "FILE_SIZE_ENABLED=true");
+        assert!(!load_with_env("FILE_SIZE_ENABLED", "false").metrics.file_size.enabled, "FILE_SIZE_ENABLED=false");
+        assert_eq!(load_with_env("FILE_SIZE_MAX_LINES", "7").metrics.file_size.max_lines.to_string(), "7", "FILE_SIZE_MAX_LINES");
+        assert!(load_with_env("SPECTRAL_ENABLED", "true").api.spectral.enabled, "SPECTRAL_ENABLED=true");
+        assert!(!load_with_env("SPECTRAL_ENABLED", "false").api.spectral.enabled, "SPECTRAL_ENABLED=false");
+        assert_eq!(load_with_env("SPECTRAL_BINARY", "pin-SPECTRAL_BINARY").api.spectral.binary, "pin-SPECTRAL_BINARY", "SPECTRAL_BINARY");
+        assert_eq!(load_with_env("SPECTRAL_RULESET", "pin-SPECTRAL_RULESET").api.spectral.ruleset, "pin-SPECTRAL_RULESET", "SPECTRAL_RULESET");
+        assert!(load_with_env("OASDIFF_ENABLED", "true").api.oasdiff.enabled, "OASDIFF_ENABLED=true");
+        assert!(!load_with_env("OASDIFF_ENABLED", "false").api.oasdiff.enabled, "OASDIFF_ENABLED=false");
+        assert_eq!(load_with_env("OASDIFF_BINARY", "pin-OASDIFF_BINARY").api.oasdiff.binary, "pin-OASDIFF_BINARY", "OASDIFF_BINARY");
+        assert!(load_with_env("SYFT_ENABLED", "true").sbom.syft.enabled, "SYFT_ENABLED=true");
+        assert!(!load_with_env("SYFT_ENABLED", "false").sbom.syft.enabled, "SYFT_ENABLED=false");
+        assert_eq!(load_with_env("SYFT_BINARY", "pin-SYFT_BINARY").sbom.syft.binary, "pin-SYFT_BINARY", "SYFT_BINARY");
+        assert!(load_with_env("MCP_AUTOSTART", "true").mcp.auto_start, "MCP_AUTOSTART=true");
+        assert!(!load_with_env("MCP_AUTOSTART", "false").mcp.auto_start, "MCP_AUTOSTART=false");
+        assert_eq!(load_with_env("MCP_HTTP_PORT", "7").mcp.http_port.to_string(), "7", "MCP_HTTP_PORT");
+        assert_eq!(load_with_env("LLM_PROVIDER", "pin-LLM_PROVIDER").llm.provider, "pin-LLM_PROVIDER", "LLM_PROVIDER");
+        assert_eq!(load_with_env("LLM_SCAN_URL", "pin-LLM_SCAN_URL").llm.url, "pin-LLM_SCAN_URL", "LLM_SCAN_URL");
+        assert_eq!(load_with_env("LLM_SCAN_MODEL", "pin-LLM_SCAN_MODEL").llm.model, "pin-LLM_SCAN_MODEL", "LLM_SCAN_MODEL");
+        assert_eq!(load_with_env("LLM_SCAN_MODE", "pin-LLM_SCAN_MODE").llm.mode, "pin-LLM_SCAN_MODE", "LLM_SCAN_MODE");
+        assert_eq!(load_with_env("LLM_MAX_FILES", "7").llm.max_files.to_string(), "7", "LLM_MAX_FILES");
+        assert_eq!(load_with_env("LLM_CHUNK_CHARS", "7").llm.chunk_chars.to_string(), "7", "LLM_CHUNK_CHARS");
+        assert!(load_with_env("LLM_DEEP_SCAN_ENABLED", "true").llm.deep_scan_enabled, "LLM_DEEP_SCAN_ENABLED=true");
+        assert!(!load_with_env("LLM_DEEP_SCAN_ENABLED", "false").llm.deep_scan_enabled, "LLM_DEEP_SCAN_ENABLED=false");
+        assert_eq!(load_with_env("LLM_ADVISORY_LEVEL", "pin-LLM_ADVISORY_LEVEL").llm.advisory_level, "pin-LLM_ADVISORY_LEVEL", "LLM_ADVISORY_LEVEL");
+        assert_eq!(load_with_env("OPENAI_API_KEY", "pin-OPENAI_API_KEY").llm.openai.api_key, "pin-OPENAI_API_KEY", "OPENAI_API_KEY");
+        assert_eq!(load_with_env("OPENAI_BASE_URL", "pin-OPENAI_BASE_URL").llm.openai.base_url, "pin-OPENAI_BASE_URL", "OPENAI_BASE_URL");
+        assert_eq!(load_with_env("OPENAI_MODEL", "pin-OPENAI_MODEL").llm.openai.model, "pin-OPENAI_MODEL", "OPENAI_MODEL");
+        assert_eq!(load_with_env("ANTHROPIC_API_KEY", "pin-ANTHROPIC_API_KEY").llm.anthropic.api_key, "pin-ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+        assert_eq!(load_with_env("ANTHROPIC_BASE_URL", "pin-ANTHROPIC_BASE_URL").llm.anthropic.base_url, "pin-ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL");
+        assert_eq!(load_with_env("ANTHROPIC_MODEL", "pin-ANTHROPIC_MODEL").llm.anthropic.model, "pin-ANTHROPIC_MODEL", "ANTHROPIC_MODEL");
+        assert_eq!(load_with_env("AZURE_FOUNDRY_API_KEY", "pin-AZURE_FOUNDRY_API_KEY").llm.azure_foundry.api_key, "pin-AZURE_FOUNDRY_API_KEY", "AZURE_FOUNDRY_API_KEY");
+        assert_eq!(load_with_env("AZURE_FOUNDRY_ENDPOINT", "pin-AZURE_FOUNDRY_ENDPOINT").llm.azure_foundry.endpoint, "pin-AZURE_FOUNDRY_ENDPOINT", "AZURE_FOUNDRY_ENDPOINT");
+        assert_eq!(load_with_env("AZURE_FOUNDRY_DEPLOYMENT", "pin-AZURE_FOUNDRY_DEPLOYMENT").llm.azure_foundry.deployment, "pin-AZURE_FOUNDRY_DEPLOYMENT", "AZURE_FOUNDRY_DEPLOYMENT");
+        assert_eq!(load_with_env("AZURE_FOUNDRY_API_VERSION", "pin-AZURE_FOUNDRY_API_VERSION").llm.azure_foundry.api_version, "pin-AZURE_FOUNDRY_API_VERSION", "AZURE_FOUNDRY_API_VERSION");
+        assert_eq!(load_with_env("SECRETS_KNOWN_PUBLIC_KEY_PATTERNS", " one , two ,, three ").security.secrets.known_public_key_patterns, vec!["one", "two", "three"], "SECRETS_KNOWN_PUBLIC_KEY_PATTERNS: comma list, trimmed, empties dropped");
+        assert_eq!(load_with_env("SECURITY_EXCLUDE_PATHS", " one , two ,, three ").security.exclude_paths, vec!["one", "two", "three"], "SECURITY_EXCLUDE_PATHS: comma list, trimmed, empties dropped");
+        assert_eq!(load_with_env("OVERRIDE_APPROVAL_APPROVER_EMAILS", " one , two ,, three ").security.override_approval.approver_emails, vec!["one", "two", "three"], "OVERRIDE_APPROVAL_APPROVER_EMAILS: comma list, trimmed, empties dropped");
+        assert_eq!(load_with_env("CODEQL_LANGUAGES", " one , two ,, three ").security.codeql.languages, vec!["one", "two", "three"], "CODEQL_LANGUAGES: comma list, trimmed, empties dropped");
+        assert_eq!(load_with_env("AI_AUTO_JUSTIFY_CATEGORIES", " one , two ,, three ").ai_auto_justify.categories, vec!["one", "two", "three"], "AI_AUTO_JUSTIFY_CATEGORIES: comma list, trimmed, empties dropped");
+        assert_eq!(load_with_env("JSCPD_IGNORE", " one , two ,, three ").metrics.jscpd.ignore_patterns, vec!["one", "two", "three"], "JSCPD_IGNORE: comma list, trimmed, empties dropped");
+    }
+
+    #[test]
+    fn the_env_override_table_covers_every_direct_override_in_the_source() {
+        // Guards this table itself: a new `if let Some(v) = env_*("X") { merged.a.b = v; }`
+        // line must get a row above (regenerate or add it by hand).
+        let src = include_str!("lib.rs");
+        let start = src.find("fn apply_env_overrides").unwrap();
+        let body = &src[start..];
+        let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
+        assert_eq!(direct, 128, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+    }
 }

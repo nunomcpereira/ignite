@@ -256,4 +256,65 @@ mod tests {
         assert_eq!(found.payload_hash, "hash-abc");
         assert_eq!(found.legacy_job_id.as_deref(), Some("job-1"));
     }
+
+    // ---- characterization: the ordering rules callers depend on today.
+
+    #[test]
+    fn finish_project_never_overwrites_a_precise_terminal_state() {
+        // Regression pin: finish_project maps status "success" to "published"
+        // when nothing more precise exists. Callers transition to the precise
+        // terminal state *first*, so that fallback must never clobber it.
+        let (db, _dir) = open_test_db();
+        for (repo, terminal) in [("completed-repo", Completed), ("blocked-repo", Blocked), ("failed-repo", Failed)] {
+            let pid = db.create_project(&format!("job-{repo}"), "acme", repo, false, "ui", None).unwrap();
+            let run = db.get_scan_run_for_legacy_project(pid).unwrap().id;
+            db.transition_scan_run(run, Scanning).unwrap();
+            db.transition_scan_run(run, terminal).unwrap();
+            db.finish_project("success", None, None, None, pid);
+            assert_eq!(db.get_scan_run_lifecycle(run).as_deref(), Some(terminal.as_str()), "{repo}");
+        }
+    }
+
+    #[test]
+    fn without_a_precise_state_finish_project_falls_back_to_a_status_mapping() {
+        // The naive mapping the precise transitions exist to bypass.
+        let (db, _dir) = open_test_db();
+        let ok = db.create_project("job-ok", "acme", "ok-repo", false, "ui", None).unwrap();
+        db.finish_project("success", None, None, None, ok);
+        assert_eq!(db.get_scan_run_lifecycle(db.get_scan_run_for_legacy_project(ok).unwrap().id).as_deref(), Some("published"));
+
+        let bad = db.create_project("job-bad", "acme", "bad-repo", false, "ui", None).unwrap();
+        db.finish_project("failed", Some("boom"), None, None, bad);
+        assert_eq!(db.get_scan_run_lifecycle(db.get_scan_run_for_legacy_project(bad).unwrap().id).as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn every_accepted_transition_is_recorded_in_order_and_a_rejected_one_is_not() {
+        let (db, _dir) = open_test_db();
+        let run = run_id_for(&db, "job-history", "acme", "history-repo");
+        for to in [Scanning, AwaitingReview, Approved, Publishing, Published] {
+            db.transition_scan_run(run, to).unwrap();
+        }
+        assert!(db.transition_scan_run(run, Scanning).is_err(), "a terminal run cannot move again");
+        let conn = db.conn.lock();
+        let mut stmt = conn.prepare("SELECT from_state, to_state FROM scan_run_transitions WHERE run_id = ? ORDER BY id").unwrap();
+        let rows: Vec<(String, String)> = stmt.query_map([run], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
+        let expected: Vec<(String, String)> = [("queued", "scanning"), ("scanning", "awaiting_review"), ("awaiting_review", "approved"), ("approved", "publishing"), ("publishing", "published")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        assert_eq!(rows, expected);
+    }
+
+    #[test]
+    fn a_dry_run_style_finish_leaves_completed_not_published() {
+        // validate-all and dry-run onboard: Scanning -> Completed, then finish_project("success").
+        let (db, _dir) = open_test_db();
+        let pid = db.create_project("job-dry", "acme", "dry-repo", false, "api", None).unwrap();
+        let run = db.get_scan_run_for_legacy_project(pid).unwrap().id;
+        db.transition_scan_run(run, Scanning).unwrap();
+        db.transition_scan_run(run, Completed).unwrap();
+        db.finish_project("success", None, None, None, pid);
+        assert_eq!(db.get_scan_run_lifecycle(run).as_deref(), Some("completed"));
+    }
 }

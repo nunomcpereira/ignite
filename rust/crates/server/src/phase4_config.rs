@@ -200,4 +200,116 @@ mod tests {
         assert_eq!(phase4.boundaries.zones.len(), 1);
         assert_eq!(phase4.boundaries.zones[0].name, "api");
     }
+
+    // ---- characterization: pins how each config value reaches its check. The
+    // ---- bridge is a hand-written field-by-field copy; deepening it must keep
+    // ---- every row of this table true.
+
+    type SetFlag = fn(&mut ignite_config::Config, bool);
+    type GetFlag = fn(&ignite_phase4_orchestrator::Phase4Config) -> bool;
+
+    fn flag_table() -> Vec<(&'static str, SetFlag, GetFlag)> {
+        vec![
+            ("security.gitleaks.enabled", |c, v| c.security.gitleaks.enabled = v, |p| p.secrets.gitleaks_enabled),
+            ("security.gitleaks.scanHistory", |c, v| c.security.gitleaks.scan_history = v, |p| p.secrets.gitleaks_scan_history),
+            ("security.secretVerification.enabled", |c, v| c.security.secret_verification.enabled = v, |p| p.secret_verification.enabled),
+            ("llm.deepScanEnabled", |c, v| c.llm.deep_scan_enabled = v, |p| p.llm.as_ref().unwrap().enabled),
+            ("security.trivy.enabled", |c, v| c.security.trivy.enabled = v, |p| p.iac.trivy_enabled),
+            ("security.checkov.enabled", |c, v| c.security.checkov.enabled = v, |p| p.iac.checkov_enabled),
+            ("security.hadolint.enabled", |c, v| c.security.hadolint.enabled = v, |p| p.iac.hadolint_enabled),
+            ("security.zizmor.enabled", |c, v| c.security.zizmor.enabled = v, |p| p.gha_security.enabled),
+            ("security.trivyImage.enabled", |c, v| c.security.trivy_image.enabled = v, |p| p.container_image_vulnerabilities.enabled),
+            ("sbom.syft.enabled", |c, v| c.sbom.syft.enabled = v, |p| p.sbom_enabled),
+            ("security.cosign.enabled", |c, v| c.security.cosign.enabled = v, |p| p.image_provenance.enabled),
+            ("security.semgrep.enabled", |c, v| c.security.semgrep.enabled = v, |p| p.semantic_sast.enabled),
+            ("security.bearer.enabled", |c, v| c.security.bearer.enabled = v, |p| p.pii_data_flow.enabled),
+            ("metrics.jscpd.enabled", |c, v| c.metrics.jscpd.enabled = v, |p| p.code_duplication.enabled),
+            ("metrics.fileSize.enabled", |c, v| c.metrics.file_size.enabled = v, |p| p.file_encapsulation.enabled),
+            ("metrics.gocloc.enabled", |c, v| c.metrics.gocloc.enabled = v, |p| p.loc_metrics_enabled),
+            ("api.spectral.enabled", |c, v| c.api.spectral.enabled = v, |p| p.api_schema.enabled),
+            ("api.oasdiff.enabled", |c, v| c.api.oasdiff.enabled = v, |p| p.api_schema_drift.enabled),
+            ("security.guarddog.enabled", |c, v| c.security.guarddog.enabled = v, |p| p.malicious_dependencies.enabled),
+            ("security.picklescan.enabled", |c, v| c.security.picklescan.enabled = v, |p| p.model_artifact_security.enabled),
+            ("security.packageHallucination.enabled", |c, v| c.security.package_hallucination.enabled = v, |p| p.package_hallucination_enabled),
+            ("compliance.posture.enabled", |c, v| c.compliance.posture.enabled = v, |p| p.feature_posture.enabled),
+            ("compliance.euAiActDocuments.enabled", |c, v| c.compliance.eu_ai_act_documents.enabled = v, |p| p.eu_ai_act_documents_enabled),
+            ("compliance.euAiAct.reportAsFindings", |c, v| c.compliance.eu_ai_act.report_as_findings = v, |p| p.eu_ai_act_report_as_findings),
+            ("codeIntelligence.deadCode.enabled", |c, v| c.code_intelligence.dead_code.enabled = v, |p| p.dead_code.enabled),
+            ("codeIntelligence.health.enabled", |c, v| c.code_intelligence.health.enabled = v, |p| p.complexity_health.enabled),
+            ("codeIntelligence.cssDeadCode.enabled", |c, v| c.code_intelligence.css_dead_code.enabled = v, |p| p.css_dead_code.enabled),
+            ("architecture.boundaries.enabled", |c, v| c.architecture.boundaries.enabled = v, |p| p.boundaries.enabled),
+            ("ignoreFile.enabled", |c, v| c.ignore_file.enabled = v, |p| p.igniteignore_enabled),
+            ("security.codeql.enabled", |c, v| c.security.codeql.enabled = v, |p| p.codeql.enabled),
+        ]
+    }
+
+    #[test]
+    fn every_enable_flag_reaches_its_check_in_both_directions() {
+        for (name, set, get) in flag_table() {
+            for value in [true, false] {
+                let mut cfg = ignite_config::Config::default();
+                set(&mut cfg, value);
+                let p = from_config(&cfg, "acme", "widgets", None, false, None);
+                assert_eq!(get(&p), value, "{name} = {value} did not reach its check");
+            }
+        }
+    }
+
+    #[test]
+    fn identity_and_mode_pass_straight_through() {
+        let cfg = ignite_config::Config::default();
+        let p = from_config(&cfg, "acme", "widgets", Some(42), true, None);
+        assert_eq!((p.org.as_str(), p.repo.as_str(), p.project_id, p.fast), ("acme", "widgets", Some(42), true));
+        let p = from_config(&cfg, "o", "r", None, false, None);
+        assert_eq!((p.project_id, p.fast), (None, false));
+    }
+
+    #[test]
+    fn tunable_values_reach_their_check_unchanged() {
+        let mut cfg = ignite_config::Config::default();
+        cfg.security.semgrep.config = "p/pinned".to_string();
+        cfg.security.secret_verification.timeout_ms = 1234;
+        cfg.security.cosign.identity_regexp = "id-re".to_string();
+        cfg.security.cosign.issuer_regexp = "iss-re".to_string();
+        cfg.security.trivy_image.severity_threshold = "CRITICAL".to_string();
+        cfg.metrics.jscpd.min_lines = 33;
+        cfg.metrics.jscpd.min_tokens = 77;
+        cfg.metrics.file_size.max_lines = 321;
+        cfg.api.spectral.ruleset = "rules.yaml".to_string();
+        cfg.compliance.posture.ruleset = "posture.yaml".to_string();
+        cfg.security.codeql.languages = vec!["go".to_string()];
+        cfg.security.codeql.threads = 3;
+        let p = from_config(&cfg, "acme", "widgets", None, false, None);
+        assert_eq!(p.semantic_sast.semgrep_config, "p/pinned");
+        assert_eq!(p.secret_verification.timeout_ms, 1234);
+        assert_eq!((p.image_provenance.identity_regexp.as_str(), p.image_provenance.issuer_regexp.as_str()), ("id-re", "iss-re"));
+        assert_eq!(p.container_image_vulnerabilities.severity_threshold, "CRITICAL");
+        assert_eq!((p.code_duplication.min_lines, p.code_duplication.min_tokens), (33, 77));
+        assert_eq!(p.file_encapsulation.max_lines, 321);
+        assert_eq!(p.api_schema.ruleset, "rules.yaml");
+        assert_eq!(p.feature_posture.ruleset, "posture.yaml");
+        assert_eq!(p.codeql.languages, vec!["go".to_string()]);
+        assert_eq!(p.codeql.threads, 3);
+    }
+
+    #[test]
+    fn an_empty_gitleaks_config_path_means_none_and_an_invalid_public_key_pattern_is_dropped() {
+        let mut cfg = ignite_config::Config::default();
+        cfg.security.gitleaks.config_path = String::new();
+        assert!(from_config(&cfg, "a", "b", None, false, None).secrets.gitleaks_config_path.is_none());
+        cfg.security.gitleaks.config_path = "/etc/gitleaks.toml".to_string();
+        assert_eq!(from_config(&cfg, "a", "b", None, false, None).secrets.gitleaks_config_path, Some(std::path::PathBuf::from("/etc/gitleaks.toml")));
+        cfg.security.secrets.known_public_key_patterns = vec!["AIza[0-9A-Za-z_-]{20,}".to_string(), "(unclosed".to_string()];
+        let p = from_config(&cfg, "a", "b", None, false, None);
+        assert_eq!(p.secrets.known_public_key_patterns.len(), 1, "a bad regex is skipped, never a panic");
+    }
+
+    #[test]
+    fn the_llm_advisory_level_is_warning_or_info_and_nothing_else() {
+        let mut cfg = ignite_config::Config::default();
+        cfg.llm.advisory_level = "warning".to_string();
+        assert_eq!(from_config(&cfg, "a", "b", None, false, None).llm.unwrap().advisory_level, "warning");
+        cfg.llm.advisory_level = "anything-else".to_string();
+        assert_eq!(from_config(&cfg, "a", "b", None, false, None).llm.unwrap().advisory_level, "info");
+    }
 }

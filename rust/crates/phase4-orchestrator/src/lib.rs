@@ -1378,4 +1378,101 @@ mod tests {
         assert!(output.documents.provenance.is_none());
         ignite_fs_utils::invalidate_walk_cache(root);
     }
+
+    // ---- characterization: pins what every Phase 4 pass reports as coverage, so
+    // ---- giving checks a shared shape can't drop or rename one.
+
+    const ALL_COVERAGE_IDS: [&str; 27] = [
+        "apiSchema", "apiSchemaDrift", "boundaries", "codeql", "cssDeadCode", "deadCode", "duplication", "euAiActDocuments",
+        "fileEncapsulation", "ghaSecurity", "governance", "health", "igniteIgnore", "iac", "imageProvenance", "imageVulnerabilities",
+        "llm", "locMetrics", "maliciousDependencies", "modelArtifactSecurity", "packageHallucination", "pii", "posture",
+        "provenance", "sbom", "secrets", "semanticSast",
+    ];
+
+    async fn coverage_for(config: Phase4Config) -> Vec<ignite_policy::CheckCoverage> {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("app.js"), "console.log(1);\n").unwrap();
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let runner = ToolRunner::new(StdHashMap::new());
+        let checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+        let output = run_phase4_checks(dir.path(), &runner, &store, &config, &checker, &|_m: &str| {}).await.unwrap();
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+        output.coverage
+    }
+
+    fn sorted_ids(coverage: &[ignite_policy::CheckCoverage]) -> Vec<String> {
+        let mut ids: Vec<String> = coverage.iter().map(|c| c.check_id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_full_pass_reports_exactly_these_check_ids_once_each() {
+        let coverage = coverage_for(test_config(None)).await;
+        let mut expected: Vec<String> = ALL_COVERAGE_IDS.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(sorted_ids(&coverage), expected, "a check was added, renamed or dropped: update ALL_COVERAGE_IDS deliberately");
+    }
+
+    #[tokio::test]
+    async fn a_fast_pass_reports_the_same_ids_with_the_skipped_ones_marked_disabled_by_fast_mode() {
+        let mut config = test_config(None);
+        config.fast = true;
+        let coverage = coverage_for(config).await;
+        let mut expected: Vec<String> = ALL_COVERAGE_IDS.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(sorted_ids(&coverage), expected);
+        for c in &coverage {
+            if FULL_MODE_ONLY_CHECKS.contains(&c.check_id.as_str()) {
+                assert_eq!(c.outcome, ignite_policy::CheckOutcome::Disabled, "{}", c.check_id);
+                assert!(c.reason.as_deref().unwrap_or("").contains("fast mode"), "{} should say why it was skipped: {:?}", c.check_id, c.reason);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn every_check_that_did_not_complete_says_why() {
+        for fast in [false, true] {
+            let mut config = test_config(None);
+            config.fast = fast;
+            for c in coverage_for(config).await {
+                if c.outcome != ignite_policy::CheckOutcome::Completed {
+                    assert!(c.reason.as_deref().map(|r| !r.is_empty()).unwrap_or(false), "fast={fast}: {} is {:?} with no reason", c.check_id, c.outcome);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_full_mode_only_list_is_the_fast_mode_complement() {
+        assert_eq!(FULL_MODE_ONLY_CHECKS.len(), ALL_COVERAGE_IDS.len() - 4, "27 checks, 4 of which (secrets, governance, semanticSast, fileEncapsulation) run in fast mode");
+        for fast_task in ["secrets", "governance", "semanticSast", "fileEncapsulation"] {
+            assert!(!FULL_MODE_ONLY_CHECKS.contains(&fast_task), "{fast_task}");
+        }
+    }
+
+    #[test]
+    fn engine_strings_map_onto_coverage_outcomes_exactly_like_this() {
+        use ignite_policy::CheckOutcome::*;
+        let cases: [(&str, ignite_policy::CheckOutcome, bool); 7] = [
+            ("disabled", Disabled, false),
+            ("unavailable", Unavailable, false),
+            ("failed", Failed, false),
+            ("error", Failed, false),
+            ("timed_out", TimedOut, false),
+            ("unconfigured", NotApplicable, false),
+            ("fallback", Completed, true),
+        ];
+        for (engine, outcome, is_fallback) in cases {
+            let c = coverage_for_engine("x", engine, 3);
+            assert_eq!(c.outcome, outcome, "{engine}");
+            assert_eq!(c.is_fallback, is_fallback, "{engine}");
+        }
+        let real = coverage_for_engine("x", "semgrep", 3);
+        assert_eq!(real.outcome, Completed);
+        assert_eq!(real.engine.as_deref(), Some("semgrep"));
+        assert!(!real.is_fallback);
+        assert_eq!(real.scope.as_deref(), Some("3 finding(s)"));
+    }
 }
