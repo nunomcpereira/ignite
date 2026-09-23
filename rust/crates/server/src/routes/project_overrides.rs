@@ -23,9 +23,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use ignite_db_store::IssueRow;
-use ignite_override_engine::{is_critical_score, partition_for_dual_custody, validate_overrides, Issue, Severity, SubmittedOverride};
+use ignite_override_engine::{Issue, Severity, SubmittedOverride};
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 fn issue_row_to_issue(r: &IssueRow) -> Issue {
@@ -83,54 +82,17 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "No overrides submitted." }))).into_response();
     }
 
-    let result = validate_overrides(&still_open, &requested);
-    let applied: Vec<(&Issue, String)> = result.applied.iter().map(|(i, j)| (*i, j.clone())).collect();
-    if applied.is_empty() {
+    let plan = ignite_pipeline_core::plan_overrides(&state.db, &still_open, &requested, &ignite_pipeline_core::PlanOverridesRequest { project_id, dual_custody_enabled: state.config.security.override_approval.enabled });
+    if plan.applied.is_empty() && plan.needs_approval.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "None of the submitted overrides matched a still-open issue on this project.", "issues": issues_json(&issue_rows) }))).into_response();
     }
 
     let actor_email = user.email.clone();
     let actor_name = user.name.clone().unwrap_or_else(|| user.email.clone());
 
-    let (auto_apply, needs_approval): (Vec<_>, Vec<_>) = if state.config.security.override_approval.enabled {
-        let already_approved: HashSet<String> = applied.iter().filter(|(i, _)| state.db.has_approved_override(project_id, &i.id)).map(|(i, _)| i.id.clone()).collect();
-        partition_for_dual_custody(applied.clone(), |i| is_critical_score(i.score), &already_approved)
-    } else {
-        (applied.clone(), Vec::new())
-    };
-
-    for (issue, justification) in &needs_approval {
-        if state.db.has_pending_override(project_id, &issue.id) {
-            continue;
-        }
-        state.db.add_pending_override_with_origin(ignite_db_store::AddOverrideArgs {
-            project_id,
-            job_id: &job_id,
-            phase: 4,
-            issue_id: &issue.id,
-            category: &issue.category,
-            severity: match issue.severity {
-                Severity::Error => "error",
-                Severity::Warning => "warning",
-            },
-            summary: &issue.summary,
-            file: issue.file.as_deref(),
-            line: issue.line,
-            justification,
-            actor_email: &actor_email,
-            actor_name: Some(&actor_name),
-            email_sent: false,
-        }, origin);
-        state.emit_audit_event(
-            ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
-                .actor(actor_email.clone())
-                .repo(&project.org, &project.repo)
-                .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
-        );
-    }
-
-    if !auto_apply.is_empty() {
-        let overrides: Vec<ignite_notifications::AppliedOverride> = auto_apply
+    let email_sent = if !plan.applied.is_empty() {
+        let overrides: Vec<ignite_notifications::AppliedOverride> = plan
+            .applied
             .iter()
             .map(|(issue, justification)| ignite_notifications::AppliedOverride {
                 issue: ignite_notifications::IssueLike {
@@ -156,43 +118,40 @@ async fn add_overrides(project_id: i64, job_id: String, state: Arc<AppState>, us
             actor: ignite_notifications::Actor { name: Some(&actor_name), email: &actor_email },
             applied: &overrides,
         };
-        let email_sent = ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false);
+        ignite_notifications::send_override_notification(&state.config.notifications, &titles, &details).await.map(|r| r.sent).unwrap_or(false)
+    } else {
+        false
+    };
 
-        for (issue, justification) in &auto_apply {
-            state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {
-                project_id,
-                job_id: &job_id,
-                phase: 4,
-                issue_id: &issue.id,
-                category: &issue.category,
-                severity: match issue.severity {
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                },
-                summary: &issue.summary,
-                file: issue.file.as_deref(),
-                line: issue.line,
-                justification,
-                actor_email: &actor_email,
-                actor_name: Some(&actor_name),
-                email_sent,
-            }, origin);
-            state.db.set_issue_status(project_id, &issue.id, "overridden");
-            state.emit_audit_event(
-                ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
-                    .actor(actor_email.clone())
-                    .repo(&project.org, &project.repo)
-                    .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
-            );
-        }
+    ignite_pipeline_core::persist_overrides(
+        &state.db,
+        &plan,
+        &ignite_pipeline_core::PersistOverridesRequest { project_id, job_id: &job_id, phase: 4, actor_email: &actor_email, actor_name: &actor_name, origin, email_sent },
+    );
+
+    for (issue, justification) in &plan.newly_pending {
+        state.emit_audit_event(
+            ignite_audit_log::AuditEvent::new("override.pending_approval", "warning", format!("critical override for {}: {} awaiting a second reviewer's approval", issue.category, issue.summary))
+                .actor(actor_email.clone())
+                .repo(&project.org, &project.repo)
+                .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
+        );
+    }
+    for (issue, justification) in &plan.applied {
+        state.emit_audit_event(
+            ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override approved for {}: {}", issue.category, issue.summary))
+                .actor(actor_email.clone())
+                .repo(&project.org, &project.repo)
+                .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": origin })),
+        );
     }
 
     let updated_rows = state.db.get_project_issues(project_id);
     Json(json!({
         "ok": true,
-        "appliedCount": auto_apply.len(),
-        "pendingApprovalCount": needs_approval.len(),
-        "pendingApproval": !needs_approval.is_empty(),
+        "appliedCount": plan.applied.len(),
+        "pendingApprovalCount": plan.needs_approval.len(),
+        "pendingApproval": !plan.needs_approval.is_empty(),
         "issues": issues_json(&updated_rows),
     }))
     .into_response()
@@ -233,7 +192,7 @@ mod characterization {
     use crate::state;
     use ignite_db_store::IssueInput;
     use parking_lot::Mutex;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     struct Fixture {
         state: Arc<AppState>,
