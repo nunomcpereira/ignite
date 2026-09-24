@@ -220,7 +220,8 @@ fn follows_code(entry: &ExistingEntry, finding: &Finding, code: &str) -> bool {
 /// - A finding already overridden by the server needs nothing — including
 ///   one whose line moved: the server matched it through the entry's
 ///   `# Code:` line, so its old `ID:` is left alone rather than rewritten.
-/// - The file only changes when a still-unresolved finding needs an entry:
+/// - The file only changes when a still-unresolved *blocking* finding needs an entry
+///   (new warnings ride along with the next rewrite instead of causing one):
 ///   either a blank `Acknowledge:` entry for a new finding, or an existing
 ///   justified entry re-keyed to a finding's new `ID:` because its code moved
 ///   and the server didn't match it (e.g. the entry predates `# Code:`).
@@ -247,7 +248,10 @@ pub fn regenerate(existing_text: &str, findings: &[Finding]) -> Option<String> {
             None => String::new(),
         };
         new_blocks.push((finding.id.clone(), build_new_block(finding, &justification)));
-        changed = true;
+        // Only a blocking finding is a reason to rewrite: a new warning can't
+        // fail the push, so on its own it must not change the file either.
+        // It still gets its blank entry whenever the file is written.
+        changed |= finding.severity.eq_ignore_ascii_case("error");
     }
     if !changed {
         return None;
@@ -492,6 +496,18 @@ mod tests {
         assert_eq!(ids, vec!["secret::b.rs::2", "secret::m.rs::5", "secret::z.rs::1"]);
         assert!(!body.contains("# Issue #"));
         assert!(body.ends_with("Acknowledge: zed") && !body.contains("auto-carried-forward"), "carry-forward notes are stripped: {body}");
+    }
+
+    #[test]
+    fn a_new_warning_alone_does_not_rewrite_the_file_but_rides_along_with_the_next_rewrite() {
+        let mut warning = finding("dead-code::x.ts::26::unused-export", "dead-code", "x.ts", 26, "unused export");
+        warning.severity = "warning".to_string();
+        assert!(regenerate(JUSTIFIED_A10, &[warning.clone()]).is_none(), "a passing push with a new warning leaves the file alone");
+
+        let blocking = finding("secret::m.rs::5", "secret", "m.rs", 5, "new one");
+        let body = regenerate(JUSTIFIED_A10, &[warning, blocking]).unwrap();
+        assert!(body.contains("ID: dead-code::x.ts::26::unused-export"));
+        assert!(body.contains("ID: secret::m.rs::5"));
     }
 
     #[test]
