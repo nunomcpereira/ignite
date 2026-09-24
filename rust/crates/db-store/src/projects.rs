@@ -330,7 +330,7 @@ impl DbStore {
                 "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification,
                         o.actor_email, o.actor_name, o.email_sent, o.created_at, o.origin
                  FROM overrides o INNER JOIN projects p ON o.project_id = p.id
-                 WHERE p.org = ? AND p.repo = ? ORDER BY o.created_at DESC",
+                 WHERE p.org = ? AND p.repo = ? ORDER BY o.created_at DESC, o.id DESC",
             ),
             conn.prepare_cached(
                 "SELECT pr.kind, pr.url, pr.branch, pr.files_changed, pr.created_at
@@ -366,7 +366,7 @@ impl DbStore {
                             origin: row.get(13)?,
                         })
                     })
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .map(|rows| distinct_latest_acknowledgments(rows.filter_map(|r| r.ok()).collect()))
                     .unwrap_or_default();
                 let recent_prs = prs_stmt
                     .query_map(params![latest.org, latest.repo], |row| Ok(PullRequestRow { kind: row.get(0)?, url: row.get(1)?, branch: row.get(2)?, files_changed: row.get(3)?, created_at: row.get(4)? }))
@@ -555,4 +555,84 @@ impl DbStore {
         .unwrap()
     }
 
+}
+
+/// One acknowledgment per finding (issue id = category + file + line) for a
+/// repo's history. Every scan records its own override rows (per-scan issue
+/// status, fix PRs and the audit trail depend on them), so the raw list
+/// grows by one per rescan of an already-justified finding. `rows` must be
+/// newest first; the survivor is the latest justification a person or the
+/// repo's acknowledgments file supplied, falling back to an automatic
+/// carried-forward/AI copy (`origin = 'system'`) only when that's all there is.
+pub(crate) fn distinct_latest_acknowledgments(rows: Vec<OverrideRow>) -> Vec<OverrideRow> {
+    let mut order: Vec<String> = Vec::new();
+    let mut chosen: std::collections::HashMap<String, OverrideRow> = std::collections::HashMap::new();
+    for row in rows {
+        match chosen.get(&row.issue_id) {
+            None => {
+                order.push(row.issue_id.clone());
+                chosen.insert(row.issue_id.clone(), row);
+            }
+            Some(current) if current.origin == "system" && row.origin != "system" => {
+                chosen.insert(row.issue_id.clone(), row);
+            }
+            Some(_) => {}
+        }
+    }
+    order.into_iter().filter_map(|id| chosen.remove(&id)).collect()
+}
+
+#[cfg(test)]
+mod distinct_ack_tests {
+    use super::distinct_latest_acknowledgments;
+    use crate::types::OverrideRow;
+
+    fn row(id: i64, issue_id: &str, justification: &str, origin: &str) -> OverrideRow {
+        OverrideRow {
+            id,
+            phase: 4,
+            issue_id: issue_id.to_string(),
+            category: "secret".to_string(),
+            severity: "error".to_string(),
+            summary: "Hardcoded credential".to_string(),
+            file: None,
+            line: None,
+            justification: justification.to_string(),
+            actor_email: "x@example.com".to_string(),
+            actor_name: None,
+            email_sent: false,
+            created_at: format!("2026-09-24 00:00:{id:02}"),
+            origin: origin.to_string(),
+        }
+    }
+
+    #[test]
+    fn rescans_of_one_justified_finding_show_up_once_with_the_latest_justification() {
+        // Newest first, as the query returns them: three rescans + one edit.
+        let rows = vec![
+            row(4, "secret::a::12", "newest wording", "repo_file"),
+            row(3, "secret::a::12", "older wording", "repo_file"),
+            row(2, "secret::a::12", "older wording", "session"),
+            row(1, "secret::b::3", "other finding", "session"),
+        ];
+        let out = distinct_latest_acknowledgments(rows);
+        assert_eq!(out.iter().map(|r| (r.issue_id.as_str(), r.justification.as_str())).collect::<Vec<_>>(), vec![("secret::a::12", "newest wording"), ("secret::b::3", "other finding")]);
+    }
+
+    #[test]
+    fn an_automatic_carried_forward_copy_never_hides_the_supplied_justification() {
+        let rows = vec![
+            row(3, "secret::a::12", "Carried forward from a previous scan of o/r: real reason", "system"),
+            row(2, "secret::a::12", "real reason", "session"),
+        ];
+        let out = distinct_latest_acknowledgments(rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].justification, "real reason");
+    }
+
+    #[test]
+    fn a_finding_with_only_automatic_copies_still_appears() {
+        let out = distinct_latest_acknowledgments(vec![row(1, "secret::a::12", "AI drafted", "system")]);
+        assert_eq!(out.len(), 1);
+    }
 }

@@ -94,12 +94,36 @@ pub fn parse_blocks(text: &str) -> Vec<ExistingEntry> {
         .collect()
 }
 
+/// Collapses duplicate entries for the same finding (same `ID:`, i.e. the
+/// same category + file + line) down to one, keeping the **latest supplied
+/// justification**: writers append newer entries after older ones, so the
+/// last entry with a non-blank justification wins — a later blank entry
+/// never erases an earlier filled-in one. The survivor takes the position
+/// of the id's first occurrence, so the file's order stays stable.
+pub fn dedupe_latest(entries: Vec<ExistingEntry>) -> Vec<ExistingEntry> {
+    let mut order: Vec<String> = Vec::new();
+    let mut chosen: std::collections::HashMap<String, ExistingEntry> = std::collections::HashMap::new();
+    for entry in entries {
+        match chosen.get(&entry.id) {
+            None => {
+                order.push(entry.id.clone());
+                chosen.insert(entry.id.clone(), entry);
+            }
+            Some(_) if !entry.justification.is_empty() => {
+                chosen.insert(entry.id.clone(), entry);
+            }
+            Some(_) => {}
+        }
+    }
+    order.into_iter().filter_map(|id| chosen.remove(&id)).collect()
+}
+
 /// The `overrides` array to send `/api/pipeline/validate-all` — every
 /// already-justified entry, regardless of whether the underlying finding
 /// still exists (a stale entry's `issueId` simply won't match anything
 /// server-side and is silently ignored there, same as before this port).
 pub fn build_overrides(entries: &[ExistingEntry]) -> Vec<Value> {
-    entries
+    dedupe_latest(entries.to_vec())
         .iter()
         .filter(|e| !e.justification.is_empty())
         .map(|e| {
@@ -173,7 +197,7 @@ fn insert_issue_number(block: &str, n: usize) -> String {
 /// - Everything is deduped by id (existing beats freshly-built for the
 ///   same id; first occurrence wins otherwise) and renumbered.
 pub fn regenerate(existing_text: &str, findings: &[Finding]) -> String {
-    let mut existing = parse_blocks(existing_text);
+    let mut existing = dedupe_latest(parse_blocks(existing_text));
 
     let mut new_blocks: Vec<String> = Vec::new();
     for finding in findings {
@@ -298,17 +322,35 @@ fn build_ack_block(ack: &AckInput) -> String {
 /// or `None` when there's nothing to change (no usable acks, or every one
 /// already has a filled-in entry in `existing_text`).
 ///
-/// Unlike [`regenerate`], this never drops an existing entry: it runs
+/// Unlike [`regenerate`], this never drops a finding's entry: it runs
 /// outside a scan, so it has no "current findings" list to prune against.
-/// An existing entry with the same `ID:` and a non-blank justification is
-/// left exactly as written (a human's own wording wins); a blank one is
-/// replaced by the ack's block; an ack with no entry is appended.
+/// Duplicates are always collapsed to one entry per `ID:` (same finding on
+/// the same line), keeping the latest supplied justification: an ack
+/// replaces an existing entry for its `ID:` unless that entry already has
+/// the same justification; an ack with no entry is appended; and existing
+/// duplicate entries are merged per [`dedupe_latest`] even when no ack
+/// changes anything.
 pub fn merge_acknowledgments(existing_text: &str, acks: &[AckInput]) -> Option<String> {
-    let usable: Vec<&AckInput> = acks.iter().filter(|a| !a.id.trim().is_empty() && !a.justification.trim().is_empty()).collect();
-    let existing = parse_blocks(existing_text);
-    let already_filled = |id: &str| existing.iter().any(|e| e.id == one_line(id) && !e.justification.is_empty());
-    let to_write: Vec<&AckInput> = usable.into_iter().filter(|a| !already_filled(&a.id)).collect();
-    if to_write.is_empty() {
+    // `acks` arrive oldest first, so for a finding justified more than once
+    // the last ack is the latest supplied justification — keep only that one.
+    let mut usable: Vec<&AckInput> = Vec::new();
+    for a in acks.iter().filter(|a| !a.id.trim().is_empty() && !a.justification.trim().is_empty()) {
+        match usable.iter().position(|u| one_line(&u.id) == one_line(&a.id)) {
+            Some(i) => usable[i] = a,
+            None => usable.push(a),
+        }
+    }
+    let parsed = parse_blocks(existing_text);
+    let had_duplicates = {
+        let mut ids = std::collections::HashSet::new();
+        parsed.iter().any(|e| !ids.insert(e.id.as_str()))
+    };
+    let existing = dedupe_latest(parsed);
+    // The ack is the latest supplied justification, so it replaces an
+    // existing entry unless that entry already says exactly the same thing.
+    let already_same = |a: &AckInput| existing.iter().any(|e| e.id == one_line(&a.id) && e.justification == one_line(&a.justification));
+    let to_write: Vec<&AckInput> = usable.into_iter().filter(|a| !already_same(a)).collect();
+    if to_write.is_empty() && !had_duplicates {
         return None;
     }
 
@@ -475,9 +517,60 @@ mod tests {
     }
 
     #[test]
-    fn merge_keeps_existing_filled_entry_untouched_and_returns_none_when_nothing_to_do() {
-        let existing = merge_acknowledgments("", &[ack("secret::a.rs::10", "human wording")]).unwrap();
-        assert!(merge_acknowledgments(&existing, &[ack("secret::a.rs::10", "different wording")]).is_none());
+    fn merge_returns_none_when_the_same_justification_is_already_there() {
+        let existing = merge_acknowledgments("", &[ack("secret::a.rs::10", "same wording")]).unwrap();
+        assert!(merge_acknowledgments(&existing, &[ack("secret::a.rs::10", "same wording")]).is_none());
+    }
+
+    #[test]
+    fn merge_replaces_an_existing_justification_with_the_latest_supplied_one() {
+        let existing = merge_acknowledgments("", &[ack("secret::a.rs::10", "old wording")]).unwrap();
+        let out = merge_acknowledgments(&existing, &[ack("secret::a.rs::10", "new wording")]).unwrap();
+        let entries = parse_blocks(&out);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].justification, "new wording");
+    }
+
+    #[test]
+    fn merge_collapses_repeated_acks_for_one_finding_to_the_latest() {
+        let out = merge_acknowledgments("", &[ack("secret::a.rs::10", "first"), ack("secret::a.rs::10", "second"), ack("secret::a.rs::10", "third")]).unwrap();
+        let entries = parse_blocks(&out);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].justification, "third");
+        assert!(out.contains("# Issue #1") && !out.contains("# Issue #2"));
+    }
+
+    #[test]
+    fn merge_cleans_up_duplicates_already_in_the_file_even_with_nothing_new() {
+        let dup = "ID: secret::a.rs::10\n# [ERROR] secret - x\n#   a.rs:10\nAcknowledge: older\n\nID: secret::a.rs::10\n# [ERROR] secret - x\n#   a.rs:10\nAcknowledge: newer\n\nID: secret::a.rs::10\n# [ERROR] secret - x\n#   a.rs:10\nAcknowledge: \n";
+        let out = merge_acknowledgments(dup, &[]).unwrap();
+        let entries = parse_blocks(&out);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].justification, "newer", "a later blank entry must not erase the latest filled one");
+    }
+
+    #[test]
+    fn dedupe_latest_keeps_first_position_and_last_filled_justification() {
+        let text = "ID: a::x::1\nAcknowledge: a-old\n\nID: b::y::2\nAcknowledge: b\n\nID: a::x::1\nAcknowledge: a-new\n";
+        let entries = dedupe_latest(parse_blocks(text));
+        assert_eq!(entries.iter().map(|e| (e.id.as_str(), e.justification.as_str())).collect::<Vec<_>>(), vec![("a::x::1", "a-new"), ("b::y::2", "b")]);
+    }
+
+    #[test]
+    fn build_overrides_sends_only_the_latest_justification_per_finding() {
+        let text = "ID: a::x::1\nAcknowledge: old\n\nID: a::x::1\nAcknowledge: new\n";
+        let overrides = build_overrides(&parse_blocks(text));
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0]["justification"], "new");
+    }
+
+    #[test]
+    fn regenerate_keeps_the_latest_justification_for_duplicate_entries() {
+        let text = "ID: secret::a.rs::10\n# [ERROR] secret - x\n#   a.rs:10\nAcknowledge: older\n\nID: secret::a.rs::10\n# [ERROR] secret - x\n#   a.rs:10\nAcknowledge: newer\n";
+        let finding = Finding { id: "secret::a.rs::10".into(), category: "secret".into(), severity: "error".into(), summary: "x".into(), file: Some("a.rs".into()), line: Some(10), snippet: None, status: None };
+        let entries = parse_blocks(&regenerate(text, &[finding]));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].justification, "newer");
     }
 
     #[test]

@@ -1230,92 +1230,92 @@ ID: dependency-vulnerability::rust/crates/server/Cargo.toml::66::jsonwebtoken::G
 # Code: jsonwebtoken = "9"
 Acknowledge: 
 
-ID: code-duplication::CLAUDE.md:markdown::98
-# Issue #175
-# [WARNING] code-duplication - 25-line duplicate block, also found in CLAUDE.md:markdown:98-122.
-#   CLAUDE.md:markdown:98
-Acknowledge: 
-
 ID: dead-code::vscode-extension/src/upload.ts::19::unused-export
-# Issue #176
+# Issue #175
 # [WARNING] dead-code - Export "MAX_UPLOAD_FILES" in vscode-extension/src/upload.ts is never imported by name anywhere else in the project — a candidate for removal.
 #   vscode-extension/src/upload.ts:19
 # Code: export const MAX_UPLOAD_FILES = 100_000;
 Acknowledge: 
 
 ID: dead-code::vscode-extension/src/upload.ts::20::unused-export
-# Issue #177
+# Issue #176
 # [WARNING] dead-code - Export "MAX_UPLOAD_BYTES" in vscode-extension/src/upload.ts is never imported by name anywhere else in the project — a candidate for removal.
 #   vscode-extension/src/upload.ts:20
 # Code: export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 Acknowledge: 
 
 ID: complexity-health::vscode-extension/src/upload.ts::1::low-maintainability
-# Issue #178
+# Issue #177
 # [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 48 over 194 lines of code).
 #   vscode-extension/src/upload.ts:1
 # Code: /**
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::d7d2e041
-# Issue #179
+# Issue #178
 # [WARNING] css-dead-code - CSS class ".infima" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::f7a17797
-# Issue #180
+# Issue #179
 # [WARNING] css-dead-code - CSS class ".theme-common" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::fed58fab
-# Issue #181
+# Issue #180
 # [WARNING] css-dead-code - CSS class ".theme-classic" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::7f1b5cb7
-# Issue #182
+# Issue #181
 # [WARNING] css-dead-code - CSS class ".core" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::fc15df4f
-# Issue #183
+# Issue #182
 # [WARNING] css-dead-code - CSS class ".plugin-debug" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::52d7aa74
-# Issue #184
+# Issue #183
 # [WARNING] css-dead-code - CSS class ".theme-mermaid" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::04a53937
-# Issue #185
+# Issue #184
 # [WARNING] css-dead-code - CSS class ".theme-live-codeblock" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::e94cad3e
-# Issue #186
+# Issue #185
 # [WARNING] css-dead-code - CSS class ".theme-search-algolia" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
 Acknowledge: 
 
 ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::012ed889
-# Issue #187
+# Issue #186
 # [WARNING] css-dead-code - CSS class ".docsearch" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 40 scanned markup file(s).
 #   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
 # Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: code-duplication::CLAUDE.md:markdown::100
+# Issue #187
+# [WARNING] code-duplication - 25-line duplicate block, also found in CLAUDE.md:markdown:100-124.
+#   CLAUDE.md:markdown:100
 Acknowledge: 

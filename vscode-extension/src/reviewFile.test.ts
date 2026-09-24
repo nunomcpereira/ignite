@@ -12,6 +12,7 @@ import {
   loadOverrides,
   loadAcknowledgedIds,
   acknowledgeIssues,
+  dedupeLatest,
 } from './reviewFile';
 import type { IgniteIssue } from './api';
 
@@ -206,4 +207,54 @@ test('writeScanSnapshot writes one findings.md per datetime folder under .ignite
   } finally {
     await fs.rm(repoRoot, { recursive: true, force: true });
   }
+});
+
+const DUPLICATED = [
+  '# header',
+  'ID: secret::a.py::3',
+  '# [ERROR] secret - Hardcoded password',
+  'Acknowledge: older',
+  '',
+  'ID: secret::a.py::3',
+  '# [ERROR] secret - Hardcoded password',
+  'Acknowledge: newer',
+  '',
+  'ID: secret::a.py::3',
+  '# [ERROR] secret - Hardcoded password',
+  'Acknowledge: ',
+  '',
+].join('\n');
+
+test('dedupeLatest keeps the latest non-blank justification per finding, at its first position', () => {
+  const out = dedupeLatest([
+    { id: 'a', justification: 'a-old' },
+    { id: 'b', justification: 'b' },
+    { id: 'a', justification: 'a-new' },
+    { id: 'a', justification: '' },
+  ]);
+  assert.deepEqual(out, [{ id: 'a', justification: 'a-new' }, { id: 'b', justification: 'b' }]);
+});
+
+test('duplicate entries resolve to the latest justification and are removed on the next write', async () => {
+  const root = await makeRepoRoot();
+  await fs.mkdir(igniteDir(root), { recursive: true });
+  await fs.writeFile(reviewFilePath(root), DUPLICATED);
+
+  assert.deepEqual(await loadOverrides(root), [{ issueId: 'secret::a.py::3', justification: 'newer' }]);
+
+  await appendUnresolvedIssues(root, [sampleIssue]);
+  const text = await fs.readFile(reviewFilePath(root), 'utf8');
+  assert.equal(text.match(/^ID: secret::a\.py::3$/gm)?.length, 1, 'duplicates collapsed to one entry');
+  assert.match(text, /^Acknowledge: newer$/m);
+});
+
+test('acknowledgeIssues on a duplicated finding leaves one entry with the new justification', async () => {
+  const root = await makeRepoRoot();
+  await fs.mkdir(igniteDir(root), { recursive: true });
+  await fs.writeFile(reviewFilePath(root), DUPLICATED);
+
+  await acknowledgeIssues(root, [sampleIssue], 'latest supplied');
+  const text = await fs.readFile(reviewFilePath(root), 'utf8');
+  assert.equal(text.match(/^ID: secret::a\.py::3$/gm)?.length, 1);
+  assert.match(text, /^Acknowledge: latest supplied$/m);
 });

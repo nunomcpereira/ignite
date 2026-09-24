@@ -32,7 +32,7 @@ exists) even with none of them installed.
   <line x1="233.0" y1="54.0" x2="265.0" y2="54.0" stroke="var(--ifm-color-emphasis-500)" stroke-width="1.5" marker-end="url(#arrowGray2)"/>
   <rect x="518.0" y="20" width="213.0" height="68" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
   <text x="624.5" y="50.0" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12.5" font-weight="600" fill="var(--ifm-color-emphasis-900)">Zip-bomb guard</text>
-  <text x="624.5" y="66.0" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-600)">≤4GB extracted, ≤1GB upload</text>
+  <text x="624.5" y="66.0" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--ifm-color-emphasis-600)">≤4GB extracted, ≤1250MB upload</text>
   <line x1="482.0" y1="54.0" x2="514.0" y2="54.0" stroke="var(--ifm-color-emphasis-500)" stroke-width="1.5" marker-end="url(#arrowGray2)"/>
   <rect x="767.0" y="20" width="213.0" height="68" rx="8" fill="var(--ifm-color-emphasis-100)" stroke="var(--ifm-color-emphasis-300)"/>
   <text x="873.5" y="50.0" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12.5" font-weight="600" fill="var(--ifm-color-emphasis-900)">org/repo name validated</text>
@@ -46,7 +46,7 @@ Ignite extracts whatever comes in (a ZIP, a folder, a `git push`, a VS Code
 scan, or an MCP `onboard_project` call) into a per-job staging directory,
 under a zip-slip guard (every archive entry's resolved path must stay
 inside the staging root; symlink entries are skipped, never followed) and a
-zip-bomb guard (4GB extracted, 1GB upload caps). It validates the target
+zip-bomb guard (4GB extracted, 1250MB upload caps). It validates the target
 org/repo name against GitHub's own naming rules before using it in any
 command.
 
@@ -335,7 +335,7 @@ installed* (Ignite still runs, and falls back where it can, if it isn't).
 | Org-mandated security/compliance CI gates silently not enforced locally, only caught after a real PR | Runs the actual central `ai-guardrails-orchestrator.yml` (and every workflow it `uses:`) locally via `act`, so local pass/fail matches the real remote gate | act + Docker | Soft-skipped with a warning if `act`/Docker are missing — the workflows still gate remotely on GitHub, just not caught locally before pushing |
 | Unauthorized/unvetted code reaching the org's GitHub regardless of findings above | Provisioning + push only happens after every enabled phase passes (or every blocking issue is overridden with a justified, attributed, emailed audit record) | The pipeline gate itself | N/A — enforced by the pipeline's own logic, not an external tool |
 | Zip-slip — a malicious archive entry resolving outside the staging directory | Every archive entry's resolved path is verified to stay inside the staging root before extraction; symlink entries are skipped entirely | Built-in extraction guard | N/A — built-in, no external tool involved |
-| Zip-bomb / disk-exhaustion DoS via a malicious or oversized upload | Extracted size capped at 4 GB, upload capped at 1 GB | Built-in size guards | N/A — built-in, no external tool involved |
+| Zip-bomb / disk-exhaustion DoS via a malicious or oversized upload | Extracted size capped at 4 GB, upload capped at 1250 MB | Built-in size guards | N/A — built-in, no external tool involved |
 | Command injection via org/repo names or shelled-out tool arguments | Every `git`/`gh`/tool invocation uses `execFile` with argument arrays (no shell); org/repo names validated against GitHub's naming rules; commands restricted to a fixed allowlist | Built-in sanitizers | N/A — built-in, no external tool involved |
 | The project's own automated test suite silently regressing | Auto-detects Node/Go/Rust/Python/Java and runs that ecosystem's native test runner (`npm test`, `go test`, `cargo test`, `pytest`, `mvn test`) inside an isolated Docker container | Built-in detection + Docker | Skipped if no recognized test setup is found, or if Docker isn't available — logged, never silently assumed to pass |
 | A repo drifting out of compliance *after* onboarding — a new vulnerable/malicious dependency merged later, with no one notified | Effectivated repos can opt into a scheduled (daily/weekly/monthly) re-check of the default branch; on failure, emails the repo's CODEOWNERS contact or files a GitHub issue if none can be resolved | Scheduled re-check + CODEOWNERS check | N/A for the schedule/notify logic itself — the re-check still depends on whichever Phase 4 tools are installed on the server at the time it runs |

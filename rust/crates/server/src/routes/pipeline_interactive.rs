@@ -118,13 +118,13 @@ fn write_temp_upload(bytes: &[u8]) -> std::io::Result<PathBuf> {
 /// `{ fileSize: MAX_ZIP_BYTES, files: 100000 }`) — `fileSize` bounds each
 /// individual file *part*, `files` bounds the file-part *count*. Neither is
 /// a whole-request-body cap: a folder upload with many small files can
-/// total well over 1GB as long as no single file exceeds it, same as Node.
+/// total well over 1250 MB as long as no single file exceeds it.
 /// Enforced by streaming each file field via `.chunk()` instead of
 /// `.bytes()` (which would buffer past the limit before we could reject),
 /// with the whole-body `DefaultBodyLimit` disabled on this route (see
 /// `router()` below) so it can't impose its own, different cap underneath
 /// this one.
-const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 1250 * 1024 * 1024;
 const MAX_FILES: usize = 100_000;
 
 async fn read_field_bytes_limited(field: &mut axum::extract::multipart::Field<'_>) -> Result<Vec<u8>, (StatusCode, Value)> {
@@ -132,7 +132,7 @@ async fn read_field_bytes_limited(field: &mut axum::extract::multipart::Field<'_
 }
 
 /// `max_bytes`-parameterized core so tests can exercise real rejection
-/// behavior at a small scale instead of needing an actual 1GB upload.
+/// behavior at a small scale instead of needing an actual 1250 MB upload.
 async fn read_field_bytes_limited_to(field: &mut axum::extract::multipart::Field<'_>, max_bytes: u64) -> Result<Vec<u8>, (StatusCode, Value)> {
     let mut buf = Vec::new();
     while let Some(chunk) = field.chunk().await.map_err(|e| (StatusCode::BAD_REQUEST, json!({ "error": e.to_string() })))? {
@@ -638,7 +638,7 @@ mod tests {
     /// Real end-to-end test of `read_field_bytes_limited_to`'s streaming
     /// rejection, against a genuine `axum::extract::Multipart` `Field`
     /// (not a mock) — a tiny standalone route lets this run at a 10-byte
-    /// scale instead of needing an actual 1GB upload to exercise the
+    /// scale instead of needing an actual 1250 MB upload to exercise the
     /// production `MAX_FILE_BYTES` constant. Regression coverage for the
     /// multer-parity fix: a per-file limit enforced by streaming `.chunk()`
     /// calls and rejecting mid-stream, not by buffering the whole field
@@ -673,7 +673,7 @@ mod tests {
         let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         // Axum's `Multipart` extractor enforces its own default 2 MB
         // whole-body limit unless disabled per-route; server.js's multer
-        // config bounds each *file* to 1 GB (MAX_ZIP_BYTES) with no
+        // config bounds each *file* to 1250 MB (MAX_FILE_BYTES) with no
         // whole-body cap at all. Proves the `DefaultBodyLimit::disable()`
         // on this route actually takes effect by sending a real multipart
         // body over 2 MB — incompressible filler bytes, so zip deflate

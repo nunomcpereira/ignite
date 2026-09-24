@@ -17,7 +17,7 @@ const execFileAsync = promisify(execFile);
 
 /** Same caps the server enforces on a folder upload (`MAX_FILES`, upload size). */
 export const MAX_UPLOAD_FILES = 100_000;
-export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 1250 * 1024 * 1024;
 
 /** Directories never worth uploading when there's no .gitignore to go by. */
 const SKIP_DIRS = new Set([
@@ -103,7 +103,7 @@ export function checkUploadLimits(files: UploadFile[]): void {
   if (files.length === 0) throw new Error('Nothing to upload — the folder has no files (after .gitignore).');
   if (files.length > MAX_UPLOAD_FILES) throw new Error(`Too many files to upload (${files.length}; the server accepts at most ${MAX_UPLOAD_FILES}).`);
   const total = files.reduce((n, f) => n + f.size, 0);
-  if (total > MAX_UPLOAD_BYTES) throw new Error(`Folder is too large to upload (${(total / 1024 / 1024).toFixed(0)} MB; the limit is 1024 MB).`);
+  if (total > MAX_UPLOAD_BYTES) throw new Error(`Folder is too large to upload (${(total / 1024 / 1024).toFixed(0)} MB; the limit is ${MAX_UPLOAD_BYTES / 1024 / 1024} MB).`);
 }
 
 /**

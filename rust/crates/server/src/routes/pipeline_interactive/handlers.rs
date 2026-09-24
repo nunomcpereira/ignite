@@ -163,7 +163,7 @@ pub fn router() -> Router<Arc<AppState>> {
         // per-file/per-field-count limits matching server.js's multer
         // config exactly (MAX_FILE_BYTES/MAX_FILES above), which a single
         // whole-body cap can't express (a folder upload with many small
-        // files can legitimately total well over 1GB in Node as long as no
+        // files can legitimately total well over 1250 MB as long as no
         // single file exceeds it). Scoped to just this route, not the
         // whole router, so JSON endpoints elsewhere keep axum's smaller
         // stock default, closer to server.js's separate

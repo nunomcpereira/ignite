@@ -49,6 +49,9 @@ test('checkUploadLimits rejects empty and oversized uploads', () => {
   assert.throws(() => checkUploadLimits([]), /no files/);
   assert.throws(() => checkUploadLimits([{ rel: 'a', abs: '/a', size: 2 * 1024 * 1024 * 1024 }]), /too large/);
   assert.doesNotThrow(() => checkUploadLimits([{ rel: 'a', abs: '/a', size: 10 }]));
+  const mb = 1024 * 1024;
+  assert.doesNotThrow(() => checkUploadLimits([{ rel: 'a', abs: '/a', size: 1250 * mb }]), 'exactly 1250 MB is allowed');
+  assert.throws(() => checkUploadLimits([{ rel: 'a', abs: '/a', size: 1250 * mb + 1 }]), /limit is 1250 MB/);
 });
 
 test('PipelineRunState folds the event stream into phases, issues and outcome', () => {

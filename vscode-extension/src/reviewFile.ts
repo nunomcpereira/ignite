@@ -85,9 +85,31 @@ async function readFileSafe(p: string): Promise<string> {
   }
 }
 
+/**
+ * One entry per finding (same `ID:` = same category + file + line), keeping
+ * the latest supplied justification: newer entries are appended after older
+ * ones, so the last non-blank justification wins and a later blank entry
+ * never erases a filled-in one. The survivor keeps the id's first position.
+ * Mirrors `ignite_acknowledgments::dedupe_latest` on the server/CLI side.
+ */
+export function dedupeLatest<T extends { id: string; justification: string }>(entries: T[]): T[] {
+  const order: string[] = [];
+  const chosen = new Map<string, T>();
+  for (const entry of entries) {
+    const current = chosen.get(entry.id);
+    if (!current) {
+      order.push(entry.id);
+      chosen.set(entry.id, entry);
+    } else if (entry.justification) {
+      chosen.set(entry.id, entry);
+    }
+  }
+  return order.map((id) => chosen.get(id) as T);
+}
+
 /** Justified entries, as the `overrides` array validate-all's body expects. */
 export async function loadOverrides(repoRoot: string): Promise<OverrideSubmission[]> {
-  const entries = parseBlocks(await readFileSafe(reviewFilePath(repoRoot)));
+  const entries = dedupeLatest(parseBlocks(await readFileSafe(reviewFilePath(repoRoot))));
   return entries
     .filter((e) => e.justification)
     .map((e) => ({ issueId: e.id, justification: e.justification }));
@@ -95,7 +117,7 @@ export async function loadOverrides(repoRoot: string): Promise<OverrideSubmissio
 
 /** id -> justification, for filtering "already acknowledged" issues out of Diagnostics. */
 export async function loadAcknowledgedIds(repoRoot: string): Promise<Set<string>> {
-  const entries = parseBlocks(await readFileSafe(reviewFilePath(repoRoot)));
+  const entries = dedupeLatest(parseBlocks(await readFileSafe(reviewFilePath(repoRoot))));
   return new Set(entries.filter((e) => e.justification).map((e) => e.id));
 }
 
@@ -128,7 +150,7 @@ function codeForIssue(issue: IgniteIssue): string | null {
  */
 export async function appendUnresolvedIssues(repoRoot: string, issues: IgniteIssue[]): Promise<number> {
   const filePath = reviewFilePath(repoRoot);
-  const existing = parseBlocks(await readFileSafe(filePath));
+  const existing = dedupeLatest(parseBlocks(await readFileSafe(filePath)));
   const existingIds = new Set(existing.map((e) => e.id));
 
   const newBlocks: string[] = [];
@@ -215,7 +237,7 @@ export async function writeScanSnapshot(repoRoot: string, issues: IgniteIssue[],
  */
 export async function acknowledgeIssues(repoRoot: string, issues: IgniteIssue[], justification: string): Promise<void> {
   const filePath = reviewFilePath(repoRoot);
-  const existing = parseBlocks(await readFileSafe(filePath));
+  const existing = dedupeLatest(parseBlocks(await readFileSafe(filePath)));
   const byId = new Map(existing.map((e) => [e.id, e]));
 
   const newBlocks: string[] = [];

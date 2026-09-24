@@ -52,6 +52,15 @@ struct DetectedRunner {
 /// can match more than one (e.g. a Node frontend next to a Go backend) —
 /// all matches run, in this fixed order, and any one failing fails the
 /// phase.
+/// Shell step for the Python runner: writes every dependency spec
+/// `pyproject.toml` declares — `[project].dependencies`, the
+/// `dev`/`test`/`tests`/`testing` entries of `[project.optional-dependencies]`
+/// and of PEP 735 `[dependency-groups]` — to `/tmp/_ignite_pyproject_deps.txt`,
+/// one per line, for a follow-up `pip install -r`. Only plain strings are
+/// kept (a `{include-group = ...}` table entry is skipped). No-ops without
+/// a pyproject.toml or on a parse error.
+const PYPROJECT_DEPS_EXTRACT: &str = "(test -f pyproject.toml && python3 -c 'import tomllib; d = tomllib.load(open(\"pyproject.toml\", \"rb\")); p = d.get(\"project\", {}); names = (\"dev\", \"test\", \"tests\", \"testing\"); opt = p.get(\"optional-dependencies\", {}); grp = d.get(\"dependency-groups\", {}); deps = list(p.get(\"dependencies\", [])) + [x for n in names for x in opt.get(n, [])] + [x for n in names for x in grp.get(n, [])]; open(\"/tmp/_ignite_pyproject_deps.txt\", \"w\").write(chr(10).join(x for x in deps if isinstance(x, str)))' 2>/dev/null || true)";
+
 fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
     let mut matches = Vec::new();
 
@@ -97,19 +106,22 @@ fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
                 // that's otherwise fine. Best-effort: an absent extra
                 // group just no-ops rather than failing the run.
                 "(test -f pyproject.toml && pip install --quiet --no-input --disable-pip-version-check -e '.[dev,test,tests,testing]' 2>/dev/null || true)",
-                // A PEP 735 [dependency-groups] "dev"/"test" table (the
-                // uv/pip-tools-native way to declare test-only deps, and
-                // what a plain `dependencies = [...]` project most often
-                // uses instead of optional-dependencies) isn't installable
-                // via `-e .[group]` at all — it's a separate mechanism, not
-                // an extra. `pip install --group` only exists from pip
-                // 25.1 on, and python:3.12-slim ships 25.0.1, so that flag
-                // silently doesn't exist here — read the table directly
-                // with the stdlib's own `tomllib` (3.11+) instead and feed
-                // the plain dependency-spec strings to pip as a
-                // requirements file.
-                "(test -f pyproject.toml && python3 -c 'import tomllib; d = tomllib.load(open(\"pyproject.toml\", \"rb\")); g = d.get(\"dependency-groups\", {}); deps = [dep for n in (\"dev\", \"test\", \"tests\", \"testing\") for dep in g.get(n, []) if isinstance(dep, str)]; open(\"/tmp/_ignite_dev_deps.txt\", \"w\").write(chr(10).join(deps))' 2>/dev/null || true)",
-                "(test -s /tmp/_ignite_dev_deps.txt && pip install --quiet --no-input --disable-pip-version-check -r /tmp/_ignite_dev_deps.txt || true)",
+                // Read the dependency lists straight out of pyproject.toml
+                // and install them as a plain requirements file, so they
+                // land even when the project itself can't be installed.
+                // `pip install -e .` above fails outright for the common
+                // application/agent-repo shape — several top-level folders
+                // (`agents/`, `archive/`, ...) with no [tool.setuptools]
+                // package config ("Multiple top-level packages discovered
+                // in a flat-layout") — and when it does, none of
+                // [project].dependencies gets installed and every test dies
+                // on its first third-party import. Also covers PEP 735
+                // [dependency-groups] dev/test tables, which aren't
+                // installable via `-e .[group]` at all, and `pip install
+                // --group` only exists from pip 25.1 (python:3.12-slim
+                // ships 25.0.1). stdlib `tomllib` (3.11+), no extra tools.
+                PYPROJECT_DEPS_EXTRACT,
+                "(test -s /tmp/_ignite_pyproject_deps.txt && pip install --quiet --no-input --disable-pip-version-check -r /tmp/_ignite_pyproject_deps.txt || true)",
                 "pytest",
             ]
             .join(" && "),
@@ -230,6 +242,46 @@ mod tests {
     fn resolve_test_node_image_never_downgrades_below_default() {
         let pkg: serde_json::Value = serde_json::json!({"engines": {"node": ">=18.0.0"}});
         assert_eq!(resolve_test_node_image(&pkg), "node:22-alpine");
+    }
+
+    #[test]
+    fn pyproject_deps_extract_collects_runtime_and_test_deps_for_a_flat_layout_project() {
+        // Needs a host python3 with tomllib (3.11+); the real step runs in python:3.12-slim.
+        let has_tomllib = std::process::Command::new("python3").args(["-c", "import tomllib"]).status().map(|s| s.success()).unwrap_or(false);
+        if !has_tomllib {
+            eprintln!("skipping: host python3 lacks tomllib (3.11+)");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // The shape that makes `pip install -e .` fail: several top-level
+        // packages, no [tool.setuptools] config — deps must still be found.
+        for pkg in ["agents", "archive", "reviews"] {
+            std::fs::create_dir(dir.path().join(pkg)).unwrap();
+        }
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"x\"\nversion = \"0\"\ndependencies = [\"google-adk>=1.0\", \"pydantic\"]\n\n[project.optional-dependencies]\ntest = [\"pytest-asyncio\"]\ndocs = [\"mkdocs\"]\n\n[dependency-groups]\ndev = [\"httpx\", {include-group = \"test\"}]\n",
+        )
+        .unwrap();
+        let out = std::path::Path::new("/tmp/_ignite_pyproject_deps.txt");
+        let _ = std::fs::remove_file(out);
+        let status = std::process::Command::new("sh").arg("-c").arg(PYPROJECT_DEPS_EXTRACT).current_dir(dir.path()).status().unwrap();
+        assert!(status.success());
+        let deps = std::fs::read_to_string(out).unwrap();
+        let _ = std::fs::remove_file(out);
+        assert_eq!(deps.lines().collect::<Vec<_>>(), vec!["google-adk>=1.0", "pydantic", "pytest-asyncio", "httpx"], "docs extra and include-group tables are skipped");
+    }
+
+    #[test]
+    fn python_runner_installs_pyproject_deps_even_if_editable_install_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
+        let runners = detect_runners(dir.path());
+        let python = runners.iter().find(|r| r.language == "Python").unwrap();
+        // Each step is `(... || true)`, so a failing `-e .` can't stop the direct install.
+        let editable = python.command.find("-e . ||").unwrap();
+        let direct = python.command.find("-r /tmp/_ignite_pyproject_deps.txt").unwrap();
+        assert!(direct > editable && python.command.ends_with("pytest"));
     }
 
     #[test]

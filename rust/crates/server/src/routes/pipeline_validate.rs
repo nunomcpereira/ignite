@@ -362,6 +362,15 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         let _ = stage_result;
         let root = ignite_staging::resolve_project_root(&staging_dir).map_err(|e| PipelineError::new(3, e.to_string()))?;
         project_root = Some(root.clone());
+        // Justifications committed in the scanned repo itself. A caller
+        // with a local checkout (CLI/pre-push/VS Code) already sends these
+        // as `overrides`, but a server-side scan of a fresh clone (org scan,
+        // scheduled rescan) has nobody to send them — without this, every
+        // such scan re-flags findings the repo has long since justified.
+        let file_overrides = repo_file_overrides(&project_path, &root, &requested_overrides);
+        if !file_overrides.is_empty() {
+            logger.log(3, &format!("Using {} justification(s) from the repository's {REPO_ACK_FILE}.", file_overrides.len()));
+        }
 
         {
             let l3 = logger.clone();
@@ -433,7 +442,46 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             // same `security.overrideApproval` gate `routes/effectivate.rs`/
             // `pipeline_interactive/run.rs` apply, kept in sync here since
             // this is the other place a human submits a brand-new override.
-            let plan = ignite_pipeline_core::plan_overrides(&state.db, &owned, &requested_overrides, &ignite_pipeline_core::PlanOverridesRequest { project_id, dual_custody_enabled: state.config.security.override_approval.enabled });
+            let all_requested: Vec<SubmittedOverride> = requested_overrides.iter().chain(file_overrides.iter()).cloned().collect();
+            let plan = ignite_pipeline_core::plan_overrides(&state.db, &owned, &all_requested, &ignite_pipeline_core::PlanOverridesRequest { project_id, dual_custody_enabled: state.config.security.override_approval.enabled });
+            // Overrides that came only from the repo file are recorded under
+            // the file's own identity, never attributed to whoever triggered
+            // the scan; the rest keep the existing caller-attributed flow.
+            let from_file: std::collections::HashSet<&str> = file_overrides.iter().map(|o| o.issue_id.as_str()).collect();
+            let is_file = |(issue, _): &(&Issue, String)| from_file.contains(issue.id.as_str());
+            let file_applied: Vec<(&Issue, String)> = plan.applied.iter().filter(|o| is_file(o)).cloned().collect();
+            let file_needs_approval = plan.needs_approval.iter().filter(|o| is_file(o)).count();
+            let file_newly_pending: Vec<(&Issue, String)> = plan.newly_pending.iter().filter(|o| is_file(o)).cloned().collect();
+            let plan = ignite_pipeline_core::OverridesPlan {
+                ok: plan.ok,
+                unresolved_errors: plan.unresolved_errors,
+                applied: plan.applied.into_iter().filter(|o| !is_file(o)).collect(),
+                needs_approval: plan.needs_approval.into_iter().filter(|o| !is_file(o)).collect(),
+                newly_pending: plan.newly_pending.into_iter().filter(|o| !is_file(o)).collect(),
+            };
+            for (issue, _) in &file_applied {
+                overridden_ids.insert(issue.id.clone());
+            }
+            if !file_applied.is_empty() || !file_newly_pending.is_empty() {
+                let file_req = ignite_pipeline_core::PersistOverridesRequest { project_id, job_id: &job_id, phase: 4, actor_email: REPO_ACK_ACTOR_EMAIL, actor_name: REPO_ACK_ACTOR_NAME, origin: "repo_file", email_sent: false };
+                ignite_pipeline_core::persist_applied_overrides(&state.db, &file_applied, &file_req);
+                ignite_pipeline_core::persist_pending_overrides(&state.db, &file_newly_pending, &file_req);
+                if !file_applied.is_empty() {
+                    logger.log(4, &format!("⚠ {} flagged issue(s) justified in the repository's {REPO_ACK_FILE}:", file_applied.len()));
+                }
+                for (issue, justification) in &file_applied {
+                    logger.log(4, &format!("    ⚠ [override] [{:?}] {}:{} — {} — \"{justification}\"", issue.severity, issue.file.as_deref().unwrap_or(""), issue.line.unwrap_or(0), issue.summary));
+                    state.emit_audit_event(
+                        ignite_audit_log::AuditEvent::new("override.approved", "info", format!("override from {REPO_ACK_FILE} for {}: {}", issue.category, issue.summary))
+                            .actor(REPO_ACK_ACTOR_EMAIL)
+                            .repo(&org, &repo)
+                            .metadata(json!({ "issueId": issue.id, "category": issue.category, "justification": justification, "origin": "repo_file" })),
+                    );
+                }
+            }
+            if file_needs_approval > 0 {
+                return Err(PipelineError::new(4, format!("{file_needs_approval} critical finding(s) justified in {REPO_ACK_FILE} require a second reviewer's approval before this can ship. Ask another reviewer to approve them, then re-run.")));
+            }
             for (issue, _) in &plan.applied {
                 overridden_ids.insert(issue.id.clone());
             }
@@ -908,6 +956,33 @@ pub(crate) fn idempotency_payload_hash(body: &Value) -> String {
     format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
+/// Where a repository keeps its committed justifications — the same file
+/// the pre-push hook, `ignite check` and the VS Code extension maintain.
+const REPO_ACK_FILE: &str = ".ignite/acknowledgments.md";
+/// Actor recorded on overrides that came from [`REPO_ACK_FILE`] rather than
+/// from the request itself.
+const REPO_ACK_ACTOR_EMAIL: &str = "repo-acknowledgments@ignite.internal";
+const REPO_ACK_ACTOR_NAME: &str = "Repository .ignite/acknowledgments.md";
+
+/// Justified entries from the scanned repo's own [`REPO_ACK_FILE`] (checked
+/// at the path the caller gave, then at the resolved project root), minus
+/// any issue the request already sent an override for — an explicit
+/// request always wins over the file. Missing/unreadable file = none.
+fn repo_file_overrides(project_path: &std::path::Path, root: &std::path::Path, requested: &[SubmittedOverride]) -> Vec<SubmittedOverride> {
+    let text = [project_path, root]
+        .iter()
+        .find_map(|dir| std::fs::read_to_string(dir.join(REPO_ACK_FILE)).ok())
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    let already: std::collections::HashSet<&str> = requested.iter().map(|o| o.issue_id.as_str()).collect();
+    // One entry per finding, latest justification wins (same rule every writer applies).
+    ignite_acknowledgments::dedupe_latest(ignite_acknowledgments::parse_blocks(&text))
+        .into_iter()
+        .filter(|e| !e.justification.is_empty() && !already.contains(e.id.as_str()))
+        .map(|e| SubmittedOverride { issue_id: e.id, justification: e.justification, code: e.code })
+        .collect()
+}
+
 fn filter_tagged_by_changed_files(tagged: &[Value], changed_files: Option<&std::collections::HashSet<String>>) -> Vec<Value> {
     match changed_files {
         None => tagged.to_vec(),
@@ -1162,5 +1237,44 @@ mod phase_gating_tests {
         assert_eq!(super::error_status(&json!({ "ok": false, "error": "Phase 4 has 1 unresolved blocking finding(s)." })), StatusCode::BAD_REQUEST);
         assert_eq!(super::error_status(&json!({ "conflict": false })), StatusCode::BAD_REQUEST);
         assert_eq!(super::error_status(&json!({})), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod repo_ack_file_tests {
+    use super::{repo_file_overrides, REPO_ACK_FILE};
+    use ignite_override_engine::SubmittedOverride;
+
+    fn ack_file(dir: &std::path::Path, body: &str) {
+        std::fs::create_dir_all(dir.join(".ignite")).unwrap();
+        std::fs::write(dir.join(REPO_ACK_FILE), body).unwrap();
+    }
+
+    #[test]
+    fn reads_the_latest_justification_per_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        ack_file(
+            dir.path(),
+            "# header\nID: secret::Preparation Steps/LELEQUIPMENT.txt::12\n# [ERROR] secret - Hardcoded credential\nAcknowledge: older\n\nID: secret::Preparation Steps/LELEQUIPMENT.txt::12\nAcknowledge: false positive, CPI security material\r\n\nID: secret::b.txt::1\nAcknowledge: \n",
+        );
+        let got = repo_file_overrides(dir.path(), dir.path(), &[]);
+        assert_eq!(got.len(), 1, "one entry per finding, blank ones skipped");
+        assert_eq!(got[0].issue_id, "secret::Preparation Steps/LELEQUIPMENT.txt::12");
+        assert_eq!(got[0].justification, "false positive, CPI security material");
+    }
+
+    #[test]
+    fn never_shadows_an_override_sent_in_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        ack_file(dir.path(), "ID: secret::a.txt::1\nAcknowledge: from file\n\nID: secret::b.txt::2\nAcknowledge: also from file\n");
+        let requested = vec![SubmittedOverride { issue_id: "secret::a.txt::1".into(), justification: "from request".into(), code: None }];
+        let got = repo_file_overrides(dir.path(), dir.path(), &requested);
+        assert_eq!(got.iter().map(|o| o.issue_id.as_str()).collect::<Vec<_>>(), vec!["secret::b.txt::2"]);
+    }
+
+    #[test]
+    fn is_empty_without_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(repo_file_overrides(dir.path(), dir.path(), &[]).is_empty());
     }
 }
