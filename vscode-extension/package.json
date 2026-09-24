@@ -24,6 +24,12 @@
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  },
   "contributes": {
     "commands": [
       {
@@ -100,6 +106,11 @@
       {
         "command": "ignite.showPosture",
         "title": "Ignite: Show Compliance & Feature Posture"
+      },
+      {
+        "command": "ignite.scanFolder",
+        "title": "Ignite: Scan Selected Folder — run the full compliance/security pipeline against just this folder",
+        "icon": "$(shield)"
       }
     ],
     "menus": {
@@ -138,6 +149,13 @@
           "command": "ignite.refreshToolsStatus",
           "when": "view == igniteToolsStatus",
           "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "ignite.scanFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "2_ignite"
         }
       ],
       "view/item/context": [

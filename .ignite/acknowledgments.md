@@ -153,1095 +153,1095 @@ ID: secret::rust/crates/pii-dataflow/src/lib.rs::444
 # Code: let line = r#"const apiKey = "AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe";"#;
 Acknowledge: Fake Firebase public web API key literal used as test input to verify is_firebase_public_api_key_finding correctly excludes this shape only for the "hard-coded secret" finding title, not for other titles - not a real credential. (auto-carried-forward from secret::rust/crates/pii-dataflow/src/lib.rs::354 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/pii-dataflow/src/lib.rs::377 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/pii-dataflow/src/lib.rs::393 - pure line-number drift, flagged code unchanged)
 
-ID: iac-security::Dockerfile::1::629a3996
-# Issue #21
-# [WARNING] iac-security - No HEALTHCHECK defined
-#   Dockerfile:1
-# Code: # Ignite, self-contained: the Rust server/CLI/MCP binaries plus every
-Acknowledge: 
-
-ID: iac-security::Dockerfile::1::5c411837
-# Issue #22
-# [WARNING] iac-security - Ensure that HEALTHCHECK instructions have been added to container images
-#   Dockerfile:1
-# Code: # Ignite, self-contained: the Rust server/CLI/MCP binaries plus every
-Acknowledge: 
-
-ID: iac-security::Dockerfile::162
-# Issue #23
-# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
-#   Dockerfile:162
-# Code: RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov --pip-args="--no-compile" && pipx ensurepath; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::171
-# Issue #24
-# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
-#   Dockerfile:171
-# Code: RUN if [ "$INSTALL_GITLEAKS" = "true" ]; then \
-Acknowledge: 
-
-ID: gha-security::.github/workflows/check-env-var-drift.yml::25
-# Issue #25
-# [WARNING] gha-security - credential persistence through GitHub Actions artifacts (uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4)
-#   .github/workflows/check-env-var-drift.yml:25
-# Code: - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-Acknowledge: 
-
-ID: gha-security::.github/workflows/deploy-docs.yml::24
-# Issue #26
-# [WARNING] gha-security - credential persistence through GitHub Actions artifacts (uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4)
-#   .github/workflows/deploy-docs.yml:24
-# Code: - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-Acknowledge: 
-
-ID: image-provenance::Dockerfile::19
-# Issue #27
-# [WARNING] image-provenance - Base image "rust:1-bookworm" has no verifiable Sigstore/cosign signature — supply-chain provenance can't be confirmed.
-#   Dockerfile:19
-# Code: FROM rust:1-bookworm AS rust-builder
-Acknowledge: 
-
-ID: image-provenance::Dockerfile::30
-# Issue #28
-# [WARNING] image-provenance - Base image "node:24-bookworm-slim" has no verifiable Sigstore/cosign signature — supply-chain provenance can't be confirmed.
-#   Dockerfile:30
-# Code: FROM node:24-bookworm-slim
-Acknowledge: 
-
-ID: code-duplication::README.md:markdown::110
-# Issue #29
-# [WARNING] code-duplication - 28-line duplicate block, also found in README.md:markdown:427-502.
-#   README.md:markdown:110
-Acknowledge: 
-
-ID: code-duplication::rust/crates/server/src/routes/pipeline_onboard.rs::29
-# Issue #30
-# [WARNING] code-duplication - 59-line duplicate block, also found in rust/crates/server/src/routes/pipeline_validate.rs:32-90.
-#   rust/crates/server/src/routes/pipeline_onboard.rs:29
-# Code: static REPO_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
-Acknowledge: 
-
-ID: code-duplication::rust/crates/server/src/routes/pipeline_onboard.rs::88
-# Issue #31
-# [WARNING] code-duplication - 18-line duplicate block, also found in rust/crates/server/src/routes/pipeline_validate.rs:92-109.
-#   rust/crates/server/src/routes/pipeline_onboard.rs:88
-# Code: self.inner.lock().unwrap().project_id = Some(id);
-Acknowledge: 
-
-ID: code-duplication::rust/crates/server/src/routes/repository_events_webhook.rs::67
-# Issue #32
-# [WARNING] code-duplication - 20-line duplicate block, also found in rust/crates/server/src/routes/secret_scanning_webhook.rs:79-98.
-#   rust/crates/server/src/routes/repository_events_webhook.rs:67
-# Code: return err(StatusCode::NOT_FOUND, "Inbound repository-events webhook is not configured.".to_string());
-Acknowledge: 
-
-ID: code-duplication::rust/crates/server/src/routes/studio.rs::349::f8d6eb75
-# Issue #33
-# [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/server/src/routes/studio.rs:452-470.
-#   rust/crates/server/src/routes/studio.rs:349
-# Code: async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
-Acknowledge: 
-
-ID: code-duplication::rust/crates/server/src/routes/studio.rs::349::34308faa
-# Issue #34
-# [WARNING] code-duplication - 22-line duplicate block, also found in rust/crates/server/src/routes/studio.rs:567-587.
-#   rust/crates/server/src/routes/studio.rs:349
-# Code: async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
-Acknowledge: 
-
-ID: code-structure::rust/crates/db-store/src/lib.rs::1
-# Issue #35
-# [WARNING] code-structure - rust/crates/db-store/src/lib.rs is 1027 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/db-store/src/lib.rs:1
-# Code: //! SQLite-backed store — faithful port of `db-store.js`. Same schema
-Acknowledge: 
-
-ID: code-structure::rust/crates/config/src/lib.rs::1
-# Issue #36
-# [WARNING] code-structure - rust/crates/config/src/lib.rs is 1597 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/config/src/lib.rs:1
-# Code: //! Ignite configuration — config.json < environment variables. Faithful
-Acknowledge: 
-
-ID: code-structure::rust/crates/secrets/src/lib.rs::1
-# Issue #37
-# [WARNING] code-structure - rust/crates/secrets/src/lib.rs is 1097 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/secrets/src/lib.rs:1
-# Code: //! Regex-based secret scan + optional gitleaks supplement. Faithful port
-Acknowledge: 
-
-ID: code-structure::rust/crates/auto-fix-pr/src/lib.rs::1
-# Issue #38
-# [WARNING] code-structure - rust/crates/auto-fix-pr/src/lib.rs is 1456 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/auto-fix-pr/src/lib.rs:1
-# Code: //! Auto-fix PR bot — the Dependabot-parity gap `scheduled-rescan` leaves
-Acknowledge: 
-
-ID: code-structure::rust/crates/server/src/routes/studio.rs::1
-# Issue #39
-# [WARNING] code-structure - rust/crates/server/src/routes/studio.rs is 1110 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/server/src/routes/studio.rs:1
-# Code: //! `/api/pipeline/:jobId/studio/*` — faithful (partial) port of
-Acknowledge: 
-
-ID: code-structure::rust/crates/server/src/routes/pipeline_validate.rs::1
-# Issue #40
-# [WARNING] code-structure - rust/crates/server/src/routes/pipeline_validate.rs is 1068 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/server/src/routes/pipeline_validate.rs:1
-# Code: //! POST /api/pipeline/validate-all — faithful port of
-Acknowledge: 
-
-ID: code-structure::rust/crates/fix-pr/src/lib.rs::1
-# Issue #41
-# [WARNING] code-structure - rust/crates/fix-pr/src/lib.rs is 1218 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/fix-pr/src/lib.rs:1
-# Code: //! Bulk "fix all findings" PR generator — the scan-wide counterpart to
-Acknowledge: 
-
-ID: code-structure::rust/crates/dependency-license-scan/src/lib.rs::1
-# Issue #42
-# [WARNING] code-structure - rust/crates/dependency-license-scan/src/lib.rs is 1826 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/dependency-license-scan/src/lib.rs:1
-# Code: //! Dependency license/vulnerability scan orchestrators. Faithful port of
-Acknowledge: 
-
-ID: code-structure::rust/crates/phase4-orchestrator/src/lib.rs::1
-# Issue #43
-# [WARNING] code-structure - rust/crates/phase4-orchestrator/src/lib.rs is 1379 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/phase4-orchestrator/src/lib.rs:1
-# Code: //! Phase 4 check orchestrator. Faithful port of server.js's
-Acknowledge: 
-
-ID: code-structure::public/i18n.js::1
-# Issue #44
-# [WARNING] code-structure - public/i18n.js is 1324 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   public/i18n.js:1
-# Code: // Ignite web UI translations — static UI chrome only (buttons, labels,
-Acknowledge: 
-
-ID: dead-code::docs-site/.docusaurus/client-modules.js::1::unused-file
-# Issue #45
-# [WARNING] dead-code - docs-site/.docusaurus/client-modules.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   docs-site/.docusaurus/client-modules.js:1
-# Code: export default [
-Acknowledge: 
-
-ID: dead-code::docs-site/.docusaurus/registry.js::1::unused-file
-# Issue #46
-# [WARNING] dead-code - docs-site/.docusaurus/registry.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   docs-site/.docusaurus/registry.js:1
-# Code: export default {
-Acknowledge: 
-
-ID: dead-code::docs-site/.docusaurus/routes.js::1::unused-file
-# Issue #47
-# [WARNING] dead-code - docs-site/.docusaurus/routes.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   docs-site/.docusaurus/routes.js:1
-# Code: import React from 'react';
-Acknowledge: 
-
-ID: dead-code::docs-site/sidebars.js::1::unused-file
-# Issue #48
-# [WARNING] dead-code - docs-site/sidebars.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   docs-site/sidebars.js:1
-# Code: // @ts-check
-Acknowledge: 
-
-ID: dead-code::docs-site/src/clientModules/eagerImages.js::1::unused-file
-# Issue #49
-# [WARNING] dead-code - docs-site/src/clientModules/eagerImages.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   docs-site/src/clientModules/eagerImages.js:1
-# Code: // Docusaurus's MDX <img> component auto-sets loading="lazy" on every doc
-Acknowledge: 
-
-ID: dead-code::public/i18n.js::1::unused-file
-# Issue #50
-# [WARNING] dead-code - public/i18n.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   public/i18n.js:1
-# Code: // Ignite web UI translations — static UI chrome only (buttons, labels,
-Acknowledge: 
-
-ID: dead-code::vscode-extension/src/progress.ts::1::unused-file
-# Issue #51
-# [WARNING] dead-code - vscode-extension/src/progress.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   vscode-extension/src/progress.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: dead-code::vscode-extension/src/panels/findingsTree.ts::1::unused-file
-# Issue #52
-# [WARNING] dead-code - vscode-extension/src/panels/findingsTree.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   vscode-extension/src/panels/findingsTree.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: dead-code::vscode-extension/src/panels/reportPanel.ts::1::unused-file
-# Issue #53
-# [WARNING] dead-code - vscode-extension/src/panels/reportPanel.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   vscode-extension/src/panels/reportPanel.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: dead-code::vscode-extension/src/panels/toolsStatusTree.ts::1::unused-file
-# Issue #54
-# [WARNING] dead-code - vscode-extension/src/panels/toolsStatusTree.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   vscode-extension/src/panels/toolsStatusTree.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: dead-code::vscode-extension/src/extension.ts::1::unused-file
-# Issue #55
-# [WARNING] dead-code - vscode-extension/src/extension.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   vscode-extension/src/extension.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: dead-code::vscode-extension/src/diagnostics.ts::1::unused-file
-# Issue #56
-# [WARNING] dead-code - vscode-extension/src/diagnostics.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   vscode-extension/src/diagnostics.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: dead-code::vscode-extension/src/prePushHook.ts::1::unused-file
-# Issue #57
-# [WARNING] dead-code - vscode-extension/src/prePushHook.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
-#   vscode-extension/src/prePushHook.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: complexity-health::rust/crates/override-engine/src/collect.rs::1::low-maintainability
-# Issue #58
-# [WARNING] complexity-health - Maintainability Index 25/100 — below the 40 threshold (complexity 109 over 545 lines of code).
-#   rust/crates/override-engine/src/collect.rs:1
-# Code: //! Turns every check's raw findings (`RawFinding`/`CodeqlFinding`/license
-Acknowledge: 
-
-ID: complexity-health::rust/crates/staging/src/lib.rs::1::low-maintainability
-# Issue #59
-# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 47 over 491 lines of code).
-#   rust/crates/staging/src/lib.rs:1
-# Code: //! Faithful port of `server.js`'s staging/extraction layer — the guarded
-Acknowledge: 
-
-ID: complexity-health::rust/crates/image-provenance/src/lib.rs::1::low-maintainability
-# Issue #60
-# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 29 over 280 lines of code).
-#   rust/crates/image-provenance/src/lib.rs:1
-# Code: //! Sigstore/cosign keyless-signature verification for external Dockerfile
-Acknowledge: 
-
-ID: complexity-health::rust/crates/auto-fix/src/lib.rs::1::low-maintainability
-# Issue #61
-# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 28 over 374 lines of code).
-#   rust/crates/auto-fix/src/lib.rs:1
-# Code: //! Faithful port of `lib/auto-fix.js` — turns a subset of dead-code and
-Acknowledge: 
-
-ID: complexity-health::rust/crates/codeql-cross-file/src/lib.rs::1::low-maintainability
-# Issue #62
-# [WARNING] complexity-health - Maintainability Index 24/100 — below the 40 threshold (complexity 79 over 860 lines of code).
-#   rust/crates/codeql-cross-file/src/lib.rs:1
-# Code: //! Cross-file static analysis via the CodeQL CLI. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/secret-verifier/src/lib.rs::1::low-maintainability
-# Issue #63
-# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 60 over 837 lines of code).
-#   rust/crates/secret-verifier/src/lib.rs:1
-# Code: //! Active, read-only credential verification — the GHAS-parity gap noted
-Acknowledge: 
-
-ID: complexity-health::rust/crates/config/src/lib.rs::1::low-maintainability
-# Issue #64
-# [WARNING] complexity-health - Maintainability Index 14/100 — below the 40 threshold (complexity 196 over 1501 lines of code).
-#   rust/crates/config/src/lib.rs:1
-# Code: //! Ignite configuration — config.json < environment variables. Faithful
-Acknowledge: 
-
-ID: complexity-health::rust/crates/license-classification/src/lib.rs::1::low-maintainability
-# Issue #65
-# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 25 over 314 lines of code).
-#   rust/crates/license-classification/src/lib.rs:1
-# Code: //! SPDX license tier classification and version-range helpers shared by
-Acknowledge: 
-
-ID: complexity-health::rust/crates/pipeline-core/src/lib.rs::1::low-maintainability
-# Issue #66
-# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 38 over 479 lines of code).
-#   rust/crates/pipeline-core/src/lib.rs:1
-# Code: //! Pipeline orchestration helpers shared across `validate-all`/`onboard`/
-Acknowledge: 
-
-ID: complexity-health::rust/crates/iac-security/src/lib.rs::1::low-maintainability
-# Issue #67
-# [WARNING] complexity-health - Maintainability Index 31/100 — below the 40 threshold (complexity 57 over 475 lines of code).
-#   rust/crates/iac-security/src/lib.rs:1
-# Code: //! IaC/container misconfiguration scan (Dockerfiles, Terraform, Kubernetes
-Acknowledge: 
-
-ID: complexity-health::rust/crates/dead-code/src/lib.rs::1::low-maintainability
-# Issue #68
-# [WARNING] complexity-health - Maintainability Index 30/100 — below the 40 threshold (complexity 66 over 437 lines of code).
-#   rust/crates/dead-code/src/lib.rs:1
-# Code: //! Built-in dead-code / unused-export / unused-dependency / circular-import
-Acknowledge: 
-
-ID: complexity-health::rust/crates/secrets/src/lib.rs::1::low-maintainability
-# Issue #69
-# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 82 over 995 lines of code).
-#   rust/crates/secrets/src/lib.rs:1
-# Code: //! Regex-based secret scan + optional gitleaks supplement. Faithful port
-Acknowledge: 
-
-ID: complexity-health::rust/crates/auto-fix-pr/src/lib.rs::1::low-maintainability
-# Issue #70
-# [WARNING] complexity-health - Maintainability Index 20/100 — below the 40 threshold (complexity 96 over 1344 lines of code).
-#   rust/crates/auto-fix-pr/src/lib.rs:1
-# Code: //! Auto-fix PR bot — the Dependabot-parity gap `scheduled-rescan` leaves
-Acknowledge: 
-
-ID: complexity-health::rust/crates/deps-dev-client/src/lib.rs::1::low-maintainability
-# Issue #71
-# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 67 over 657 lines of code).
-#   rust/crates/deps-dev-client/src/lib.rs:1
-# Code: //! deps.dev API client + npm-registry/unpkg license fallbacks, shared by
-Acknowledge: 
-
-ID: complexity-health::rust/crates/mcp-server/src/main.rs::1::low-maintainability
-# Issue #72
-# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 32 over 845 lines of code).
-#   rust/crates/mcp-server/src/main.rs:1
-# Code: //! MCP server exposing the company AI validation guidelines, faithful
-Acknowledge: 
-
-ID: complexity-health::rust/crates/css-dead-code/src/lib.rs::1::low-maintainability
-# Issue #73
-# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 59 over 353 lines of code).
-#   rust/crates/css-dead-code/src/lib.rs:1
-# Code: //! Built-in CSS/Tailwind dead-class scan. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/boundaries/src/lib.rs::1::low-maintainability
-# Issue #74
-# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 26 over 325 lines of code).
-#   rust/crates/boundaries/src/lib.rs:1
-# Code: //! Built-in architecture-boundary enforcement. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/studio-manifests/src/lib.rs::1::low-maintainability
-# Issue #75
-# [WARNING] complexity-health - Maintainability Index 24/100 — below the 40 threshold (complexity 113 over 619 lines of code).
-#   rust/crates/studio-manifests/src/lib.rs:1
-# Code: //! The manifest parsers server.js's dependency license/vulnerability
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/auth.rs::1::low-maintainability
-# Issue #76
-# [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 28 over 433 lines of code).
-#   rust/crates/server/src/auth.rs:1
-# Code: //! Session/API-key auth route wiring — Rust port of `auth.js`'s Express
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/studio.rs::1::low-maintainability
-# Issue #77
-# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 52 over 1008 lines of code).
-#   rust/crates/server/src/routes/studio.rs:1
-# Code: //! `/api/pipeline/:jobId/studio/*` — faithful (partial) port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/issues.rs::1::low-maintainability
-# Issue #78
-# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 21 over 438 lines of code).
-#   rust/crates/server/src/routes/issues.rs:1
-# Code: //! /api/issues/{explain,suggest-fix} — faithful port of routes/issues.js.
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/pipeline_onboard.rs::1::low-maintainability
-# Issue #79
-# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 61 over 526 lines of code).
-#   rust/crates/server/src/routes/pipeline_onboard.rs:1
-# Code: //! POST /api/pipeline/onboard — faithful port of routes/pipeline-onboard.js:
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/pipeline_interactive/run.rs::1::low-maintainability
-# Issue #80
-# [WARNING] complexity-health - Maintainability Index 22/100 — below the 40 threshold (complexity 113 over 810 lines of code).
-#   rust/crates/server/src/routes/pipeline_interactive/run.rs:1
-# Code: //! The actual phase-by-phase driver for `POST /api/pipeline` — split
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/pipeline_interactive.rs::1::low-maintainability
-# Issue #81
-# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 44 over 925 lines of code).
-#   rust/crates/server/src/routes/pipeline_interactive.rs:1
-# Code: //! POST /api/pipeline — faithful port of routes/pipeline-interactive.js:
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/github_pr_status.rs::1::low-maintainability
-# Issue #82
-# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 59 over 361 lines of code).
-#   rust/crates/server/src/routes/github_pr_status.rs:1
-# Code: //! POST /api/pipeline/:jobId/github-check — faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/pipeline_validate.rs::1::low-maintainability
-# Issue #83
-# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 83 over 985 lines of code).
-#   rust/crates/server/src/routes/pipeline_validate.rs:1
-# Code: //! POST /api/pipeline/validate-all — faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/github-api/src/lib.rs::1::low-maintainability
-# Issue #84
-# [WARNING] complexity-health - Maintainability Index 28/100 — below the 40 threshold (complexity 53 over 751 lines of code).
-#   rust/crates/github-api/src/lib.rs:1
-# Code: //! Faithful port of `lib/github-api.js` — GitHub API access without
-Acknowledge: 
-
-ID: complexity-health::rust/crates/fs-utils/src/lib.rs::1::low-maintainability
-# Issue #85
-# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 31 over 488 lines of code).
-#   rust/crates/fs-utils/src/lib.rs:1
-# Code: //! Pure filesystem/content helpers shared by Ignite's checks — file
-Acknowledge: 
-
-ID: complexity-health::rust/crates/fix-pr/src/lib.rs::1::low-maintainability
-# Issue #86
-# [WARNING] complexity-health - Maintainability Index 24/100 — below the 40 threshold (complexity 71 over 1111 lines of code).
-#   rust/crates/fix-pr/src/lib.rs:1
-# Code: //! Bulk "fix all findings" PR generator — the scan-wide counterpart to
-Acknowledge: 
-
-ID: complexity-health::rust/crates/llm-deep-scan/src/lib.rs::1::low-maintainability
-# Issue #87
-# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 120 over 602 lines of code).
-#   rust/crates/llm-deep-scan/src/lib.rs:1
-# Code: //! Local LLM (Ollama/llama.cpp-compatible, or OpenAI) security/quality
-Acknowledge: 
-
-ID: complexity-health::rust/crates/dependency-license-scan/src/lib.rs::1::low-maintainability
-# Issue #88
-# [WARNING] complexity-health - Maintainability Index 16/100 — below the 40 threshold (complexity 132 over 1682 lines of code).
-#   rust/crates/dependency-license-scan/src/lib.rs:1
-# Code: //! Dependency license/vulnerability scan orchestrators. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/llm-client/src/lib.rs::1::low-maintainability
-# Issue #89
-# [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 22 over 546 lines of code).
-#   rust/crates/llm-client/src/lib.rs:1
-# Code: //! Shared local-LLM/OpenAI chat-completions client. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/phase4-orchestrator/src/lib.rs::1::low-maintainability
-# Issue #90
-# [WARNING] complexity-health - Maintainability Index 25/100 — below the 40 threshold (complexity 51 over 1291 lines of code).
-#   rust/crates/phase4-orchestrator/src/lib.rs:1
-# Code: //! Phase 4 check orchestrator. Faithful port of server.js's
-Acknowledge: 
-
-ID: complexity-health::rust/crates/package-hallucination/src/lib.rs::1::low-maintainability
-# Issue #91
-# [WARNING] complexity-health - Maintainability Index 36/100 — below the 40 threshold (complexity 33 over 370 lines of code).
-#   rust/crates/package-hallucination/src/lib.rs:1
-# Code: //! AI package-hallucination / slopsquat detection. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/gha-security/src/lib.rs::1::low-maintainability
-# Issue #92
-# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 22 over 436 lines of code).
-#   rust/crates/gha-security/src/lib.rs:1
-# Code: //! GitHub Actions workflow security scan via zizmor (Trail of Bits'
-Acknowledge: 
-
-ID: complexity-health::rust/crates/tool-runner/src/lib.rs::1::low-maintainability
-# Issue #93
-# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 67 over 640 lines of code).
-#   rust/crates/tool-runner/src/lib.rs:1
-# Code: //! External-tool process execution + the sanitizers that guard it — every
-Acknowledge: 
-
-ID: complexity-health::rust/crates/complexity-health/src/lib.rs::1::low-maintainability
-# Issue #94
-# [WARNING] complexity-health - Maintainability Index 28/100 — below the 40 threshold (complexity 63 over 626 lines of code).
-#   rust/crates/complexity-health/src/lib.rs:1
-# Code: //! Built-in complexity/maintainability health scan. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/container-image-vulnerabilities/src/lib.rs::1::low-maintainability
-# Issue #95
-# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 30 over 316 lines of code).
-#   rust/crates/container-image-vulnerabilities/src/lib.rs:1
-# Code: //! Builds every discovered Dockerfile and runs `trivy image` against the
-Acknowledge: 
-
-ID: complexity-health::rust/crates/module-graph/src/lib.rs::1::low-maintainability
-# Issue #96
-# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 53 over 660 lines of code).
-#   rust/crates/module-graph/src/lib.rs:1
-# Code: //! Lightweight JS/TS module graph: parses import/require/export statements
-Acknowledge: 
-
-ID: complexity-health::rust/crates/guidelines/src/checks.rs::1::low-maintainability
-# Issue #97
-# [WARNING] complexity-health - Maintainability Index 25/100 — below the 40 threshold (complexity 87 over 680 lines of code).
-#   rust/crates/guidelines/src/checks.rs:1
-# Code: //! Mechanical checks for the automated subset of the guideline catalog.
-Acknowledge: 
-
-ID: complexity-health::rust/crates/enforce-gate-branch-protection/src/lib.rs::1::low-maintainability
-# Issue #98
-# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 23 over 676 lines of code).
-#   rust/crates/enforce-gate-branch-protection/src/lib.rs:1
-# Code: //! `enforce-gate-branch-protection <org/repo> [<org/repo>...] [--apply]` —
-Acknowledge: 
-
-ID: complexity-health::rust/crates/report-vulnerability/src/main.rs::1::low-maintainability
-# Issue #99
-# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 30 over 568 lines of code).
-#   rust/crates/report-vulnerability/src/main.rs:1
-# Code: //! `report-vulnerability <org/repo> --summary <str> --severity <level>
-Acknowledge: 
-
-ID: complexity-health::rust/crates/callgraph/src/lib.rs::1::low-maintainability
-# Issue #100
-# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 62 over 593 lines of code).
-#   rust/crates/callgraph/src/lib.rs:1
-# Code: //! Studio's "Call Graph" feature: caller -> callee edges across a project,
-Acknowledge: 
-
-ID: complexity-health::rust/crates/pii-dataflow/src/lib.rs::1::low-maintainability
-# Issue #101
-# [WARNING] complexity-health - Maintainability Index 33/100 — below the 40 threshold (complexity 47 over 403 lines of code).
-#   rust/crates/pii-dataflow/src/lib.rs:1
-# Code: //! Sensitive data-flow (PII/GDPR) SAST via Bearer. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::rust/crates/governance-ci/src/lib.rs::1::low-maintainability
-# Issue #102
-# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 33 over 290 lines of code).
-#   rust/crates/governance-ci/src/lib.rs:1
-# Code: //! Phase 5: org governance CI, run locally via `act`. Faithful port of
-Acknowledge: 
-
-ID: complexity-health::vscode-extension/src/panels/findingsTree.ts::1::low-maintainability
-# Issue #103
-# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 41 over 179 lines of code).
-#   vscode-extension/src/panels/findingsTree.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: complexity-health::vscode-extension/src/panels/reportPanel.ts::1::low-maintainability
-# Issue #104
-# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 53 over 273 lines of code).
-#   vscode-extension/src/panels/reportPanel.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: complexity-health::vscode-extension/src/extension.ts::1::low-maintainability
-# Issue #105
-# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 90 over 488 lines of code).
-#   vscode-extension/src/extension.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: complexity-health::vscode-extension/src/api.ts::1::low-maintainability
-# Issue #106
-# [WARNING] complexity-health - Maintainability Index 30/100 — below the 40 threshold (complexity 68 over 397 lines of code).
-#   vscode-extension/src/api.ts:1
-# Code: import * as vscode from 'vscode';
-Acknowledge: 
-
-ID: complexity-health::vscode-extension/src/reviewFile.ts::1::low-maintainability
-# Issue #107
-# [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 43 over 239 lines of code).
-#   vscode-extension/src/reviewFile.ts:1
-# Code: import * as fs from 'fs/promises';
-Acknowledge: 
-
-ID: css-dead-code::docs-site/src/css/custom.css::32::unused-css-class
-# Issue #108
-# [WARNING] css-dead-code - CSS class ".markdown" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs-site/src/css/custom.css:32
-# Code: .markdown {
-Acknowledge: 
-
-ID: css-dead-code::docs-site/src/css/custom.css::88::unused-css-class
-# Issue #109
-# [WARNING] css-dead-code - CSS class ".theme-admonition" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs-site/src/css/custom.css:88
-# Code: .theme-admonition {
-Acknowledge: 
-
-ID: css-dead-code::docs-site/src/css/custom.css::95::unused-css-class
-# Issue #110
-# [WARNING] css-dead-code - CSS class ".theme-doc-markdown" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs-site/src/css/custom.css:95
-# Code: .theme-doc-markdown table {
-Acknowledge: 
-
-ID: css-dead-code::docs-site/src/css/custom.css::173::unused-css-class
-# Issue #111
-# [WARNING] css-dead-code - CSS class ".heroShot" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs-site/src/css/custom.css:173
-# Code: .heroShot {
-Acknowledge: 
-
-ID: css-dead-code::docs-site/src/css/custom.css::193::unused-css-class
-# Issue #112
-# [WARNING] css-dead-code - CSS class ".phaseDiagram" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs-site/src/css/custom.css:193
-# Code: .phaseDiagram {
-Acknowledge: 
-
-ID: css-dead-code::docs-site/src/css/custom.css::209::unused-css-class
-# Issue #113
-# [WARNING] css-dead-code - CSS class ".phase-link" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs-site/src/css/custom.css:209
-# Code: .phase-link {
-Acknowledge: 
-
-ID: css-dead-code::docs/assets/css/style.scss::4::unused-css-class
-# Issue #114
-# [WARNING] css-dead-code - CSS class ".theme" is declared in docs/assets/css/style.scss but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs/assets/css/style.scss:4
-# Code: @import "{{ site.theme }}";
-Acknowledge: 
-
-ID: css-dead-code::docs/assets/css/style.scss::6::unused-css-class
-# Issue #115
-# [WARNING] css-dead-code - CSS class ".main-content" is declared in docs/assets/css/style.scss but never referenced in a class/className attribute across 32 scanned markup file(s).
-#   docs/assets/css/style.scss:6
-# Code: // Cayman's default .main-content is a fixed ~64rem column with no overflow
-Acknowledge: 
-
-ID: iac-security::Dockerfile::140
-# Issue #116
-# [WARNING] iac-security - Pin versions in apt get install. Instead of `apt-get install <package>` use `apt-get install <package>=<version>`
-#   Dockerfile:140
-# Code: RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::175
-# Issue #117
-# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
-#   Dockerfile:175
-# Code: RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov --pip-args="--no-compile" && pipx ensurepath; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::184
-# Issue #118
-# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
-#   Dockerfile:184
-# Code: RUN if [ "$INSTALL_GITLEAKS" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::190
-# Issue #119
-# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
-#   Dockerfile:190
-# Code: RUN if [ "$INSTALL_SYFT" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::200
-# Issue #120
-# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
-#   Dockerfile:200
-# Code: RUN if [ "$INSTALL_SEMGREP" = "true" ]; then pipx install semgrep --pip-args="--no-compile" && pipx ensurepath; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::201
-# Issue #121
-# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
-#   Dockerfile:201
-# Code: RUN if [ "$INSTALL_BEARER" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::225::09cd120f
-# Issue #122
-# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
-#   Dockerfile:225
-# Code: RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::225::bdfb7069
-# Issue #123
-# [WARNING] iac-security - Pin versions in apt get install. Instead of `apt-get install <package>` use `apt-get install <package>=<version>`
-#   Dockerfile:225
-# Code: RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::225::19c88dc5
-# Issue #124
-# [WARNING] iac-security - Pin versions in gem install. Instead of `gem install <gem>` use `gem install <gem>:<version>`
-#   Dockerfile:225
-# Code: RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::238
-# Issue #125
-# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
-#   Dockerfile:238
-# Code: RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan --pip-args="--no-compile" && pipx ensurepath; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::239
-# Issue #126
-# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
-#   Dockerfile:239
-# Code: RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor --pip-args="--no-compile" && pipx ensurepath; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::240
-# Issue #127
-# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
-#   Dockerfile:240
-# Code: RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::268
-# Issue #128
-# [WARNING] iac-security - Pin versions in npm. Instead of `npm install <package>` use `npm install <package>@<version>`
-#   Dockerfile:268
-# Code: RUN if [ "$INSTALL_JSCPD" = "true" ]; then npm install -g jscpd; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::269::2ddec02b
-# Issue #129
-# [WARNING] iac-security - Multiple consecutive `RUN` instructions. Consider consolidation.
-#   Dockerfile:269
-# Code: RUN if [ "$INSTALL_SPECTRAL" = "true" ]; then npm install -g @stoplight/spectral-cli; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::269::37ad8298
-# Issue #130
-# [WARNING] iac-security - Pin versions in npm. Instead of `npm install <package>` use `npm install <package>@<version>`
-#   Dockerfile:269
-# Code: RUN if [ "$INSTALL_SPECTRAL" = "true" ]; then npm install -g @stoplight/spectral-cli; fi
-Acknowledge: 
-
-ID: iac-security::Dockerfile::290
-# Issue #131
-# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
-#   Dockerfile:290
-# Code: RUN if [ "$INSTALL_ACT" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::304
-# Issue #132
-# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
-#   Dockerfile:304
-# Code: RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then \
-Acknowledge: 
-
-ID: iac-security::Dockerfile::356
-# Issue #133
-# [WARNING] iac-security - Non-numeric user-id may not be resolvable by host system
-#   Dockerfile:356
-# Code: USER ignite
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/org_repos.rs::1::low-maintainability
-# Issue #134
-# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 35 over 454 lines of code).
-#   rust/crates/server/src/routes/org_repos.rs:1
-# Code: //! `GET /api/org-repos/:org` — the web UI's "GitHub Org" view: explore
-Acknowledge: 
-
-ID: complexity-health::rust/crates/notifications/src/lib.rs::1::low-maintainability
-# Issue #135
-# [WARNING] complexity-health - Maintainability Index 36/100 — below the 40 threshold (complexity 24 over 589 lines of code).
-#   rust/crates/notifications/src/lib.rs:1
-# Code: //! Faithful port of `lib/notifications.js`'s email-building and sending
-Acknowledge: 
-
-ID: complexity-health::rust/crates/acknowledgments/src/lib.rs::1::low-maintainability
-# Issue #136
-# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 33 over 456 lines of code).
-#   rust/crates/acknowledgments/src/lib.rs:1
-# Code: //! Parsing and regeneration of `.ignite/acknowledgments.md` — ported from
-Acknowledge: 
-
-ID: dependency-vulnerability::rust/crates/server/Cargo.toml::66::jsonwebtoken::GHSA-h395-gr6q-cpjc
-# Issue #137
-# [WARNING] dependency-vulnerability - jsonwebtoken@9.3.1 — GHSA-h395-gr6q-cpjc: jsonwebtoken has Type Confusion that leads to potential authorization bypass (CVE-2026-25537) (CVSS 0)
-#   rust/crates/server/Cargo.toml:66
-# Code: jsonwebtoken = "9"
-Acknowledge: 
-
-ID: code-structure::rust/crates/mcp-server/src/main.rs::1
-# Issue #138
-# [WARNING] code-structure - rust/crates/mcp-server/src/main.rs is 1080 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/mcp-server/src/main.rs:1
-# Code: //! MCP server exposing the company AI validation guidelines, faithful
-Acknowledge: 
-
-ID: code-structure::rust/crates/server/src/routes/daily_report.rs::1
-# Issue #139
-# [WARNING] code-structure - rust/crates/server/src/routes/daily_report.rs is 1177 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
-#   rust/crates/server/src/routes/daily_report.rs:1
-# Code: //! Org-level daily findings report: once a day (default 23:59 server-local
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/daily_report.rs::1::low-maintainability
-# Issue #140
-# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 79 over 1085 lines of code).
-#   rust/crates/server/src/routes/daily_report.rs:1
-# Code: //! Org-level daily findings report: once a day (default 23:59 server-local
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/settings.rs::1::low-maintainability
-# Issue #141
-# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 24 over 360 lines of code).
-#   rust/crates/server/src/routes/settings.rs:1
-# Code: //! Admin settings for the org daily report (`/api/admin/settings/daily-report`).
-Acknowledge: 
-
-ID: complexity-health::rust/crates/cli/src/report.rs::1::low-maintainability
-# Issue #142
-# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 54 over 288 lines of code).
-#   rust/crates/cli/src/report.rs:1
-# Code: //! `ignite report [org] [--channels email,webhook,azure_blob,pdf] [--webhook-url URL]
-Acknowledge: 
-
-ID: complexity-health::vscode-extension/src/dailyReport.ts::1::high-complexity
-# Issue #143
-# [WARNING] complexity-health - Cyclomatic complexity 41 (cognitive 102) — over the 20 threshold past which functions become difficult to test exhaustively. CRAP score 1722 (no coverage data ingested — treated as 0% for CRAP).
-#   vscode-extension/src/dailyReport.ts:1
-# Code: /**
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::f52e1018
-# Issue #144
-# [WARNING] css-dead-code - CSS class ".infima" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::2c327514
-# Issue #145
-# [WARNING] css-dead-code - CSS class ".theme-common" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::e3029717
-# Issue #146
-# [WARNING] css-dead-code - CSS class ".theme-classic" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::10ff8513
-# Issue #147
-# [WARNING] css-dead-code - CSS class ".core" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::ded83cdb
-# Issue #148
-# [WARNING] css-dead-code - CSS class ".plugin-debug" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::55def2ef
-# Issue #149
-# [WARNING] css-dead-code - CSS class ".theme-mermaid" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::ed3865a6
-# Issue #150
-# [WARNING] css-dead-code - CSS class ".theme-live-codeblock" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::d798a436
-# Issue #151
-# [WARNING] css-dead-code - CSS class ".theme-search-algolia" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::059cce80
-# Issue #152
-# [WARNING] css-dead-code - CSS class ".docsearch" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
-#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
-# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
-Acknowledge: 
-
-ID: code-duplication::public/index.html::3378
-# Issue #153
-# [WARNING] code-duplication - 20-line duplicate block, also found in public/index.html:6286-6305.
-#   public/index.html:3378
-# Code: list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: issues[idx].status !== 'overridden' })).join('');
-Acknowledge: 
-
-ID: code-duplication::public/index.html::5254
-# Issue #154
-# [WARNING] code-duplication - 25-line duplicate block, also found in public/index.html:5420-5444.
-#   public/index.html:5254
-# Code: body: JSON.stringify({ language }),
-Acknowledge: 
-
-ID: code-duplication::rust/crates/server/src/routes/effectivate.rs::52
-# Issue #155
-# [WARNING] code-duplication - 27-line duplicate block, also found in rust/crates/server/src/routes/project_overrides.rs:36-62.
-#   rust/crates/server/src/routes/effectivate.rs:52
-# Code: score: i32::try_from(r.score.unwrap_or(0)).unwrap_or(i32::MAX),
-Acknowledge: 
-
-ID: codeql-sast::public/index.html::1729::js/incomplete-html-attribute-sanitization
-# Issue #156
-# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
-#   public/index.html:1729
-# Code: <button type="button" class="shrink-0 text-slate-300 hover:text-slate-600" aria-label="${escapeHtml(t('common.close'))}">
-Acknowledge: 
-
-ID: codeql-sast::public/index.html::3328::js/incomplete-html-attribute-sanitization
-# Issue #157
-# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
-#   public/index.html:3328
-# Code: <span class="w-56 shrink-0 truncate text-slate-700" title="${escapeHtml(label)}">${escapeHtml(label)}${isBottleneck ? ' <span class="text-rose-500" title="Bottleneck — slowest check this run">⬤</span>' : ''}</span>
-Acknowledge: 
-
-ID: codeql-sast::public/index.html::5081::js/incomplete-html-attribute-sanitization
-# Issue #158
-# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
-#   public/index.html:5081
-# Code: <textarea id="studioQueryText" class="w-full flex-1 min-h-[180px] font-mono text-[12px] leading-relaxed border border-slate-200 rounded-lg p-2" spellcheck="false" placeholder="import ${escapeHtml(defaultLanguage)}\n\nfrom ...\nselect ...">${escapeHtml(initialText)}</textarea>
-Acknowledge: 
-
-ID: codeql-sast::public/index.html::6906::js/incomplete-html-attribute-sanitization
-# Issue #159
-# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
-#   public/index.html:6906
-# Code: select.innerHTML = orgs.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
-Acknowledge: 
-
-ID: codeql-sast::public/index.html::6998::js/incomplete-html-attribute-sanitization::e40e5cb3
-# Issue #160
-# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
-#   public/index.html:6998
-# Code: <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.checksBtn')}</button>
-Acknowledge: 
-
-ID: codeql-sast::public/index.html::7000::js/incomplete-html-attribute-sanitization::e40e5cb3
-# Issue #161
-# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
-#   public/index.html:7000
-# Code: ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${escapeAttr(p.retained ? t('history.fullStudioTitle') : t('history.readOnlyStudioTitle'))}">${p.retained ? `${t('history.studioBtn')}${p.retained_tier === 'pruned' ? ` (${t('history.flaggedFilesOnly')})` : ` (${t('common.full')})`}` : t('history.studioBtn')}</button>` : ''}
-Acknowledge: 
-
-ID: codeql-sast::public/index.html::7001::js/incomplete-html-attribute-sanitization::e40e5cb3
-# Issue #162
-# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
-#   public/index.html:7001
-# Code: ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" data-job-id="${escapeAttr(p.job_id || '')}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/routes/effectivate.rs::1::low-maintainability
-# Issue #163
-# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 19 over 583 lines of code).
-#   rust/crates/server/src/routes/effectivate.rs:1
-# Code: //! `POST /api/projects/:projectId/effectivate` — faithful port of
-Acknowledge: 
-
-ID: code-duplication::CLAUDE.md:markdown::94
-# Issue #164
-# [WARNING] code-duplication - 25-line duplicate block, also found in CLAUDE.md:markdown:94-118.
-#   CLAUDE.md:markdown:94
-Acknowledge: 
-
-ID: code-duplication::rust/crates/db-store/src/overrides.rs::247::13f5b9b5
-# Issue #165
-# [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/db-store/src/overrides.rs:296-314.
-#   rust/crates/db-store/src/overrides.rs:247
-# Code: stmt.query_map(params![project_id], |row| {
-Acknowledge: 
-
-ID: code-duplication::rust/crates/db-store/src/overrides.rs::247::e2d31a16
-# Issue #166
-# [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/db-store/src/projects.rs:351-369.
-#   rust/crates/db-store/src/overrides.rs:247
-# Code: stmt.query_map(params![project_id], |row| {
-Acknowledge: 
-
-ID: code-duplication::rust/crates/mcp-server/src/main.rs::956
-# Issue #167
-# [WARNING] code-duplication - 36-line duplicate block, also found in rust/crates/mcp-server/src/main.rs:1108-1142.
-#   rust/crates/mcp-server/src/main.rs:956
-# Code: let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-Acknowledge: 
-
-ID: complexity-health::rust/crates/server/src/main.rs::1::low-maintainability
-# Issue #168
-# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 20 over 907 lines of code).
-#   rust/crates/server/src/main.rs:1
-# Code: //! Ignite's HTTP server — Rust port of `server.js`'s route layer.
-Acknowledge: 
-
 ID: secret::rust/crates/server/src/auth/oidc.rs::311
-# Issue #169
+# Issue #21
 # [ERROR] secret - Hardcoded secret
 #   rust/crates/server/src/auth/oidc.rs:311
 # Code: config.auth.oidc.client_secret = "test-secret".into();
 Acknowledge: Literal test-fixture OIDC client secret used only to construct an in-process test Config for oidc.rs's own unit tests, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/auth/oidc.rs::317 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/auth/oidc.rs::318 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/auth/oidc.rs::319 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/auth/oidc.rs::322 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/auth/github_oauth.rs::282
-# Issue #170
+# Issue #22
 # [ERROR] secret - Hardcoded secret
 #   rust/crates/server/src/auth/github_oauth.rs:282
 # Code: config.github.oauth.client_secret = "secret-123".into();
 Acknowledge: Literal test-fixture GitHub OAuth client secret used only to construct an in-process test Config for github_oauth.rs's own unit tests, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/auth/github_oauth.rs::289 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/auth/github_oauth.rs::290 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/auth/github_oauth.rs::293 - pure line-number drift, flagged code unchanged)
 
-ID: secret::rust/crates/server/src/tests/pipeline_sequence.rs::10
-# Issue #171
-# [WARNING] secret - Hardcoded aws_secret (in a test file — likely a fixture, not a real credential)
-#   rust/crates/server/src/tests/pipeline_sequence.rs:10
-# Code: std::fs::write(dir.path().join("config.js"), "const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n").unwrap();
-Acknowledge: 
-
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::747
-# Issue #172
+# Issue #23
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:747
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entries above, reused in a fourth review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1567 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1571 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::846 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::898 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::899 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::920 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::758 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::811
-# Issue #173
+# Issue #24
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:811
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Fake AWS access key literal used as a fixture file inside a review-gate integration test (uploaded as a zip so the secret scanner flags a real blocking finding to pause the run for review), not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1397 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1401 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::676 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::711 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::712 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::731 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::759 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::822 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::908
-# Issue #174
+# Issue #25
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:908
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entry above, reused in a second review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1453 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1457 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::732 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::773 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::774 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::793 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::823 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::919 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/pipeline_interactive.rs::963
-# Issue #175
+# Issue #26
 # [ERROR] secret - Hardcoded aws_secret
 #   rust/crates/server/src/routes/pipeline_interactive.rs:963
 # Code: let zip = zip_bytes(&[("app.js", b"const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n")]);
 Acknowledge: Same fake AWS access key literal as the entries above, reused in a third review-gate integration test in this same file, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1523 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::1527 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::802 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::854 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::855 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::875 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::975 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/pipeline_interactive.rs::974 - pure line-number drift, flagged code unchanged)
 
 ID: secret::rust/crates/server/src/routes/custom_secret_patterns.rs::199
-# Issue #176
+# Issue #27
 # [ERROR] secret - Hardcoded generic-api-key
 #   rust/crates/server/src/routes/custom_secret_patterns.rs:199
 # Code: let req = Request::post("/api/secret-patterns/test").header("content-type", "application/json").body(Body::from(r#"{"regex":"sk_live_[a-z0-9]+","sample":"key: sk_live_abc123"}"#)).unwrap();
 Acknowledge: Fabricated Stripe-format sample string used as request-body input to the custom-secret-pattern playground's own unit test (test_pattern_route_reports_matches_without_persisting_anything) - the whole point of this endpoint is to test a regex against sample text, so a plausible-looking fake match is expected input, not a real credential. (auto-carried-forward from secret::rust/crates/server/src/routes/custom_secret_patterns.rs::193 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/custom_secret_patterns.rs::203 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/custom_secret_patterns.rs::207 - pure line-number drift, flagged code unchanged) (auto-carried-forward from secret::rust/crates/server/src/routes/custom_secret_patterns.rs::210 - pure line-number drift, flagged code unchanged)
+
+ID: iac-security::Dockerfile::1::629a3996
+# Issue #28
+# [WARNING] iac-security - No HEALTHCHECK defined
+#   Dockerfile:1
+# Code: # Ignite, self-contained: the Rust server/CLI/MCP binaries plus every
+Acknowledge: 
+
+ID: iac-security::Dockerfile::1::5c411837
+# Issue #29
+# [WARNING] iac-security - Ensure that HEALTHCHECK instructions have been added to container images
+#   Dockerfile:1
+# Code: # Ignite, self-contained: the Rust server/CLI/MCP binaries plus every
+Acknowledge: 
+
+ID: iac-security::Dockerfile::162
+# Issue #30
+# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
+#   Dockerfile:162
+# Code: RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov --pip-args="--no-compile" && pipx ensurepath; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::171
+# Issue #31
+# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
+#   Dockerfile:171
+# Code: RUN if [ "$INSTALL_GITLEAKS" = "true" ]; then \
+Acknowledge: 
+
+ID: gha-security::.github/workflows/check-env-var-drift.yml::25
+# Issue #32
+# [WARNING] gha-security - credential persistence through GitHub Actions artifacts (uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4)
+#   .github/workflows/check-env-var-drift.yml:25
+# Code: - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+Acknowledge: 
+
+ID: gha-security::.github/workflows/deploy-docs.yml::24
+# Issue #33
+# [WARNING] gha-security - credential persistence through GitHub Actions artifacts (uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4)
+#   .github/workflows/deploy-docs.yml:24
+# Code: - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+Acknowledge: 
+
+ID: image-provenance::Dockerfile::19
+# Issue #34
+# [WARNING] image-provenance - Base image "rust:1-bookworm" has no verifiable Sigstore/cosign signature — supply-chain provenance can't be confirmed.
+#   Dockerfile:19
+# Code: FROM rust:1-bookworm AS rust-builder
+Acknowledge: 
+
+ID: image-provenance::Dockerfile::30
+# Issue #35
+# [WARNING] image-provenance - Base image "node:24-bookworm-slim" has no verifiable Sigstore/cosign signature — supply-chain provenance can't be confirmed.
+#   Dockerfile:30
+# Code: FROM node:24-bookworm-slim
+Acknowledge: 
+
+ID: code-duplication::README.md:markdown::110
+# Issue #36
+# [WARNING] code-duplication - 28-line duplicate block, also found in README.md:markdown:427-502.
+#   README.md:markdown:110
+Acknowledge: 
+
+ID: code-duplication::rust/crates/server/src/routes/pipeline_onboard.rs::29
+# Issue #37
+# [WARNING] code-duplication - 59-line duplicate block, also found in rust/crates/server/src/routes/pipeline_validate.rs:32-90.
+#   rust/crates/server/src/routes/pipeline_onboard.rs:29
+# Code: static REPO_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,100}$").unwrap());
+Acknowledge: 
+
+ID: code-duplication::rust/crates/server/src/routes/pipeline_onboard.rs::88
+# Issue #38
+# [WARNING] code-duplication - 18-line duplicate block, also found in rust/crates/server/src/routes/pipeline_validate.rs:92-109.
+#   rust/crates/server/src/routes/pipeline_onboard.rs:88
+# Code: self.inner.lock().unwrap().project_id = Some(id);
+Acknowledge: 
+
+ID: code-duplication::rust/crates/server/src/routes/repository_events_webhook.rs::67
+# Issue #39
+# [WARNING] code-duplication - 20-line duplicate block, also found in rust/crates/server/src/routes/secret_scanning_webhook.rs:79-98.
+#   rust/crates/server/src/routes/repository_events_webhook.rs:67
+# Code: return err(StatusCode::NOT_FOUND, "Inbound repository-events webhook is not configured.".to_string());
+Acknowledge: 
+
+ID: code-duplication::rust/crates/server/src/routes/studio.rs::349::f8d6eb75
+# Issue #40
+# [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/server/src/routes/studio.rs:452-470.
+#   rust/crates/server/src/routes/studio.rs:349
+# Code: async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+Acknowledge: 
+
+ID: code-duplication::rust/crates/server/src/routes/studio.rs::349::34308faa
+# Issue #41
+# [WARNING] code-duplication - 22-line duplicate block, also found in rust/crates/server/src/routes/studio.rs:567-587.
+#   rust/crates/server/src/routes/studio.rs:349
+# Code: async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+Acknowledge: 
+
+ID: code-structure::rust/crates/db-store/src/lib.rs::1
+# Issue #42
+# [WARNING] code-structure - rust/crates/db-store/src/lib.rs is 1027 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/db-store/src/lib.rs:1
+# Code: //! SQLite-backed store — faithful port of `db-store.js`. Same schema
+Acknowledge: 
+
+ID: code-structure::rust/crates/config/src/lib.rs::1
+# Issue #43
+# [WARNING] code-structure - rust/crates/config/src/lib.rs is 1597 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/config/src/lib.rs:1
+# Code: //! Ignite configuration — config.json < environment variables. Faithful
+Acknowledge: 
+
+ID: code-structure::rust/crates/secrets/src/lib.rs::1
+# Issue #44
+# [WARNING] code-structure - rust/crates/secrets/src/lib.rs is 1097 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/secrets/src/lib.rs:1
+# Code: //! Regex-based secret scan + optional gitleaks supplement. Faithful port
+Acknowledge: 
+
+ID: code-structure::rust/crates/auto-fix-pr/src/lib.rs::1
+# Issue #45
+# [WARNING] code-structure - rust/crates/auto-fix-pr/src/lib.rs is 1456 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/auto-fix-pr/src/lib.rs:1
+# Code: //! Auto-fix PR bot — the Dependabot-parity gap `scheduled-rescan` leaves
+Acknowledge: 
+
+ID: code-structure::rust/crates/server/src/routes/studio.rs::1
+# Issue #46
+# [WARNING] code-structure - rust/crates/server/src/routes/studio.rs is 1110 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/server/src/routes/studio.rs:1
+# Code: //! `/api/pipeline/:jobId/studio/*` — faithful (partial) port of
+Acknowledge: 
+
+ID: code-structure::rust/crates/server/src/routes/pipeline_validate.rs::1
+# Issue #47
+# [WARNING] code-structure - rust/crates/server/src/routes/pipeline_validate.rs is 1068 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/server/src/routes/pipeline_validate.rs:1
+# Code: //! POST /api/pipeline/validate-all — faithful port of
+Acknowledge: 
+
+ID: code-structure::rust/crates/fix-pr/src/lib.rs::1
+# Issue #48
+# [WARNING] code-structure - rust/crates/fix-pr/src/lib.rs is 1218 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/fix-pr/src/lib.rs:1
+# Code: //! Bulk "fix all findings" PR generator — the scan-wide counterpart to
+Acknowledge: 
+
+ID: code-structure::rust/crates/dependency-license-scan/src/lib.rs::1
+# Issue #49
+# [WARNING] code-structure - rust/crates/dependency-license-scan/src/lib.rs is 1826 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/dependency-license-scan/src/lib.rs:1
+# Code: //! Dependency license/vulnerability scan orchestrators. Faithful port of
+Acknowledge: 
+
+ID: code-structure::rust/crates/phase4-orchestrator/src/lib.rs::1
+# Issue #50
+# [WARNING] code-structure - rust/crates/phase4-orchestrator/src/lib.rs is 1379 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/phase4-orchestrator/src/lib.rs:1
+# Code: //! Phase 4 check orchestrator. Faithful port of server.js's
+Acknowledge: 
+
+ID: code-structure::public/i18n.js::1
+# Issue #51
+# [WARNING] code-structure - public/i18n.js is 1324 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   public/i18n.js:1
+# Code: // Ignite web UI translations — static UI chrome only (buttons, labels,
+Acknowledge: 
+
+ID: dead-code::docs-site/.docusaurus/client-modules.js::1::unused-file
+# Issue #52
+# [WARNING] dead-code - docs-site/.docusaurus/client-modules.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   docs-site/.docusaurus/client-modules.js:1
+# Code: export default [
+Acknowledge: 
+
+ID: dead-code::docs-site/.docusaurus/registry.js::1::unused-file
+# Issue #53
+# [WARNING] dead-code - docs-site/.docusaurus/registry.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   docs-site/.docusaurus/registry.js:1
+# Code: export default {
+Acknowledge: 
+
+ID: dead-code::docs-site/.docusaurus/routes.js::1::unused-file
+# Issue #54
+# [WARNING] dead-code - docs-site/.docusaurus/routes.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   docs-site/.docusaurus/routes.js:1
+# Code: import React from 'react';
+Acknowledge: 
+
+ID: dead-code::docs-site/sidebars.js::1::unused-file
+# Issue #55
+# [WARNING] dead-code - docs-site/sidebars.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   docs-site/sidebars.js:1
+# Code: // @ts-check
+Acknowledge: 
+
+ID: dead-code::docs-site/src/clientModules/eagerImages.js::1::unused-file
+# Issue #56
+# [WARNING] dead-code - docs-site/src/clientModules/eagerImages.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   docs-site/src/clientModules/eagerImages.js:1
+# Code: // Docusaurus's MDX <img> component auto-sets loading="lazy" on every doc
+Acknowledge: 
+
+ID: dead-code::public/i18n.js::1::unused-file
+# Issue #57
+# [WARNING] dead-code - public/i18n.js is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   public/i18n.js:1
+# Code: // Ignite web UI translations — static UI chrome only (buttons, labels,
+Acknowledge: 
+
+ID: dead-code::vscode-extension/src/progress.ts::1::unused-file
+# Issue #58
+# [WARNING] dead-code - vscode-extension/src/progress.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   vscode-extension/src/progress.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: dead-code::vscode-extension/src/panels/findingsTree.ts::1::unused-file
+# Issue #59
+# [WARNING] dead-code - vscode-extension/src/panels/findingsTree.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   vscode-extension/src/panels/findingsTree.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: dead-code::vscode-extension/src/panels/reportPanel.ts::1::unused-file
+# Issue #60
+# [WARNING] dead-code - vscode-extension/src/panels/reportPanel.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   vscode-extension/src/panels/reportPanel.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: dead-code::vscode-extension/src/panels/toolsStatusTree.ts::1::unused-file
+# Issue #61
+# [WARNING] dead-code - vscode-extension/src/panels/toolsStatusTree.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   vscode-extension/src/panels/toolsStatusTree.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: dead-code::vscode-extension/src/extension.ts::1::unused-file
+# Issue #62
+# [WARNING] dead-code - vscode-extension/src/extension.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   vscode-extension/src/extension.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: dead-code::vscode-extension/src/diagnostics.ts::1::unused-file
+# Issue #63
+# [WARNING] dead-code - vscode-extension/src/diagnostics.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   vscode-extension/src/diagnostics.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: dead-code::vscode-extension/src/prePushHook.ts::1::unused-file
+# Issue #64
+# [WARNING] dead-code - vscode-extension/src/prePushHook.ts is never imported/required from any detected entry point (package.json main/exports/bin, index/main/server/app files, config files, or tests) — a candidate for deletion.
+#   vscode-extension/src/prePushHook.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: complexity-health::rust/crates/override-engine/src/collect.rs::1::low-maintainability
+# Issue #65
+# [WARNING] complexity-health - Maintainability Index 25/100 — below the 40 threshold (complexity 109 over 545 lines of code).
+#   rust/crates/override-engine/src/collect.rs:1
+# Code: //! Turns every check's raw findings (`RawFinding`/`CodeqlFinding`/license
+Acknowledge: 
+
+ID: complexity-health::rust/crates/staging/src/lib.rs::1::low-maintainability
+# Issue #66
+# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 47 over 491 lines of code).
+#   rust/crates/staging/src/lib.rs:1
+# Code: //! Faithful port of `server.js`'s staging/extraction layer — the guarded
+Acknowledge: 
+
+ID: complexity-health::rust/crates/image-provenance/src/lib.rs::1::low-maintainability
+# Issue #67
+# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 29 over 280 lines of code).
+#   rust/crates/image-provenance/src/lib.rs:1
+# Code: //! Sigstore/cosign keyless-signature verification for external Dockerfile
+Acknowledge: 
+
+ID: complexity-health::rust/crates/auto-fix/src/lib.rs::1::low-maintainability
+# Issue #68
+# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 28 over 374 lines of code).
+#   rust/crates/auto-fix/src/lib.rs:1
+# Code: //! Faithful port of `lib/auto-fix.js` — turns a subset of dead-code and
+Acknowledge: 
+
+ID: complexity-health::rust/crates/codeql-cross-file/src/lib.rs::1::low-maintainability
+# Issue #69
+# [WARNING] complexity-health - Maintainability Index 24/100 — below the 40 threshold (complexity 79 over 860 lines of code).
+#   rust/crates/codeql-cross-file/src/lib.rs:1
+# Code: //! Cross-file static analysis via the CodeQL CLI. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/secret-verifier/src/lib.rs::1::low-maintainability
+# Issue #70
+# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 60 over 837 lines of code).
+#   rust/crates/secret-verifier/src/lib.rs:1
+# Code: //! Active, read-only credential verification — the GHAS-parity gap noted
+Acknowledge: 
+
+ID: complexity-health::rust/crates/config/src/lib.rs::1::low-maintainability
+# Issue #71
+# [WARNING] complexity-health - Maintainability Index 14/100 — below the 40 threshold (complexity 196 over 1501 lines of code).
+#   rust/crates/config/src/lib.rs:1
+# Code: //! Ignite configuration — config.json < environment variables. Faithful
+Acknowledge: 
+
+ID: complexity-health::rust/crates/license-classification/src/lib.rs::1::low-maintainability
+# Issue #72
+# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 25 over 314 lines of code).
+#   rust/crates/license-classification/src/lib.rs:1
+# Code: //! SPDX license tier classification and version-range helpers shared by
+Acknowledge: 
+
+ID: complexity-health::rust/crates/pipeline-core/src/lib.rs::1::low-maintainability
+# Issue #73
+# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 38 over 479 lines of code).
+#   rust/crates/pipeline-core/src/lib.rs:1
+# Code: //! Pipeline orchestration helpers shared across `validate-all`/`onboard`/
+Acknowledge: 
+
+ID: complexity-health::rust/crates/iac-security/src/lib.rs::1::low-maintainability
+# Issue #74
+# [WARNING] complexity-health - Maintainability Index 31/100 — below the 40 threshold (complexity 57 over 475 lines of code).
+#   rust/crates/iac-security/src/lib.rs:1
+# Code: //! IaC/container misconfiguration scan (Dockerfiles, Terraform, Kubernetes
+Acknowledge: 
+
+ID: complexity-health::rust/crates/dead-code/src/lib.rs::1::low-maintainability
+# Issue #75
+# [WARNING] complexity-health - Maintainability Index 30/100 — below the 40 threshold (complexity 66 over 437 lines of code).
+#   rust/crates/dead-code/src/lib.rs:1
+# Code: //! Built-in dead-code / unused-export / unused-dependency / circular-import
+Acknowledge: 
+
+ID: complexity-health::rust/crates/secrets/src/lib.rs::1::low-maintainability
+# Issue #76
+# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 82 over 995 lines of code).
+#   rust/crates/secrets/src/lib.rs:1
+# Code: //! Regex-based secret scan + optional gitleaks supplement. Faithful port
+Acknowledge: 
+
+ID: complexity-health::rust/crates/auto-fix-pr/src/lib.rs::1::low-maintainability
+# Issue #77
+# [WARNING] complexity-health - Maintainability Index 20/100 — below the 40 threshold (complexity 96 over 1344 lines of code).
+#   rust/crates/auto-fix-pr/src/lib.rs:1
+# Code: //! Auto-fix PR bot — the Dependabot-parity gap `scheduled-rescan` leaves
+Acknowledge: 
+
+ID: complexity-health::rust/crates/deps-dev-client/src/lib.rs::1::low-maintainability
+# Issue #78
+# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 67 over 657 lines of code).
+#   rust/crates/deps-dev-client/src/lib.rs:1
+# Code: //! deps.dev API client + npm-registry/unpkg license fallbacks, shared by
+Acknowledge: 
+
+ID: complexity-health::rust/crates/mcp-server/src/main.rs::1::low-maintainability
+# Issue #79
+# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 32 over 845 lines of code).
+#   rust/crates/mcp-server/src/main.rs:1
+# Code: //! MCP server exposing the company AI validation guidelines, faithful
+Acknowledge: 
+
+ID: complexity-health::rust/crates/css-dead-code/src/lib.rs::1::low-maintainability
+# Issue #80
+# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 59 over 353 lines of code).
+#   rust/crates/css-dead-code/src/lib.rs:1
+# Code: //! Built-in CSS/Tailwind dead-class scan. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/boundaries/src/lib.rs::1::low-maintainability
+# Issue #81
+# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 26 over 325 lines of code).
+#   rust/crates/boundaries/src/lib.rs:1
+# Code: //! Built-in architecture-boundary enforcement. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/studio-manifests/src/lib.rs::1::low-maintainability
+# Issue #82
+# [WARNING] complexity-health - Maintainability Index 24/100 — below the 40 threshold (complexity 113 over 619 lines of code).
+#   rust/crates/studio-manifests/src/lib.rs:1
+# Code: //! The manifest parsers server.js's dependency license/vulnerability
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/auth.rs::1::low-maintainability
+# Issue #83
+# [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 28 over 433 lines of code).
+#   rust/crates/server/src/auth.rs:1
+# Code: //! Session/API-key auth route wiring — Rust port of `auth.js`'s Express
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/studio.rs::1::low-maintainability
+# Issue #84
+# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 52 over 1008 lines of code).
+#   rust/crates/server/src/routes/studio.rs:1
+# Code: //! `/api/pipeline/:jobId/studio/*` — faithful (partial) port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/issues.rs::1::low-maintainability
+# Issue #85
+# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 21 over 438 lines of code).
+#   rust/crates/server/src/routes/issues.rs:1
+# Code: //! /api/issues/{explain,suggest-fix} — faithful port of routes/issues.js.
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/pipeline_onboard.rs::1::low-maintainability
+# Issue #86
+# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 61 over 526 lines of code).
+#   rust/crates/server/src/routes/pipeline_onboard.rs:1
+# Code: //! POST /api/pipeline/onboard — faithful port of routes/pipeline-onboard.js:
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/pipeline_interactive/run.rs::1::low-maintainability
+# Issue #87
+# [WARNING] complexity-health - Maintainability Index 22/100 — below the 40 threshold (complexity 113 over 810 lines of code).
+#   rust/crates/server/src/routes/pipeline_interactive/run.rs:1
+# Code: //! The actual phase-by-phase driver for `POST /api/pipeline` — split
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/pipeline_interactive.rs::1::low-maintainability
+# Issue #88
+# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 44 over 925 lines of code).
+#   rust/crates/server/src/routes/pipeline_interactive.rs:1
+# Code: //! POST /api/pipeline — faithful port of routes/pipeline-interactive.js:
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/github_pr_status.rs::1::low-maintainability
+# Issue #89
+# [WARNING] complexity-health - Maintainability Index 32/100 — below the 40 threshold (complexity 59 over 361 lines of code).
+#   rust/crates/server/src/routes/github_pr_status.rs:1
+# Code: //! POST /api/pipeline/:jobId/github-check — faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/pipeline_validate.rs::1::low-maintainability
+# Issue #90
+# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 83 over 985 lines of code).
+#   rust/crates/server/src/routes/pipeline_validate.rs:1
+# Code: //! POST /api/pipeline/validate-all — faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/github-api/src/lib.rs::1::low-maintainability
+# Issue #91
+# [WARNING] complexity-health - Maintainability Index 28/100 — below the 40 threshold (complexity 53 over 751 lines of code).
+#   rust/crates/github-api/src/lib.rs:1
+# Code: //! Faithful port of `lib/github-api.js` — GitHub API access without
+Acknowledge: 
+
+ID: complexity-health::rust/crates/fs-utils/src/lib.rs::1::low-maintainability
+# Issue #92
+# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 31 over 488 lines of code).
+#   rust/crates/fs-utils/src/lib.rs:1
+# Code: //! Pure filesystem/content helpers shared by Ignite's checks — file
+Acknowledge: 
+
+ID: complexity-health::rust/crates/fix-pr/src/lib.rs::1::low-maintainability
+# Issue #93
+# [WARNING] complexity-health - Maintainability Index 24/100 — below the 40 threshold (complexity 71 over 1111 lines of code).
+#   rust/crates/fix-pr/src/lib.rs:1
+# Code: //! Bulk "fix all findings" PR generator — the scan-wide counterpart to
+Acknowledge: 
+
+ID: complexity-health::rust/crates/llm-deep-scan/src/lib.rs::1::low-maintainability
+# Issue #94
+# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 120 over 602 lines of code).
+#   rust/crates/llm-deep-scan/src/lib.rs:1
+# Code: //! Local LLM (Ollama/llama.cpp-compatible, or OpenAI) security/quality
+Acknowledge: 
+
+ID: complexity-health::rust/crates/dependency-license-scan/src/lib.rs::1::low-maintainability
+# Issue #95
+# [WARNING] complexity-health - Maintainability Index 16/100 — below the 40 threshold (complexity 132 over 1682 lines of code).
+#   rust/crates/dependency-license-scan/src/lib.rs:1
+# Code: //! Dependency license/vulnerability scan orchestrators. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/llm-client/src/lib.rs::1::low-maintainability
+# Issue #96
+# [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 22 over 546 lines of code).
+#   rust/crates/llm-client/src/lib.rs:1
+# Code: //! Shared local-LLM/OpenAI chat-completions client. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/phase4-orchestrator/src/lib.rs::1::low-maintainability
+# Issue #97
+# [WARNING] complexity-health - Maintainability Index 25/100 — below the 40 threshold (complexity 51 over 1291 lines of code).
+#   rust/crates/phase4-orchestrator/src/lib.rs:1
+# Code: //! Phase 4 check orchestrator. Faithful port of server.js's
+Acknowledge: 
+
+ID: complexity-health::rust/crates/package-hallucination/src/lib.rs::1::low-maintainability
+# Issue #98
+# [WARNING] complexity-health - Maintainability Index 36/100 — below the 40 threshold (complexity 33 over 370 lines of code).
+#   rust/crates/package-hallucination/src/lib.rs:1
+# Code: //! AI package-hallucination / slopsquat detection. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/gha-security/src/lib.rs::1::low-maintainability
+# Issue #99
+# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 22 over 436 lines of code).
+#   rust/crates/gha-security/src/lib.rs:1
+# Code: //! GitHub Actions workflow security scan via zizmor (Trail of Bits'
+Acknowledge: 
+
+ID: complexity-health::rust/crates/tool-runner/src/lib.rs::1::low-maintainability
+# Issue #100
+# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 67 over 640 lines of code).
+#   rust/crates/tool-runner/src/lib.rs:1
+# Code: //! External-tool process execution + the sanitizers that guard it — every
+Acknowledge: 
+
+ID: complexity-health::rust/crates/complexity-health/src/lib.rs::1::low-maintainability
+# Issue #101
+# [WARNING] complexity-health - Maintainability Index 28/100 — below the 40 threshold (complexity 63 over 626 lines of code).
+#   rust/crates/complexity-health/src/lib.rs:1
+# Code: //! Built-in complexity/maintainability health scan. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/container-image-vulnerabilities/src/lib.rs::1::low-maintainability
+# Issue #102
+# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 30 over 316 lines of code).
+#   rust/crates/container-image-vulnerabilities/src/lib.rs:1
+# Code: //! Builds every discovered Dockerfile and runs `trivy image` against the
+Acknowledge: 
+
+ID: complexity-health::rust/crates/module-graph/src/lib.rs::1::low-maintainability
+# Issue #103
+# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 53 over 660 lines of code).
+#   rust/crates/module-graph/src/lib.rs:1
+# Code: //! Lightweight JS/TS module graph: parses import/require/export statements
+Acknowledge: 
+
+ID: complexity-health::rust/crates/guidelines/src/checks.rs::1::low-maintainability
+# Issue #104
+# [WARNING] complexity-health - Maintainability Index 25/100 — below the 40 threshold (complexity 87 over 680 lines of code).
+#   rust/crates/guidelines/src/checks.rs:1
+# Code: //! Mechanical checks for the automated subset of the guideline catalog.
+Acknowledge: 
+
+ID: complexity-health::rust/crates/enforce-gate-branch-protection/src/lib.rs::1::low-maintainability
+# Issue #105
+# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 23 over 676 lines of code).
+#   rust/crates/enforce-gate-branch-protection/src/lib.rs:1
+# Code: //! `enforce-gate-branch-protection <org/repo> [<org/repo>...] [--apply]` —
+Acknowledge: 
+
+ID: complexity-health::rust/crates/report-vulnerability/src/main.rs::1::low-maintainability
+# Issue #106
+# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 30 over 568 lines of code).
+#   rust/crates/report-vulnerability/src/main.rs:1
+# Code: //! `report-vulnerability <org/repo> --summary <str> --severity <level>
+Acknowledge: 
+
+ID: complexity-health::rust/crates/callgraph/src/lib.rs::1::low-maintainability
+# Issue #107
+# [WARNING] complexity-health - Maintainability Index 29/100 — below the 40 threshold (complexity 62 over 593 lines of code).
+#   rust/crates/callgraph/src/lib.rs:1
+# Code: //! Studio's "Call Graph" feature: caller -> callee edges across a project,
+Acknowledge: 
+
+ID: complexity-health::rust/crates/pii-dataflow/src/lib.rs::1::low-maintainability
+# Issue #108
+# [WARNING] complexity-health - Maintainability Index 33/100 — below the 40 threshold (complexity 47 over 403 lines of code).
+#   rust/crates/pii-dataflow/src/lib.rs:1
+# Code: //! Sensitive data-flow (PII/GDPR) SAST via Bearer. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::rust/crates/governance-ci/src/lib.rs::1::low-maintainability
+# Issue #109
+# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 33 over 290 lines of code).
+#   rust/crates/governance-ci/src/lib.rs:1
+# Code: //! Phase 5: org governance CI, run locally via `act`. Faithful port of
+Acknowledge: 
+
+ID: complexity-health::vscode-extension/src/panels/findingsTree.ts::1::low-maintainability
+# Issue #110
+# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 41 over 179 lines of code).
+#   vscode-extension/src/panels/findingsTree.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: complexity-health::vscode-extension/src/panels/reportPanel.ts::1::low-maintainability
+# Issue #111
+# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 53 over 273 lines of code).
+#   vscode-extension/src/panels/reportPanel.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: complexity-health::vscode-extension/src/extension.ts::1::low-maintainability
+# Issue #112
+# [WARNING] complexity-health - Maintainability Index 27/100 — below the 40 threshold (complexity 90 over 488 lines of code).
+#   vscode-extension/src/extension.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: complexity-health::vscode-extension/src/api.ts::1::low-maintainability
+# Issue #113
+# [WARNING] complexity-health - Maintainability Index 30/100 — below the 40 threshold (complexity 68 over 397 lines of code).
+#   vscode-extension/src/api.ts:1
+# Code: import * as vscode from 'vscode';
+Acknowledge: 
+
+ID: complexity-health::vscode-extension/src/reviewFile.ts::1::low-maintainability
+# Issue #114
+# [WARNING] complexity-health - Maintainability Index 37/100 — below the 40 threshold (complexity 43 over 239 lines of code).
+#   vscode-extension/src/reviewFile.ts:1
+# Code: import * as fs from 'fs/promises';
+Acknowledge: 
+
+ID: css-dead-code::docs-site/src/css/custom.css::32::unused-css-class
+# Issue #115
+# [WARNING] css-dead-code - CSS class ".markdown" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs-site/src/css/custom.css:32
+# Code: .markdown {
+Acknowledge: 
+
+ID: css-dead-code::docs-site/src/css/custom.css::88::unused-css-class
+# Issue #116
+# [WARNING] css-dead-code - CSS class ".theme-admonition" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs-site/src/css/custom.css:88
+# Code: .theme-admonition {
+Acknowledge: 
+
+ID: css-dead-code::docs-site/src/css/custom.css::95::unused-css-class
+# Issue #117
+# [WARNING] css-dead-code - CSS class ".theme-doc-markdown" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs-site/src/css/custom.css:95
+# Code: .theme-doc-markdown table {
+Acknowledge: 
+
+ID: css-dead-code::docs-site/src/css/custom.css::173::unused-css-class
+# Issue #118
+# [WARNING] css-dead-code - CSS class ".heroShot" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs-site/src/css/custom.css:173
+# Code: .heroShot {
+Acknowledge: 
+
+ID: css-dead-code::docs-site/src/css/custom.css::193::unused-css-class
+# Issue #119
+# [WARNING] css-dead-code - CSS class ".phaseDiagram" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs-site/src/css/custom.css:193
+# Code: .phaseDiagram {
+Acknowledge: 
+
+ID: css-dead-code::docs-site/src/css/custom.css::209::unused-css-class
+# Issue #120
+# [WARNING] css-dead-code - CSS class ".phase-link" is declared in docs-site/src/css/custom.css but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs-site/src/css/custom.css:209
+# Code: .phase-link {
+Acknowledge: 
+
+ID: css-dead-code::docs/assets/css/style.scss::4::unused-css-class
+# Issue #121
+# [WARNING] css-dead-code - CSS class ".theme" is declared in docs/assets/css/style.scss but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs/assets/css/style.scss:4
+# Code: @import "{{ site.theme }}";
+Acknowledge: 
+
+ID: css-dead-code::docs/assets/css/style.scss::6::unused-css-class
+# Issue #122
+# [WARNING] css-dead-code - CSS class ".main-content" is declared in docs/assets/css/style.scss but never referenced in a class/className attribute across 32 scanned markup file(s).
+#   docs/assets/css/style.scss:6
+# Code: // Cayman's default .main-content is a fixed ~64rem column with no overflow
+Acknowledge: 
+
+ID: iac-security::Dockerfile::140
+# Issue #123
+# [WARNING] iac-security - Pin versions in apt get install. Instead of `apt-get install <package>` use `apt-get install <package>=<version>`
+#   Dockerfile:140
+# Code: RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::175
+# Issue #124
+# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
+#   Dockerfile:175
+# Code: RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov --pip-args="--no-compile" && pipx ensurepath; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::184
+# Issue #125
+# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
+#   Dockerfile:184
+# Code: RUN if [ "$INSTALL_GITLEAKS" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::190
+# Issue #126
+# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
+#   Dockerfile:190
+# Code: RUN if [ "$INSTALL_SYFT" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::200
+# Issue #127
+# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
+#   Dockerfile:200
+# Code: RUN if [ "$INSTALL_SEMGREP" = "true" ]; then pipx install semgrep --pip-args="--no-compile" && pipx ensurepath; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::201
+# Issue #128
+# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
+#   Dockerfile:201
+# Code: RUN if [ "$INSTALL_BEARER" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::225::09cd120f
+# Issue #129
+# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
+#   Dockerfile:225
+# Code: RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::225::bdfb7069
+# Issue #130
+# [WARNING] iac-security - Pin versions in apt get install. Instead of `apt-get install <package>` use `apt-get install <package>=<version>`
+#   Dockerfile:225
+# Code: RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::225::19c88dc5
+# Issue #131
+# [WARNING] iac-security - Pin versions in gem install. Instead of `gem install <gem>` use `gem install <gem>:<version>`
+#   Dockerfile:225
+# Code: RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::238
+# Issue #132
+# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
+#   Dockerfile:238
+# Code: RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan --pip-args="--no-compile" && pipx ensurepath; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::239
+# Issue #133
+# [WARNING] iac-security - Pin versions in pip. Instead of `pip install <package>` use `pip install <package>==<version>` or `pip install --requirement <requirements file>`
+#   Dockerfile:239
+# Code: RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor --pip-args="--no-compile" && pipx ensurepath; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::240
+# Issue #134
+# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
+#   Dockerfile:240
+# Code: RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::268
+# Issue #135
+# [WARNING] iac-security - Pin versions in npm. Instead of `npm install <package>` use `npm install <package>@<version>`
+#   Dockerfile:268
+# Code: RUN if [ "$INSTALL_JSCPD" = "true" ]; then npm install -g jscpd; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::269::2ddec02b
+# Issue #136
+# [WARNING] iac-security - Multiple consecutive `RUN` instructions. Consider consolidation.
+#   Dockerfile:269
+# Code: RUN if [ "$INSTALL_SPECTRAL" = "true" ]; then npm install -g @stoplight/spectral-cli; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::269::37ad8298
+# Issue #137
+# [WARNING] iac-security - Pin versions in npm. Instead of `npm install <package>` use `npm install <package>@<version>`
+#   Dockerfile:269
+# Code: RUN if [ "$INSTALL_SPECTRAL" = "true" ]; then npm install -g @stoplight/spectral-cli; fi
+Acknowledge: 
+
+ID: iac-security::Dockerfile::290
+# Issue #138
+# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
+#   Dockerfile:290
+# Code: RUN if [ "$INSTALL_ACT" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::304
+# Issue #139
+# [WARNING] iac-security - Set the SHELL option -o pipefail before RUN with a pipe in it. If you are using /bin/sh in an alpine image or if your shell is symlinked to busybox then consider explicitly setting your SHELL to /bin/ash, or disable this check
+#   Dockerfile:304
+# Code: RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then \
+Acknowledge: 
+
+ID: iac-security::Dockerfile::356
+# Issue #140
+# [WARNING] iac-security - Non-numeric user-id may not be resolvable by host system
+#   Dockerfile:356
+# Code: USER ignite
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/org_repos.rs::1::low-maintainability
+# Issue #141
+# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 35 over 454 lines of code).
+#   rust/crates/server/src/routes/org_repos.rs:1
+# Code: //! `GET /api/org-repos/:org` — the web UI's "GitHub Org" view: explore
+Acknowledge: 
+
+ID: complexity-health::rust/crates/notifications/src/lib.rs::1::low-maintainability
+# Issue #142
+# [WARNING] complexity-health - Maintainability Index 36/100 — below the 40 threshold (complexity 24 over 589 lines of code).
+#   rust/crates/notifications/src/lib.rs:1
+# Code: //! Faithful port of `lib/notifications.js`'s email-building and sending
+Acknowledge: 
+
+ID: complexity-health::rust/crates/acknowledgments/src/lib.rs::1::low-maintainability
+# Issue #143
+# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 33 over 456 lines of code).
+#   rust/crates/acknowledgments/src/lib.rs:1
+# Code: //! Parsing and regeneration of `.ignite/acknowledgments.md` — ported from
+Acknowledge: 
+
+ID: dependency-vulnerability::rust/crates/server/Cargo.toml::66::jsonwebtoken::GHSA-h395-gr6q-cpjc
+# Issue #144
+# [WARNING] dependency-vulnerability - jsonwebtoken@9.3.1 — GHSA-h395-gr6q-cpjc: jsonwebtoken has Type Confusion that leads to potential authorization bypass (CVE-2026-25537) (CVSS 0)
+#   rust/crates/server/Cargo.toml:66
+# Code: jsonwebtoken = "9"
+Acknowledge: 
+
+ID: code-structure::rust/crates/mcp-server/src/main.rs::1
+# Issue #145
+# [WARNING] code-structure - rust/crates/mcp-server/src/main.rs is 1080 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/mcp-server/src/main.rs:1
+# Code: //! MCP server exposing the company AI validation guidelines, faithful
+Acknowledge: 
+
+ID: code-structure::rust/crates/server/src/routes/daily_report.rs::1
+# Issue #146
+# [WARNING] code-structure - rust/crates/server/src/routes/daily_report.rs is 1177 lines — over the 1000-line guideline. A single file this size usually means more than one responsibility living together, making it harder to review, test in isolation, and (for SAST tools that cache per-file) harder to scan incrementally.
+#   rust/crates/server/src/routes/daily_report.rs:1
+# Code: //! Org-level daily findings report: once a day (default 23:59 server-local
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/daily_report.rs::1::low-maintainability
+# Issue #147
+# [WARNING] complexity-health - Maintainability Index 23/100 — below the 40 threshold (complexity 79 over 1085 lines of code).
+#   rust/crates/server/src/routes/daily_report.rs:1
+# Code: //! Org-level daily findings report: once a day (default 23:59 server-local
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/settings.rs::1::low-maintainability
+# Issue #148
+# [WARNING] complexity-health - Maintainability Index 39/100 — below the 40 threshold (complexity 24 over 360 lines of code).
+#   rust/crates/server/src/routes/settings.rs:1
+# Code: //! Admin settings for the org daily report (`/api/admin/settings/daily-report`).
+Acknowledge: 
+
+ID: complexity-health::rust/crates/cli/src/report.rs::1::low-maintainability
+# Issue #149
+# [WARNING] complexity-health - Maintainability Index 34/100 — below the 40 threshold (complexity 54 over 288 lines of code).
+#   rust/crates/cli/src/report.rs:1
+# Code: //! `ignite report [org] [--channels email,webhook,azure_blob,pdf] [--webhook-url URL]
+Acknowledge: 
+
+ID: complexity-health::vscode-extension/src/dailyReport.ts::1::high-complexity
+# Issue #150
+# [WARNING] complexity-health - Cyclomatic complexity 41 (cognitive 102) — over the 20 threshold past which functions become difficult to test exhaustively. CRAP score 1722 (no coverage data ingested — treated as 0% for CRAP).
+#   vscode-extension/src/dailyReport.ts:1
+# Code: /**
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::f52e1018
+# Issue #151
+# [WARNING] css-dead-code - CSS class ".infima" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::2c327514
+# Issue #152
+# [WARNING] css-dead-code - CSS class ".theme-common" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::e3029717
+# Issue #153
+# [WARNING] css-dead-code - CSS class ".theme-classic" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::10ff8513
+# Issue #154
+# [WARNING] css-dead-code - CSS class ".core" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::ded83cdb
+# Issue #155
+# [WARNING] css-dead-code - CSS class ".plugin-debug" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::55def2ef
+# Issue #156
+# [WARNING] css-dead-code - CSS class ".theme-mermaid" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::ed3865a6
+# Issue #157
+# [WARNING] css-dead-code - CSS class ".theme-live-codeblock" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::d798a436
+# Issue #158
+# [WARNING] css-dead-code - CSS class ".theme-search-algolia" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: css-dead-code::docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css::1::unused-css-class::059cce80
+# Issue #159
+# [WARNING] css-dead-code - CSS class ".docsearch" is declared in docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css but never referenced in a class/className attribute across 34 scanned markup file(s).
+#   docs-site/.docusaurus/docusaurus-plugin-css-cascade-layers/default/layers.css:1
+# Code: @layer docusaurus.infima, docusaurus.theme-common, docusaurus.theme-classic, docusaurus.core, docusaurus.plugin-debug, docusaurus.theme-mermaid, docusaurus.theme-live-codeblock, docusaurus.theme-search-algolia.docsearch, docusaurus.theme-search-algolia;
+Acknowledge: 
+
+ID: code-duplication::public/index.html::3378
+# Issue #160
+# [WARNING] code-duplication - 20-line duplicate block, also found in public/index.html:6286-6305.
+#   public/index.html:3378
+# Code: list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: issues[idx].status !== 'overridden' })).join('');
+Acknowledge: 
+
+ID: code-duplication::public/index.html::5254
+# Issue #161
+# [WARNING] code-duplication - 25-line duplicate block, also found in public/index.html:5420-5444.
+#   public/index.html:5254
+# Code: body: JSON.stringify({ language }),
+Acknowledge: 
+
+ID: code-duplication::rust/crates/server/src/routes/effectivate.rs::52
+# Issue #162
+# [WARNING] code-duplication - 27-line duplicate block, also found in rust/crates/server/src/routes/project_overrides.rs:36-62.
+#   rust/crates/server/src/routes/effectivate.rs:52
+# Code: score: i32::try_from(r.score.unwrap_or(0)).unwrap_or(i32::MAX),
+Acknowledge: 
+
+ID: codeql-sast::public/index.html::1729::js/incomplete-html-attribute-sanitization
+# Issue #163
+# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
+#   public/index.html:1729
+# Code: <button type="button" class="shrink-0 text-slate-300 hover:text-slate-600" aria-label="${escapeHtml(t('common.close'))}">
+Acknowledge: 
+
+ID: codeql-sast::public/index.html::3328::js/incomplete-html-attribute-sanitization
+# Issue #164
+# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
+#   public/index.html:3328
+# Code: <span class="w-56 shrink-0 truncate text-slate-700" title="${escapeHtml(label)}">${escapeHtml(label)}${isBottleneck ? ' <span class="text-rose-500" title="Bottleneck — slowest check this run">⬤</span>' : ''}</span>
+Acknowledge: 
+
+ID: codeql-sast::public/index.html::5081::js/incomplete-html-attribute-sanitization
+# Issue #165
+# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
+#   public/index.html:5081
+# Code: <textarea id="studioQueryText" class="w-full flex-1 min-h-[180px] font-mono text-[12px] leading-relaxed border border-slate-200 rounded-lg p-2" spellcheck="false" placeholder="import ${escapeHtml(defaultLanguage)}\n\nfrom ...\nselect ...">${escapeHtml(initialText)}</textarea>
+Acknowledge: 
+
+ID: codeql-sast::public/index.html::6906::js/incomplete-html-attribute-sanitization
+# Issue #166
+# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
+#   public/index.html:6906
+# Code: select.innerHTML = orgs.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+Acknowledge: 
+
+ID: codeql-sast::public/index.html::6998::js/incomplete-html-attribute-sanitization::e40e5cb3
+# Issue #167
+# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
+#   public/index.html:6998
+# Code: <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.checksBtn')}</button>
+Acknowledge: 
+
+ID: codeql-sast::public/index.html::7000::js/incomplete-html-attribute-sanitization::e40e5cb3
+# Issue #168
+# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
+#   public/index.html:7000
+# Code: ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${escapeAttr(p.retained ? t('history.fullStudioTitle') : t('history.readOnlyStudioTitle'))}">${p.retained ? `${t('history.studioBtn')}${p.retained_tier === 'pruned' ? ` (${t('history.flaggedFilesOnly')})` : ` (${t('common.full')})`}` : t('history.studioBtn')}</button>` : ''}
+Acknowledge: 
+
+ID: codeql-sast::public/index.html::7001::js/incomplete-html-attribute-sanitization::e40e5cb3
+# Issue #169
+# [WARNING] codeql-sast - Cross-site scripting vulnerability as the output of this final HTML sanitizer step may contain double quotes when it reaches this attribute definition.
+#   public/index.html:7001
+# Code: ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" data-job-id="${escapeAttr(p.job_id || '')}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/routes/effectivate.rs::1::low-maintainability
+# Issue #170
+# [WARNING] complexity-health - Maintainability Index 38/100 — below the 40 threshold (complexity 19 over 583 lines of code).
+#   rust/crates/server/src/routes/effectivate.rs:1
+# Code: //! `POST /api/projects/:projectId/effectivate` — faithful port of
+Acknowledge: 
+
+ID: code-duplication::CLAUDE.md:markdown::94
+# Issue #171
+# [WARNING] code-duplication - 25-line duplicate block, also found in CLAUDE.md:markdown:94-118.
+#   CLAUDE.md:markdown:94
+Acknowledge: 
+
+ID: code-duplication::rust/crates/db-store/src/overrides.rs::247::13f5b9b5
+# Issue #172
+# [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/db-store/src/overrides.rs:296-314.
+#   rust/crates/db-store/src/overrides.rs:247
+# Code: stmt.query_map(params![project_id], |row| {
+Acknowledge: 
+
+ID: code-duplication::rust/crates/db-store/src/overrides.rs::247::e2d31a16
+# Issue #173
+# [WARNING] code-duplication - 19-line duplicate block, also found in rust/crates/db-store/src/projects.rs:351-369.
+#   rust/crates/db-store/src/overrides.rs:247
+# Code: stmt.query_map(params![project_id], |row| {
+Acknowledge: 
+
+ID: code-duplication::rust/crates/mcp-server/src/main.rs::956
+# Issue #174
+# [WARNING] code-duplication - 36-line duplicate block, also found in rust/crates/mcp-server/src/main.rs:1108-1142.
+#   rust/crates/mcp-server/src/main.rs:956
+# Code: let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+Acknowledge: 
+
+ID: complexity-health::rust/crates/server/src/main.rs::1::low-maintainability
+# Issue #175
+# [WARNING] complexity-health - Maintainability Index 35/100 — below the 40 threshold (complexity 20 over 907 lines of code).
+#   rust/crates/server/src/main.rs:1
+# Code: //! Ignite's HTTP server — Rust port of `server.js`'s route layer.
+Acknowledge: 
+
+ID: secret::rust/crates/server/src/tests/pipeline_sequence.rs::10
+# Issue #176
+# [WARNING] secret - Hardcoded aws_secret (in a test file — likely a fixture, not a real credential)
+#   rust/crates/server/src/tests/pipeline_sequence.rs:10
+# Code: std::fs::write(dir.path().join("config.js"), "const aws_secret_key = 'AKIAABCDEFGHIJKLMNOP';\nconsole.log(aws_secret_key);\n").unwrap();
+Acknowledge: 
 
 ID: code-duplication::rust/crates/server/src/routes/audit_log.rs::126::8cfb44e0
 # Issue #177

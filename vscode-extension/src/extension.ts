@@ -68,8 +68,39 @@ async function scanWorkspace(context: vscode.ExtensionContext, changedOnly = fal
     vscode.window.showWarningMessage('Ignite: open a folder first — there is no workspace to scan.');
     return;
   }
-  const workspaceRoot = folder.uri.fsPath;
+  await runGuarded(context, folder.uri.fsPath, changedOnly);
+}
 
+/**
+ * "Ignite: Scan Selected Folder" — an explorer context-menu command scoped
+ * to one folder instead of the whole workspace root. `uri` is the
+ * right-clicked folder (VS Code passes it as the first arg for an
+ * `explorer/context` `when: explorerResourceIsFolder` command).
+ */
+async function scanFolder(context: vscode.ExtensionContext, uri?: vscode.Uri): Promise<void> {
+  if (scanInProgress) {
+    vscode.window.showWarningMessage('Ignite: a scan is already running — wait for it to finish before starting another.');
+    outputChannel.show(true);
+    return;
+  }
+  const target = uri ?? (await pickFolderFallback());
+  if (!target) return;
+  await runGuarded(context, target.fsPath, false);
+}
+
+/** Command-palette invocation of "Scan Selected Folder" carries no URI — ask. */
+async function pickFolderFallback(): Promise<vscode.Uri | undefined> {
+  const picked = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: 'Scan this folder',
+    defaultUri: activeWorkspaceFolder()?.uri,
+  });
+  return picked?.[0];
+}
+
+async function runGuarded(context: vscode.ExtensionContext, scanRoot: string, changedOnly: boolean): Promise<void> {
   // Set before any await — checkReachable() below is the first suspension
   // point, and two near-simultaneous invocations (e.g. double-click on the
   // status bar item) would otherwise both pass the scanInProgress check
@@ -91,7 +122,7 @@ async function scanWorkspace(context: vscode.ExtensionContext, changedOnly = fal
       if (choice === 'Open Settings') vscode.commands.executeCommand('workbench.action.openSettings', 'ignite.baseUrl');
       return;
     }
-    await runScan(context, workspaceRoot, changedOnly);
+    await runScan(context, scanRoot, changedOnly);
   } finally {
     scanInProgress = false;
   }
@@ -512,6 +543,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider('igniteToolsStatus', toolsStatusTree),
     vscode.commands.registerCommand('ignite.scanWorkspace', () => scanWorkspace(context)),
     vscode.commands.registerCommand('ignite.scanChangedFiles', () => scanWorkspace(context, true)),
+    vscode.commands.registerCommand('ignite.scanFolder', (uri?: vscode.Uri) => scanFolder(context, uri)),
     vscode.commands.registerCommand('ignite.showOutput', () => outputChannel.show()),
     vscode.commands.registerCommand('ignite.refreshToolsStatus', () => toolsStatusTree.refresh()),
     vscode.commands.registerCommand('ignite.openReviewFile', async () => {
