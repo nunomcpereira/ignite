@@ -651,4 +651,6 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // caller gets a job id back immediately and reads the finished response
     // from here. `owner_user_id` is NULL for an unauthenticated caller.
     (36, "CREATE TABLE IF NOT EXISTS async_jobs (job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, owner_user_id INTEGER, state TEXT NOT NULL DEFAULT 'running', http_status INTEGER, result_json TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT);"),
+    // Self-service keys are short-lived; NULL = never expires (every CLI-minted/pre-existing key).
+    (37, "ALTER TABLE api_keys ADD COLUMN expires_at TEXT;"),
 ];

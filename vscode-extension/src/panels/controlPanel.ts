@@ -15,7 +15,7 @@ export interface ControlPanelHost {
   clearApiKey(): Promise<void>;
   reconnect(): Promise<void>;
   log(line: string): void;
-  mintApiKey(email: string, password: string): Promise<{ ok: boolean; error?: string; email?: string }>;
+  mintApiKey(email: string, password: string): Promise<{ ok: boolean; error?: string; email?: string; expiresAt?: string }>;
 }
 
 /** Commands the webview may trigger — anything else it posts is ignored. */
@@ -226,11 +226,11 @@ export class ControlPanelProvider implements vscode.WebviewViewProvider {
         <input id="mintEmail" type="text" spellcheck="false" autocomplete="username" placeholder="you@example.com">
         <input id="mintPassword" type="password" autocomplete="current-password" placeholder="Ignite password">
         <button class="wide" id="mintBtn">Sign in &amp; create key</button>
-        <div class="hint">Creates a key for this machine and stores it in your keychain. Your password is only used for this sign-in and is not saved.</div>
+        <div class="hint">Creates a 30-day key for this machine and stores it in your keychain. Your password is only used for this sign-in and is not saved.</div>
       </div>
       <div id="getKeySso" hidden>
         <button class="wide secondary" id="openKeysPageBtn">Create a key in the web UI ↗</button>
-        <div class="hint">Sign in there with <span id="ssoMode">SSO</span>, create a key, then paste it above.</div>
+        <div class="hint">Sign in there with <span id="ssoMode">SSO</span>, create a key under profile → API keys, then paste it above.</div>
       </div>
       <div class="feedback" id="mintFeedback" hidden></div>
       <details class="mint">
@@ -564,7 +564,7 @@ const SCRIPT = /* js */ `
     } else if (m.type === 'mintResult') {
       busy('mintBtn', false);
       $('mintPassword').value = '';
-      if (m.ok) mintFeedback(true, 'Key created for ' + (m.email || 'your account') + ' and saved to your keychain.');
+      if (m.ok) mintFeedback(true, 'Key created for ' + (m.email || 'your account') + ' and saved to your keychain' + (m.expiresAt ? ' — valid until ' + m.expiresAt.slice(0, 16) + ' UTC. Revoke or renew it in the web UI (profile → API keys).' : '.'));
       else mintFeedback(false, m.error || 'Could not create a key.');
     } else if (m.type === 'keyResult') {
       busy('saveKeyBtn', false);
@@ -591,7 +591,7 @@ const SCRIPT = /* js */ `
       $('connSub').textContent = hostOf(c.url) + (probeLine(c) ? ' · ' + probeLine(c) : '') + who;
       $('connSub').title = c.url;
       if (c.keyRejected) {
-        err.textContent = 'The API key was not accepted by this server — requests run unauthenticated.';
+        err.textContent = 'The API key was not accepted (expired, revoked, or from another server) — requests run unauthenticated. Create a new one below.';
         err.hidden = false;
       } else err.hidden = true;
     } else if (c.status === 'disconnected') {

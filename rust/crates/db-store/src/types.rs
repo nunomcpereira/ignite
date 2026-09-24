@@ -250,6 +250,9 @@ pub struct ApiKeySummary {
     pub created_via: String,
     pub last_used_at: Option<String>,
     pub revoked_at: Option<String>,
+    /// `None` = never expires (CLI-minted and pre-expiry keys).
+    pub expires_at: Option<String>,
+    pub expired: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -68,7 +68,7 @@ impl DbStore {
     pub fn get_active_api_key_scopes(&self, key_hash: &str) -> Option<Option<Vec<String>>> {
         let conn = self.conn.lock();
         let row: Option<Option<String>> = conn
-            .query_row("SELECT scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL", params![key_hash], |row| row.get(0))
+            .query_row("SELECT scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))", params![key_hash], |row| row.get(0))
             .optional()
             .unwrap_or(None);
         row.map(|scopes| scopes.filter(|s| !s.is_empty()).map(|s| s.split(',').map(str::to_string).collect()))
@@ -82,6 +82,15 @@ impl DbStore {
         )
         .unwrap();
         conn.last_insert_rowid()
+    }
+
+    /// Makes key `id` expire `days` days from now (an expired key stops
+    /// authenticating everywhere a key is looked up, same as a revoked one).
+    pub fn set_api_key_expiry_days(&self, id: i64, days: i64) {
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute("UPDATE api_keys SET expires_at = datetime('now', ?) WHERE id = ?", params![format!("{days:+} days"), id]) {
+            tracing::error!("set_api_key_expiry_days failed for key {id}: {e}");
+        }
     }
 
     /// Binds a GitHub push token to one API key, so a headless caller using
@@ -101,7 +110,7 @@ impl DbStore {
     pub fn get_active_api_key_github_token(&self, key_hash: &str) -> Option<String> {
         let conn = self.conn.lock();
         let token: Option<String> = conn
-            .query_row("SELECT github_token FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL", params![key_hash], |row| row.get(0))
+            .query_row("SELECT github_token FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))", params![key_hash], |row| row.get(0))
             .optional()
             .unwrap_or(None)
             .flatten();
@@ -113,7 +122,7 @@ impl DbStore {
         conn.query_row(
             "SELECT ak.id, ak.user_id, u.email, u.name, u.provider
              FROM api_keys ak JOIN users u ON u.id = ak.user_id
-             WHERE ak.key_hash = ? AND ak.revoked_at IS NULL",
+             WHERE ak.key_hash = ? AND ak.revoked_at IS NULL AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))",
             params![key_hash],
             |row| Ok(ApiKeyIdentity { id: row.get(0)?, user_id: row.get(1)?, email: row.get(2)?, name: row.get(3)?, provider: row.get(4)? }),
         )
@@ -140,7 +149,7 @@ impl DbStore {
     pub fn list_api_keys_for_user(&self, user_id: i64) -> Vec<ApiKeySummary> {
         let conn = self.conn.lock();
         let mut stmt = conn
-            .prepare_cached("SELECT id, label, created_at, created_by, created_via, last_used_at, revoked_at FROM api_keys WHERE user_id = ? ORDER BY id")
+            .prepare_cached("SELECT id, label, created_at, created_by, created_via, last_used_at, revoked_at, expires_at, expires_at IS NOT NULL AND expires_at <= datetime('now') FROM api_keys WHERE user_id = ? ORDER BY id")
             .unwrap();
         stmt.query_map(params![user_id], |row| {
             Ok(ApiKeySummary {
@@ -151,6 +160,8 @@ impl DbStore {
                 created_via: row.get(4)?,
                 last_used_at: row.get(5)?,
                 revoked_at: row.get(6)?,
+                expires_at: row.get(7)?,
+                expired: row.get::<_, i64>(8)? != 0,
             })
         })
         .unwrap()

@@ -280,6 +280,32 @@ impl<'a> GithubApi<'a> {
         self.github_api_request(token, method, &format!("/{api_path}"), Some(&Value::Object(fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect())), None).await
     }
 
+    /// When `token` isn't authorized for `org`'s SAML single sign-on, GitHub
+    /// still answers org listings with a plain `200` — just without the
+    /// org's private/internal repos — and says so only in an
+    /// `X-GitHub-SSO: required; url=<authorize link>` response header.
+    /// Returns that authorize link (or an empty string when the header is
+    /// present without one); `None` when SSO isn't what's hiding anything
+    /// or the probe itself fails. One cheap `per_page=1` REST call.
+    pub async fn sso_authorization_required(&self, org: &str, token: &str) -> Option<String> {
+        if token.is_empty() {
+            return None;
+        }
+        let res = self
+            .http
+            .get(format!("https://api.github.com/orgs/{org}/repos?per_page=1"))
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "ignite")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .ok()?;
+        let header = res.headers().get("x-github-sso")?.to_str().ok()?.to_string();
+        parse_sso_required_header(&header)
+    }
+
     pub async fn gh_api_get(&self, api_path: &str, token: &str) -> Result<Option<Value>, GithubApiError> {
         if self.is_gh_cli_available().await {
             let env = gh_token_env(token);
@@ -900,5 +926,29 @@ exit 1
         assert!(!body_file.is_empty());
         // temp dir/file must be gone after the call
         assert!(!std::path::Path::new(body_file).exists());
+    }
+}
+
+/// `required; url=https://github.com/orgs/x/sso?authorization_request=...`
+/// -> `Some(url)`; `required` alone -> `Some("")`; anything else (e.g.
+/// `partial-results; organizations=...`) -> `None`.
+pub fn parse_sso_required_header(header: &str) -> Option<String> {
+    let mut parts = header.split(';').map(str::trim);
+    if !parts.next()?.eq_ignore_ascii_case("required") {
+        return None;
+    }
+    Some(parts.find_map(|p| p.strip_prefix("url=")).map(str::to_string).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod sso_header_tests {
+    use super::parse_sso_required_header;
+
+    #[test]
+    fn parses_the_required_header_and_its_authorize_link() {
+        assert_eq!(parse_sso_required_header("required; url=https://github.com/orgs/acme/sso?authorization_request=abc").as_deref(), Some("https://github.com/orgs/acme/sso?authorization_request=abc"));
+        assert_eq!(parse_sso_required_header("required").as_deref(), Some(""));
+        assert_eq!(parse_sso_required_header("partial-results; organizations=21955855"), None);
+        assert_eq!(parse_sso_required_header(""), None);
     }
 }

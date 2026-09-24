@@ -230,6 +230,14 @@
       </button>
       <div id="accountMenu" class="hidden absolute right-0 top-11 w-80 max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-cardHover p-3 space-y-2 z-50 max-h-[80vh] overflow-y-auto">
         <div id="authBar" class="text-sm"></div>
+        <!-- Profile → API keys: a link to the API keys view (the management UI lives on the main page) -->
+        <button id="apiKeysMenuLink" type="button" class="hidden w-full flex items-center justify-between gap-2 text-sm font-semibold text-slate-700 hover:text-brand-700 hover:bg-slate-50 rounded-lg px-2 py-1.5">
+          <span class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg>
+            <span data-i18n="apiKeys.open">API keys</span>
+          </span>
+          <span class="text-slate-300" aria-hidden="true">›</span>
+        </button>
         <div id="toolsBar" class="text-sm"></div>
       </div>
     </div>
@@ -813,38 +821,6 @@
     </div>
   </div>
 
-  <!-- API keys modal: self-service keys for the VS Code extension / CLI / CI (POST /api/auth/api-keys, session-only) -->
-  <div id="apiKeysModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" role="dialog" aria-modal="true" aria-labelledby="apiKeysTitle">
-      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-        <h3 id="apiKeysTitle" class="text-sm font-bold text-slate-900" data-i18n="apiKeys.title">API keys</h3>
-        <button id="apiKeysCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
-      </div>
-      <div class="p-5 space-y-4 overflow-y-auto">
-        <p class="text-xs text-slate-500" data-i18n="apiKeys.subtitle">Keys let the VS Code extension, the CLI or CI act as you. Paste one into the extension's Overview panel.</p>
-        <p id="apiKeysSignedOut" class="hidden text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2" data-i18n="apiKeys.signInFirst">Sign in first to create API keys.</p>
-        <div id="apiKeysCreateRow" class="flex gap-2">
-          <input id="apiKeysLabelInput" type="text" maxlength="80" class="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-1.5" data-i18n-placeholder="apiKeys.labelPlaceholder" placeholder="Label, e.g. VS Code on my laptop">
-          <button id="apiKeysCreateBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="apiKeys.create">Create key</button>
-        </div>
-        <div id="apiKeysNewKey" class="hidden rounded-lg border border-emerald-200 bg-emerald-50 p-3 space-y-2">
-          <p class="text-xs font-semibold text-emerald-800" data-i18n="apiKeys.copyNow">Copy this key now — it won't be shown again.</p>
-          <div class="flex gap-2 items-center">
-            <code id="apiKeysNewKeyValue" class="flex-1 text-xs font-mono bg-white border border-emerald-200 rounded px-2 py-1.5 break-all select-all"></code>
-            <button id="apiKeysCopyBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100" data-i18n="apiKeys.copy">Copy</button>
-          </div>
-        </div>
-        <p id="apiKeysStatus" class="hidden text-xs break-words"></p>
-        <div>
-          <h4 class="text-xs font-bold uppercase tracking-wide text-slate-400 mb-2" data-i18n="apiKeys.yourKeys">Your keys</h4>
-          <ul id="apiKeysList" class="divide-y divide-slate-100 text-sm"></ul>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Admin / Integrations modal: daily report delivery settings (saved to ignite.db app_settings) -->
   <div id="adminSettingsModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" role="dialog" aria-modal="true">
@@ -964,6 +940,70 @@
   <!-- Ignite Studio: full-screen file tree + editor + AI-fix panel, only
        reachable while a run is paused at the review gate (staging dir still
        on disk). Not a real route — a full-viewport overlay over the app. -->
+  <!-- API keys view: short-lived self-service keys (GET/POST /api/auth/api-keys, DELETE /api/auth/api-keys/:id — session-only) -->
+  <div id="apiKeysView" class="hidden max-w-6xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+    <div class="flex items-center justify-between mb-8 gap-4 flex-wrap">
+      <div>
+        <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="apiKeys.title">API keys</h2>
+        <p class="text-base text-slate-500 mt-1 max-w-2xl" data-i18n="apiKeys.subtitle">Short-lived keys for the VS Code extension, the CLI or CI. They act as you until they expire or you revoke them.</p>
+      </div>
+      <button id="apiKeysRefreshBtn" type="button" data-i18n-title="apiKeys.refresh" title="Refresh" class="text-slate-400 hover:text-brand-600 transition-colors shrink-0">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+      </button>
+    </div>
+
+    <p id="apiKeysSignedOut" class="hidden text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3" data-i18n="apiKeys.signInFirst">Sign in first to create API keys.</p>
+
+    <div id="apiKeysContent" class="space-y-6">
+      <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
+        <h3 class="text-sm font-bold text-slate-900" data-i18n="apiKeys.createTitle">Create a key</h3>
+        <div class="flex flex-wrap items-end gap-3">
+          <label class="flex-1 min-w-[16rem]">
+            <span class="block text-xs font-semibold text-slate-500 mb-1" data-i18n="apiKeys.labelField">Label</span>
+            <input id="apiKeysLabelInput" type="text" maxlength="80" class="w-full text-sm border border-slate-200 rounded-lg px-3 py-2" data-i18n-placeholder="apiKeys.labelPlaceholder" placeholder="Label, e.g. VS Code on my laptop">
+          </label>
+          <label>
+            <span class="block text-xs font-semibold text-slate-500 mb-1" data-i18n="apiKeys.expiryField">Valid for</span>
+            <select id="apiKeysExpirySelect" class="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white">
+              <option value="1" data-i18n="apiKeys.expires1">1 day</option>
+              <option value="7" data-i18n="apiKeys.expires7">7 days</option>
+              <option value="30" selected data-i18n="apiKeys.expires30">30 days</option>
+              <option value="90" data-i18n="apiKeys.expires90">90 days</option>
+            </select>
+          </label>
+          <button id="apiKeysCreateBtn" type="button" class="text-sm font-semibold px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="apiKeys.create">Create key</button>
+        </div>
+        <div id="apiKeysNewKey" class="hidden rounded-xl border border-emerald-200 bg-emerald-50 p-4 space-y-2">
+          <p class="text-sm font-semibold text-emerald-800" data-i18n="apiKeys.copyNow">Copy this key now — it won't be shown again.</p>
+          <div class="flex gap-2 items-center">
+            <code id="apiKeysNewKeyValue" class="flex-1 text-xs font-mono bg-white border border-emerald-200 rounded-lg px-3 py-2 break-all select-all"></code>
+            <button id="apiKeysCopyBtn" type="button" class="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100" data-i18n="apiKeys.copy">Copy</button>
+          </div>
+          <p id="apiKeysNewKeyExpiry" class="text-xs text-emerald-800"></p>
+        </div>
+        <p id="apiKeysStatus" class="hidden text-xs break-words"></p>
+      </div>
+
+      <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th class="px-5 py-3" data-i18n="apiKeys.colLabel">Label</th>
+                <th class="px-5 py-3" data-i18n="apiKeys.colCreated">Created</th>
+                <th class="px-5 py-3" data-i18n="apiKeys.colLastUsed">Last used</th>
+                <th class="px-5 py-3" data-i18n="apiKeys.colExpires">Expires</th>
+                <th class="px-5 py-3" data-i18n="apiKeys.colStatus">Status</th>
+                <th class="px-5 py-3"><span class="sr-only" data-i18n="apiKeys.colActions">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="apiKeysList" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="studioView" class="hidden fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-3 sm:p-6">
     <div class="bg-slate-100 rounded-2xl shadow-2xl w-full h-full max-w-[1600px] flex flex-col overflow-hidden">
       <div id="studioHeaderBar" class="flex flex-wrap items-center gap-x-1 gap-y-2 px-3 sm:px-5 py-2.5 bg-white text-slate-700 border-b border-slate-200 shrink-0 rounded-t-2xl">
@@ -1634,15 +1674,16 @@
 
     function renderAuthBar() {
       const bar = $('authBar');
+      $('apiKeysMenuLink').classList.toggle('hidden', !authState.user);
+      apiKeysLoaded = false;
+      if (!$('apiKeysView').classList.contains('hidden')) renderApiKeysView();
       if (authState.user) {
         bar.innerHTML = `
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 border-b border-slate-100">
             <span class="text-xs text-slate-600">${t('account.signedInAs')} <strong class="text-slate-800">${escapeHtml(authState.user.name || authState.user.email)}</strong></span>
             <button id="logoutBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('account.signOut')}</button>
-            <button id="apiKeysBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('apiKeys.open')}</button>
             ${renderGithubConnectRow()}
           </div>`;
-        $('apiKeysBtn').addEventListener('click', openApiKeys);
         $('logoutBtn').addEventListener('click', async () => {
           await fetch('/api/auth/logout', { method: 'POST' });
           authState.user = null;
@@ -7846,58 +7887,85 @@
       document.body.appendChild(overlay);
     }
 
-    // ---- API keys: self-service keys (session-only server routes) ----
+    // ---- API keys view: short-lived self-service keys (session-only server routes) ----
+    // Reached from the profile menu's "API keys" link or the `#api-keys` deep link.
+    let apiKeysLoaded = false;
     function apiKeysStatus(text, ok) {
       const el = $('apiKeysStatus');
       el.textContent = text || '';
       el.className = text ? `text-xs break-words ${ok ? 'text-emerald-700' : 'text-red-600'}` : 'hidden';
     }
+    function apiKeyExpiryMs(expiresAt) {
+      return expiresAt ? Date.parse(expiresAt.replace(' ', 'T') + 'Z') - Date.now() : Infinity;
+    }
+    /** "expires in 5 days" / "expires in 3 h" / "expired" — from the server's UTC `YYYY-MM-DD HH:MM:SS`. */
+    function apiKeyExpiryLabel(expiresAt) {
+      if (!expiresAt) return t('apiKeys.neverExpires');
+      const ms = apiKeyExpiryMs(expiresAt);
+      if (!(ms > 0)) return t('apiKeys.expired');
+      const hours = Math.round(ms / 3600000);
+      return hours < 48 ? t('apiKeys.expiresInHours', { n: Math.max(hours, 1) }) : t('apiKeys.expiresInDays', { n: Math.round(hours / 24) });
+    }
+    function apiKeysMessageRow(text) {
+      return `<tr><td colspan="6" class="px-5 py-6 text-center text-sm text-slate-400">${escapeHtml(text)}</td></tr>`;
+    }
     async function loadApiKeys() {
       const list = $('apiKeysList');
-      list.innerHTML = `<li class="py-2 text-xs text-slate-400">${t('apiKeys.loading')}</li>`;
+      list.innerHTML = apiKeysMessageRow(t('apiKeys.loading'));
       try {
         const res = await fetch('/api/auth/api-keys');
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-        const keys = (body.keys || []).slice().reverse();
+        apiKeysLoaded = true;
+        // Active keys first (newest first), then expired/revoked ones.
+        const keys = (body.keys || []).slice().reverse().sort((a, b) => Number(b.active) - Number(a.active));
         if (keys.length === 0) {
-          list.innerHTML = `<li class="py-2 text-xs text-slate-400">${t('apiKeys.none')}</li>`;
+          list.innerHTML = apiKeysMessageRow(t('apiKeys.none'));
           return;
         }
-        list.innerHTML = keys.map((k) => `
-          <li class="py-2 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <div class="font-semibold text-slate-800 truncate ${k.revokedAt ? 'line-through text-slate-400' : ''}">${escapeHtml(k.label || t('apiKeys.unlabeled'))}</div>
-              <div class="text-[11px] text-slate-400">${escapeHtml(t('apiKeys.meta', { created: k.createdAt, via: k.createdVia, used: k.lastUsedAt || t('apiKeys.never') }))}</div>
-            </div>
-            ${k.revokedAt
-              ? `<span class="text-[11px] font-semibold text-slate-400">${t('apiKeys.revoked')}</span>`
-              : `<button type="button" data-revoke="${Number(k.id)}" class="text-xs font-semibold text-red-600 hover:text-red-800">${t('apiKeys.revoke')}</button>`}
-          </li>`).join('');
+        list.innerHTML = keys.map((k) => {
+          const soon = k.active && apiKeyExpiryMs(k.expiresAt) < 86400000;
+          const [statusText, statusClass] = k.revokedAt
+            ? [t('apiKeys.revoked'), 'bg-slate-100 text-slate-500']
+            : k.expired
+            ? [t('apiKeys.expired'), 'bg-slate-100 text-slate-500']
+            : soon
+            ? [t('apiKeys.expiringSoon'), 'bg-amber-50 text-amber-700 border border-amber-200']
+            : [t('apiKeys.active'), 'bg-emerald-50 text-emerald-700 border border-emerald-200'];
+          const expires = k.active ? apiKeyExpiryLabel(k.expiresAt) : (k.expiresAt || '').slice(0, 16) || '—';
+          return `
+          <tr class="${k.active ? '' : 'text-slate-400'}">
+            <td class="px-5 py-3.5">
+              <div class="font-semibold ${k.active ? 'text-slate-800' : 'line-through'}">${escapeHtml(k.label || t('apiKeys.unlabeled'))}</div>
+              <div class="text-[11px] text-slate-400">${escapeHtml(t('apiKeys.via', { via: k.createdVia }))}</div>
+            </td>
+            <td class="px-5 py-3.5 whitespace-nowrap text-slate-500">${formatScanDate(k.createdAt)}</td>
+            <td class="px-5 py-3.5 whitespace-nowrap text-slate-500">${k.lastUsedAt ? formatScanDate(k.lastUsedAt) : escapeHtml(t('apiKeys.never'))}</td>
+            <td class="px-5 py-3.5 whitespace-nowrap" title="${escapeAttr(k.expiresAt ? k.expiresAt + ' UTC' : '')}">${escapeHtml(expires)}</td>
+            <td class="px-5 py-3.5"><span class="inline-flex text-[11px] font-semibold px-2 py-0.5 rounded-full ${statusClass}">${escapeHtml(statusText)}</span></td>
+            <td class="px-5 py-3.5 text-right">${k.active ? `<button type="button" data-revoke="${Number(k.id)}" class="text-xs font-semibold px-2.5 py-1 rounded-lg border border-red-200 text-red-600 hover:bg-red-50">${escapeHtml(t('apiKeys.revoke'))}</button>` : ''}</td>
+          </tr>`;
+        }).join('');
         list.querySelectorAll('[data-revoke]').forEach((btn) => btn.addEventListener('click', () => revokeApiKey(btn.dataset.revoke)));
       } catch (e) {
         list.innerHTML = '';
         apiKeysStatus(t('apiKeys.loadFailed', { error: e.message }), false);
       }
     }
-    async function openApiKeys() {
-      $('apiKeysModal').classList.remove('hidden');
-      $('apiKeysNewKey').classList.add('hidden');
-      apiKeysStatus('');
+    function renderApiKeysView() {
       const signedIn = !!authState.user;
       $('apiKeysSignedOut').classList.toggle('hidden', signedIn);
-      $('apiKeysCreateRow').classList.toggle('hidden', !signedIn);
-      if (signedIn) {
-        $('apiKeysLabelInput').focus();
-        await loadApiKeys();
-      } else {
-        $('apiKeysList').innerHTML = '';
-      }
+      $('apiKeysContent').classList.toggle('hidden', !signedIn);
+      if (signedIn && !apiKeysLoaded) loadApiKeys();
     }
-    function closeApiKeys() {
-      $('apiKeysModal').classList.add('hidden');
+    function openApiKeys() {
+      $('accountMenu').classList.add('hidden');
+      showView('apiKeysView', null);
+      $('apiKeysNewKey').classList.add('hidden');
       $('apiKeysNewKeyValue').textContent = '';
-      if (location.hash === '#api-keys') history.replaceState(null, '', location.pathname + location.search);
+      apiKeysStatus('');
+      renderApiKeysView();
+      if (authState.user) $('apiKeysLabelInput').focus();
     }
     async function createApiKey() {
       const btn = $('apiKeysCreateBtn');
@@ -7907,11 +7975,12 @@
         const res = await fetch('/api/auth/api-keys', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label: $('apiKeysLabelInput').value.trim() || null }),
+          body: JSON.stringify({ label: $('apiKeysLabelInput').value.trim() || null, expiresInDays: Number($('apiKeysExpirySelect').value) }),
         });
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
         $('apiKeysNewKeyValue').textContent = body.key;
+        $('apiKeysNewKeyExpiry').textContent = t('apiKeys.validUntil', { when: `${(body.expiresAt || '').slice(0, 16)} UTC`, rel: apiKeyExpiryLabel(body.expiresAt) });
         $('apiKeysNewKey').classList.remove('hidden');
         $('apiKeysLabelInput').value = '';
         await loadApiKeys();
@@ -7932,6 +8001,8 @@
         apiKeysStatus(t('apiKeys.revokeFailed', { error: e.message }), false);
       }
     }
+    $('apiKeysMenuLink').addEventListener('click', openApiKeys);
+    $('apiKeysRefreshBtn').addEventListener('click', () => { apiKeysStatus(''); if (authState.user) loadApiKeys(); });
     $('apiKeysCreateBtn').addEventListener('click', createApiKey);
     $('apiKeysLabelInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') createApiKey(); });
     $('apiKeysCopyBtn').addEventListener('click', async () => {
@@ -7943,9 +8014,6 @@
         apiKeysStatus(t('apiKeys.copyFailed'), false);
       }
     });
-    $('apiKeysCloseBtn').addEventListener('click', closeApiKeys);
-    $('apiKeysModal').addEventListener('click', (e) => { if (e.target === $('apiKeysModal')) closeApiKeys(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('apiKeysModal').classList.contains('hidden')) closeApiKeys(); });
     window.addEventListener('hashchange', () => { if (location.hash === '#api-keys') openApiKeys(); });
 
     // ---- Admin / Integrations: daily report delivery settings ----
@@ -8094,7 +8162,10 @@
         const raw = localStorage.getItem(orgReposCacheKey(org));
         if (!raw) return null;
         const v = JSON.parse(raw);
-        return Array.isArray(v.repos) ? v : null;
+        // An empty list is never reused: the server now refuses an org with
+        // no visible repos (with the reason), so a cached [] can only be a
+        // stale leftover that would re-add a dead "0 of 0" org.
+        return Array.isArray(v.repos) && v.repos.length > 0 ? v : null;
       } catch { return null; }
     }
     function writeOrgReposCache(org, rows) {
@@ -8838,7 +8909,7 @@
     // showing.
     const NAV_ACTIVE = ['bg-brand-50', 'text-brand-600'];
     const NAV_INACTIVE = ['text-slate-400', 'hover:text-brand-600', 'hover:bg-slate-100'];
-    const NAV_VIEWS = ['dashboardView', 'onboardedReposView', 'governanceView', 'orgReposView'];
+    const NAV_VIEWS = ['dashboardView', 'onboardedReposView', 'governanceView', 'orgReposView', 'apiKeysView'];
     const NAV_BTNS = ['dashboardNavBtn', 'onboardedReposNavBtn', 'governanceNavBtn', 'orgReposNavBtn'];
     function setActiveNavBtn(activeBtn, ...inactiveBtns) {
       inactiveBtns.forEach((btn) => {
@@ -8850,6 +8921,11 @@
     }
     function showView(viewId, navBtnId) {
       NAV_VIEWS.forEach((id) => $(id).classList.toggle('hidden', id !== viewId));
+      if (!navBtnId) {
+        // A view reached from the profile menu (API keys) has no rail button — clear the highlight.
+        NAV_BTNS.forEach((id) => { $(id).classList.remove(...NAV_ACTIVE); $(id).classList.add(...NAV_INACTIVE); });
+        return;
+      }
       const otherBtns = NAV_BTNS.filter((id) => id !== navBtnId).map((id) => $(id));
       setActiveNavBtn($(navBtnId), ...otherBtns);
     }

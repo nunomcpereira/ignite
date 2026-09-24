@@ -97,6 +97,8 @@ function authHeaders(key: string = effectiveApiKey().key): Record<string, string
 
 export interface MintedKey {
   key: string;
+  /** UTC `YYYY-MM-DD HH:MM:SS` — keys created this way are always short-lived. */
+  expiresAt?: string | null;
   user?: { email?: string; name?: string | null };
 }
 
@@ -128,13 +130,13 @@ export async function mintApiKeyWithPassword(email: string, password: string, la
     const res = await fetch(`${url}/api/auth/api-keys`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: session },
-      body: JSON.stringify({ label, client: 'vscode' }),
+      body: JSON.stringify({ label, client: 'vscode', expiresInDays: 30 }),
       signal: AbortSignal.timeout(15000),
     });
     const body = (await res.json().catch(() => null)) as (MintedKey & { error?: string }) | null;
     if (res.status === 404) throw new Error('This Ignite server is too old to create API keys from the UI — update it, or use create-api-key on the server.');
     if (!res.ok || !body?.key) throw new Error(body?.error ?? `Creating the key failed (HTTP ${res.status}).`);
-    return { key: body.key, user: body.user };
+    return { key: body.key, user: body.user, expiresAt: body.expiresAt };
   } finally {
     await fetch(`${url}/api/auth/logout`, { method: 'POST', headers: { Cookie: session }, signal: AbortSignal.timeout(5000) }).catch(() => undefined);
   }

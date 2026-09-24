@@ -242,10 +242,25 @@ async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): 
     }
 
     let api = GithubApi::new(&state.runner);
-    let discovered = match discover_org(&api, &org, &token, q.include_archived, q.include_forks).await {
-        Ok(repos) => repos,
+    let raw = match api.gh_list_org_repos(&org, &token).await {
+        Ok(raw) => raw,
         Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": format!("Failed to list repositories for {org}: {e}") }))).into_response(),
     };
+    let discovered = ignite_org_onboard::filter_discovered_repos(&raw, q.include_archived, q.include_forks);
+    // Never hand back an empty org: the UI would add a dead "0 of 0" entry.
+    // Say why nothing is visible instead.
+    if discovered.is_empty() {
+        let (code, error) = if !raw.is_empty() {
+            ("all_filtered", format!("All {} repositories in {org} are archived or forks. Tick \"Include archived\" / \"Include forks\" to list them.", raw.len()))
+        } else {
+            match api.sso_authorization_required(&org, &token).await {
+                Some(url) if !url.is_empty() => ("sso_required", format!("The GitHub token Ignite uses isn't authorized for {org}'s SAML single sign-on, so GitHub hides its repositories. Authorize it here, then try again: {url}")),
+                Some(_) => ("sso_required", format!("The GitHub token Ignite uses isn't authorized for {org}'s SAML single sign-on, so GitHub hides its repositories. Authorize the token for {org} (GitHub → Settings → Developer settings → Tokens → Configure SSO), then try again.")),
+                None => ("no_visible_repos", format!("No repositories in {org} are visible to the GitHub token Ignite uses. Check that the token's account can access {org} (organization membership, or SAML SSO authorization for the token) and that the token has the repo scope.")),
+            }
+        };
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "error": error, "code": code }))).into_response();
+    }
 
     let mut statuses = collect_repo_statuses(&state, &org);
     let rows: Vec<OrgRepoRow> = discovered

@@ -131,7 +131,7 @@ function createControlPanelHost(context: vscode.ExtensionContext): ControlPanelH
       try {
         const minted = await mintApiKeyWithPassword(email.trim(), password, `VS Code — ${os.hostname()}`);
         await context.secrets.store(KEYCHAIN_ENTRY_NAME, minted.key);
-        return { ok: true, email: minted.user?.email ?? email };
+        return { ok: true, email: minted.user?.email ?? email, expiresAt: minted.expiresAt ?? undefined };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }

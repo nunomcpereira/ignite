@@ -19,6 +19,12 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const MAX_LABEL_LEN: usize = 80;
+/// Keys minted here are always short-lived: one of these lifetimes (days),
+/// defaulting to [`DEFAULT_EXPIRY_DAYS`]. Revoking ends one sooner.
+/// (`create-api-key` on the server host can still mint a non-expiring key
+/// for CI, deliberately — that's an operator's call, not self-service.)
+const ALLOWED_EXPIRY_DAYS: &[i64] = &[1, 7, 30, 90];
+const DEFAULT_EXPIRY_DAYS: i64 = 30;
 
 fn require_session_user(headers: &HeaderMap, state: &AppState) -> Result<AttachedUser, Response> {
     if resolve_auth_method(headers, &state.db) != AuthMethod::Session {
@@ -48,6 +54,9 @@ async fn list_keys(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Re
                 "createdVia": k.created_via,
                 "lastUsedAt": k.last_used_at,
                 "revokedAt": k.revoked_at,
+                "expiresAt": k.expires_at,
+                "expired": k.expired,
+                "active": k.revoked_at.is_none() && !k.expired,
             })
         })
         .collect();
@@ -80,6 +89,13 @@ async fn create_key(State(state): State<Arc<AppState>>, headers: HeaderMap, body
         }
         Some(_) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "scopes must be a comma-separated string or an array of strings." }))).into_response(),
     };
+    let expiry_days = match body.get("expiresInDays") {
+        None | Some(Value::Null) => DEFAULT_EXPIRY_DAYS,
+        Some(v) => match v.as_i64().filter(|d| ALLOWED_EXPIRY_DAYS.contains(d)) {
+            Some(d) => d,
+            None => return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("expiresInDays must be one of {ALLOWED_EXPIRY_DAYS:?}.") }))).into_response(),
+        },
+    };
     // Which client asked (extension/web UI) — informational only, from a fixed set.
     let created_via = match body.get("client").and_then(|v| v.as_str()) {
         Some("vscode") => "vscode",
@@ -92,14 +108,16 @@ async fn create_key(State(state): State<Arc<AppState>>, headers: HeaderMap, body
     if let Some(scopes) = scopes.as_deref() {
         state.db.set_api_key_scopes(id, Some(scopes));
     }
+    state.db.set_api_key_expiry_days(id, expiry_days);
+    let expires_at = state.db.list_api_keys_for_user(user.id).into_iter().find(|k| k.id == id).and_then(|k| k.expires_at);
     state.emit_audit_event(
         ignite_audit_log::AuditEvent::new("api_key.created", "warning", format!("API key created for {} via {created_via}", user.email))
             .actor(user.email.clone())
-            .metadata(json!({ "apiKeyId": id, "label": label, "scopes": scopes, "createdVia": created_via })),
+            .metadata(json!({ "apiKeyId": id, "label": label, "scopes": scopes, "createdVia": created_via, "expiresInDays": expiry_days })),
     );
     (
         StatusCode::CREATED,
-        Json(json!({ "id": id, "key": raw_key, "label": label, "scopes": scopes, "user": { "email": user.email, "name": user.name } })),
+        Json(json!({ "id": id, "key": raw_key, "label": label, "scopes": scopes, "expiresAt": expires_at, "expiresInDays": expiry_days, "user": { "email": user.email, "name": user.name } })),
     )
         .into_response()
 }
@@ -211,6 +229,47 @@ mod tests {
 
         let res = app.oneshot(Request::get("/api/auth/api-keys").header("authorization", format!("Bearer {key}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn keys_are_short_lived_by_default_and_only_accept_allowed_lifetimes() {
+        let app = app();
+        let cookie = session_cookie(&app, "expiry@example.com").await;
+        let body = json_body(create(&app, ("cookie", &cookie), json!({})).await).await;
+        assert_eq!(body["expiresInDays"], 30);
+        assert!(body["expiresAt"].as_str().is_some_and(|s| !s.is_empty()));
+
+        let week = json_body(create(&app, ("cookie", &cookie), json!({ "expiresInDays": 7 })).await).await;
+        assert_eq!(week["expiresInDays"], 7);
+
+        for bad in [json!(0), json!(365), json!("30")] {
+            let res = create(&app, ("cookie", &cookie), json!({ "expiresInDays": bad })).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad} should be rejected");
+        }
+
+        let list = app.clone().oneshot(Request::get("/api/auth/api-keys").header("cookie", &cookie).body(Body::empty()).unwrap()).await.unwrap();
+        let list = json_body(list).await;
+        assert!(list["keys"].as_array().unwrap().iter().all(|k| k["expiresAt"].is_string() && k["active"] == true));
+    }
+
+    #[tokio::test]
+    async fn an_expired_key_stops_authenticating_and_is_listed_as_expired() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let state = Arc::new(crate::state::test_state(db, ignite_config::Config::default()));
+        let app = router().merge(crate::auth::router()).with_state(state.clone());
+        let cookie = session_cookie(&app, "expired@example.com").await;
+        let body = json_body(create(&app, ("cookie", &cookie), json!({ "expiresInDays": 1 })).await).await;
+        let (id, key) = (body["id"].as_i64().unwrap(), body["key"].as_str().unwrap().to_string());
+
+        // Push it into the past, as if a day had gone by.
+        state.db.set_api_key_expiry_days(id, -1);
+
+        let me = app.clone().oneshot(Request::get("/api/auth/me").header("authorization", format!("Bearer {key}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(json_body(me).await["user"], Value::Null);
+        let list = json_body(app.oneshot(Request::get("/api/auth/api-keys").header("cookie", &cookie).body(Body::empty()).unwrap()).await.unwrap()).await;
+        assert_eq!(list["keys"][0]["expired"], true);
+        assert_eq!(list["keys"][0]["active"], false);
     }
 
     #[tokio::test]
