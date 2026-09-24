@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import type { DailyReportOptions, DailyReportResult } from './dailyReport';
 import { DEFAULT_BASE_URL, normalizeBaseUrl, cleanApiKey } from './serverUrl';
+import * as fs from 'fs/promises';
+import {
+  collectUploadFiles, checkUploadLimits, uploadPathFor, PipelineRunState, overridesForReview, splitNdjson,
+  type PipelineEvent, type StreamPhase,
+} from './upload';
 
 export interface IgniteIssue {
   id: string;
@@ -192,8 +197,14 @@ export async function probeServer(urlOverride?: string, keyOverride?: string): P
 
 /** The server answered, but wants credentials this request didn't carry (or rejected the ones it did). */
 export class IgniteAuthError extends Error {
-  constructor(path: string, status: number) {
-    super(`${path} returned HTTP ${status} — this Ignite server requires an API key for it.`);
+  constructor(path: string, readonly status: number, url?: string, serverMessage?: string, sentKey = false, unauthFlag = 'security.allowUnauthenticatedValidateAll') {
+    const where = url ? `${url}${path}` : path;
+    const why = status === 403
+      ? `your API key isn't allowed to do this${serverMessage ? ` (${serverMessage})` : ''}`
+      : sentKey
+      ? 'the server didn\'t accept your API key and requires sign-in for this'
+      : `the server requires sign-in for this — set an API key, or enable ${unauthFlag} on the server`;
+    super(`${where} returned HTTP ${status}: ${why}.`);
     this.name = 'IgniteAuthError';
   }
 }
@@ -313,6 +324,10 @@ export async function validateAll(projectPath: string, opts: ValidateAllOptions)
     }
     throw new IgniteUnreachableError(url, e);
   }
+  if (res.status === 401 || res.status === 403) {
+    const body = (await res.json().catch(() => null)) as { error?: string; code?: string } | null;
+    throw new IgniteAuthError('/api/pipeline/validate-all', res.status, url, body?.error, effectiveApiKey().source !== 'none');
+  }
   if (res.status >= 500) {
     const text = await res.text().catch(() => '');
     throw new Error(`Ignite validate-all returned HTTP ${res.status}: ${text.slice(0, 300)}`);
@@ -320,6 +335,141 @@ export async function validateAll(projectPath: string, opts: ValidateAllOptions)
   // 400 is a normal "checks failed" response here (see routes/pipeline-validate.js),
   // not a transport error — its body still has the {ok:false, issues, phases} shape.
   return (await res.json()) as ValidateAllResult;
+}
+
+export interface UploadProgress {
+  /** Upload/prepare stage before the pipeline starts. */
+  stage?: string;
+  /** A phase just changed state or logged — full log list so far for it. */
+  phase?: StreamPhase;
+}
+
+/** Phase titles from GET /api/config (unauthenticated) — best-effort, numbers only on failure. */
+async function fetchPhaseTitles(url: string): Promise<Map<number, string>> {
+  try {
+    const res = await fetch(`${url}/api/config`, { headers: authHeaders(), signal: AbortSignal.timeout(5000) });
+    const body = (await res.json()) as { phases?: { id: number; title: string }[] };
+    return new Map((body.phases ?? []).map((p) => [p.id, p.title]));
+  } catch {
+    return new Map();
+  }
+}
+
+/**
+ * Scans `projectPath` on a server that can't see this machine's disk: uploads
+ * the folder to POST /api/pipeline as a simulation (`dryRun` — never
+ * provisions or pushes), follows the NDJSON event stream, answers the review
+ * gate with whatever `.ignite/acknowledgments.md` already justifies, and
+ * returns the same shape `validateAll` does. Works unauthenticated when the
+ * server sets security.allowUnauthenticatedInteractiveDryRun.
+ */
+export async function uploadScan(
+  projectPath: string,
+  opts: ValidateAllOptions,
+  onProgress: (p: UploadProgress) => void
+): Promise<ValidateAllResult> {
+  const url = baseUrl();
+  onProgress({ stage: 'Collecting files…' });
+  const files = await collectUploadFiles(projectPath);
+  checkUploadLimits(files);
+  const totalMb = files.reduce((n, f) => n + f.size, 0) / 1024 / 1024;
+
+  onProgress({ stage: `Reading ${files.length} files (${totalMb.toFixed(1)} MB)…` });
+  const form = new FormData();
+  form.append('org', opts.org || 'local-validation');
+  form.append('repo', opts.repo || 'local-project');
+  form.append('dryRun', 'true');
+  form.append('paths', JSON.stringify(files.map((f) => uploadPathFor(projectPath, f.rel))));
+  for (const f of files) {
+    form.append('files', new Blob([await fs.readFile(f.abs)]), f.rel.split('/').pop() ?? f.rel);
+  }
+
+  const titles = await fetchPhaseTitles(url);
+  onProgress({ stage: `Uploading ${files.length} files (${totalMb.toFixed(1)} MB)…` });
+  let res: Response;
+  try {
+    res = await fetch(`${url}/api/pipeline`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+      signal: AbortSignal.timeout(60 * 60 * 1000),
+    });
+  } catch (e) {
+    if (await checkReachable()) {
+      throw new Error(`Uploading to ${url}/api/pipeline failed (${e instanceof Error ? e.message : String(e)}), but Ignite is reachable — a proxy in front of it may be limiting request size or duration.`);
+    }
+    throw new IgniteUnreachableError(url, e);
+  }
+  if (res.status === 401 || res.status === 403) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new IgniteAuthError('/api/pipeline', res.status, url, body?.error, effectiveApiKey().source !== 'none', 'security.allowUnauthenticatedInteractiveDryRun');
+  }
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Ignite /api/pipeline returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  }
+
+  const run = new PipelineRunState(titles);
+  const decoder = new TextDecoder();
+  const reader = res.body.getReader();
+  let rest = '';
+  let reviewAnswered = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    const split = splitNdjson(rest, done ? '\n' : decoder.decode(value, { stream: true }));
+    rest = split.rest;
+    for (const line of split.lines) {
+      let event: PipelineEvent;
+      try {
+        event = JSON.parse(line) as PipelineEvent;
+      } catch {
+        continue;
+      }
+      run.apply(event);
+      if ((event.type === 'log' || event.type === 'status') && typeof (event as { phase?: unknown }).phase === 'number') {
+        onProgress({ phase: run.phase((event as { phase: number }).phase) });
+      }
+      if (event.type === 'review_required' && !reviewAnswered) {
+        reviewAnswered = true;
+        const overrides = overridesForReview(run.issues, opts.overrides ?? []);
+        overrides.forEach((o) => run.submitted.add(o.issueId));
+        onProgress({ stage: `Review gate: submitting ${overrides.length} justification(s) from acknowledgments.md…` });
+        const decision = await fetch(`${url}/api/pipeline/${encodeURIComponent(run.jobId ?? '')}/review-decision`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ proceed: true, overrides }),
+          signal: AbortSignal.timeout(60_000),
+        }).catch((e) => {
+          throw new Error(`Couldn't answer the review gate: ${e instanceof Error ? e.message : String(e)}`);
+        });
+        if (!decision.ok) {
+          const body = (await decision.json().catch(() => null)) as { error?: string } | null;
+          await reader.cancel().catch(() => undefined);
+          throw new Error(`The server rejected the review decision (HTTP ${decision.status}${body?.error ? `: ${body.error}` : ''}).`);
+        }
+      }
+    }
+    if (done) break;
+  }
+
+  if (!run.done) throw new Error('The scan stream ended before the server reported a result — check the server logs.');
+  let issues = run.finalIssues() as unknown as IgniteIssue[];
+  const totalIssueCount = issues.length;
+  if (opts.changedFiles) {
+    const changed = new Set(opts.changedFiles);
+    issues = issues.filter((i) => i.file && changed.has(i.file));
+  }
+  return {
+    ok: run.done.ok,
+    mode: 'upload',
+    jobId: run.jobId,
+    projectPath,
+    error: run.done.error,
+    failedPhase: run.done.phase ?? null,
+    issues,
+    phases: run.sortedPhases(),
+    ...(opts.changedFiles ? { totalIssueCount, filteredByChangedFiles: true } : {}),
+  };
 }
 
 export interface ProjectSummary {

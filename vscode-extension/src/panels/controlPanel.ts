@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import type { UiStateStore, UiState } from '../uiState';
 import type { ServerProbe } from '../api';
 import { MINT_API_KEY_COMMAND } from '../serverUrl';
+import { resolveScanMode, type ScanMode } from '../upload';
 
 /** Everything the panel can ask the extension to do — implemented in extension.ts. */
 export interface ControlPanelHost {
@@ -109,6 +110,7 @@ export class ControlPanelProvider implements vscode.WebviewViewProvider {
         showOverriddenIssues: config.get<boolean>('showOverriddenIssues', false),
       },
       hasWorkspace: (vscode.workspace.workspaceFolders?.length ?? 0) > 0,
+      scanMode: resolveScanMode(config.get<ScanMode>('scanMode', 'auto'), this.host.baseUrl()),
     });
   }
 
@@ -250,6 +252,7 @@ export class ControlPanelProvider implements vscode.WebviewViewProvider {
       <button class="secondary" data-run="ignite.scanChangedFiles">Changed files</button>
       <button class="secondary" data-run="ignite.scanFolder">Folder…</button>
     </div>
+    <div class="hint" id="scanModeHint"></div>
     <label class="check"><input type="checkbox" id="optCi"> Run org governance CI <span class="muted">(act + Docker, slow)</span></label>
     <label class="check"><input type="checkbox" id="optOverridden"> Show acknowledged findings</label>
   </section>
@@ -628,6 +631,10 @@ const SCRIPT = /* js */ `
     if (needsKey && state.tools && state.tools.error === 'needs API key') $('serverDetails').open = true;
 
     $('optCi').checked = m.options.runLocalCi;
+    $('scanModeHint').textContent = m.scanMode === 'upload'
+      ? 'Remote server: scans upload the folder (respecting .gitignore) as a simulation run.'
+      : 'Local server: scans send the folder path; the server reads it from disk.';
+    $('optCi').closest('label').hidden = m.scanMode === 'upload';
     $('optOverridden').checked = m.options.showOverriddenIssues;
 
     const offline = c.status === 'disconnected';

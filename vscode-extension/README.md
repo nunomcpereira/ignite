@@ -2,7 +2,7 @@
 
 Runs Ignite's compliance/security pipeline against the currently open workspace folder and surfaces findings natively — Problems panel diagnostics, a Findings tree, a Tools Status tree, and an Output channel — for people who don't want the separate web UI (`public/index.html`).
 
-Thin client only: no scanning logic lives here. Every check runs on a running Ignite server (`ignite-server`, default `http://localhost:51337`) via `POST /api/pipeline/validate-all`.
+Thin client only: no scanning logic lives here. Against a remote server the extension uploads the scanned folder (git-tracked + untracked files, `.gitignore` respected; plain directory walk skipping `node_modules`/`target`/`dist`/… outside git) to `POST /api/pipeline` as a simulation (`dryRun`), answers the review gate from `.ignite/acknowledgments.md`, and shows results exactly like a local scan. Unauthenticated uploads need `security.allowUnauthenticatedInteractiveDryRun` on the server. Every check runs on a running Ignite server (`ignite-server`, default `http://localhost:51337`) via `POST /api/pipeline/validate-all`.
 
 ## Requirements
 
@@ -54,6 +54,7 @@ Some servers require one (e.g. `/api/tools/status` returns 401 without it).
 |---|---|---|
 | `ignite.baseUrl` | `http://localhost:51337` | Matches `IGNITE_BASE_URL`. Editable from the Overview panel. |
 | `ignite.apiKey` | `""` | Plaintext fallback — the Overview panel's keychain-stored key wins over it. |
+| `ignite.scanMode` | `auto` | `auto` sends the folder *path* to a server on `localhost` and *uploads* the folder to any other server (a remote server can't read your disk). `path`/`upload` force one. |
 | `ignite.runLocalCi` | `false` | Phase 5 (act + Docker) — off by default in the extension since it's the slowest phase. |
 | `ignite.showOverriddenIssues` | `false` | Show already-acknowledged issues as dimmed diagnostics instead of hiding them. |
 

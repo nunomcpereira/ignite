@@ -277,6 +277,22 @@
           "default": "",
           "markdownDescription": "**Prefer the Overview panel's API key field** \u2014 it stores the key in your OS keychain instead of plaintext settings; a keychain key wins over this setting.\n\nOptional `ignite_...` API key (mint one with `create-api-key <email>` on the server), sent as `Authorization: Bearer`. Needed for **Generate Fix PR** to open the PR under your own connected GitHub account.",
           "order": 2
+        },
+        "ignite.scanMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "path",
+            "upload"
+          ],
+          "default": "auto",
+          "order": 3,
+          "enumDescriptions": [
+            "Send the folder's path to a server on this machine (localhost); upload the folder to any other server.",
+            "Always send the path (validate-all). Only works when the server can read this machine's disk.",
+            "Always upload the folder's files as a simulation run (POST /api/pipeline, dryRun)."
+          ],
+          "markdownDescription": "How scans reach the server. A remote server can't read your local disk, so `auto` uploads the folder (respecting `.gitignore`) unless the server is on `localhost`. Unauthenticated uploads need `security.allowUnauthenticatedInteractiveDryRun` on the server; path scans need `security.allowUnauthenticatedValidateAll`."
         }
       }
     },

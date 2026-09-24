@@ -2,15 +2,16 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import {
-  validateAll, checkReachable, IgniteUnreachableError, type IgniteIssue,
+  validateAll, checkReachable, IgniteUnreachableError, IgniteAuthError, type IgniteIssue,
   getLicenseCompliance, getSbom, getLocMetrics, getPosture,
   previewFixPr, applyFixPr, type FixCandidate,
   explainIssue, suggestFix,
   runDailyReport, downloadDailyReportPdf,
-  probeServer, setStoredApiKey, effectiveApiKey, baseUrl, mintApiKeyWithPassword,
+  probeServer, setStoredApiKey, effectiveApiKey, baseUrl, mintApiKeyWithPassword, uploadScan,
 } from './api';
 import { normalizeBaseUrl, cleanApiKey, maskApiKey, DEFAULT_BASE_URL } from './serverUrl';
 import { UiStateStore } from './uiState';
+import { resolveScanMode, type ScanMode } from './upload';
 import { ControlPanelProvider, updateSetting, type ControlPanelHost } from './panels/controlPanel';
 import { planForPick, summarizeReports, defaultPdfName, type ChannelPick } from './dailyReport';
 import { publishDiagnostics, DIAGNOSTIC_SOURCE } from './diagnostics';
@@ -309,6 +310,17 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, 
     uiState.updateScan({ detail: `Phase ${phase} — ${title}` });
   });
 
+  const mode = resolveScanMode(config.get<ScanMode>('scanMode', 'auto'), baseUrl());
+  const auth = effectiveApiKey().source === 'none' ? 'none' : 'API key';
+  const scanOptions = {
+    runLocalCi,
+    org: org || undefined,
+    repo: repo || undefined,
+    overrides,
+    actor: actor ?? undefined,
+    changedFiles,
+  };
+
   try {
     const result = await vscode.window.withProgress(
       {
@@ -318,16 +330,35 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, 
       },
       async (progress) => {
         progressReport = (message: string) => progress.report({ message });
+        if (mode === 'upload') {
+          // Remote server: it can't read this disk, so the folder travels with the request.
+          outputChannel.appendLine(`POST ${baseUrl()}/api/pipeline — uploading ${workspaceRoot} as a simulation (remote server), auth: ${auth}`);
+          if (runLocalCi) outputChannel.appendLine('  (ignite.runLocalCi only applies to path scans — the server phase config decides Phase 5 for uploads)');
+          try {
+            return await uploadScan(workspaceRoot, scanOptions, (p) => {
+              if (p.stage) {
+                progressReport?.(p.stage);
+                setStatusBar('running', p.stage);
+                uiState.updateScan({ detail: p.stage });
+              }
+              if (p.phase) {
+                printer.appendPhase(p.phase.phase, p.phase.title, p.phase.state, p.phase.logs);
+                if (p.phase.state === 'running') {
+                  const label = `Phase ${p.phase.phase} — ${p.phase.title}`;
+                  setStatusBar('running', `${label} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+                  progressReport?.(label);
+                  uiState.updateScan({ detail: label });
+                }
+              }
+            });
+          } finally {
+            progressReport = undefined;
+          }
+        }
         poller.start();
         try {
-          return await validateAll(workspaceRoot, {
-            runLocalCi,
-            org: org || undefined,
-            repo: repo || undefined,
-            overrides,
-            actor: actor ?? undefined,
-            changedFiles,
-          });
+          outputChannel.appendLine(`POST ${baseUrl()}/api/pipeline/validate-all — projectPath ${workspaceRoot}, auth: ${auth}`);
+          return await validateAll(workspaceRoot, scanOptions);
         } finally {
           poller.stop();
           progressReport = undefined;
@@ -398,6 +429,12 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, 
     uiState.updateScan({ status: 'error', detail: message, finishedAt: Date.now() });
     if (e instanceof IgniteUnreachableError) void refreshConnection();
     outputChannel.appendLine(`\n✗ ${message}`);
+    if (e instanceof IgniteAuthError) {
+      const choice = await vscode.window.showErrorMessage(`Ignite: ${message}`, 'Get API Key', 'Show Output');
+      if (choice === 'Get API Key') void controlPanel.focusApiKey();
+      if (choice === 'Show Output') outputChannel.show();
+      return;
+    }
     vscode.window.showErrorMessage(`Ignite: ${message}`);
   }
 }
