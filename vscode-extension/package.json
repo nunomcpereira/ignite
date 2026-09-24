@@ -1,7 +1,7 @@
 {
   "name": "ignite-vscode",
   "displayName": "Ignite",
-  "description": "Run Ignite's compliance/security pipeline against the open workspace folder — findings in the Problems panel, no separate web UI required.",
+  "description": "Run Ignite's compliance/security pipeline against the open workspace folder \u2014 findings in the Problems panel, no separate web UI required.",
   "version": "0.1.0",
   "publisher": "ignite",
   "private": true,
@@ -34,21 +34,21 @@
     "commands": [
       {
         "command": "ignite.scanWorkspace",
-        "title": "Ignite: Scan Workspace — run the full compliance/security pipeline",
+        "title": "Ignite: Scan Workspace \u2014 run the full compliance/security pipeline",
         "icon": "$(shield)"
       },
       {
         "command": "ignite.scanChangedFiles",
-        "title": "Ignite: Scan Changed Files — full pipeline, findings limited to uncommitted files",
+        "title": "Ignite: Scan Changed Files \u2014 full pipeline, findings limited to uncommitted files",
         "icon": "$(diff)"
       },
       {
         "command": "ignite.explainIssue",
-        "title": "Ignite: Explain Finding — plain-language explanation via the local LLM"
+        "title": "Ignite: Explain Finding \u2014 plain-language explanation via the local LLM"
       },
       {
         "command": "ignite.suggestFixForIssue",
-        "title": "Ignite: Suggest Fix — propose (and optionally apply) a one-off code fix for this finding"
+        "title": "Ignite: Suggest Fix \u2014 propose (and optionally apply) a one-off code fix for this finding"
       },
       {
         "command": "ignite.showOutput",
@@ -60,11 +60,11 @@
       },
       {
         "command": "ignite.acknowledgeIssue",
-        "title": "Ignite: Open in Review File — jump to this finding's Acknowledge: line"
+        "title": "Ignite: Open in Review File \u2014 jump to this finding's Acknowledge: line"
       },
       {
         "command": "ignite.acknowledgeSelected",
-        "title": "Ignite: Acknowledge Selected — write one shared justification for every selected finding",
+        "title": "Ignite: Acknowledge Selected \u2014 write one shared justification for every selected finding",
         "icon": "$(check)"
       },
       {
@@ -74,12 +74,12 @@
       },
       {
         "command": "ignite.generateFixPr",
-        "title": "Ignite: Generate Fix PR — preview AI-suggested fixes for open findings and open a PR",
+        "title": "Ignite: Generate Fix PR \u2014 preview AI-suggested fixes for open findings and open a PR",
         "icon": "$(git-pull-request)"
       },
       {
         "command": "ignite.runDailyReport",
-        "title": "Ignite: Run Org Daily Report — send to Sentinel/webhook, Azure Blob, email or PDF",
+        "title": "Ignite: Run Org Daily Report \u2014 send to Sentinel/webhook, Azure Blob, email or PDF",
         "icon": "$(mail)"
       },
       {
@@ -88,7 +88,7 @@
       },
       {
         "command": "ignite.refreshToolsStatus",
-        "title": "Ignite: Refresh Tools Status — re-probe which scanner tools are installed/enabled",
+        "title": "Ignite: Refresh Tools Status \u2014 re-probe which scanner tools are installed/enabled",
         "icon": "$(refresh)"
       },
       {
@@ -109,8 +109,28 @@
       },
       {
         "command": "ignite.scanFolder",
-        "title": "Ignite: Scan Selected Folder — run the full compliance/security pipeline against just this folder",
-        "icon": "$(shield)"
+        "title": "Ignite: Scan Selected Folder \u2014 run the full compliance/security pipeline against just this folder",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "ignite.configureServer",
+        "title": "Ignite: Configure Server URL\u2026",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "ignite.setApiKey",
+        "title": "Ignite: Set API Key\u2026",
+        "icon": "$(key)"
+      },
+      {
+        "command": "ignite.reconnect",
+        "title": "Ignite: Reconnect to Server",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ignite.getApiKey",
+        "title": "Ignite: Get API Key \u2014 sign in and create one",
+        "icon": "$(key)"
       }
     ],
     "menus": {
@@ -136,6 +156,11 @@
           "group": "navigation"
         },
         {
+          "command": "ignite.scanFolder",
+          "when": "view == igniteFindings",
+          "group": "navigation"
+        },
+        {
           "command": "ignite.toggleFindingGrouping",
           "when": "view == igniteFindings",
           "group": "navigation"
@@ -149,6 +174,26 @@
           "command": "ignite.refreshToolsStatus",
           "when": "view == igniteToolsStatus",
           "group": "navigation"
+        },
+        {
+          "command": "ignite.reconnect",
+          "when": "view == igniteControl",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ignite.configureServer",
+          "when": "view == igniteControl",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ignite.getApiKey",
+          "when": "view == igniteControl",
+          "group": "1_ignite"
+        },
+        {
+          "command": "ignite.showOutput",
+          "when": "view == igniteControl",
+          "group": "1_ignite"
         }
       ],
       "explorer/context": [
@@ -193,12 +238,18 @@
     "views": {
       "ignite": [
         {
+          "type": "webview",
+          "id": "igniteControl",
+          "name": "Overview"
+        },
+        {
           "id": "igniteFindings",
           "name": "Findings"
         },
         {
           "id": "igniteToolsStatus",
-          "name": "Tools Status"
+          "name": "Tools Status",
+          "visibility": "collapsed"
         }
       ]
     },
@@ -208,12 +259,13 @@
         "ignite.baseUrl": {
           "type": "string",
           "default": "http://localhost:51337",
-          "description": "Base URL of a running Ignite server (npm start in the ignite repo). Matches IGNITE_BASE_URL."
+          "markdownDescription": "Base URL of a running Ignite server (`ignite-server`). Easiest to change from the **Overview** panel in the Ignite sidebar, which also tests the connection. Matches `IGNITE_BASE_URL`.",
+          "order": 1
         },
         "ignite.runLocalCi": {
           "type": "boolean",
           "default": false,
-          "description": "Run Phase 5 org governance CI (act + Docker) as part of a scan. Off by default in the extension — it's the slowest phase and needs Docker."
+          "description": "Run Phase 5 org governance CI (act + Docker) as part of a scan. Off by default in the extension \u2014 it's the slowest phase and needs Docker."
         },
         "ignite.showOverriddenIssues": {
           "type": "boolean",
@@ -223,10 +275,23 @@
         "ignite.apiKey": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Optional `ignite_...` API key (mint one with `ignite create-api-key <email>` on the server), sent as `Authorization: Bearer`. Most scans work fine without it, but it's needed for **Generate Fix PR** to open the PR under your own connected GitHub account instead of the server's fallback token."
+          "markdownDescription": "**Prefer the Overview panel's API key field** \u2014 it stores the key in your OS keychain instead of plaintext settings; a keychain key wins over this setting.\n\nOptional `ignite_...` API key (mint one with `create-api-key <email>` on the server), sent as `Authorization: Bearer`. Needed for **Generate Fix PR** to open the PR under your own connected GitHub account.",
+          "order": 2
         }
       }
-    }
+    },
+    "viewsWelcome": [
+      {
+        "view": "igniteFindings",
+        "when": "!ignite.hasScanResult && workbenchState != empty",
+        "contents": "No scan results yet.\n[$(shield) Scan Workspace](command:ignite.scanWorkspace)\n[$(diff) Scan Changed Files](command:ignite.scanChangedFiles)\n[$(folder) Scan a Folder\u2026](command:ignite.scanFolder)\nFindings also appear in the [Problems panel](command:workbench.actions.view.problems). You can also right-click any folder in the Explorer \u2192 **Ignite: Scan Selected Folder**."
+      },
+      {
+        "view": "igniteFindings",
+        "when": "workbenchState == empty",
+        "contents": "Open a folder to scan it with Ignite.\n[Open Folder](command:workbench.action.files.openFolder)\n[$(folder) Scan a Folder\u2026](command:ignite.scanFolder)"
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",
@@ -235,12 +300,8 @@
     "test": "tsc -p ./ && node --test dist/*.test.js"
   },
   "devDependencies": {
-    "@types/he": "^1.2.3",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.4.0"
-  },
-  "dependencies": {
-    "he": "^1.2.0"
   }
 }

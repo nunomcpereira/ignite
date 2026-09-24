@@ -37,6 +37,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::sarif::router())
         .merge(routes::github_annotations::router())
         .merge(routes::baseline::router())
+        .merge(routes::api_keys::router())
         .merge(routes::campaigns::router())
         .merge(routes::compliance::router())
         .merge(routes::daily_report::router())

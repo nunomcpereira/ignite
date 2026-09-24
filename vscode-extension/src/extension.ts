@@ -7,7 +7,11 @@ import {
   previewFixPr, applyFixPr, type FixCandidate,
   explainIssue, suggestFix,
   runDailyReport, downloadDailyReportPdf,
+  probeServer, setStoredApiKey, effectiveApiKey, baseUrl, mintApiKeyWithPassword,
 } from './api';
+import { normalizeBaseUrl, cleanApiKey, maskApiKey, DEFAULT_BASE_URL } from './serverUrl';
+import { UiStateStore } from './uiState';
+import { ControlPanelProvider, updateSetting, type ControlPanelHost } from './panels/controlPanel';
 import { planForPick, summarizeReports, defaultPdfName, type ChannelPick } from './dailyReport';
 import { publishDiagnostics, DIAGNOSTIC_SOURCE } from './diagnostics';
 import { getActor, getOriginOrgRepo, getRepoRoot, getChangedFiles } from './git';
@@ -26,6 +30,10 @@ let diagnostics: vscode.DiagnosticCollection;
 let findingsTree: FindingsTreeProvider;
 let toolsStatusTree: ToolsStatusTreeProvider;
 let statusBarItem: vscode.StatusBarItem;
+let findingsView: vscode.TreeView<FindingsNode>;
+let uiState: UiStateStore;
+let controlPanel: ControlPanelProvider;
+const SECRET_API_KEY = 'ignite.apiKey';
 let lastResultIssues: IgniteIssue[] = [];
 /** jobId from the most recent scan — the fix-PR endpoints are scoped to one job's stored issues. */
 let lastJobId: string | undefined;
@@ -39,22 +47,138 @@ function activeWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
 }
 
 function setStatusBar(state: 'idle' | 'running' | 'ok' | 'errors', detail?: string): void {
+  const offline = uiState?.current.connection.status === 'disconnected';
+  statusBarItem.backgroundColor = undefined;
   switch (state) {
     case 'running':
       statusBarItem.text = `$(sync~spin) Ignite: ${detail ?? 'scanning…'}`;
       break;
     case 'ok':
-      statusBarItem.text = '$(shield) Ignite: passed';
+      statusBarItem.text = '$(pass-filled) Ignite: passed';
       break;
     case 'errors':
-      statusBarItem.text = `$(shield) Ignite: ${detail ?? 'issues found'}`;
+      statusBarItem.text = `$(error) Ignite: ${detail ?? 'issues found'}`;
+      statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
       break;
     default:
-      statusBarItem.text = '$(shield) Ignite';
+      statusBarItem.text = offline ? '$(debug-disconnect) Ignite: offline' : '$(shield) Ignite';
+      if (offline) statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
   }
-  statusBarItem.tooltip = 'Run Ignite: Scan Workspace';
-  statusBarItem.command = 'ignite.scanWorkspace';
+  const tooltip = new vscode.MarkdownString(undefined, true);
+  tooltip.isTrusted = { enabledCommands: ['ignite.scanWorkspace', 'ignite.configureServer', 'ignite.showOutput'] };
+  tooltip.appendMarkdown(`**Ignite** — ${offline ? 'server unreachable' : 'server'} \`${baseUrl()}\`\n\n`);
+  tooltip.appendMarkdown('[$(shield) Scan workspace](command:ignite.scanWorkspace) · [$(plug) Server…](command:ignite.configureServer) · [$(output) Output](command:ignite.showOutput)');
+  statusBarItem.tooltip = tooltip;
+  statusBarItem.command = state === 'running' ? 'ignite.showOutput' : offline && state === 'idle' ? 'ignite.configureServer' : 'ignite.scanWorkspace';
   statusBarItem.show();
+}
+
+/** Re-probes the configured server and publishes the result to the sidebar + status bar. */
+async function refreshConnection(): Promise<void> {
+  const url = baseUrl();
+  uiState.update({ connection: { status: 'checking', url } });
+  const probe = await probeServer();
+  // A newer refresh (URL changed mid-probe) already superseded this one.
+  if (baseUrl() !== url) return;
+  uiState.update({ connection: { status: probe.ok ? 'connected' : 'disconnected', ...probe } });
+  if (uiState.current.scan.status !== 'running' && !['passed', 'blocked', 'failed'].includes(uiState.current.scan.status)) setStatusBar('idle');
+}
+
+function publishApiKeyState(): void {
+  const { key, source } = effectiveApiKey();
+  uiState.update({ apiKey: { source, masked: maskApiKey(key) } });
+}
+
+async function refreshTools(): Promise<void> {
+  await toolsStatusTree.refresh();
+  uiState.update({ tools: toolsStatusTree.summary() });
+}
+
+function createControlPanelHost(context: vscode.ExtensionContext): ControlPanelHost {
+  return {
+    baseUrl,
+    async testBaseUrl(input) {
+      const normalized = normalizeBaseUrl(input);
+      if (!normalized.ok) return { ok: false, error: normalized.error };
+      const probe = await probeServer(normalized.url);
+      return { ok: probe.ok, probe, error: probe.error };
+    },
+    async saveBaseUrl(input) {
+      const normalized = normalizeBaseUrl(input);
+      if (!normalized.ok) return { ok: false, error: normalized.error };
+      const probe = await probeServer(normalized.url);
+      // Saved regardless of the probe — the server may simply not be started yet.
+      // onDidChangeConfiguration then re-probes and refreshes everything else.
+      await updateSetting('baseUrl', normalized.url === DEFAULT_BASE_URL ? undefined : normalized.url);
+      return { ok: probe.ok, probe, error: probe.error };
+    },
+    async resetBaseUrl() {
+      await updateSetting('baseUrl', undefined);
+    },
+    async saveApiKey(input) {
+      const key = cleanApiKey(input);
+      if (!key) return { ok: false, error: 'Paste an API key first.' };
+      await context.secrets.store(SECRET_API_KEY, key);
+      return { ok: true };
+    },
+    async clearApiKey() {
+      await context.secrets.delete(SECRET_API_KEY);
+    },
+    log: (line) => outputChannel.appendLine(line),
+    async mintApiKey(email, password) {
+      try {
+        const minted = await mintApiKeyWithPassword(email.trim(), password, `VS Code — ${os.hostname()}`);
+        await context.secrets.store(SECRET_API_KEY, minted.key);
+        return { ok: true, email: minted.user?.email ?? email };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    reconnect: async () => {
+      await Promise.all([refreshConnection(), refreshTools()]);
+    },
+  };
+}
+
+/** "Ignite: Configure Server…" — palette/status-bar entry point to the same URL field the sidebar has. */
+async function configureServer(): Promise<void> {
+  const value = await vscode.window.showInputBox({
+    title: 'Ignite server URL',
+    prompt: 'Where is ignite-server running?',
+    value: baseUrl(),
+    ignoreFocusOut: true,
+    validateInput: (v) => {
+      const n = normalizeBaseUrl(v);
+      return n.ok ? null : n.error;
+    },
+  });
+  if (value === undefined) return;
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized.ok) return;
+  const probe = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Ignite: connecting to ${normalized.url}…` },
+    () => probeServer(normalized.url)
+  );
+  await updateSetting('baseUrl', normalized.url === DEFAULT_BASE_URL ? undefined : normalized.url);
+  if (probe.ok) {
+    vscode.window.showInformationMessage(`Ignite: connected to ${normalized.url} (${probe.latencyMs} ms).`);
+  } else {
+    vscode.window.showWarningMessage(`Ignite: saved ${normalized.url}, but it isn't reachable — ${probe.error}`);
+  }
+}
+
+async function setApiKeyCommand(context: vscode.ExtensionContext): Promise<void> {
+  const value = await vscode.window.showInputBox({
+    title: 'Ignite API key',
+    prompt: 'Paste an ignite_… key (kept in your OS keychain; empty removes it). No key? Use "Sign in & create key" in the Ignite Overview panel, or the web UI\'s API keys page.',
+    placeHolder: 'ignite_…',
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (value === undefined) return;
+  const key = cleanApiKey(value);
+  if (key) await context.secrets.store(SECRET_API_KEY, key);
+  else await context.secrets.delete(SECRET_API_KEY);
 }
 
 async function scanWorkspace(context: vscode.ExtensionContext, changedOnly = false): Promise<void> {
@@ -110,28 +234,41 @@ async function runGuarded(context: vscode.ExtensionContext, scanRoot: string, ch
     outputChannel.appendLine(`Checking reachability of the Ignite server...`);
     const reachable = await checkReachable((line) => outputChannel.appendLine(line));
     if (!reachable) {
-      const baseUrl = vscode.workspace.getConfiguration('ignite').get<string>('baseUrl');
-      outputChannel.appendLine(`✗ Ignite isn't reachable at ${baseUrl} after 3 probes — see the lines above for the actual cause per attempt.`);
+      const url = baseUrl();
+      void refreshConnection();
+      outputChannel.appendLine(`✗ Ignite isn't reachable at ${url} after 3 probes — see the lines above for the actual cause per attempt.`);
       outputChannel.show(true);
       const choice = await vscode.window.showErrorMessage(
-        `Ignite isn't reachable at ${baseUrl}. Start it with 'npm start' in the ignite repo, or set "ignite.baseUrl". See Output › Ignite for per-attempt detail.`,
-        'Show Output',
-        'Open Settings'
+        `Ignite isn't reachable at ${url}. Start ignite-server, or point the extension at a running server. See Output › Ignite for per-attempt detail.`,
+        'Change Server URL',
+        'Show Output'
       );
       if (choice === 'Show Output') outputChannel.show();
-      if (choice === 'Open Settings') vscode.commands.executeCommand('workbench.action.openSettings', 'ignite.baseUrl');
+      if (choice === 'Change Server URL') void controlPanel.focusServerSettings();
       return;
     }
+    if (uiState.current.connection.status !== 'connected') void refreshConnection();
     await runScan(context, scanRoot, changedOnly);
   } finally {
     scanInProgress = false;
   }
 }
 
+function updateFindingsBadge(blocking: number, total: number): void {
+  findingsView.badge = blocking > 0 ? { value: blocking, tooltip: `${blocking} blocking finding(s)` } : undefined;
+  findingsView.description = total > 0 ? `${total} finding(s)` : undefined;
+  findingsView.message = total === 0 ? 'No findings — the last scan came back clean.' : undefined;
+  void vscode.commands.executeCommand('setContext', 'ignite.hasScanResult', true);
+}
+
 async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, changedOnly: boolean): Promise<void> {
   outputChannel.clear();
   outputChannel.show(true);
   setStatusBar('running');
+  const startedAt = Date.now();
+  const target = path.basename(workspaceRoot) + (changedOnly ? ' (changed files)' : '');
+  uiState.updateScan({ status: 'running', target, detail: 'Starting…', startedAt, finishedAt: undefined });
+  findingsView.message = undefined;
 
   const config = vscode.workspace.getConfiguration('ignite');
   const runLocalCi = config.get<boolean>('runLocalCi', false);
@@ -151,6 +288,7 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, 
       outputChannel.appendLine('No uncommitted changes in this workspace — nothing to scan.');
       vscode.window.showInformationMessage('Ignite: no uncommitted changes to scan.');
       setStatusBar('idle');
+      uiState.updateScan({ status: 'idle' });
       return;
     }
     outputChannel.appendLine(`Scanning ${changedFiles.length} changed file(s): ${changedFiles.join(', ')}`);
@@ -167,13 +305,14 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, 
   const poller = new ScanProgressPoller(org, repo, printer, (phase, title, elapsedSeconds) => {
     setStatusBar('running', `Phase ${phase} — ${title} (${elapsedSeconds}s)`);
     progressReport?.(`Phase ${phase} — ${title}`);
+    uiState.updateScan({ detail: `Phase ${phase} — ${title}` });
   });
 
   try {
     const result = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: 'Ignite: scanning workspace',
+        title: `Ignite: scanning ${target}`,
         cancellable: false,
       },
       async (progress) => {
@@ -209,6 +348,20 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, 
     }
     publishDiagnostics(diagnostics, workspaceRoot, issues, showOverridden);
     findingsTree.setResult(result.phases ?? [], issues, workspaceRoot);
+    const blocking = issues.filter((i) => i.severity === 'error' && i.status !== 'overridden').length;
+    const counts = {
+      blocking,
+      warnings: issues.filter((i) => i.severity !== 'error' && i.status !== 'overridden').length,
+      acknowledged: issues.filter((i) => i.status === 'overridden').length,
+      total: issues.length,
+      finishedAt: Date.now(),
+    };
+    updateFindingsBadge(counts.blocking, issues.length);
+    uiState.updateScan({
+      ...counts,
+      status: result.ok ? 'passed' : blocking > 0 ? 'blocked' : 'failed',
+      detail: result.ok ? undefined : blocking > 0 ? undefined : result.error ?? 'Checks failed',
+    });
     const snapshotPath = await writeScanSnapshot(repoRoot, issues);
     outputChannel.appendLine(`  Findings snapshot: ${snapshotPath}`);
 
@@ -241,6 +394,8 @@ async function runScan(context: vscode.ExtensionContext, workspaceRoot: string, 
   } catch (e) {
     setStatusBar('idle');
     const message = e instanceof IgniteUnreachableError || e instanceof Error ? e.message : String(e);
+    uiState.updateScan({ status: 'error', detail: message, finishedAt: Date.now() });
+    if (e instanceof IgniteUnreachableError) void refreshConnection();
     outputChannel.appendLine(`\n✗ ${message}`);
     vscode.window.showErrorMessage(`Ignite: ${message}`);
   }
@@ -532,20 +687,52 @@ export function activate(context: vscode.ExtensionContext): void {
   diagnostics = vscode.languages.createDiagnosticCollection(DIAGNOSTIC_SOURCE);
   findingsTree = new FindingsTreeProvider();
   toolsStatusTree = new ToolsStatusTreeProvider();
-  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  uiState = new UiStateStore();
+  controlPanel = new ControlPanelProvider(uiState, createControlPanelHost(context));
+  statusBarItem = vscode.window.createStatusBarItem('ignite.status', vscode.StatusBarAlignment.Left, 100);
+  statusBarItem.name = 'Ignite';
+  findingsView = vscode.window.createTreeView('igniteFindings', { treeDataProvider: findingsTree, canSelectMany: true, showCollapseAll: true });
+  const toolsView = vscode.window.createTreeView('igniteToolsStatus', { treeDataProvider: toolsStatusTree });
   setStatusBar('idle');
+  publishApiKeyState();
+
+  uiState.onDidChange((s) => {
+    toolsView.description = s.tools && !s.tools.error ? `${s.tools.installed}/${s.tools.total} installed` : undefined;
+  });
 
   context.subscriptions.push(
     outputChannel,
     diagnostics,
     statusBarItem,
-    vscode.window.createTreeView('igniteFindings', { treeDataProvider: findingsTree, canSelectMany: true }),
-    vscode.window.registerTreeDataProvider('igniteToolsStatus', toolsStatusTree),
+    uiState,
+    findingsView,
+    toolsView,
+    vscode.window.registerWebviewViewProvider(ControlPanelProvider.viewId, controlPanel),
+    context.secrets.onDidChange(async (e) => {
+      if (e.key !== SECRET_API_KEY) return;
+      setStoredApiKey(await context.secrets.get(SECRET_API_KEY));
+      publishApiKeyState();
+      void refreshConnection();
+    }),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration('ignite')) return;
+      if (e.affectsConfiguration('ignite.baseUrl') || e.affectsConfiguration('ignite.apiKey')) {
+        publishApiKeyState();
+        void refreshConnection();
+        void refreshTools();
+      }
+      controlPanel.refresh();
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => controlPanel.refresh()),
+    vscode.commands.registerCommand('ignite.configureServer', () => configureServer()),
+    vscode.commands.registerCommand('ignite.setApiKey', () => setApiKeyCommand(context)),
+    vscode.commands.registerCommand('ignite.getApiKey', () => controlPanel.focusApiKey()),
+    vscode.commands.registerCommand('ignite.reconnect', () => Promise.all([refreshConnection(), refreshTools()])),
     vscode.commands.registerCommand('ignite.scanWorkspace', () => scanWorkspace(context)),
     vscode.commands.registerCommand('ignite.scanChangedFiles', () => scanWorkspace(context, true)),
     vscode.commands.registerCommand('ignite.scanFolder', (uri?: vscode.Uri) => scanFolder(context, uri)),
     vscode.commands.registerCommand('ignite.showOutput', () => outputChannel.show()),
-    vscode.commands.registerCommand('ignite.refreshToolsStatus', () => toolsStatusTree.refresh()),
+    vscode.commands.registerCommand('ignite.refreshToolsStatus', () => refreshTools()),
     vscode.commands.registerCommand('ignite.openReviewFile', async () => {
       const folder = activeWorkspaceFolder();
       if (!folder) return;
@@ -635,7 +822,12 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  toolsStatusTree.refresh();
+  void context.secrets.get(SECRET_API_KEY).then((key) => {
+    setStoredApiKey(key);
+    publishApiKeyState();
+    void refreshConnection();
+    void refreshTools();
+  });
 }
 
 export function deactivate(): void {

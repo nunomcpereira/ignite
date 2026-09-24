@@ -72,7 +72,7 @@ fn probe_to_value(v: &impl serde::Serialize) -> Value {
 /// enabled flag. jscpd/trivyImage read the live config (both default off,
 /// see config.json); the rest are always-on or have no disable toggle in
 /// the JS original either.
-async fn tools_status(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Json<Value> {
+async fn tools_status(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation) -> Json<Value> {
     if let Some(cached) = cached_tools_status() {
         return Json(cached);
     }
@@ -133,7 +133,7 @@ async fn tools_status(State(state): State<Arc<AppState>>, crate::auth::RequireAu
 /// never silently drift apart if a probe is ever added/removed.
 const TOOL_COUNT: usize = 19;
 
-async fn tools_status_stream(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
+async fn tools_status_stream(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation) -> Response {
     let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     if let Some(cached) = cached_tools_status() {
         tokio::spawn(replay_cached_tools_status_stream(cached, out_tx));

@@ -283,6 +283,54 @@ impl FromRequestParts<Arc<AppState>> for RequireAuth {
     }
 }
 
+fn unauthorized() -> Response {
+    (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response()
+}
+
+/// Read-only scan-support routes (tools status, project history/progress)
+/// a scan-only client like the VS Code extension needs alongside a scan:
+/// a real session/API key, or — when the operator opted into unauthenticated
+/// simulation (`security.allowUnauthenticatedValidateAll` or
+/// `security.allowUnauthenticatedInteractiveDryRun`) — nothing, since those
+/// runs themselves already need no identity. Never use it on a route that
+/// mutates state or reaches GitHub.
+pub struct AuthOrUnauthSimulation(pub Option<AttachedUser>);
+
+#[async_trait::async_trait]
+impl FromRequestParts<Arc<AppState>> for AuthOrUnauthSimulation {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        let user = resolve_user(&parts.headers, &state.db);
+        let security = &state.config.security;
+        if user.is_some() || security.allow_unauthenticated_validate_all || security.allow_unauthenticated_interactive_dry_run {
+            Ok(AuthOrUnauthSimulation(user))
+        } else {
+            Err(unauthorized())
+        }
+    }
+}
+
+/// Report routes that analyse a server-local `projectPath` (SBOM, LOC,
+/// posture, license compliance) — the same capability as validate-all's own
+/// `projectPath`, so they follow exactly `security.allowUnauthenticatedValidateAll`
+/// and nothing broader.
+pub struct AuthOrUnauthValidateAll(pub Option<AttachedUser>);
+
+#[async_trait::async_trait]
+impl FromRequestParts<Arc<AppState>> for AuthOrUnauthValidateAll {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        let user = resolve_user(&parts.headers, &state.db);
+        if user.is_some() || state.config.security.allow_unauthenticated_validate_all {
+            Ok(AuthOrUnauthValidateAll(user))
+        } else {
+            Err(unauthorized())
+        }
+    }
+}
+
 /// Middleware form of `RequireAuth`, for mounting on a whole sub-router at
 /// once (e.g. `/studio/*`) rather than adding the extractor to every
 /// handler individually. Same 401 body shape.
@@ -533,6 +581,38 @@ mod tests {
         assert_eq!(me_res.status(), StatusCode::OK);
         let body = json_body(me_res).await;
         assert_eq!(body["user"]["email"], "dev@example.com");
+    }
+
+    fn simulation_app(validate_all: bool, interactive: bool) -> Router {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        Box::leak(Box::new(db_dir));
+        let mut config = ignite_config::Config::default();
+        config.security.allow_unauthenticated_validate_all = validate_all;
+        config.security.allow_unauthenticated_interactive_dry_run = interactive;
+        Router::new()
+            .route("/sim", get(|AuthOrUnauthSimulation(_u): AuthOrUnauthSimulation| async { "ok" }))
+            .route("/va", get(|AuthOrUnauthValidateAll(_u): AuthOrUnauthValidateAll| async { "ok" }))
+            .with_state(Arc::new(crate::state::test_state(db, config)))
+    }
+
+    async fn status_of(app: &Router, path: &str) -> StatusCode {
+        app.clone().oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn read_only_scan_routes_follow_the_unauthenticated_simulation_flags() {
+        let locked = simulation_app(false, false);
+        assert_eq!(status_of(&locked, "/sim").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status_of(&locked, "/va").await, StatusCode::UNAUTHORIZED);
+
+        let interactive_only = simulation_app(false, true);
+        assert_eq!(status_of(&interactive_only, "/sim").await, StatusCode::OK);
+        assert_eq!(status_of(&interactive_only, "/va").await, StatusCode::UNAUTHORIZED, "path-based reports need the validate-all flag specifically");
+
+        let validate_all = simulation_app(true, false);
+        assert_eq!(status_of(&validate_all, "/sim").await, StatusCode::OK);
+        assert_eq!(status_of(&validate_all, "/va").await, StatusCode::OK);
     }
 
     #[tokio::test]

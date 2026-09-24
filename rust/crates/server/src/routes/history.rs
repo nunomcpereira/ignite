@@ -25,7 +25,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn list_projects(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth) -> Response {
+async fn list_projects(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation) -> Response {
     Json(state.db.list_projects()).into_response()
 }
 
@@ -43,7 +43,7 @@ fn parse_id(raw: &str) -> Option<i64> {
     raw.parse::<i64>().ok()
 }
 
-async fn project_details(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
+async fn project_details(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
     match state.db.get_project_details(id) {
         Some(project) => Json(project).into_response(),

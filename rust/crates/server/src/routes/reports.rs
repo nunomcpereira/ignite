@@ -20,7 +20,7 @@ fn resolve_project_path(body: &Value) -> Result<PathBuf, Box<Response>> {
     Ok(project_path)
 }
 
-async fn sbom(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+async fn sbom(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthValidateAll(_user): crate::auth::AuthOrUnauthValidateAll, Json(body): Json<Value>) -> Response {
     let project_path = match resolve_project_path(&body) {
         Ok(p) => p,
         Err(r) => return *r,
@@ -32,7 +32,7 @@ async fn sbom(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user
     }
 }
 
-async fn loc_metrics(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+async fn loc_metrics(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthValidateAll(_user): crate::auth::AuthOrUnauthValidateAll, Json(body): Json<Value>) -> Response {
     let project_path = match resolve_project_path(&body) {
         Ok(p) => p,
         Err(r) => return *r,
@@ -41,7 +41,7 @@ async fn loc_metrics(State(state): State<Arc<AppState>>, crate::auth::RequireAut
     Json(json!({ "ok": true, "projectPath": project_path, "engine": result.engine, "metrics": result.metrics })).into_response()
 }
 
-async fn posture(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+async fn posture(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthValidateAll(_user): crate::auth::AuthOrUnauthValidateAll, Json(body): Json<Value>) -> Response {
     let project_path = match resolve_project_path(&body) {
         Ok(p) => p,
         Err(r) => return *r,

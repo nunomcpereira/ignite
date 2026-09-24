@@ -813,6 +813,38 @@
     </div>
   </div>
 
+  <!-- API keys modal: self-service keys for the VS Code extension / CLI / CI (POST /api/auth/api-keys, session-only) -->
+  <div id="apiKeysModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" role="dialog" aria-modal="true" aria-labelledby="apiKeysTitle">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+        <h3 id="apiKeysTitle" class="text-sm font-bold text-slate-900" data-i18n="apiKeys.title">API keys</h3>
+        <button id="apiKeysCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-5 space-y-4 overflow-y-auto">
+        <p class="text-xs text-slate-500" data-i18n="apiKeys.subtitle">Keys let the VS Code extension, the CLI or CI act as you. Paste one into the extension's Overview panel.</p>
+        <p id="apiKeysSignedOut" class="hidden text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2" data-i18n="apiKeys.signInFirst">Sign in first to create API keys.</p>
+        <div id="apiKeysCreateRow" class="flex gap-2">
+          <input id="apiKeysLabelInput" type="text" maxlength="80" class="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-1.5" data-i18n-placeholder="apiKeys.labelPlaceholder" placeholder="Label, e.g. VS Code on my laptop">
+          <button id="apiKeysCreateBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="apiKeys.create">Create key</button>
+        </div>
+        <div id="apiKeysNewKey" class="hidden rounded-lg border border-emerald-200 bg-emerald-50 p-3 space-y-2">
+          <p class="text-xs font-semibold text-emerald-800" data-i18n="apiKeys.copyNow">Copy this key now — it won't be shown again.</p>
+          <div class="flex gap-2 items-center">
+            <code id="apiKeysNewKeyValue" class="flex-1 text-xs font-mono bg-white border border-emerald-200 rounded px-2 py-1.5 break-all select-all"></code>
+            <button id="apiKeysCopyBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100" data-i18n="apiKeys.copy">Copy</button>
+          </div>
+        </div>
+        <p id="apiKeysStatus" class="hidden text-xs break-words"></p>
+        <div>
+          <h4 class="text-xs font-bold uppercase tracking-wide text-slate-400 mb-2" data-i18n="apiKeys.yourKeys">Your keys</h4>
+          <ul id="apiKeysList" class="divide-y divide-slate-100 text-sm"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Admin / Integrations modal: daily report delivery settings (saved to ignite.db app_settings) -->
   <div id="adminSettingsModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" role="dialog" aria-modal="true">
@@ -1509,6 +1541,7 @@
         }
       }
       renderAuthBar();
+      if (location.hash === '#api-keys') openApiKeys();
     }
 
     // Provisioning (Phase 6) runs as the actual signed-in user's own GitHub
@@ -1606,8 +1639,10 @@
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 border-b border-slate-100">
             <span class="text-xs text-slate-600">${t('account.signedInAs')} <strong class="text-slate-800">${escapeHtml(authState.user.name || authState.user.email)}</strong></span>
             <button id="logoutBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('account.signOut')}</button>
+            <button id="apiKeysBtn" class="text-xs font-semibold text-brand-600 hover:text-brand-800">${t('apiKeys.open')}</button>
             ${renderGithubConnectRow()}
           </div>`;
+        $('apiKeysBtn').addEventListener('click', openApiKeys);
         $('logoutBtn').addEventListener('click', async () => {
           await fetch('/api/auth/logout', { method: 'POST' });
           authState.user = null;
@@ -7805,6 +7840,108 @@
       overlay.querySelector('[data-act="markdown"]').addEventListener('click', run('markdown', () => downloadOrgReportMarkdown(org), 'orgRepos.reportMarkdownFailed'));
       document.body.appendChild(overlay);
     }
+
+    // ---- API keys: self-service keys (session-only server routes) ----
+    function apiKeysStatus(text, ok) {
+      const el = $('apiKeysStatus');
+      el.textContent = text || '';
+      el.className = text ? `text-xs break-words ${ok ? 'text-emerald-700' : 'text-red-600'}` : 'hidden';
+    }
+    async function loadApiKeys() {
+      const list = $('apiKeysList');
+      list.innerHTML = `<li class="py-2 text-xs text-slate-400">${t('apiKeys.loading')}</li>`;
+      try {
+        const res = await fetch('/api/auth/api-keys');
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        const keys = (body.keys || []).slice().reverse();
+        if (keys.length === 0) {
+          list.innerHTML = `<li class="py-2 text-xs text-slate-400">${t('apiKeys.none')}</li>`;
+          return;
+        }
+        list.innerHTML = keys.map((k) => `
+          <li class="py-2 flex items-center gap-3">
+            <div class="flex-1 min-w-0">
+              <div class="font-semibold text-slate-800 truncate ${k.revokedAt ? 'line-through text-slate-400' : ''}">${escapeHtml(k.label || t('apiKeys.unlabeled'))}</div>
+              <div class="text-[11px] text-slate-400">${escapeHtml(t('apiKeys.meta', { created: k.createdAt, via: k.createdVia, used: k.lastUsedAt || t('apiKeys.never') }))}</div>
+            </div>
+            ${k.revokedAt
+              ? `<span class="text-[11px] font-semibold text-slate-400">${t('apiKeys.revoked')}</span>`
+              : `<button type="button" data-revoke="${Number(k.id)}" class="text-xs font-semibold text-red-600 hover:text-red-800">${t('apiKeys.revoke')}</button>`}
+          </li>`).join('');
+        list.querySelectorAll('[data-revoke]').forEach((btn) => btn.addEventListener('click', () => revokeApiKey(btn.dataset.revoke)));
+      } catch (e) {
+        list.innerHTML = '';
+        apiKeysStatus(t('apiKeys.loadFailed', { error: e.message }), false);
+      }
+    }
+    async function openApiKeys() {
+      $('apiKeysModal').classList.remove('hidden');
+      $('apiKeysNewKey').classList.add('hidden');
+      apiKeysStatus('');
+      const signedIn = !!authState.user;
+      $('apiKeysSignedOut').classList.toggle('hidden', signedIn);
+      $('apiKeysCreateRow').classList.toggle('hidden', !signedIn);
+      if (signedIn) {
+        $('apiKeysLabelInput').focus();
+        await loadApiKeys();
+      } else {
+        $('apiKeysList').innerHTML = '';
+      }
+    }
+    function closeApiKeys() {
+      $('apiKeysModal').classList.add('hidden');
+      $('apiKeysNewKeyValue').textContent = '';
+      if (location.hash === '#api-keys') history.replaceState(null, '', location.pathname + location.search);
+    }
+    async function createApiKey() {
+      const btn = $('apiKeysCreateBtn');
+      btn.disabled = true;
+      apiKeysStatus('');
+      try {
+        const res = await fetch('/api/auth/api-keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: $('apiKeysLabelInput').value.trim() || null }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        $('apiKeysNewKeyValue').textContent = body.key;
+        $('apiKeysNewKey').classList.remove('hidden');
+        $('apiKeysLabelInput').value = '';
+        await loadApiKeys();
+      } catch (e) {
+        apiKeysStatus(t('apiKeys.createFailed', { error: e.message }), false);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    async function revokeApiKey(id) {
+      try {
+        const res = await fetch(`/api/auth/api-keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        apiKeysStatus(t('apiKeys.revokedOk'), true);
+        await loadApiKeys();
+      } catch (e) {
+        apiKeysStatus(t('apiKeys.revokeFailed', { error: e.message }), false);
+      }
+    }
+    $('apiKeysCreateBtn').addEventListener('click', createApiKey);
+    $('apiKeysLabelInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') createApiKey(); });
+    $('apiKeysCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText($('apiKeysNewKeyValue').textContent);
+        $('apiKeysCopyBtn').textContent = t('apiKeys.copied');
+        setTimeout(() => { $('apiKeysCopyBtn').textContent = t('apiKeys.copy'); }, 1500);
+      } catch {
+        apiKeysStatus(t('apiKeys.copyFailed'), false);
+      }
+    });
+    $('apiKeysCloseBtn').addEventListener('click', closeApiKeys);
+    $('apiKeysModal').addEventListener('click', (e) => { if (e.target === $('apiKeysModal')) closeApiKeys(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('apiKeysModal').classList.contains('hidden')) closeApiKeys(); });
+    window.addEventListener('hashchange', () => { if (location.hash === '#api-keys') openApiKeys(); });
 
     // ---- Admin / Integrations: daily report delivery settings ----
     // GET/POST /api/admin/settings/daily-report. Secrets (webhook URL/token,

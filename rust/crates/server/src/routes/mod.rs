@@ -3,6 +3,7 @@ pub mod audit_log;
 pub mod auto_fix;
 pub mod baseline;
 pub mod blocked;
+pub mod api_keys;
 pub mod campaigns;
 pub mod compliance;
 pub mod daily_report;

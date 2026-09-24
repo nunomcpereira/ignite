@@ -55,6 +55,51 @@ export function unresolvedIssuesFromSelection(nodes: Node[]): IgniteIssue[] {
   return result;
 }
 
+function isUnresolved(issue: IgniteIssue): boolean {
+  return issue.severity === 'error' && issue.status !== 'overridden';
+}
+
+/** Unresolved first, then highest score, then file/line — the order someone triaging wants. */
+function sortIssues(issues: IgniteIssue[]): IgniteIssue[] {
+  return [...issues].sort(
+    (a, b) =>
+      Number(isUnresolved(b)) - Number(isUnresolved(a)) ||
+      (b.score ?? 0) - (a.score ?? 0) ||
+      (a.file ?? '').localeCompare(b.file ?? '') ||
+      (a.line ?? 0) - (b.line ?? 0)
+  );
+}
+
+function issueTooltip(issue: IgniteIssue): vscode.MarkdownString {
+  const md = new vscode.MarkdownString();
+  const cweNum = issue.cwe?.match(/\d+/)?.[0];
+  md.appendMarkdown(`**${escapeMd(issue.summary)}**\n\n`);
+  const facts = [
+    `${issue.severity === 'error' ? '$(error) blocking' : '$(warning) warning'} · score ${issue.score ?? '–'}/10`,
+    `category \`${issue.category}\``,
+    issue.cwe && cweNum ? `[${issue.cwe}](https://cwe.mitre.org/data/definitions/${cweNum}.html)` : issue.cwe ?? '',
+    issue.owasp ? `OWASP ${issue.owasp}` : '',
+    issue.status === 'overridden' ? '$(check) acknowledged' : '',
+  ].filter(Boolean);
+  md.supportThemeIcons = true;
+  md.appendMarkdown(facts.join(' · ') + '\n\n');
+  if (issue.file) md.appendMarkdown(`\`${issue.file}${issue.line ? ':' + issue.line : ''}\`\n\n`);
+  const lines = issue.snippet?.lines ?? [];
+  if (lines.length > 0) {
+    const width = String(lines[lines.length - 1].number).length;
+    const code = lines
+      .slice(0, 12)
+      .map((l) => `${l.number === issue.snippet?.highlightLine ? '>' : ' '} ${String(l.number).padStart(width)} │ ${l.text}`)
+      .join('\n');
+    md.appendCodeblock(code, 'text');
+  }
+  return md;
+}
+
+function escapeMd(text: string): string {
+  return text.replace(/[\\`*_{}\[\]<>#|]/g, (c) => `\\${c}`);
+}
+
 const STATE_ICON: Record<string, vscode.ThemeIcon> = {
   success: new vscode.ThemeIcon('pass', new vscode.ThemeColor('testing.iconPassed')),
   failed: new vscode.ThemeIcon('error', new vscode.ThemeColor('testing.iconFailed')),
@@ -107,7 +152,9 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<Node> {
     if (node.kind === 'group') {
       const unresolvedCount = node.issues.filter((i) => i.severity === 'error' && i.status !== 'overridden').length;
       const item = new vscode.TreeItem(node.summary, vscode.TreeItemCollapsibleState.Collapsed);
-      item.description = `${node.category} · ${node.issues.length} occurrence(s)`;
+      const maxScore = Math.max(...node.issues.map((i) => i.score ?? 0));
+      item.description = `${node.category} · ${node.issues.length}× · score ${maxScore}`;
+      item.tooltip = `${node.summary}\n${node.issues.length} occurrence(s), ${unresolvedCount} unresolved`;
       item.iconPath = new vscode.ThemeIcon(
         unresolvedCount > 0 ? 'error' : 'check',
         new vscode.ThemeColor(unresolvedCount > 0 ? 'testing.iconFailed' : 'disabledForeground')
@@ -119,18 +166,8 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<Node> {
     const loc = issue.file ? `${path.basename(issue.file)}${issue.line ? ':' + issue.line : ''}` : '';
     const item = new vscode.TreeItem(`${loc ? loc + ' — ' : ''}${issue.summary}`, vscode.TreeItemCollapsibleState.None);
     const refs = [issue.cwe, issue.owasp].filter(Boolean).join(' · ');
-    item.description = refs ? `${issue.category} · ${refs}` : issue.category;
-    item.tooltip = new vscode.MarkdownString(
-      [
-        `**${issue.summary}**`,
-        '',
-        `Category: ${issue.category}`,
-        issue.cwe ? `CWE: [${issue.cwe}](https://cwe.mitre.org/data/definitions/${issue.cwe.match(/\d+/)?.[0] ?? ''}.html)` : '',
-        issue.owasp ? `OWASP: ${issue.owasp}` : '',
-      ]
-        .filter(Boolean)
-        .join('  \n')
-    );
+    item.description = [issue.status === 'overridden' ? 'acknowledged' : '', issue.category, refs].filter(Boolean).join(' · ');
+    item.tooltip = issueTooltip(issue);
     item.iconPath = new vscode.ThemeIcon(
       issue.status === 'overridden' ? 'check' : issue.severity === 'error' ? 'error' : 'warning',
       new vscode.ThemeColor(
@@ -158,8 +195,8 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<Node> {
       if (this.groupBy === 'finding') return this.findingGroups(this.issues);
       return this.phases.map((p) => new PhaseNode(p, this.issues.filter((i) => this.issueBelongsToPhase(i, p))));
     }
-    if (node.kind === 'phase') return node.issues.map((i) => new IssueNode(i));
-    if (node.kind === 'group') return node.issues.map((i) => new IssueNode(i));
+    if (node.kind === 'phase') return sortIssues(node.issues).map((i) => new IssueNode(i));
+    if (node.kind === 'group') return sortIssues(node.issues).map((i) => new IssueNode(i));
     return [];
   }
 

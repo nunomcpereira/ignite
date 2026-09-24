@@ -21,7 +21,7 @@ fn sanitize_project_path(body: &Value) -> Result<PathBuf, Response> {
     Ok(project_path)
 }
 
-async fn check_licenses(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+async fn check_licenses(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthValidateAll(_user): crate::auth::AuthOrUnauthValidateAll, Json(body): Json<Value>) -> Response {
     let project_path = match sanitize_project_path(&body) {
         Ok(p) => p,
         Err(r) => return r,

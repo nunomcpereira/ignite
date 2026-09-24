@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { DailyReportOptions, DailyReportResult } from './dailyReport';
+import { DEFAULT_BASE_URL, normalizeBaseUrl, cleanApiKey } from './serverUrl';
 
 export interface IgniteIssue {
   id: string;
@@ -49,31 +50,158 @@ export interface ToolStatus {
   detail?: string;
 }
 
-function baseUrl(): string {
-  return vscode.workspace.getConfiguration('ignite').get<string>('baseUrl', 'http://localhost:51337').replace(/\/+$/, '');
+export function baseUrl(): string {
+  const configured = vscode.workspace.getConfiguration('ignite').get<string>('baseUrl', DEFAULT_BASE_URL);
+  const normalized = normalizeBaseUrl(configured || DEFAULT_BASE_URL);
+  return normalized.ok ? normalized.url : configured.replace(/\/+$/, '');
 }
 
 /**
- * `Authorization: Bearer ignite_<key>` when "ignite.apiKey" is set (minted via
- * `ignite create-api-key`) — most routes this extension calls work fine
+ * API key held in VS Code's SecretStorage (OS keychain) — set from the
+ * sidebar's Server panel. Kept in a module variable because every request
+ * builds its headers synchronously; extension.ts loads it at activation and
+ * on every SecretStorage change.
+ */
+let storedApiKey = '';
+
+export function setStoredApiKey(key: string | undefined): void {
+  storedApiKey = cleanApiKey(key ?? '');
+}
+
+export type ApiKeySource = 'secret' | 'settings' | 'none';
+
+/** Which key requests actually carry: the keychain one wins over the plaintext `ignite.apiKey` setting. */
+export function effectiveApiKey(): { key: string; source: ApiKeySource } {
+  if (storedApiKey) return { key: storedApiKey, source: 'secret' };
+  const fromSettings = cleanApiKey(vscode.workspace.getConfiguration('ignite').get<string>('apiKey', ''));
+  if (fromSettings) return { key: fromSettings, source: 'settings' };
+  return { key: '', source: 'none' };
+}
+
+/**
+ * `Authorization: Bearer ignite_<key>` when an API key is configured (minted via
+ * `create-api-key`) — most routes this extension calls work fine
  * unauthenticated, but resolve_effective_github_token (fix-PR's apply step)
  * prefers a resolved session/API-key user's own connected GitHub account over
  * the server's fallback token, so a PR opens attributed to the right person
  * once this is set instead of always falling back to the server's own token.
  */
-function authHeaders(): Record<string, string> {
-  const raw = vscode.workspace.getConfiguration('ignite').get<string>('apiKey', '').trim();
-  if (!raw) return {};
-  // Tolerate a pasted "Bearer ignite_xxx" (e.g. copied straight from a curl
-  // example) instead of doubling it into "Authorization: Bearer Bearer ignite_xxx".
-  const key = raw.replace(/^Bearer\s+/i, '');
-  return { Authorization: `Bearer ${key}` };
+function authHeaders(key: string = effectiveApiKey().key): Record<string, string> {
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
+
+export interface MintedKey {
+  key: string;
+  user?: { email?: string; name?: string | null };
+}
+
+/**
+ * Standalone-auth sign-in → mint → sign-out, all in one go: logs in with the
+ * account's email/password to get a short-lived session, uses it on
+ * POST /api/auth/api-keys (which only accepts a session, never a key), then
+ * logs that session out again. The password is only ever held for these
+ * three requests — the caller stores just the returned key.
+ */
+export async function mintApiKeyWithPassword(email: string, password: string, label: string): Promise<MintedKey> {
+  const url = baseUrl();
+  const login = await fetch(`${url}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(15000),
+  }).catch((e) => {
+    throw new IgniteUnreachableError(url, e);
+  });
+  if (!login.ok) {
+    const body = (await login.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `Sign-in failed (HTTP ${login.status}).`);
+  }
+  const setCookies = typeof login.headers.getSetCookie === 'function' ? login.headers.getSetCookie() : [login.headers.get('set-cookie') ?? ''];
+  const session = setCookies.map((c) => c.split(';')[0]).find((c) => c.startsWith('ignite_sid='));
+  if (!session) throw new Error('Signed in, but the server returned no session cookie.');
+  try {
+    const res = await fetch(`${url}/api/auth/api-keys`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: session },
+      body: JSON.stringify({ label, client: 'vscode' }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const body = (await res.json().catch(() => null)) as (MintedKey & { error?: string }) | null;
+    if (res.status === 404) throw new Error('This Ignite server is too old to create API keys from the UI — update it, or use create-api-key on the server.');
+    if (!res.ok || !body?.key) throw new Error(body?.error ?? `Creating the key failed (HTTP ${res.status}).`);
+    return { key: body.key, user: body.user };
+  } finally {
+    await fetch(`${url}/api/auth/logout`, { method: 'POST', headers: { Cookie: session }, signal: AbortSignal.timeout(5000) }).catch(() => undefined);
+  }
+}
+
+export interface ServerProbe {
+  ok: boolean;
+  url: string;
+  latencyMs?: number;
+  authMode?: string;
+  /** Resolved from GET /api/auth/me — who the API key authenticates as, if anyone. */
+  user?: { email?: string; name?: string } | null;
+  /** Set when a key was sent but the server didn't resolve it to a user. */
+  keyRejected?: boolean;
+  error?: string;
+}
+
+/**
+ * One quick, non-retrying probe for the sidebar's connection indicator —
+ * `checkReachable` below is the patient 3-attempt variant a scan uses.
+ * `urlOverride`/`keyOverride` let the panel test a value before saving it.
+ */
+export async function probeServer(urlOverride?: string, keyOverride?: string): Promise<ServerProbe> {
+  const url = urlOverride ?? baseUrl();
+  const key = keyOverride ?? effectiveApiKey().key;
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(`${url}/api/auth/config`, { signal: AbortSignal.timeout(5000) });
+    const latencyMs = Date.now() - startedAt;
+    if (!res.ok) return { ok: false, url, latencyMs, error: `HTTP ${res.status} from /api/auth/config — is this an Ignite server?` };
+    const config = (await res.json().catch(() => null)) as { mode?: string } | null;
+    if (!config || typeof config.mode !== 'string') {
+      return { ok: false, url, latencyMs, error: 'Something answered, but it doesn\'t look like Ignite.' };
+    }
+    let user: ServerProbe['user'] = null;
+    let keyRejected = false;
+    if (key) {
+      try {
+        const me = await fetch(`${url}/api/auth/me`, { headers: authHeaders(key), signal: AbortSignal.timeout(5000) });
+        const body = me.ok ? ((await me.json().catch(() => null)) as { user?: ServerProbe['user'] } | null) : null;
+        user = body?.user ?? null;
+        keyRejected = !user;
+      } catch {
+        // Reachability already confirmed — an /auth/me hiccup isn't worth failing the probe over.
+      }
+    }
+    return { ok: true, url, latencyMs, authMode: config.mode, user, keyRejected };
+  } catch (e) {
+    const cause = e instanceof Error ? ((e.cause as { code?: string } | undefined)?.code ?? e.name) : String(e);
+    const error = cause === 'ECONNREFUSED'
+      ? 'Connection refused — nothing is listening there.'
+      : cause === 'TimeoutError'
+      ? 'Timed out after 5s.'
+      : cause === 'ENOTFOUND'
+      ? 'Host not found.'
+      : `Unreachable (${cause}).`;
+    return { ok: false, url, latencyMs: Date.now() - startedAt, error };
+  }
+}
+
+/** The server answered, but wants credentials this request didn't carry (or rejected the ones it did). */
+export class IgniteAuthError extends Error {
+  constructor(path: string, status: number) {
+    super(`${path} returned HTTP ${status} — this Ignite server requires an API key for it.`);
+    this.name = 'IgniteAuthError';
+  }
 }
 
 /** Thrown when the Ignite server isn't reachable — same precondition hooks/pre-push already documents. */
 export class IgniteUnreachableError extends Error {
   constructor(url: string, cause?: unknown) {
-    super(`Ignite isn't reachable at ${url}. Start it with 'npm start' in the ignite repo, or set the "ignite.baseUrl" setting to point elsewhere.`);
+    super(`Ignite isn't reachable at ${url}. Start ignite-server, or change the server URL in the Ignite sidebar (or the "ignite.baseUrl" setting).`);
     this.name = 'IgniteUnreachableError';
     if (cause) this.cause = cause;
   }
@@ -424,6 +552,7 @@ export async function toolsStatus(): Promise<ToolStatus[]> {
   } catch (e) {
     throw new IgniteUnreachableError(url, e);
   }
+  if (res.status === 401 || res.status === 403) throw new IgniteAuthError('/api/tools/status', res.status);
   if (!res.ok) throw new Error(`Ignite /api/tools/status returned HTTP ${res.status}`);
   // Shape: { <toolName>: { ok: boolean, reason?: string, enabled: boolean }, ... }
   // — each xTooling() probe's own return shape (see checks/secrets.js's gitleaksTooling

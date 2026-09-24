@@ -1,8 +1,11 @@
 import * as vscode from 'vscode';
-import { encode } from 'he';
+// Local escaper instead of a runtime npm dependency — .vscodeignore drops
+// node_modules/ from the .vsix, so any `dependencies` entry fails to load
+// at activation and takes the whole extension down with it.
+const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' };
 
 function escapeHtml(s: unknown): string {
-  return encode(String(s ?? ''), { useNamedReferences: true });
+  return String(s ?? '').replace(/[&<>"'`]/g, (c) => HTML_ESCAPES[c]);
 }
 
 const SHARED_STYLE = `

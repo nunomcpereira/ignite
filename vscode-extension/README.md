@@ -2,7 +2,7 @@
 
 Runs Ignite's compliance/security pipeline against the currently open workspace folder and surfaces findings natively — Problems panel diagnostics, a Findings tree, a Tools Status tree, and an Output channel — for people who don't want the separate web UI (`public/index.html`).
 
-Thin client only: no scanning logic lives here. Every check runs on a locally running Ignite server (`npm start` in the `ignite` repo root, default `http://localhost:51337`) via `POST /api/pipeline/validate-all`.
+Thin client only: no scanning logic lives here. Every check runs on a running Ignite server (`ignite-server`, default `http://localhost:51337`) via `POST /api/pipeline/validate-all`.
 
 ## Requirements
 
@@ -19,8 +19,27 @@ Builds the extension and installs it into your editor as a real (non-debug) exte
 
 To build the `.vsix` without installing it (e.g. to hand it to someone else): `npx @vscode/vsce package --allow-missing-repository --skip-license -o ignite-vscode.vsix`, then `code --install-extension ignite-vscode.vsix` on their machine.
 
+## Sidebar
+
+The Ignite activity-bar icon opens three views:
+
+- **Overview** — live connection indicator (latency, auth mode, who the API key signs in as), an editable **server URL** (Save & connect / Test / Reset — no settings.json needed), an **API key** field stored in the OS keychain (VS Code SecretStorage), scan buttons and options, the last scan's result (blocking / warnings / acknowledged, duration), and one-click reports and workspace actions.
+- **Findings** — grouped by finding or phase, unresolved and highest-score first, with a blocking-count badge and code-snippet tooltips.
+- **Tools Status** — which scanner binaries the server has, installed first.
+
+The status bar item turns red when a scan is blocked and shows `offline` when the server can't be reached (click it to change the URL).
+
+### Getting an API key
+
+Some servers require one (e.g. `/api/tools/status` returns 401 without it).
+
+- **Standalone accounts**: Overview panel → **Sign in & create key**. The extension signs in, creates a key named after this machine, signs out and stores the key in the OS keychain. The password is not saved.
+- **OIDC/GitHub sign-in**: **Create a key in the web UI** opens the web UI's **API keys** dialog (`/#api-keys`, also in the account bar). Create a key there, copy it and paste it into the Overview panel.
+- **Server admins** can still mint a key for any existing user from the ignite repo root: `cargo run --manifest-path rust/Cargo.toml --bin create-api-key -- you@example.com vscode`.
+
 ## Commands
 
+- **Ignite: Configure Server URL…** / **Set API Key…** / **Reconnect to Server** — palette equivalents of the Overview panel's server controls.
 - **Ignite: Scan Workspace** — runs phases 1–5 (Phase 5/org-governance-CI only if `ignite.runLocalCi` is on) against the open folder. Results land in the Problems panel, the Findings tree, and the Output channel. Refuses to start a second scan while one is already running, and the reachability probe logs a per-attempt reason (timeout / `ECONNREFUSED` / 5xx body / ...) to the Output channel rather than a flat "isn't reachable" — check there first if a scan won't start.
 - **Ignite: Toggle Findings Grouping (Finding / Phase)** — the Findings tree's title-bar icon switches between grouping by phase (original layout) and grouping by finding — every occurrence of the same (category + summary) finding collapsed under one row, unresolved findings sorted first.
 - **Ignite: Acknowledge Selected** — right-click a finding group, or select several rows with `Cmd`/`Ctrl`-click, and acknowledge every unresolved occurrence in one prompt (one shared justification), instead of opening the review file and acknowledging each occurrence by hand.
@@ -33,7 +52,8 @@ To build the `.vsix` without installing it (e.g. to hand it to someone else): `n
 
 | Setting | Default | Notes |
 |---|---|---|
-| `ignite.baseUrl` | `http://localhost:51337` | Matches `IGNITE_BASE_URL`. |
+| `ignite.baseUrl` | `http://localhost:51337` | Matches `IGNITE_BASE_URL`. Editable from the Overview panel. |
+| `ignite.apiKey` | `""` | Plaintext fallback — the Overview panel's keychain-stored key wins over it. |
 | `ignite.runLocalCi` | `false` | Phase 5 (act + Docker) — off by default in the extension since it's the slowest phase. |
 | `ignite.showOverriddenIssues` | `false` | Show already-acknowledged issues as dimmed diagnostics instead of hiding them. |
 
@@ -44,7 +64,7 @@ npm install
 npm run watch   # or: npm run compile
 ```
 
-Press `F5` (or Run → Start Debugging) to launch an Extension Development Host with this extension loaded, against whatever folder you open in it. Requires `npm start` running in the `ignite` repo first.
+Press `F5` (or Run → Start Debugging) to launch an Extension Development Host with this extension loaded, against whatever folder you open in it. Requires `ignite-server` running first.
 
 ```bash
 npm test   # compiles, then runs the node:test suite in dist/*.test.js
