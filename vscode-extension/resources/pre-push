@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Ignite pre-push hook - runs Ignite's checks against this repo before a
 # push leaves the machine, instead of onboarding-time-only via the web UI.
-# Blocking findings can be acknowledged (justified + overridden) entirely
-# from the terminal - see "CLI acknowledgment" below - no browser required.
 #
 # Install (either works):
 #   1. One repo:      cp hooks/pre-push /path/to/other-repo/.git/hooks/pre-push
@@ -13,59 +11,34 @@
 #        git config --global core.hooksPath ~/.git-hooks
 #
 # Requires: a running ignite-server (Rust) reachable at IGNITE_BASE_URL
-# (default http://localhost:51337), and `jq` on PATH.
+# (default http://localhost:51337), and the `ignite` CLI binary on PATH.
 #
-# CLI acknowledgment: on a blocking finding, this hook writes/appends to a
-# .ignite/acknowledgments.md file (repo root) listing each one with a blank
-# "Acknowledge:" line - the same justify-and-override step the web UI's
-# review gate does, but as a file you edit in your own editor. Fill in a
-# justification, `git push` again: the hook resubmits every filled-in entry
-# as a real, attributed override (git config user.name/user.email). Meant
-# to be committed - it's a real audit record, but a refreshed one, not
-# scratch state: the file is rewritten from scratch on every run to match
-# the CURRENT scan. An id (<category>::<file>::<line>) that's already
-# justified stays in the file (and keeps getting resubmitted as an
-# override) for as long as that finding keeps being reported - but once
-# it's actually resolved, its entry is dropped rather than kept forever.
-# Each surviving entry also carries a running "# Issue #N" count,
-# recomputed every run.
+# Everything about `.ignite/acknowledgments.md` - parsing it into overrides,
+# resubmitting them, calling `/api/pipeline/validate-all`, writing the
+# per-run findings snapshot, and adding entries for new findings - lives in
+# `ignite check`
+# (`rust/crates/cli/src/check.rs` + `acknowledgments.rs`), not here. That
+# logic used to be ~350 lines of inline bash+jq in this exact file, with no
+# tests - which is how a single missing closing quote (commit 1268efe) once
+# made this hook invalid bash outright, silently resubmitting an empty
+# override list on every push regardless of what was justified, for who
+# knows how long before anyone noticed. This file now only owns what's
+# genuinely git/push-specific: the delta check below (skip a push whose tree
+# is byte-identical to the last fully-validated one).
 #
-# Staying in sync with what actually got pushed: the file carries no commit
-# sha (that would drift on literally every commit and force a fold-and-repush
-# loop for no reason) - it only changes when the actual set of findings
-# changes, or a justification's line number has drifted. When that happens,
-# and a clean pass leaves the file still stale, it refreshes the file, folds
-# it into the just-made commit with `git commit --amend`, and blocks that one
-# push (exit 1) so you push again and send the amended commit - rather than
-# letting the committed file quietly go stale until some later failing push
-# happens to touch it again.
+# One push is always enough: a passing check never rewrites the review file
+# (it's written in a stable, sorted form, and a finding whose line merely
+# moved keeps matching through its `# Code:` line), so this hook never has
+# to amend a commit and ask for a second push.
 #
-# Every run (pass or fail) also drops a point-in-time snapshot of every
-# reported finding at .ignite/scans/<timestamp>/findings.md - a full,
-# unfiltered per-scan history, unlike acknowledgments.md which only ever
-# shows currently-open findings.
-#
-# Line-drift carry-forward: the id embeds a line number, so any edit above a
-# flagged line (even one totally unrelated to it) changes the id and would
-# otherwise turn an already-justified finding back into a fresh blank one.
-# When a finding's language check reports a `# Code:` snippet (the flagged
-# line's own source text), a "new" id is matched against existing entries by
-# same category + file + byte-identical `# Code:` text; on a match the old
-# entry's justification is reused (annotated "auto-carried-forward from
-# <old id>") and the old entry is dropped rather than duplicated. This only
-# fires when the flagged line's actual text is unchanged - if the line
-# itself was edited, the code text differs, no match is found, and it's
-# treated as a genuinely new finding needing real review, same as always.
-#
-# Delta check: a full run records the pushed commit in the local (untracked)
-# .git/ignite-last-validated-ok. The next push skips the check entirely if
-# the working tree at HEAD is byte-identical to that commit's tree (ignoring
-# .ignite/acknowledgments.md) - i.e. re-pushing code that already fully passed, with
-# at most an override justification edited. Any real source change makes the
-# diff non-empty, so it always falls through to a full, whole-project run -
-# this never trades away coverage, it only skips redundant re-scans of code
-# Ignite has already scanned and passed. A fresh clone has no state file, so
-# a new repo's first push always gets the full run.
+# `ignite check` exit codes:
+#   0 = checks passed
+#   1 = checks failed (blocking findings remain - the review file gains a
+#       blank "Acknowledge:" entry for each) or a non-overridable failure -
+#       justify or fix, commit, and push again
+#   2 = couldn't reach the server / bad usage
+#   3 = (older `ignite` binaries only) passed, but the review file was
+#       refreshed - treated as a pass; the refreshed file is left to commit
 #
 # Env overrides:
 #   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
@@ -77,7 +50,7 @@
 #   IGNITE_REVIEW_FILE    path to the acknowledgment file (default
 #                         <repo-root>/.ignite/acknowledgments.md)
 #   IGNITE_FORCE_FULL_CHECK  "true" to always run the full pipeline, ignoring
-#                         the delta check above
+#                         the delta check below
 #   IGNITE_PREPUSH_SKIP   "true" to skip this hook entirely for one push
 #                         (prefer this over --no-verify so it's logged)
 #   IGNITE_FAST_SCAN      "true" for a lightning pre-push: secrets,
@@ -87,6 +60,17 @@
 #                         (full Phase 4). A slow full scan still belongs
 #                         somewhere in the loop (CI, or an occasional manual
 #                         `ignite scan` without --fast) even when this is on.
+#
+# Delta check: a full run records the pushed commit in the local (untracked)
+# .git/ignite-last-validated-ok. The next push skips the check entirely if
+# the working tree at HEAD is byte-identical to that commit's tree (ignoring
+# .ignite/acknowledgments.md) - i.e. re-pushing code that already fully
+# passed, with at most an override justification edited. Any real source
+# change makes the diff non-empty, so it always falls through to a full,
+# whole-project run - this never trades away coverage, it only skips
+# redundant re-scans of code Ignite has already scanned and passed. A fresh
+# clone has no state file, so a new repo's first push always gets the full
+# run.
 set -euo pipefail
 
 if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
@@ -94,44 +78,18 @@ if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
   exit 0
 fi
 
-if ! command -v jq > /dev/null 2>&1; then
-  echo "✗ jq is required by this hook but isn't on PATH (brew install jq)." >&2
+if ! command -v ignite > /dev/null 2>&1; then
+  echo "✗ the 'ignite' CLI is required by this hook but isn't on PATH." >&2
+  echo "  Build it with 'cargo build --release -p ignite-cli' and add" >&2
+  echo "  rust/target/release/ to PATH, or set IGNITE_PREPUSH_SKIP=true." >&2
   exit 2
 fi
 
-IGNITE_URL="${IGNITE_BASE_URL:-http://localhost:51337}"
 REPO_PATH="$(git rev-parse --show-toplevel)"
-REVIEW_FILE="${IGNITE_REVIEW_FILE:-$REPO_PATH/.ignite/acknowledgments.md}"
-ORIGIN_URL="$(git config --get remote.origin.url || echo '')"
-ORG="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\1#')"
-REPO="$(echo "$ORIGIN_URL" | sed -E 's#.*[:/]([^/]+)/([^/.]+)(\.git)?$#\2#')"
-RUN_LOCAL_CI="${IGNITE_RUN_LOCAL_CI:-true}"
-FAST_SCAN="${IGNITE_FAST_SCAN:-false}"
-WARNING_DECISION="${IGNITE_WARNING_MODE:-continue}"
-ACTOR_EMAIL="$(git config --get user.email || echo '')"
-ACTOR_NAME="$(git config --get user.name || echo '')"
-
-# A single quick probe can read as "down" purely because the server's
-# event loop is momentarily busy with another in-flight scan - three
-# attempts with a generous per-attempt timeout give that room to clear
-# before this reports "unreachable".
-REACHABLE=false
-for attempt in 1 2 3; do
-  if curl -sf -m 8 "$IGNITE_URL/api/config" > /dev/null 2>&1; then
-    REACHABLE=true
-    break
-  fi
-  [ "$attempt" -lt 3 ] && sleep 1.5
-done
-if [ "$REACHABLE" != true ]; then
-  echo "✗ Ignite isn't reachable at $IGNITE_URL." >&2
-  echo "  Start ignite-server, set IGNITE_BASE_URL to point elsewhere, or" >&2
-  echo "  set IGNITE_PREPUSH_SKIP=true to skip this push." >&2
-  exit 1
-fi
-
 STATE_FILE="$REPO_PATH/.git/ignite-last-validated-ok"
 CURRENT_SHA="$(git rev-parse HEAD)"
+REVIEW_FILE="${IGNITE_REVIEW_FILE:-$REPO_PATH/.ignite/acknowledgments.md}"
+
 if [ "${IGNITE_FORCE_FULL_CHECK:-}" != "true" ] && [ -f "$STATE_FILE" ]; then
   LAST_OK_SHA="$(cat "$STATE_FILE")"
   if git cat-file -e "${LAST_OK_SHA}^{commit}" 2>/dev/null \
@@ -145,261 +103,23 @@ if [ "${IGNITE_FORCE_FULL_CHECK:-}" != "true" ] && [ -f "$STATE_FILE" ]; then
   fi
 fi
 
-REVIEW_TEXT=""
-[ -f "$REVIEW_FILE" ] && REVIEW_TEXT="$(cat "$REVIEW_FILE")"
+set +e
+ignite check "$REPO_PATH"
+STATUS=$?
+set -e
 
-# Turn any already-justified entries in the local review file into the
-# overrides array validate-all expects. "[]" if the file doesn't exist or
-# has nothing filled in yet.
-OVERRIDES_JSON="$(jq -n --arg text "$REVIEW_TEXT" '
-  def trim: gsub("^\\s+|\\s+$"; "");
-  ([$text | splits("\n(?=ID: )")]
-  | map(select(test("^ID:")))
-  | map({
-      id: (capture("^ID:\\s*(?<v>[^\\n]+)").v),
-      ack: (((capture("Acknowledge:\\s*(?<v>[^\\n]*)").v) // "") | trim),
-      code: ((capture("(?m)^# Code:\\s*(?<v>[^\\n]*)") // {v:null}).v)
-    })
-  | map(select(.ack | length > 0))
-  | map({issueId: .id, justification: .ack} + (if .code then {code: .code} else {} end))
-)')
-
-echo "→ Running Ignite checks against $REPO_PATH ..."
-if [ "$OVERRIDES_JSON" != "[]" ]; then
-  COUNT="$(echo "$OVERRIDES_JSON" | jq 'length')"
-  echo "  (resubmitting $COUNT justification(s) from $REVIEW_FILE)"
-fi
-
-REQUEST_BODY="$(jq -n \
-  --arg projectPath "$REPO_PATH" \
-  --arg org "$ORG" \
-  --arg repo "$REPO" \
-  --arg runLocalCi "$RUN_LOCAL_CI" \
-  --arg warningDecision "$WARNING_DECISION" \
-  --argjson overrides "$OVERRIDES_JSON" \
-  --arg actorEmail "$ACTOR_EMAIL" \
-  --arg actorName "$ACTOR_NAME" \
-  --arg fastScan "$FAST_SCAN" \
-  '{
-    projectPath: $projectPath, org: $org, repo: $repo,
-    gxp: false,
-    runLocalCi: ($runLocalCi == "true"),
-    warningDecision: $warningDecision,
-    overrides: $overrides,
-    fast: ($fastScan == "true")
-  }
-  | if $actorEmail != "" then .actor = {email: $actorEmail, name: (if $actorName != "" then $actorName else $actorEmail end)} else . end
-  ')"
-
-RESPONSE="$(curl -sS -X POST "$IGNITE_URL/api/pipeline/validate-all" \
-  -H 'Content-Type: application/json' \
-  -d "$REQUEST_BODY")"
-
-if ! echo "$RESPONSE" | jq -e . > /dev/null 2>&1; then
-  echo "✗ Ignite returned a non-JSON response: $(echo "$RESPONSE" | head -c 500)" >&2
-  exit 1
-fi
-
-NOW_ISO="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-# Point-in-time snapshot of every reported finding, separate from the
-# refreshed-every-run acknowledgments.md - one folder per run, never edited.
-SNAPSHOT_TS="$(echo "$NOW_ISO" | tr ':' '-')"
-SNAPSHOT_FILE="$REPO_PATH/.ignite/scans/$SNAPSHOT_TS/findings.md"
-mkdir -p "$(dirname "$SNAPSHOT_FILE")"
-echo "$RESPONSE" | jq -r --arg now "$NOW_ISO" --arg sha "$CURRENT_SHA" '
-  def issue_lines(i; idx):
-    ("## \(idx+1). [\(i.severity // "" | ascii_upcase)] \(i.category) - \(i.summary)"),
-    "",
-    "- ID: `\(i.id)`",
-    "- Location: \(if i.file then i.file + (if i.line then ":\(i.line)" else "" end) else "(no file)" end)",
-    "- Score: \(i.score)",
-    (if i.status then "- Status: \(i.status)" else empty end),
-    "";
-  (.issues // []) as $all
-  | (["# Ignite scan findings — \($now)", "", "Scanned against commit: \($sha)", ""]
-     + (if ($all|length) == 0 then ["No findings."]
-        else [range(0; $all|length) as $idx | issue_lines($all[$idx]; $idx)]
-        end))
-  | join("\n")
-' > "$SNAPSHOT_FILE"
-echo "  Findings snapshot: $SNAPSHOT_FILE"
-
-OK="$(echo "$RESPONSE" | jq -r '.ok // false')"
-ISSUES_COUNT="$(echo "$RESPONSE" | jq '(.issues // []) | length')"
-# .issues now carries every error-severity finding the scan reported,
-# including ones already resolved by an override this round (status:
-# "overridden") - UNRESOLVED_COUNT excludes those so the final "N blocking
-# finding(s)" message reports what actually still needs attention, matching
-# Phase 4's own per-run "unresolved blocking" count.
-UNRESOLVED_COUNT="$(echo "$RESPONSE" | jq '[(.issues // [])[] | select(.status != "overridden")] | length')"
-
-if [ "$OK" != "true" ]; then
-  echo "✗ Ignite checks failed - push blocked." >&2
-  echo "$RESPONSE" | jq -r '(.phases // [])[] | select(.state=="failed") | "  Phase \(.phase) - \(.title)\n" + ((.logs // [])[-10:] | map("    " + .) | join("\n"))' >&2
-
-  if [ "$ISSUES_COUNT" -eq 0 ]; then
-    # Not the overridable Phase 4 issue-list case (e.g. raw .env files, a
-    # failing unit test) - nothing to acknowledge from the CLI.
-    echo "" >&2
-    echo "This failure isn't something a justification can override - fix it in the source and push again." >&2
+case "$STATUS" in
+  0)
+    echo -n "$CURRENT_SHA" > "$STATE_FILE"
+    exit 0
+    ;;
+  3)
+    # Never amend or block a passing push over the review file.
+    echo -n "$CURRENT_SHA" > "$STATE_FILE"
+    echo "  $REVIEW_FILE was refreshed - commit it with your next change."
+    exit 0
+    ;;
+  *)
     exit 1
-  fi
-fi
-
-# Regenerated whenever there's something to reconcile: open/overridden issues
-# this run, or a stale file left over from a previous run - so a clean pass
-# can't silently leave the committed file out of date (still naming a
-# previous push's commit sha, or a justification pinned to a line number
-# that has since drifted) the way it used to until some later failing push
-# happened to touch the file again.
-if [ "$ISSUES_COUNT" -gt 0 ] || [ -s "$REVIEW_FILE" ]; then
-  mkdir -p "$(dirname "$REVIEW_FILE")"
-  NEW_REVIEW_CONTENT="$({
-  cat <<'HEADER'
-# Ignite pre-push acknowledgments - meant to be committed: a filled-in
-# justification is a real audit record, reviewable like code.
-#
-# Fill in a justification after "Acknowledge:" for any issue below you want
-# to override, save, then `git push` again. Blank = stays blocking.
-# Refreshed every run: only entries for findings still reported by the
-# current scan are kept - a filled-in justification survives as long
-# as its finding does, but once the underlying issue is fixed (or a
-# pure line-number shift carries its justification to a new id), the
-# stale entry is dropped rather than kept forever.
-# A `# Code:` line, when present, is the flagged source line own text -
-# used to auto-carry-forward this justification if an unrelated edit
-# elsewhere in the file later shifts its line number. Do not hand-edit it.
-# The `# Issue #N` line is just a running count of entries in this file
-# - recomputed on every push, not a stable id. Use the `ID:` line to
-# refer to a specific finding.
-
-HEADER
-  echo "$RESPONSE" | jq -r --arg existingText "$REVIEW_TEXT" '
-    def trim: gsub("^\\s+|\\s+$"; "");
-
-    def parse_blocks(text):
-      ([text | splits("\n(?=ID: )")])
-      | map(select(test("^ID:")))
-      | map(
-          . as $block
-          | ($block | rtrimstr("\n")) as $raw
-          | {
-              id: ($block | capture("^ID:\\s*(?<v>[^\\n]+)").v),
-              file: ($block | ((capture("(?m)^#\\s+(?<v>\\S+?)(?::\\d+)?$").v) // null)),
-              code: ($block | ((capture("(?m)^# Code:\\s*(?<v>[^\\n]*)").v) // null)),
-              justification: ($block | ((capture("Acknowledge:\\s*(?<v>[^\\n]*)").v) // "") | trim),
-              raw: $raw
-            }
-          | .category = (.id | split("::")[0])
-          | .superseded = false
-        );
-
-    def code_for_issue(issue):
-      if (issue.snippet? and (issue.snippet.lines? // null) != null) then
-        ((issue.snippet.lines | map(select(.number == issue.snippet.highlightLine)) | first | .text?) // null | if . then trim else null end)
-      else null end;
-
-    def issue_loc(issue):
-      if issue.file then issue.file + (if issue.line then ":\(issue.line)" else "" end) else "(no file)" end;
-
-    def build_new_block(issue; matchOrNull):
-      ( "ID: \(issue.id)"
-      + "\n# [\(issue.severity // "" | ascii_upcase)] \(issue.category) - \(issue.summary)"
-      + "\n#   \(issue_loc(issue))"
-      + ( (code_for_issue(issue)) as $code | if $code then "\n# Code: \($code)" else "" end )
-      + "\n"
-      + (if matchOrNull then "Acknowledge: \(matchOrNull.justification) (auto-carried-forward from \(matchOrNull.id) - pure line-number drift, flagged code unchanged)" else "Acknowledge: " end)
-      );
-
-    def strip_issue_number(raw):
-      raw | sub("^(?<h>ID: [^\\n]*)\\n# Issue #[0-9]+\\n"; "\(.h)\n");
-
-    . as $r
-    | ($existingText | parse_blocks(.)) as $existingParsed0
-    # The server now returns every error-severity issue the scan found on a
-    # failed run, not only the still-unresolved ones - a successfully
-    # overridden issue is tagged status:"overridden" here rather than
-    # omitted, specifically so this regeneration can tell "still reported,
-    # already resolved this round" apart from "genuinely fixed in source
-    # and gone." $currentIds below spans both so an already-justified entry
-    # is never dropped just because it happened to be overridden rather
-    # than left unresolved on this particular run; only issues actually
-    # missing from the scan (not present at all) count as fixed.
-    | ($r.issues // []) as $issues
-    | ($issues | map(select(.status != "overridden"))) as $unresolvedIssues
-    | (reduce $unresolvedIssues[] as $issue
-        ({existing: $existingParsed0, blocks: []};
-          if (any(.existing[]; .id == $issue.id)) then .
-            else
-              ( code_for_issue($issue) ) as $code
-              | ( if $code then
-                    ( .existing | map(select(.superseded==false and (.justification|length)>0 and .category==$issue.category and .file==$issue.file and .code==$code)) | first )
-                  else null end
-                ) as $match
-              | .existing = ( if $match then
-                    (.existing | map(if .id == $match.id then .superseded = true else . end))
-                  else .existing end )
-              | .blocks += [ build_new_block($issue; $match) ]
-            end
-        )
-      ) as $folded
-    | ($issues | map(.id)) as $currentIds
-    # A finding id does not always encode every distinguishing detail of the
-    # underlying tool output (e.g. container-image-cve ids are keyed on
-    # category+CVE+package, not the exact vendored version string that
-    # appears in the description) - a real rebuild between runs can surface
-    # the same id with different description text without ever tripping
-    # the line-drift carry-forward match. Left undeduped, every such run
-    # appends another stale block sharing that id instead of replacing the
-    # old one, so entries are deduped by id here (preferring one already
-    # justified over a blank duplicate) before combining with the freshly
-    # built blocks for this run.
-    | ( $folded.existing
-        | map(select(.superseded==false and (.id as $i | $currentIds | index($i) != null)))
-        | sort_by(.justification == "")
-        | (reduce .[] as $e ({seen: {}, out: []}; if (.seen[$e.id] // false) then . else (.seen[$e.id] = true | .out += [$e]) end)).out
-        | map(strip_issue_number(.raw))
-      ) as $existingBlocks
-    | ( $existingBlocks + $folded.blocks ) as $combinedRaw
-    # A single scan can itself report the same id more than once (e.g. the
-    # same CVE against the same package name surfaces separately per
-    # vendoring binary inside the built image) - dedupe the combined list
-    # by the id embedded in each blocks own header line, keeping the
-    # first (existing/carried-forward beats freshly-built for the same id).
-    | ( reduce $combinedRaw[] as $b
-        ({seen: {}, out: []};
-          ($b | capture("^ID:\\s*(?<v>[^\\n]+)").v) as $bid
-          | if (.seen[$bid] // false) then . else (.seen[$bid] = true | .out += [$b]) end
-        )
-      ).out as $combined
-    | ( [ range(0; $combined|length) as $i | ($combined[$i] | sub("^(?<h>ID: [^\\n]*)\\n"; "\(.h)\n# Issue #\($i+1)\n")) ] )
-    | join("\n\n")
-  '
-  })"
-else
-  NEW_REVIEW_CONTENT=""
-fi
-
-if [ "$OK" = "true" ]; then
-  echo "✓ Ignite checks passed."
-  if [ -n "$NEW_REVIEW_CONTENT" ] && [ "$NEW_REVIEW_CONTENT" != "$REVIEW_TEXT" ]; then
-    printf '%s\n' "$NEW_REVIEW_CONTENT" > "$REVIEW_FILE"
-    git -C "$REPO_PATH" add "$REVIEW_FILE"
-    git -C "$REPO_PATH" commit --amend --no-edit -q
-    NEW_SHA="$(git -C "$REPO_PATH" rev-parse HEAD)"
-    echo -n "$NEW_SHA" > "$STATE_FILE"
-    echo "  $REVIEW_FILE was stale (old commit sha and/or a drifted line number) - refreshed and folded into this commit (amended -> $NEW_SHA)." >&2
-    echo "  Push again to send the amended commit." >&2
-    exit 1
-  fi
-  echo -n "$CURRENT_SHA" > "$STATE_FILE"
-  exit 0
-fi
-
-printf '%s\n' "$NEW_REVIEW_CONTENT" > "$REVIEW_FILE"
-echo "" >&2
-echo "✗ $UNRESOLVED_COUNT blocking finding(s) need a justification or a source fix." >&2
-echo "  Edit $REVIEW_FILE, fill in \"Acknowledge:\" for whichever you want to" >&2
-echo "  override, then push again - or fix them in the source instead." >&2
-exit 1
+    ;;
+esac

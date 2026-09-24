@@ -15,28 +15,30 @@
 #
 # Everything about `.ignite/acknowledgments.md` - parsing it into overrides,
 # resubmitting them, calling `/api/pipeline/validate-all`, writing the
-# per-run findings snapshot, and regenerating the file afterward (line-drift
-# carry-forward, dedup, renumbering) - lives in `ignite check`
+# per-run findings snapshot, and adding entries for new findings - lives in
+# `ignite check`
 # (`rust/crates/cli/src/check.rs` + `acknowledgments.rs`), not here. That
 # logic used to be ~350 lines of inline bash+jq in this exact file, with no
 # tests - which is how a single missing closing quote (commit 1268efe) once
 # made this hook invalid bash outright, silently resubmitting an empty
 # override list on every push regardless of what was justified, for who
 # knows how long before anyone noticed. This file now only owns what's
-# genuinely git/push-specific and simple enough that bash was never the
-# risk there:
-#   - the delta check below (skip a push whose tree is byte-identical to
-#     the last fully-validated one)
-#   - `git commit --amend` to fold a regenerated review file into the push
-#     when `ignite check` reports it changed (exit code 3)
+# genuinely git/push-specific: the delta check below (skip a push whose tree
+# is byte-identical to the last fully-validated one).
+#
+# One push is always enough: a passing check never rewrites the review file
+# (it's written in a stable, sorted form, and a finding whose line merely
+# moved keeps matching through its `# Code:` line), so this hook never has
+# to amend a commit and ask for a second push.
 #
 # `ignite check` exit codes:
-#   0 = checks passed, review file didn't need touching
-#   1 = checks failed (blocking findings remain) or a non-overridable
-#       failure - fix the source and push again
+#   0 = checks passed
+#   1 = checks failed (blocking findings remain - the review file gains a
+#       blank "Acknowledge:" entry for each) or a non-overridable failure -
+#       justify or fix, commit, and push again
 #   2 = couldn't reach the server / bad usage
-#   3 = checks passed, but the review file was regenerated - amend and
-#       block this push so the amended commit gets sent instead
+#   3 = (older `ignite` binaries only) passed, but the review file was
+#       refreshed - treated as a pass; the refreshed file is left to commit
 #
 # Env overrides:
 #   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
@@ -112,12 +114,10 @@ case "$STATUS" in
     exit 0
     ;;
   3)
-    git -C "$REPO_PATH" add "$REVIEW_FILE"
-    git -C "$REPO_PATH" commit --amend --no-edit -q
-    NEW_SHA="$(git -C "$REPO_PATH" rev-parse HEAD)"
-    echo -n "$NEW_SHA" > "$STATE_FILE"
-    echo "  Push again to send the amended commit." >&2
-    exit 1
+    # Never amend or block a passing push over the review file.
+    echo -n "$CURRENT_SHA" > "$STATE_FILE"
+    echo "  $REVIEW_FILE was refreshed - commit it with your next change."
+    exit 0
     ;;
   *)
     exit 1

@@ -51,7 +51,7 @@ test('appendUnresolvedIssues creates the .ignite dir and writes a blank Acknowle
     const contents = await fs.readFile(filePath, 'utf8');
     assert.match(contents, /ID: secret::a\.py::3/);
     assert.match(contents, /Acknowledge: $/m);
-    assert.match(contents, /^ID: secret::a\.py::3\n# Issue #1\n/m);
+    assert.doesNotMatch(contents, /# Issue #/, 'no running numbers');
 
     // Re-running with the same unresolved issue must not duplicate the entry.
     const appendedAgain = await appendUnresolvedIssues(repoRoot, [sampleIssue]);
@@ -61,18 +61,23 @@ test('appendUnresolvedIssues creates the .ignite dir and writes a blank Acknowle
   }
 });
 
-test('appendUnresolvedIssues renumbers "# Issue #N" fresh on every write instead of accumulating', async () => {
+test('appendUnresolvedIssues writes entries sorted by ID and leaves the file alone when nothing is new', async () => {
   const repoRoot = await makeRepoRoot();
   try {
+    const second: IgniteIssue = { ...sampleIssue, id: 'secret::0first.py::9', file: '0first.py', line: 9 };
     await appendUnresolvedIssues(repoRoot, [sampleIssue]);
-    const second: IgniteIssue = { ...sampleIssue, id: 'secret::b.py::9', file: 'b.py', line: 9 };
     await appendUnresolvedIssues(repoRoot, [sampleIssue, second]);
 
     const contents = await fs.readFile(reviewFilePath(repoRoot), 'utf8');
-    assert.match(contents, /^ID: secret::a\.py::3\n# Issue #1\n/m);
-    assert.match(contents, /^ID: secret::b\.py::9\n# Issue #2\n/m);
-    // No leftover/duplicate numbering from the first write.
-    assert.equal((contents.match(/# Issue #\d+/g) ?? []).length, 2);
+    const ids = [...contents.matchAll(/^ID: (.+)$/gm)].map((m) => m[1]);
+    assert.deepEqual(ids, ['secret::0first.py::9', 'secret::a.py::3']);
+    assert.doesNotMatch(contents, /# Issue #/);
+
+    // Same issues again: nothing new, so the file isn't rewritten at all.
+    const before = (await fs.stat(reviewFilePath(repoRoot))).mtimeMs;
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(await appendUnresolvedIssues(repoRoot, [sampleIssue, second]), 0);
+    assert.equal((await fs.stat(reviewFilePath(repoRoot))).mtimeMs, before);
   } finally {
     await fs.rm(repoRoot, { recursive: true, force: true });
   }
@@ -242,7 +247,8 @@ test('duplicate entries resolve to the latest justification and are removed on t
 
   assert.deepEqual(await loadOverrides(root), [{ issueId: 'secret::a.py::3', justification: 'newer' }]);
 
-  await appendUnresolvedIssues(root, [sampleIssue]);
+  // A new finding triggers a rewrite, which collapses the duplicates.
+  await appendUnresolvedIssues(root, [sampleIssue, { ...sampleIssue, id: 'secret::b.py::1', file: 'b.py', line: 1 }]);
   const text = await fs.readFile(reviewFilePath(root), 'utf8');
   assert.equal(text.match(/^ID: secret::a\.py::3$/gm)?.length, 1, 'duplicates collapsed to one entry');
   assert.match(text, /^Acknowledge: newer$/m);
@@ -257,4 +263,17 @@ test('acknowledgeIssues on a duplicated finding leaves one entry with the new ju
   const text = await fs.readFile(reviewFilePath(root), 'utf8');
   assert.equal(text.match(/^ID: secret::a\.py::3$/gm)?.length, 1);
   assert.match(text, /^Acknowledge: latest supplied$/m);
+});
+
+test('a rewrite strips carry-forward notes older versions appended', async () => {
+  const root = await makeRepoRoot();
+  await fs.mkdir(igniteDir(root), { recursive: true });
+  await fs.writeFile(
+    reviewFilePath(root),
+    'ID: secret::a.py::3\n# Issue #1\n# [ERROR] secret - x\nAcknowledge: fixture (auto-carried-forward from secret::a.py::1 - pure line-number drift, flagged code unchanged)\n'
+  );
+  await acknowledgeIssues(root, [{ ...sampleIssue, id: 'secret::b.py::1', file: 'b.py', line: 1 }], 'new one');
+  const text = await fs.readFile(reviewFilePath(root), 'utf8');
+  assert.match(text, /^Acknowledge: fixture$/m);
+  assert.doesNotMatch(text, /auto-carried-forward|# Issue #/);
 });

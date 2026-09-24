@@ -29,7 +29,8 @@ git config --global core.hooksPath ~/.git-hooks
 ```
 
 It needs a running Ignite server reachable at `IGNITE_BASE_URL` (default
-`http://localhost:51337`) and `jq` on `PATH`. On `git push`, it posts the
+`http://localhost:51337`) and the `ignite` CLI on `PATH`
+(`cargo build --release -p ignite-cli`, then add `rust/target/release/`). On `git push`, it posts the
 repo's absolute path to `/api/pipeline/validate-all`, blocks the push if any
 check fails, and prints the failing phase's logs so you don't have to open
 the UI just to see what broke:
@@ -61,18 +62,26 @@ ID: secret::python/config.py::3
 Acknowledge:
 ```
 
-The file carries no commit sha — that would drift on every single commit and force a fold-and-repush cycle for no reason. It's only regenerated when the actual set of findings changes, or a justification's line number has drifted (see the `# Code:` carry-forward note below). The point-in-time snapshot at `.ignite/scans/<timestamp>/findings.md` still names the exact commit it was scanned against, for that level of audit detail.
-
-Fill in a justification, save, `git push` again — the hook resubmits every
-filled-in line as a real, attributed override (using your `git config
+Fill in a justification, save, commit, `git push` again — the hook resubmits
+every filled-in line as a real, attributed override (using your `git config
 user.name`/`user.email`), the same justify-and-override step the web UI's
-review gate does, just from your own editor. The file is rewritten from
-scratch every run to match the current scan: a justified entry survives as
-long as its finding is still reported (including across a pure line-number
-shift, carried forward automatically), but once the underlying issue is
-actually fixed, its entry is dropped rather than lingering forever. Each
-surviving entry is also numbered (`# Issue #1`, `#2`, …) as a running count,
-recomputed every push.
+review gate does, just from your own editor.
+
+**One push is always enough.** A push whose checks pass never rewrites the
+file, so the hook never has to amend your commit and ask you to push again:
+
+- Entries are written in one stable form: one per `ID:`, sorted by `ID:`, no
+  running numbers, no commit sha.
+- A justified finding whose line merely moved (an edit above it) keeps
+  matching through its `# Code:` line — the flagged source line's own text —
+  so its entry isn't rewritten just because the line number changed.
+- The file is only rewritten when a finding needs a new entry (the push is
+  blocked anyway in that case). Then duplicates collapse to the latest
+  justification and entries for findings that are no longer reported are
+  dropped.
+
+The point-in-time snapshot at `.ignite/scans/<timestamp>/findings.md` still
+names the exact commit it was scanned against, for that level of audit detail.
 
 Fast by default — `runLocalCi` is off (skips Phase 5's `act`/Docker
 governance CI, which is slow and typically belongs in real CI, not on

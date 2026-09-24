@@ -2,37 +2,52 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { IgniteIssue, OverrideSubmission } from './api';
 
+// Same header and canonical form `ignite_acknowledgments` (the pre-push
+// hook / `ignite check`) writes, so the two writers never churn each other's
+// output: one entry per ID, sorted by ID, no running numbers.
 const HEADER = [
   '# Ignite pre-push acknowledgments - meant to be committed: a filled-in',
   '# justification is a real audit record, reviewable like code.',
   '#',
   '# Fill in a justification after "Acknowledge:" for any issue below you want',
-  '# to override, save, then `git push` again (or rerun "Ignite: Scan Workspace").',
-  '# Blank = stays blocking.',
-  '# Append-only: once written, an entry (and its justification) stays here',
-  '# permanently, resubmitted as an override on every future run, even',
-  '# after the id it names stops being reported - delete an entry yourself',
-  '# if you want to stop carrying it forward.',
-  '# A `# Code:` line, when present, is the flagged source line own text -',
-  '# used to auto-carry-forward this justification if an unrelated edit',
-  '# elsewhere in the file later shifts its line number. Do not hand-edit it.',
-  '# The `# Issue #N` line is just a running count of entries in this file',
-  '# - recomputed on every write, not a stable id. Use the `ID:` line to',
-  '# refer to a specific finding.',
+  '# to override, save, commit, then `git push` again. Blank = stays blocking.',
+  '# Entries are sorted by ID, one per finding. The file is only rewritten when',
+  '# a new finding needs an entry - then entries for findings that are no',
+  '# longer reported are dropped.',
+  "# A `# Code:` line, when present, is the flagged source line's own text -",
+  '# it lets this justification keep matching after an unrelated edit',
+  '# elsewhere in the file shifts its line number. Do not hand-edit it.',
   '',
 ].join('\n');
 
-/** Strips a previously-written "# Issue #N" line so it can be recomputed
- *  fresh against the current combined block order — same dodge hooks/
- *  pre-push's identical stripIssueNumberLine uses, so neither writer
- *  accumulates a stale/duplicate number line on the other's output. */
-function stripIssueNumberLine(raw: string): string {
-  return raw.replace(/^(ID: [^\n]*)\n# Issue #\d+\n/, '$1\n');
+const CARRY_NOTE = / \(auto-carried-forward from [^()]* - pure line-number drift, flagged code unchanged\)/g;
+
+/** A justification without the carry-forward notes older versions appended on every line move. */
+export function cleanJustification(justification: string): string {
+  return justification.replace(CARRY_NOTE, '').trim();
 }
 
-/** Renumbers a final, ordered list of raw blocks as "# Issue #1", "#2", ... */
-function numberBlocks(blocks: string[]): string[] {
-  return blocks.map((block, i) => block.replace(/^(ID: [^\n]*)\n/, `$1\n# Issue #${i + 1}\n`));
+/** An entry's text in the current format: no "# Issue #N" line, no carry-forward notes. */
+function normalizeBlock(raw: string): string {
+  return raw
+    .replace(/^(ID: [^\n]*)\n# Issue #\d+\n/, '$1\n')
+    .trimEnd()
+    .split('\n')
+    .map((l) => {
+      if (!l.startsWith('Acknowledge:')) return l;
+      const j = cleanJustification(l.slice('Acknowledge:'.length));
+      return j ? `Acknowledge: ${j}` : 'Acknowledge: ';
+    })
+    .join('\n');
+}
+
+function blockId(block: string): string {
+  return /^ID:\s*([^\n]+)/.exec(block)?.[1]?.trim() ?? '';
+}
+
+/** Final file body: entries sorted by ID, separated by a blank line. */
+function renderBlocks(blocks: string[]): string {
+  return [...blocks].sort((a, b) => (blockId(a) < blockId(b) ? -1 : blockId(a) > blockId(b) ? 1 : 0)).join('\n\n');
 }
 
 interface ParsedEntry {
@@ -163,7 +178,7 @@ export async function appendUnresolvedIssues(repoRoot: string, issues: IgniteIss
       : undefined;
     if (match) match.superseded = true;
     const ackLine = match
-      ? `Acknowledge: ${match.justification} (auto-carried-forward from ${sanitizeLine(match.id)} - pure line-number drift, flagged code unchanged)`
+      ? `Acknowledge: ${sanitizeLine(cleanJustification(match.justification))}`
       : 'Acknowledge: ';
     newBlocks.push(
       [
@@ -175,9 +190,11 @@ export async function appendUnresolvedIssues(repoRoot: string, issues: IgniteIss
       ].join('\n')
     );
   }
-  const remainingExisting = existing.filter((e) => !e.superseded).map((e) => stripIssueNumberLine(e.raw));
+  // Nothing new to add: leave the file exactly as it is (no reshuffling).
+  if (newBlocks.length === 0) return 0;
+  const remainingExisting = existing.filter((e) => !e.superseded).map((e) => normalizeBlock(e.raw));
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, HEADER + numberBlocks([...remainingExisting, ...newBlocks]).join('\n\n') + '\n');
+  await fs.writeFile(filePath, HEADER + renderBlocks([...remainingExisting, ...newBlocks]) + '\n');
   return newBlocks.filter((b) => b.endsWith('Acknowledge: ')).length;
 }
 
@@ -260,9 +277,9 @@ export async function acknowledgeIssues(repoRoot: string, issues: IgniteIssue[],
       ].join('\n')
     );
   }
-  const all = [...existing.filter((e) => !e.superseded).map((e) => stripIssueNumberLine(e.raw)), ...newBlocks];
+  const all = [...existing.filter((e) => !e.superseded).map((e) => normalizeBlock(e.raw)), ...newBlocks];
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, HEADER + numberBlocks(all).join('\n\n') + '\n');
+  await fs.writeFile(filePath, HEADER + renderBlocks(all) + '\n');
 }
 
 /** Byte offset of a given issue id's `Acknowledge:` line, for jumping the editor there. */

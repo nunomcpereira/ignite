@@ -5,21 +5,19 @@
 //! `acknowledgments.rs`, this module is just the I/O around it.
 //!
 //! Deliberately does NOT own the delta-check (skip a push whose tree is
-//! byte-identical to the last fully-validated one) or the `git commit
-//! --amend` step that folds a regenerated review file into the push —
-//! both stay in `hooks/pre-push` itself, since they're genuinely
-//! git/push-specific and simple enough that bash was never the risk there
-//! (the risk was always the jq parsing/regeneration, which is what moved
-//! here). The hook calls this, inspects the exit code, and does the
-//! amend dance itself:
-//! - exit 0: checks passed, review file didn't need touching
-//! - exit 1: checks failed (blocking findings remain) or a non-overridable
-//!   failure (fix the source and re-run)
+//! byte-identical to the last fully-validated one) — that stays in
+//! `hooks/pre-push` itself, since it's genuinely git/push-specific.
+//!
+//! The review file is written in a stable form and only when a finding
+//! needs a new entry (see `ignite_acknowledgments::regenerate`), so a
+//! passing run never touches it and a push never has to be repeated just
+//! to carry a refreshed file. Exit codes:
+//! - exit 0: checks passed
+//! - exit 1: checks failed (blocking findings remain — the review file
+//!   gains blank entries for them) or a non-overridable failure
 //! - exit 2: couldn't reach the server / bad usage
-//! - exit 3: checks passed, but the review file was regenerated
-//!   (line-drift carry-forward, or a stale sha reference) - the hook
-//!   should `git add` it, `commit --amend`, and block this push so the
-//!   amended commit gets sent instead
+//! (Exit 3 — "passed, but amend and push again" — is no longer used; the
+//! hook still treats it as a pass for older `ignite` binaries.)
 
 use ignite_acknowledgments::{self as acknowledgments, Finding};
 use serde_json::Value;
@@ -255,8 +253,10 @@ pub async fn run(args: CheckArgs) -> i32 {
                     eprintln!("  (warning: could not write {})", args.review_file.display());
                     return 0;
                 }
-                eprintln!("  {} was stale (old commit sha and/or a drifted line number) - refreshed.", args.review_file.display());
-                return 3;
+                // Rare (a passing run normally leaves the file alone): don't
+                // block or amend the push over it, just leave the update to commit.
+                println!("  Updated {} - commit it with your next change.", args.review_file.display());
+                return 0;
             }
         }
         return 0;
