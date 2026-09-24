@@ -739,7 +739,7 @@ site](https://nunomcpereira.github.io/ignite/pre-push-hook).
 
 ## VS Code extension
 
-`vscode-extension/` is a thin client that runs the same `validate-all` pipeline against the currently open workspace folder, natively in the editor - no separate web UI, no upload/picker flow. Works with VS Code, Cursor, or VS Code Insiders.
+`vscode-extension/` is a thin client that runs the same pipeline against the currently open workspace folder (or any folder you pick), natively in the editor - no separate web UI. Against a server on `localhost` it sends the folder path to `validate-all`; against a remote server it uploads the folder as a simulation run instead, since a remote server can't read your disk. Works with VS Code, Cursor, or VS Code Insiders.
 
 ```bash
 cd vscode-extension
@@ -748,8 +748,20 @@ cd vscode-extension
 
 Requires a running Ignite server (`./target/release/ignite-server` from `rust/`, default `http://localhost:51337`).
 
+The **Overview** panel at the top of the Ignite sidebar is the extension's home screen: connection status (latency, auth mode, who the API key signs in as), the server URL and API key (editable in place, no `settings.json` round-trip), scan buttons and options, the last scan's result, and one-click reports and workspace actions.
+
+| Overview | Server URL + API key |
+| --- | --- |
+| ![VS Code - Ignite Overview panel with the last scan's result](docs/assets/images/18-vscode-overview.png) | ![VS Code - server URL and "Sign in & create key"](docs/assets/images/19-vscode-server-and-api-key.png) |
+
+- **Server URL** - *Save & connect* / *Test* / *Reset to default*; `localhost:51337` works without `http://`, and invalid input is rejected with a reason. A disconnected server shows why (connection refused, timeout, host not found) and the status bar turns into an `offline` shortcut back to this field.
+- **API key** - stored in the OS keychain (VS Code SecretStorage), not in `settings.json`. **Sign in & create key** (standalone accounts) signs in with your Ignite email/password, creates a 30-day key for this machine, signs out again and keeps only the key; your password is never stored. With OIDC/GitHub sign-in, *Create a key in the web UI* opens the web UI's [API keys](#api-keys-headlessagent-auth) view instead. The key is optional unless the server requires sign-in.
+- **Remote servers** - `ignite.scanMode` (`auto` by default) uploads the folder (git-tracked + untracked files, `.gitignore` respected) to `POST /api/pipeline` as a `dryRun` simulation, answers the review gate with the justifications in `.ignite/acknowledgments.md`, and shows the result exactly like a local scan. Unauthenticated uploads need `security.allowUnauthenticatedInteractiveDryRun` on the server; uploads are capped at 1250 MB and 100,000 files.
+
 Commands (Command Palette):
 
+- **Ignite: Configure Server URL…** / **Set API Key…** / **Get API Key** / **Reconnect to Server** - palette equivalents of the Overview panel's server controls.
+- **Ignite: Scan Selected Folder** - right-click any folder in the Explorer (or use *Folder…* in the Overview panel / the Findings title bar) to scan just that folder.
 - **Ignite: Scan Workspace** - runs phases 1-5 (phase 5 only if `ignite.runLocalCi` is on) against the open folder; findings land in the Problems panel, a Findings tree, and an Output channel. Guarded against double-firing while a scan is already running, and the reachability probe now logs a per-attempt reason (timeout, `ECONNREFUSED`, 5xx body, ...) to the Output channel instead of a flat "isn't reachable".
 - **Ignite: Toggle Findings Grouping (Finding / Phase)** - switches the Findings tree between the original per-phase layout and a per-finding layout that groups every occurrence of the same (category + summary) finding under one collapsible row, unresolved findings sorted first. A toolbar icon in the Findings view title bar toggles it without opening the Command Palette.
 - **Ignite: Acknowledge Selected** - available on a finding group or a multi-selection in the Findings tree (`Cmd`/`Ctrl`-click to select several); prompts once for a justification and writes an `Acknowledge:`-filled stanza for every unresolved occurrence in the selection to `.ignite/acknowledgments.md` in one shot, instead of acknowledging one occurrence at a time.
@@ -758,7 +770,7 @@ Commands (Command Palette):
 - **Ignite: Refresh Tools Status** - re-probes the optional external tools in a Tools Status tree.
 - **Ignite: Show License Compliance** / **Show SBOM** / **Show LOC Metrics** / **Show Compliance & Feature Posture** - on-demand report panels for the four non-issue Phase 4 artifacts, opened beside the editor. Backed by the same `projectPath` convention as `validate-all`: license compliance calls the existing `POST /api/dependencies/check`; SBOM/LOC/posture call the new standalone `POST /api/reports/{sbom,loc-metrics,posture}` endpoints (`rust/crates/server/src/routes/reports.rs`) added specifically for the extension, since it only ever calls `validate-all` and has no `jobId`/review-gate state to hang a Studio request off of. Each renders as pretty-printed JSON in a reused webview panel (one per report kind) - the same data the web UI's Studio buttons show in full table form.
 
-Settings: `ignite.baseUrl` (default `http://localhost:51337`), `ignite.runLocalCi` (default `false`), `ignite.showOverriddenIssues` (default `false`). Full detail, dev/debug instructions, and building the `.vsix` for someone else without installing it: [`vscode-extension/README.md`](vscode-extension/README.md).
+Settings: `ignite.baseUrl` (default `http://localhost:51337`, also editable from the Overview panel), `ignite.scanMode` (`auto` = path for `localhost`, upload otherwise; `path`/`upload` force one), `ignite.runLocalCi` (default `false`, path scans only), `ignite.showOverriddenIssues` (default `false`), `ignite.apiKey` (plaintext fallback - a keychain-stored key from the Overview panel wins over it). Full detail, dev/debug instructions, and building the `.vsix` for someone else without installing it: [`vscode-extension/README.md`](vscode-extension/README.md).
 
 Screenshots (Findings/Tools Status trees, inline Problems-panel diagnostics): see the [docs site's VS Code section](https://nunomcpereira.github.io/ignite/how-it-works#5-or-scan-straight-from-vs-code--no-upload-no-browser).
 
@@ -930,7 +942,33 @@ Every mode above requires a browser to complete a login/OAuth redirect -
 something no unattended agent or CI job can do. A real (non-`dryRun`) push
 also hard-requires a connected GitHub account tied to a logged-in user, so
 without a session an agent can run dry-run checks but can never actually
-ship. API keys close that gap:
+ship. API keys close that gap.
+
+**Self-service, short-lived keys (web UI).** Signed-in users manage their own
+keys: open the profile menu (the person icon, top right) and click
+**API keys** - or go to `/#api-keys`.
+
+| Profile menu | API keys view |
+| --- | --- |
+| ![Profile menu - API keys link](docs/assets/images/21-profile-api-keys-link.png) | ![API keys view - create, list, revoke](docs/assets/images/20-api-keys-view.png) |
+
+- **Create** - give it a label and pick how long it stays valid: 1, 7, 30
+  (default) or 90 days. The key is shown **once**, with its expiry; only its
+  SHA-256 hash and `expires_at` are stored in `ignite.db`.
+- **List** - active keys first, with created / last used / expires and a
+  status badge (*Active*, *Expiring soon* under 24 h, *Expired*, *Revoked*).
+- **Revoke** - immediate; the key stops working on the next request.
+- An expired key is refused everywhere a key is checked, exactly like a
+  revoked one. Keys can only be created or revoked from a signed-in browser
+  session (`GET`/`POST /api/auth/api-keys`, `DELETE /api/auth/api-keys/:id`),
+  never with another API key, and every create/revoke is audit-logged.
+- The VS Code extension's **Sign in & create key** uses the same endpoint
+  (30-day key, `created via vscode`).
+
+**Operator-minted keys (CLI).** For CI/agents that should outlive any
+self-service lifetime, an operator on the server host mints keys that don't
+expire (these are also the only keys that can carry a bound GitHub token or
+`--scopes`):
 
 1. Sign up / log in once via the web UI (whichever `AUTH_MODE` is
    configured). For real pushes, give the key a GitHub token one of three

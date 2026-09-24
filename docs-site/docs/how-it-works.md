@@ -142,12 +142,19 @@ built stays cached when you switch away and back.
 ### 6. Or scan straight from VS Code — no upload, no browser
 
 For people who don't want the web UI, the [VS Code extension](https://github.com/nunomcpereira/ignite/tree/main/vscode-extension)
-runs the same `validate-all` pipeline against whatever folder you have
-open, natively in the editor. It's a thin client — all scanning still
-happens on a locally running Ignite server — but findings land as real
-Problems-panel diagnostics with squiggles at the exact line, plus a
-Findings tree broken down by phase and a Tools Status tree showing which of
-the optional external scanners are actually installed.
+runs the same pipeline against whatever folder you have open, natively in
+the editor. It's a thin client — all scanning still happens on an Ignite
+server, local or remote (a remote server gets the folder uploaded as a
+simulation run) — but findings land as real Problems-panel diagnostics with
+squiggles at the exact line, plus a Findings tree broken down by phase and a
+Tools Status tree showing which of the optional external scanners are
+actually installed.
+
+Its **Overview** panel is the home screen: connection status, the server URL
+and API key (editable in place — see [VS Code extension](./vscode-extension#the-overview-panel)),
+scan buttons, the last scan's result and one-click reports.
+
+![VS Code - Ignite Overview panel](/img/screenshots/18-vscode-overview.png)
 
 ![VS Code - Findings tree by phase and Tools Status](/img/screenshots/08-vscode-findings-tools.png)
 
