@@ -33,7 +33,8 @@ let statusBarItem: vscode.StatusBarItem;
 let findingsView: vscode.TreeView<FindingsNode>;
 let uiState: UiStateStore;
 let controlPanel: ControlPanelProvider;
-const SECRET_API_KEY = 'ignite.apiKey';
+/** Name of the SecretStorage (OS keychain) entry holding the API key — an identifier, not the key. */
+const KEYCHAIN_ENTRY_NAME = 'ignite.apiKey';
 let lastResultIssues: IgniteIssue[] = [];
 /** jobId from the most recent scan — the fix-PR endpoints are scoped to one job's stored issues. */
 let lastJobId: string | undefined;
@@ -118,17 +119,17 @@ function createControlPanelHost(context: vscode.ExtensionContext): ControlPanelH
     async saveApiKey(input) {
       const key = cleanApiKey(input);
       if (!key) return { ok: false, error: 'Paste an API key first.' };
-      await context.secrets.store(SECRET_API_KEY, key);
+      await context.secrets.store(KEYCHAIN_ENTRY_NAME, key);
       return { ok: true };
     },
     async clearApiKey() {
-      await context.secrets.delete(SECRET_API_KEY);
+      await context.secrets.delete(KEYCHAIN_ENTRY_NAME);
     },
     log: (line) => outputChannel.appendLine(line),
     async mintApiKey(email, password) {
       try {
         const minted = await mintApiKeyWithPassword(email.trim(), password, `VS Code — ${os.hostname()}`);
-        await context.secrets.store(SECRET_API_KEY, minted.key);
+        await context.secrets.store(KEYCHAIN_ENTRY_NAME, minted.key);
         return { ok: true, email: minted.user?.email ?? email };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -177,8 +178,8 @@ async function setApiKeyCommand(context: vscode.ExtensionContext): Promise<void>
   });
   if (value === undefined) return;
   const key = cleanApiKey(value);
-  if (key) await context.secrets.store(SECRET_API_KEY, key);
-  else await context.secrets.delete(SECRET_API_KEY);
+  if (key) await context.secrets.store(KEYCHAIN_ENTRY_NAME, key);
+  else await context.secrets.delete(KEYCHAIN_ENTRY_NAME);
 }
 
 async function scanWorkspace(context: vscode.ExtensionContext, changedOnly = false): Promise<void> {
@@ -709,8 +710,8 @@ export function activate(context: vscode.ExtensionContext): void {
     toolsView,
     vscode.window.registerWebviewViewProvider(ControlPanelProvider.viewId, controlPanel),
     context.secrets.onDidChange(async (e) => {
-      if (e.key !== SECRET_API_KEY) return;
-      setStoredApiKey(await context.secrets.get(SECRET_API_KEY));
+      if (e.key !== KEYCHAIN_ENTRY_NAME) return;
+      setStoredApiKey(await context.secrets.get(KEYCHAIN_ENTRY_NAME));
       publishApiKeyState();
       void refreshConnection();
     }),
@@ -822,7 +823,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  void context.secrets.get(SECRET_API_KEY).then((key) => {
+  void context.secrets.get(KEYCHAIN_ENTRY_NAME).then((key) => {
     setStoredApiKey(key);
     publishApiKeyState();
     void refreshConnection();
