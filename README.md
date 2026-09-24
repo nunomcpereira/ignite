@@ -92,6 +92,7 @@ Phase 4's displayed name drops to **"Security & Compliance Scan"** (from "Securi
 | 4 | Complexity / maintainability health | Built-in per-file cyclomatic/cognitive complexity, a calibrated Maintainability Index, and a CRAP score (pulls real coverage when [ingested](#runtime-coverage-ingestion)). Flags `high-complexity`/`low-maintainability` by decision *density*, not raw file length. Always advisory. | On/off (`CONFIG.codeIntelligence.health`) |
 | 4 | Architecture / import-boundary enforcement | Built-in zone-based import-graph check (`bulletproof`/`layered`/`hexagonal`/`feature-sliced` presets, or custom `zones`) flags an import that crosses a declared boundary. Always advisory. **Off by default** - a default zone layout on a project that doesn't follow one is pure noise. | On/off (`CONFIG.architecture.boundaries`) |
 | 4 | CSS/Tailwind dead-class scan | Built-in scan flags a `.css`/`.scss`/`.less` class selector never referenced in any scanned `class`/`className` attribute. One-directional only (can't flag unused Tailwind utilities). Always advisory. | On/off (`CONFIG.codeIntelligence.cssDeadCode`) |
+| 4 | Env-var documentation drift | Built-in (`rust/crates/env-var-drift`) diffs the env vars code reads by literal name (Rust `env::var`/`env!`/`env_*("X")` wrappers, JS/TS `process.env`/`import.meta.env`, Python `os.environ`/`getenv`, Go `os.Getenv`/`LookupEnv`, Java `System.getenv`, C# `Environment.GetEnvironmentVariable`, Ruby `ENV`, docker-compose `${X}`) against `.env.example`/`.env.sample`/`.env.template`. Commented `# X=` template lines count as documented. A read with no template entry is flagged once per var at its first read site; a template entry never mentioned in any code/config file is flagged as stale (score 1). OS/CI/build-tool vars and test code are skipped. Category `config-drift`, always advisory. `NotApplicable` (no findings) when the project has no template. | On/off (`CONFIG.codeIntelligence.envVarDrift`, `ENV_VAR_DRIFT_ENABLED`) |
 | 4 | EU AI Act code-detectable signals | `ignite-posture-rules.yaml`'s three `ai-act-*` categories (prohibited-practice, transparency-disclosure, ai-logging) via the Posture Engine. Advisory-only by default; see [EU AI Act coverage](#eu-ai-act-coverage) below. | On/off (rolled into `compliance.posture`); findings mode via `EU_AI_ACT_REPORT_AS_FINDINGS` |
 | 4 | EU AI Act document-presence scan | Built-in filename/path scan for risk-management-system, Annex IV technical documentation, FRIA, GPAI training-data summary, and post-market monitoring plan documents. DETECTED/MISSING, never PARTIAL. Advisory-only by default. | On/off (`EU_AI_ACT_DOCS_ENABLED`); findings mode via `EU_AI_ACT_REPORT_AS_FINDINGS` |
 | 5 | Org governance CI (act) | Any job of the central `ai-guardrails-orchestrator.yml` fails when executed locally in Docker. Soft-skipped if `act`/Docker are unavailable. | On/off |
@@ -455,7 +456,7 @@ All settings live in `config.json` at the repo root, read by `ignite-server` via
     // becomes a dropdown, first entry selected by default.
     "orgs": "ai-governance-poc-2026",
     // Branch the compliant code is pushed to before PRing into the
-    // repo's default branch (env override: BOOTSTRAP_BRANCH).
+    // repo's default branch.
     "bootstrapBranch": "ignite"
   },
   "governance": {                // central org workflows run locally via act

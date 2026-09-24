@@ -1130,12 +1130,20 @@ pub struct CssDeadCodeConfig {
     pub enabled: bool,
 }
 
+/// `ignite-env-var-drift`: code-read env vars vs. the committed `.env.example`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvVarDriftConfig {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeIntelligenceConfig {
     pub dead_code: DeadCodeConfig,
     pub health: HealthConfig,
     pub css_dead_code: CssDeadCodeConfig,
+    pub env_var_drift: EnvVarDriftConfig,
 }
 impl Default for CodeIntelligenceConfig {
     fn default() -> Self {
@@ -1143,6 +1151,7 @@ impl Default for CodeIntelligenceConfig {
             dead_code: DeadCodeConfig { enabled: true },
             health: HealthConfig::default(),
             css_dead_code: CssDeadCodeConfig { enabled: true },
+            env_var_drift: EnvVarDriftConfig { enabled: true },
         }
     }
 }
@@ -1413,6 +1422,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("DEAD_CODE_ENABLED") { merged.code_intelligence.dead_code.enabled = v; }
     if let Some(v) = env_bool("HEALTH_ENABLED") { merged.code_intelligence.health.enabled = v; }
     if let Some(v) = env_bool("CSS_DEAD_CODE_ENABLED") { merged.code_intelligence.css_dead_code.enabled = v; }
+    if let Some(v) = env_bool("ENV_VAR_DRIFT_ENABLED") { merged.code_intelligence.env_var_drift.enabled = v; }
     if let Some(v) = env_bool("ARCHITECTURE_BOUNDARIES_ENABLED") { merged.architecture.boundaries.enabled = v; }
     if let Some(v) = env_str("ARCHITECTURE_BOUNDARIES_PRESET") { merged.architecture.boundaries.preset = v; }
     if let Some(v) = env_bool("IGNOREFILE_ENABLED") { merged.ignore_file.enabled = v; }
@@ -1833,6 +1843,8 @@ mod tests {
         assert!(!load_with_env("HEALTH_ENABLED", "false").code_intelligence.health.enabled, "HEALTH_ENABLED=false");
         assert!(load_with_env("CSS_DEAD_CODE_ENABLED", "true").code_intelligence.css_dead_code.enabled, "CSS_DEAD_CODE_ENABLED=true");
         assert!(!load_with_env("CSS_DEAD_CODE_ENABLED", "false").code_intelligence.css_dead_code.enabled, "CSS_DEAD_CODE_ENABLED=false");
+        assert!(load_with_env("ENV_VAR_DRIFT_ENABLED", "true").code_intelligence.env_var_drift.enabled, "ENV_VAR_DRIFT_ENABLED=true");
+        assert!(!load_with_env("ENV_VAR_DRIFT_ENABLED", "false").code_intelligence.env_var_drift.enabled, "ENV_VAR_DRIFT_ENABLED=false");
         assert!(load_with_env("ARCHITECTURE_BOUNDARIES_ENABLED", "true").architecture.boundaries.enabled, "ARCHITECTURE_BOUNDARIES_ENABLED=true");
         assert!(!load_with_env("ARCHITECTURE_BOUNDARIES_ENABLED", "false").architecture.boundaries.enabled, "ARCHITECTURE_BOUNDARIES_ENABLED=false");
         assert_eq!(load_with_env("ARCHITECTURE_BOUNDARIES_PRESET", "pin-ARCHITECTURE_BOUNDARIES_PRESET").architecture.boundaries.preset, "pin-ARCHITECTURE_BOUNDARIES_PRESET", "ARCHITECTURE_BOUNDARIES_PRESET");
@@ -1910,6 +1922,6 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 128, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 129, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
     }
 }

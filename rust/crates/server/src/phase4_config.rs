@@ -109,6 +109,7 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
         },
         css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: cfg.code_intelligence.css_dead_code.enabled },
         boundaries: ignite_boundaries::BoundariesConfig { enabled: cfg.architecture.boundaries.enabled, preset: boundaries_preset, zones },
+        env_var_drift: ignite_env_var_drift::EnvVarDriftConfig { enabled: cfg.code_intelligence.env_var_drift.enabled },
         igniteignore_enabled: cfg.ignore_file.enabled,
         igniteignore_git_check_root,
         codeql: ignite_codeql_cross_file::CodeqlConfig {
@@ -237,6 +238,7 @@ mod tests {
             ("codeIntelligence.deadCode.enabled", |c, v| c.code_intelligence.dead_code.enabled = v, |p| p.dead_code.enabled),
             ("codeIntelligence.health.enabled", |c, v| c.code_intelligence.health.enabled = v, |p| p.complexity_health.enabled),
             ("codeIntelligence.cssDeadCode.enabled", |c, v| c.code_intelligence.css_dead_code.enabled = v, |p| p.css_dead_code.enabled),
+            ("codeIntelligence.envVarDrift.enabled", |c, v| c.code_intelligence.env_var_drift.enabled = v, |p| p.env_var_drift.enabled),
             ("architecture.boundaries.enabled", |c, v| c.architecture.boundaries.enabled = v, |p| p.boundaries.enabled),
             ("ignoreFile.enabled", |c, v| c.ignore_file.enabled = v, |p| p.igniteignore_enabled),
             ("security.codeql.enabled", |c, v| c.security.codeql.enabled = v, |p| p.codeql.enabled),

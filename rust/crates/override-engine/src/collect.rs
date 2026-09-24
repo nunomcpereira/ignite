@@ -319,6 +319,22 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
         }
     }
 
+    // Env-var documentation drift is config hygiene, never a security
+    // blocker. A stale template entry (`severity: "info"`) is the lower-
+    // value direction of the two, so it's pinned to the minimum score.
+    // `kind` carries the variable name (see phase4-orchestrator), used as
+    // the id discriminator since two reads can share one line.
+    if let Some(ev) = &input.env_var_drift {
+        for f in &ev.findings {
+            push_simple(&mut issues, "config-drift", Severity::Warning, message_or_kind(f), f, f.kind.as_deref());
+            if f.severity.as_deref() == Some("info") {
+                if let Some(issue) = issues.last_mut() {
+                    issue.score = 1;
+                }
+            }
+        }
+    }
+
     if let Some(md) = &input.malicious_dependencies {
         for f in &md.findings {
             push_simple(&mut issues, "malicious-dependency", Severity::Error, message_or_kind(f), f, None);

@@ -116,6 +116,7 @@ pub struct Phase4Config {
     pub complexity_health: ignite_complexity_health::ComplexityHealthConfig,
     pub css_dead_code: ignite_css_dead_code::CssDeadCodeConfig,
     pub boundaries: ignite_boundaries::BoundariesConfig,
+    pub env_var_drift: ignite_env_var_drift::EnvVarDriftConfig,
     pub igniteignore_enabled: bool,
     /// The real, original project directory to check `.igniteignore`'s
     /// git-tracked status against, when it's different from `root` (the
@@ -207,6 +208,7 @@ const FULL_MODE_ONLY_CHECKS: &[&str] = &[
     "health",
     "cssDeadCode",
     "boundaries",
+    "envVarDrift",
 ];
 
 fn coverage_for_engine(check_id: &'static str, engine: &str, finding_count: usize) -> ignite_policy::CheckCoverage {
@@ -474,6 +476,7 @@ pub async fn run_phase4_checks(
             boundaries: None,
             eu_ai_act: None,
             ignite_ignore: None,
+            env_var_drift: None,
         };
         let issues = ignite_override_engine::collect_phase4_issues(&inputs);
         task_timings.push(("phase4Total", __t0.elapsed().as_millis() as u64));
@@ -987,6 +990,29 @@ pub async fn run_phase4_checks(
         engine: Some(boundaries_result.engine.to_string()),
     });
 
+    log("→ envVarDrift starting...");
+    let __t = std::time::Instant::now();
+    let env_var_drift_result = ignite_env_var_drift::check_env_var_drift(root, &config.env_var_drift).unwrap_or_else(|e| {
+        log(&format!("✗ envVarDrift failed: {e}"));
+        ignite_env_var_drift::EnvVarDriftResult { findings: vec![], engine: "error", templates: vec![] }
+    });
+    let ms = __t.elapsed().as_millis() as u64;
+    task_timings.push(("envVarDrift", ms));
+    coverage.push(match env_var_drift_result.engine {
+        "not_applicable" => ignite_policy::CheckCoverage::not_applicable("envVarDrift", "no .env.example/.env.sample/.env.template in the project"),
+        "built-in" => ignite_policy::CheckCoverage::completed("envVarDrift", "built-in", false)
+            .with_duration_ms(ms)
+            .with_scope(format!("{} finding(s) against {}", env_var_drift_result.findings.len(), env_var_drift_result.templates.join(", "))),
+        engine => coverage_for_engine("envVarDrift", engine, env_var_drift_result.findings.len()),
+    });
+    log(&format!("✓ envVarDrift done ({} finding(s), {ms}ms)", env_var_drift_result.findings.len()));
+    // `kind` carries the variable name: override-engine uses it as the
+    // issue-id discriminator, since two reads can share one line.
+    let env_var_drift_check = Some(CheckResult {
+        findings: env_var_drift_result.findings.iter().map(|f| RawFinding { file: Some(f.file.clone()), line: Some(f.line as i64), kind: Some(f.var.clone()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), code: snippet_json(&f.code), ..Default::default() }).collect(),
+        engine: Some(env_var_drift_result.engine.to_string()),
+    });
+
     let igniteignore_check = Some(CheckResult {
         findings: igniteignore_result.findings.iter().map(|f| RawFinding { file: Some(f.file.to_string()), line: Some(f.line as i64), kind: Some(f.kind.to_string()), tool: Some(f.tool.to_string()), severity: Some(f.severity.to_string()), message: Some(f.message.clone()), ..Default::default() }).collect(),
         engine: Some(igniteignore_result.engine.to_string()),
@@ -1022,6 +1048,7 @@ pub async fn run_phase4_checks(
         boundaries: boundaries_check,
         eu_ai_act: eu_ai_act_check,
         ignite_ignore: igniteignore_check,
+        env_var_drift: env_var_drift_check,
     };
     let issues = ignite_override_engine::collect_phase4_issues(&inputs);
     let _ = http_client;
@@ -1129,6 +1156,7 @@ mod tests {
             complexity_health: ignite_complexity_health::ComplexityHealthConfig::default(),
             css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: false },
             boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
+            env_var_drift: ignite_env_var_drift::EnvVarDriftConfig { enabled: false },
             igniteignore_enabled: false,
             igniteignore_git_check_root: None,
             codeql: ignite_codeql_cross_file::CodeqlConfig { enabled: false, ..Default::default() },
@@ -1382,8 +1410,8 @@ mod tests {
     // ---- characterization: pins what every Phase 4 pass reports as coverage, so
     // ---- giving checks a shared shape can't drop or rename one.
 
-    const ALL_COVERAGE_IDS: [&str; 27] = [
-        "apiSchema", "apiSchemaDrift", "boundaries", "codeql", "cssDeadCode", "deadCode", "duplication", "euAiActDocuments",
+    const ALL_COVERAGE_IDS: [&str; 28] = [
+        "apiSchema", "apiSchemaDrift", "boundaries", "codeql", "cssDeadCode", "deadCode", "duplication", "envVarDrift", "euAiActDocuments",
         "fileEncapsulation", "ghaSecurity", "governance", "health", "igniteIgnore", "iac", "imageProvenance", "imageVulnerabilities",
         "llm", "locMetrics", "maliciousDependencies", "modelArtifactSecurity", "packageHallucination", "pii", "posture",
         "provenance", "sbom", "secrets", "semanticSast",
@@ -1444,9 +1472,37 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn env_var_drift_reports_advisory_issues_and_not_applicable_without_a_template() {
+        let mut config = test_config(None);
+        config.env_var_drift.enabled = true;
+        let coverage = coverage_for(test_config(None)).await;
+        assert_eq!(coverage.iter().find(|c| c.check_id == "envVarDrift").unwrap().outcome, ignite_policy::CheckOutcome::Disabled);
+
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("app.js"), "const t = process.env.API_TOKEN;\n").unwrap();
+        let db_dir = tempdir().unwrap();
+        let store = DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let runner = ToolRunner::new(StdHashMap::new());
+        let checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
+
+        let output = run_phase4_checks(dir.path(), &runner, &store, &config, &checker, &|_m: &str| {}).await.unwrap();
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+        assert_eq!(output.coverage.iter().find(|c| c.check_id == "envVarDrift").unwrap().outcome, ignite_policy::CheckOutcome::NotApplicable);
+        assert!(!output.issues.iter().any(|i| i.category == "config-drift"));
+
+        fs::write(dir.path().join(".env.example"), "# OTHER=\n").unwrap();
+        let output = run_phase4_checks(dir.path(), &runner, &store, &config, &checker, &|_m: &str| {}).await.unwrap();
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+        assert_eq!(output.coverage.iter().find(|c| c.check_id == "envVarDrift").unwrap().outcome, ignite_policy::CheckOutcome::Completed);
+        let ids: Vec<&str> = output.issues.iter().filter(|i| i.category == "config-drift").map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["config-drift::app.js::1::API_TOKEN", "config-drift::.env.example::1::OTHER"]);
+        assert!(output.issues.iter().filter(|i| i.category == "config-drift").all(|i| i.severity == ignite_override_engine::Severity::Warning));
+    }
+
     #[test]
     fn the_full_mode_only_list_is_the_fast_mode_complement() {
-        assert_eq!(FULL_MODE_ONLY_CHECKS.len(), ALL_COVERAGE_IDS.len() - 4, "27 checks, 4 of which (secrets, governance, semanticSast, fileEncapsulation) run in fast mode");
+        assert_eq!(FULL_MODE_ONLY_CHECKS.len(), ALL_COVERAGE_IDS.len() - 4, "28 checks, 4 of which (secrets, governance, semanticSast, fileEncapsulation) run in fast mode");
         for fast_task in ["secrets", "governance", "semanticSast", "fileEncapsulation"] {
             assert!(!FULL_MODE_ONLY_CHECKS.contains(&fast_task), "{fast_task}");
         }

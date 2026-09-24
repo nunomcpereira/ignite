@@ -169,6 +169,23 @@ mod tests {
     }
 
     #[test]
+    fn env_var_drift_is_advisory_config_drift_keyed_by_variable() {
+        let mut input = Phase4Inputs::default();
+        let mut ev = CheckResult::default();
+        ev.findings.push(RawFinding { kind: Some("SMTP_PASSWORD".into()), severity: Some("warning".into()), message: Some("undocumented".into()), ..finding("src/config.rs", 7) });
+        ev.findings.push(RawFinding { kind: Some("SMTP_PASS".into()), severity: Some("warning".into()), message: Some("undocumented".into()), ..finding("src/config.rs", 7) });
+        ev.findings.push(RawFinding { kind: Some("OLD_FLAG".into()), severity: Some("info".into()), message: Some("stale".into()), ..finding(".env.example", 3) });
+        input.env_var_drift = Some(ev);
+        let issues = collect_phase4_issues(&input);
+        assert_eq!(issues.len(), 3);
+        assert!(issues.iter().all(|i| i.category == "config-drift" && i.severity == Severity::Warning));
+        assert_eq!(issues[0].id, "config-drift::src/config.rs::7::SMTP_PASSWORD");
+        assert_ne!(issues[0].id, issues[1].id);
+        assert_eq!(issues[0].score, 2);
+        assert_eq!(issues[2].score, 1);
+    }
+
+    #[test]
     fn container_image_cve_finding_associates_its_real_cve_id() {
         let mut input = Phase4Inputs::default();
         let mut iv = CheckResult::default();

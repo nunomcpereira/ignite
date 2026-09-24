@@ -111,6 +111,7 @@ async fn main() {
         complexity_health: ignite_complexity_health::ComplexityHealthConfig::default(),
         css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: true },
         boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
+        env_var_drift: ignite_env_var_drift::EnvVarDriftConfig::default(),
         igniteignore_enabled: true,
         igniteignore_git_check_root: Some(PathBuf::from(&source)),
         codeql: ignite_codeql_cross_file::CodeqlConfig::default(),

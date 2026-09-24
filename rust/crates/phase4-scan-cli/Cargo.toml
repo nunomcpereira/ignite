@@ -34,6 +34,7 @@ ignite-dead-code = { path = "../dead-code" }
 ignite-complexity-health = { path = "../complexity-health" }
 ignite-css-dead-code = { path = "../css-dead-code" }
 ignite-boundaries = { path = "../boundaries" }
+ignite-env-var-drift = { path = "../env-var-drift" }
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-package-hallucination = { path = "../package-hallucination" }
 serde_json = "1"

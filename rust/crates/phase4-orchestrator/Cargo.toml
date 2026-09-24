@@ -35,6 +35,7 @@ ignite-dead-code = { path = "../dead-code" }
 ignite-complexity-health = { path = "../complexity-health" }
 ignite-css-dead-code = { path = "../css-dead-code" }
 ignite-boundaries = { path = "../boundaries" }
+ignite-env-var-drift = { path = "../env-var-drift" }
 ignite-igniteignore = { path = "../igniteignore" }
 ignite-codeql-cross-file = { path = "../codeql-cross-file" }
 ignite-policy = { path = "../policy" }

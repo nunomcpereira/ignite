@@ -60,6 +60,7 @@ ignite-phase4-orchestrator = { path = "../phase4-orchestrator" }
 ignite-policy = { path = "../policy" }
 ignite-complexity-health = { path = "../complexity-health" }
 ignite-boundaries = { path = "../boundaries" }
+ignite-env-var-drift = { path = "../env-var-drift" }
 ignite-file-encapsulation = { path = "../file-encapsulation" }
 ignite-css-dead-code = { path = "../css-dead-code" }
 ignite-shipping = { path = "../shipping" }

@@ -43,7 +43,7 @@ fn category_scores() -> &'static HashMap<&'static str, i32> {
             ("malicious-dependency", 9), ("malicious-model-artifact", 10),
             ("package-hallucination", 5), ("codeql-sast", 8), ("codeql-analysis-failed", 8), ("codeql-query-suite-stale", 6),
             ("ai-act-prohibited-practice", 6), ("ai-act-transparency-disclosure", 4),
-            ("ai-act-ai-logging", 4), ("ai-act-compliance-documents", 3),
+            ("ai-act-ai-logging", 4), ("ai-act-compliance-documents", 3), ("config-drift", 4),
         ]
         .into_iter()
         .collect()

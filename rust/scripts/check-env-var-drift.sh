@@ -27,13 +27,15 @@ fi
 # these is never a documentation gap.
 os_vars_regex='^(HOME|HOSTNAME|PATH|USER|USERNAME|PWD|SHELL|LANG|TERM|TMPDIR)$'
 
-used=$(grep -rhoE '(std::)?env::var(_os)?\("[A-Za-z0-9_]+"\)|env_(str|bool|num|csv)(::<[^>]+>)?\("[A-Za-z0-9_]+"\)' \
+used=$(grep -rhoE '(std::)?env::var(_os)?\("[A-Za-z0-9_]+"\)|env_[a-z0-9_]+(::<[^>]+>)?\("[A-Z][A-Z0-9_]*"' \
     "$rust_root"/crates/*/src/*.rs "$rust_root"/crates/*/src/**/*.rs "$rust_root"/crates/*/src/**/**/*.rs 2>/dev/null \
     | grep -oE '"[A-Za-z0-9_]+"' | tr -d '"' | sort -u \
     | grep -vE "$os_vars_regex" || true)
 
-documented=$(grep -oE '^[A-Za-z0-9_]+=' "$env_example" | tr -d '=' | sort -u)
-baselined=$(grep -vE '^\s*#|^\s*$' "$baseline" | sort -u)
+# Commented-out `# VAR=` entries count as documented too: optional vars are
+# listed that way so copying .env.example to .env doesn't override config.json.
+documented=$(grep -oE '^(#[[:space:]]*)?[A-Z][A-Z0-9_]*=' "$env_example" | sed -E 's/^#[[:space:]]*//' | tr -d '=' | sort -u)
+baselined=$( (grep -vE '^\s*#|^\s*$' "$baseline" || true) | sort -u)
 
 undocumented=$(comm -23 <(echo "$used") <(echo "$documented"))
 new_drift=$(comm -23 <(echo "$undocumented") <(echo "$baselined"))

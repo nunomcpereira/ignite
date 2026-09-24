@@ -329,6 +329,8 @@ pub struct Phase4Inputs {
     pub boundaries: Option<CheckResult>,
     pub eu_ai_act: Option<CheckResult>,
     pub ignite_ignore: Option<CheckResult>,
+    /// `ignite-env-var-drift` — always advisory, category `config-drift`.
+    pub env_var_drift: Option<CheckResult>,
 }
 
 #[derive(Debug, Clone, Default)]
