@@ -67,8 +67,8 @@ every filled-in line as a real, attributed override (using your `git config
 user.name`/`user.email`), the same justify-and-override step the web UI's
 review gate does, just from your own editor.
 
-**One push is always enough.** A push whose checks pass never rewrites the
-file, so the hook never has to amend your commit and ask you to push again:
+**One push is enough, and nothing is left uncommitted.** A push whose
+checks pass normally never rewrites the file:
 
 - Entries are written in one stable form: one per `ID:`, sorted by `ID:`, no
   running numbers, no commit sha.
@@ -79,6 +79,14 @@ file, so the hook never has to amend your commit and ask you to push again:
   blocked anyway in that case). Then duplicates collapse to the latest
   justification and entries for findings that are no longer reported are
   dropped.
+
+In the rare case a passing run does change the file (e.g. an older entry
+without a `# Code:` line had to follow its code to a new line), the hook never
+leaves it behind: it amends the file into your commit and pushes that amended
+commit itself. Git can't swap the commit an in-flight push sends, so git then
+reports the original push as failed — the hook says so, and there's nothing to
+do. (Pushing several refs at once, or something other than the current
+branch, falls back to "amended — push again".)
 
 The point-in-time snapshot at `.ignite/scans/<timestamp>/findings.md` still
 names the exact commit it was scanned against, for that level of audit detail.

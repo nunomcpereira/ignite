@@ -26,10 +26,15 @@
 # genuinely git/push-specific: the delta check below (skip a push whose tree
 # is byte-identical to the last fully-validated one).
 #
-# One push is always enough: a passing check never rewrites the review file
-# (it's written in a stable, sorted form, and a finding whose line merely
-# moved keeps matching through its `# Code:` line), so this hook never has
-# to amend a commit and ask for a second push.
+# One push is enough: a passing check normally never rewrites the review
+# file (it's written in a stable, sorted form, and a finding whose line
+# merely moved keeps matching through its `# Code:` line). In the rare case
+# it does (exit 3), the file is never left uncommitted: the hook amends it
+# into the commit and pushes that amended commit itself (git can't swap the
+# commit an in-flight push sends, so the original push is then stopped -
+# git's "failed to push some refs" line refers to that superseded push).
+# Only a push of several refs, or of something other than the current
+# branch, falls back to "amended - push again".
 #
 # `ignite check` exit codes:
 #   0 = checks passed
@@ -37,8 +42,8 @@
 #       blank "Acknowledge:" entry for each) or a non-overridable failure -
 #       justify or fix, commit, and push again
 #   2 = couldn't reach the server / bad usage
-#   3 = (older `ignite` binaries only) passed, but the review file was
-#       refreshed - treated as a pass; the refreshed file is left to commit
+#   3 = checks passed, but the review file had to change - amended into the
+#       commit and pushed by this hook (see above)
 #
 # Env overrides:
 #   IGNITE_BASE_URL       Ignite server URL (default http://localhost:51337)
@@ -72,6 +77,16 @@
 # clone has no state file, so a new repo's first push always gets the full
 # run.
 set -euo pipefail
+
+# This hook's own push of an amended commit (below) - already checked.
+if [ "${IGNITE_PREPUSH_INNER:-}" = "1" ]; then
+  exit 0
+fi
+
+REMOTE_NAME="${1:-origin}"
+# git passes one "<local ref> <local sha> <remote ref> <remote sha>" line per
+# ref being pushed on stdin; read it before anything else consumes stdin.
+PUSH_REFS="$(cat || true)"
 
 if [ "${IGNITE_PREPUSH_SKIP:-}" = "true" ]; then
   echo "⚠ Ignite pre-push check skipped (IGNITE_PREPUSH_SKIP=true)."
@@ -114,10 +129,26 @@ case "$STATUS" in
     exit 0
     ;;
   3)
-    # Never amend or block a passing push over the review file.
-    echo -n "$CURRENT_SHA" > "$STATE_FILE"
-    echo "  $REVIEW_FILE was refreshed - commit it with your next change."
-    exit 0
+    # Checks passed but the review file changed: never leave it uncommitted.
+    git -C "$REPO_PATH" add "$REVIEW_FILE"
+    git -C "$REPO_PATH" commit --amend --no-edit -q
+    NEW_SHA="$(git -C "$REPO_PATH" rev-parse HEAD)"
+    echo -n "$NEW_SHA" > "$STATE_FILE"
+    BRANCH_REF="$(git -C "$REPO_PATH" symbolic-ref -q HEAD || true)"
+    REF_COUNT="$(printf '%s\n' "$PUSH_REFS" | grep -c . || true)"
+    read -r LOCAL_REF LOCAL_SHA REMOTE_REF _REMOTE_SHA <<< "$PUSH_REFS" || true
+    if [ "$REF_COUNT" = "1" ] && [ -n "$BRANCH_REF" ] && { [ "${LOCAL_REF:-}" = "$BRANCH_REF" ] || [ "${LOCAL_REF:-}" = "HEAD" ]; } && [ "${LOCAL_SHA:-}" = "$CURRENT_SHA" ]; then
+      echo "  Folded the updated $(basename "$REVIEW_FILE") into your commit - pushing the amended commit..."
+      if IGNITE_PREPUSH_INNER=1 git -C "$REPO_PATH" push -q "$REMOTE_NAME" "HEAD:$REMOTE_REF"; then
+        echo "✓ Pushed $NEW_SHA to $REMOTE_NAME $REMOTE_REF (checks passed; working tree clean)."
+        echo "  git will now report the original push as failed - that's the superseded commit, nothing to do." >&2
+        exit 1
+      fi
+      echo "✗ Couldn't push the amended commit - run git push again." >&2
+      exit 1
+    fi
+    echo "  Folded the updated review file into your commit - push again to send it." >&2
+    exit 1
     ;;
   *)
     exit 1

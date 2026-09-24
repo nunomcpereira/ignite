@@ -16,8 +16,10 @@
 //! - exit 1: checks failed (blocking findings remain — the review file
 //!   gains blank entries for them) or a non-overridable failure
 //! - exit 2: couldn't reach the server / bad usage
-//! (Exit 3 — "passed, but amend and push again" — is no longer used; the
-//! hook still treats it as a pass for older `ignite` binaries.)
+//! - exit 3: checks passed, but the review file had to change (rare — e.g.
+//!   an entry re-keyed because its code moved and the server didn't match
+//!   it). The hook amends it into the commit and sends that commit itself,
+//!   so nothing is ever left uncommitted after a push.
 
 use ignite_acknowledgments::{self as acknowledgments, Finding};
 use serde_json::Value;
@@ -253,10 +255,10 @@ pub async fn run(args: CheckArgs) -> i32 {
                     eprintln!("  (warning: could not write {})", args.review_file.display());
                     return 0;
                 }
-                // Rare (a passing run normally leaves the file alone): don't
-                // block or amend the push over it, just leave the update to commit.
-                println!("  Updated {} - commit it with your next change.", args.review_file.display());
-                return 0;
+                // Rare (a passing run normally leaves the file alone). The hook
+                // folds it into the commit being pushed rather than leave it behind.
+                eprintln!("  Updated {}.", args.review_file.display());
+                return 3;
             }
         }
         return 0;
