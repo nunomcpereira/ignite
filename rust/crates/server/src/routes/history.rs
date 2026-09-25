@@ -51,7 +51,7 @@ async fn project_details(State(state): State<Arc<AppState>>, crate::auth::AuthOr
     }
 }
 
-async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(id_raw): Path<String>) -> Response {
+async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
     if !state.db.project_exists(id) {
         return err(StatusCode::NOT_FOUND, "Project not found.");

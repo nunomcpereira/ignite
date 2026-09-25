@@ -66,6 +66,31 @@
     details > summary { list-style: none; }
     details > summary::-webkit-details-marker { display: none; }
     details[open] .chevron { transform: rotate(90deg); }
+    /* Nav rail: collapsed = icons only; .rail-expanded widens it and shows
+       each button's label, and body.nav-expanded pushes every screen right
+       by the extra width (14rem rail vs 3.5rem) so nothing sits under it. */
+    #navRail { transition: width .15s ease; }
+    #navRail .rail-label { display: none; white-space: nowrap; font-size: .875rem; font-weight: 500; }
+    #navRail.rail-expanded { width: 14rem; align-items: stretch; padding-left: .5rem; padding-right: .5rem; }
+    #navRail.rail-expanded .rail-btn { width: auto; justify-content: flex-start; gap: .75rem; padding-left: .625rem; padding-right: .625rem; }
+    #navRail.rail-expanded .rail-label { display: inline; }
+    #navRail.rail-expanded #navRailToggleIcon { transform: rotate(180deg); }
+    /* Recent checks pinned as a permanent right sidebar: sits under the
+       header like the left rail, no backdrop/shadow, and every screen
+       reserves room for it on the right. */
+    /* The five screens are `max-w-* mx-auto` with their rail/drawer gutters
+       as padding. content-box keeps that padding *outside* the max width,
+       so opening the left rail or pinning the right drawer only shifts the
+       content instead of squeezing it into a narrow column. */
+    :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #apiKeysView) { box-sizing: content-box; }
+    body.history-pinned #historyDrawer { top: 3.5rem; z-index: 30; max-width: 24rem; box-shadow: none; }
+    body.history-pinned #historyDrawerCloseBtn,
+    body.history-pinned #historyDrawerBtn { display: none; }
+    body.history-pinned :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #apiKeysView) { padding-right: calc(24rem + 1.5rem); }
+    #historyDrawerPinBtn[aria-pressed="true"] { color: var(--tw-brand-600, #2563eb); background: #eff6ff; }
+    @media (min-width: 640px) {
+      body.nav-expanded :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #apiKeysView) { padding-left: calc(14rem + 1.5rem); }
+    }
 
     /* Dark mode: the app's entire palette is hardcoded Tailwind utility
        classes (bg-white, text-slate-800, ...) rather than CSS variables, so
@@ -264,21 +289,30 @@
        (so it's shown active/non-interactive); History opens a slide-over
        drawer with Recent Checks + Effectivated Repos, which used to sit
        permanently inline below the pipeline and crowded the page. -->
-  <nav class="hidden sm:flex flex-col items-center gap-1 w-14 shrink-0 fixed left-0 top-14 bottom-0 bg-white border-r border-slate-200 py-4 z-30">
-    <button id="dashboardNavBtn" type="button" data-i18n-title="header.dashboard" class="w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
+  <nav id="navRail" class="hidden sm:flex flex-col items-center gap-1 w-14 shrink-0 fixed left-0 top-14 bottom-0 bg-white border-r border-slate-200 py-4 z-30">
+    <button id="navRailToggle" type="button" data-i18n-title="nav.toggle" aria-expanded="false" class="rail-btn w-10 h-10 mb-2 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg id="navRailToggleIcon" class="w-5 h-5 shrink-0 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7"/></svg>
+      <span class="rail-label" data-i18n="nav.collapse">Collapse</span>
     </button>
-    <button id="onboardedReposNavBtn" type="button" data-i18n-title="header.onboardedRepos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h17.25"/></svg>
+    <button id="dashboardNavBtn" type="button" data-i18n-title="header.dashboard" class="rail-btn w-10 h-10 flex items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+      <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
+      <span class="rail-label" data-i18n="nav.dashboard">Dashboard</span>
     </button>
-    <button id="governanceNavBtn" type="button" data-i18n-title="header.governance" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+    <button id="onboardedReposNavBtn" type="button" data-i18n-title="header.onboardedRepos" class="rail-btn w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h17.25"/></svg>
+      <span class="rail-label" data-i18n="nav.onboardedRepos">Onboarded repos</span>
     </button>
-    <button id="orgReposNavBtn" type="button" data-i18n-title="header.orgRepos" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.964 0a9 9 0 10-11.964 0m11.964 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+    <button id="governanceNavBtn" type="button" data-i18n-title="header.governance" class="rail-btn w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+      <span class="rail-label" data-i18n="nav.governance">Governance</span>
     </button>
-    <button id="historyDrawerBtn" type="button" data-i18n-title="header.history" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    <button id="orgReposNavBtn" type="button" data-i18n-title="header.orgRepos" class="rail-btn w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.964 0a9 9 0 10-11.964 0m11.964 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+      <span class="rail-label" data-i18n="nav.orgRepos">GitHub org</span>
+    </button>
+    <button id="historyDrawerBtn" type="button" data-i18n-title="header.history" class="rail-btn w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors">
+      <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <span class="rail-label" data-i18n="nav.history">Recent checks</span>
     </button>
   </nav>
 
@@ -288,9 +322,14 @@
   <div id="historyDrawer" class="hidden fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-50 border-l border-slate-200 shadow-2xl z-50 flex flex-col transition-transform">
     <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-white shrink-0">
       <h2 class="text-sm font-bold text-slate-900" data-i18n="history.title">Recent Checks &amp; Effectivated Repos</h2>
+      <div class="flex items-center gap-1">
+      <button id="historyDrawerPinBtn" type="button" aria-pressed="false" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5zM12 14v6"/></svg>
+      </button>
       <button id="historyDrawerCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
+      </div>
     </div>
     <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-6">
       <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
@@ -1123,15 +1162,19 @@
   <!-- Read-only issues viewer: usable any time during/after a run, and from the history panel -->
   <div id="issuesViewModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
-      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
-        <div>
+      <div class="px-6 py-4 border-b border-slate-100 flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-[12rem] flex-1">
           <p class="text-sm font-semibold text-slate-800" data-i18n="issuesView.title">Flagged issues</p>
           <p id="issuesViewSubtitle" class="text-xs text-slate-500 mt-0.5" data-i18n="issuesView.subtitle">Read-only — issue-by-issue detail, updated live as the run progresses.</p>
         </div>
-        <div class="flex items-center gap-3 shrink-0">
+        <div class="flex flex-wrap items-center justify-end gap-2">
           <button id="issuesViewFixPrBtn" type="button"
                   class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-brand-200 text-brand-700 bg-brand-50 hover:bg-brand-100" data-i18n-title="pipeline.generateFixPrTitle">
             <span data-i18n="pipeline.generateFixPr">✨ Generate fix PR</span>
+          </button>
+          <button id="issuesViewStudioBtn" type="button"
+                  class="hidden whitespace-nowrap text-xs font-semibold px-3 py-1.5 rounded-lg border border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100" data-i18n-title="issuesView.openStudioTitle">
+            <span data-i18n="history.studioBtn">🧪 Studio</span>
           </button>
           <button id="issuesViewExpandAllBtn" type="button"
                   class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n-title="issuesView.expandAllTitle">
@@ -2719,6 +2762,18 @@
       };
     }
 
+    // Picks live vs historical Studio for a past run. `meta.retained`
+    // (history rows know it) skips the probe; otherwise the job's tree
+    // endpoint decides — it only answers while the source is still on disk.
+    async function openStudioForRun({ jobId, projectId, org, repo, retained }) {
+      let live = Boolean(jobId) && retained === true;
+      if (jobId && retained === undefined) {
+        try { live = (await fetch(`/api/pipeline/${encodeURIComponent(jobId)}/studio/tree`)).ok; } catch { live = false; }
+      }
+      if (live || (jobId && !projectId)) openStudio(jobId, null);
+      else openHistoricalStudio(projectId, org, repo);
+    }
+
     function openIssuesViewer(issues, subtitle, meta = {}) {
       const modal = $('issuesViewModal');
       $('issuesViewSubtitle').textContent = subtitle || 'Read-only — issue-by-issue detail.';
@@ -2744,6 +2799,17 @@
       // "Generate fix PR" needs a real job id (the bulk fix-PR endpoints
       // are all /api/pipeline/:jobId/fix-pr/*) — a project-id-only context
       // (e.g. History's older rows) has no equivalent yet.
+      // Studio: live (retained-source) Studio when the job's source is still
+      // on disk, else the read-only historical view keyed by project id.
+      // `meta.noStudio` hides it for a still-running live run.
+      const studioBtn = $('issuesViewStudioBtn');
+      studioBtn.classList.toggle('hidden', meta.noStudio || issues.length === 0 || !(meta.jobId || meta.projectId));
+      studioBtn.onclick = async () => {
+        modal.classList.add('hidden');
+        studioReturnTo = () => modal.classList.remove('hidden');
+        await openStudioForRun(meta);
+      };
+
       const fixPrBtn = $('issuesViewFixPrBtn');
       fixPrBtn.classList.toggle('hidden', !meta.jobId);
       fixPrBtn.onclick = () => {
@@ -2928,7 +2994,10 @@
       if (ev.target.id === 'issuesViewModal') $('issuesViewModal').classList.add('hidden');
     });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !$('issuesViewModal').classList.contains('hidden')) $('issuesViewModal').classList.add('hidden');
+      if (e.key === 'Escape' && !$('issuesViewModal').classList.contains('hidden')) {
+        e.stopImmediatePropagation(); // one Esc = one layer; keep the history drawer underneath open
+        $('issuesViewModal').classList.add('hidden');
+      }
     });
 
     function updateViewIssuesButton() {
@@ -2950,7 +3019,7 @@
         openIssuesViewer(data.issues || [], data.running
           ? 'Read-only — updates as later phases run. Overrides are only settled at the final review gate.'
           : 'Read-only — final result of this run.',
-          { org: orgInput.value.trim(), repo: repoInput.value.trim(), jobId: state.jobId });
+          { org: orgInput.value.trim(), repo: repoInput.value.trim(), jobId: state.jobId, noStudio: Boolean(data.running) });
       } catch {
         openIssuesViewer([], 'Could not load issues for this run.');
       }
@@ -4036,9 +4105,15 @@
 
       try {
         const res = await fetch(`/api/projects/${projectId}/issues`);
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        // Surface a failed load (e.g. 401 without a session) instead of
+        // rendering it as "no findings" — an empty tree reads as a clean run.
+        if (!res.ok) throw new Error(data.error || `Could not load findings (HTTP ${res.status}).`);
         studioState.issues = (data.issues || []).filter((i) => Boolean(i.file));
-      } catch { studioState.issues = []; }
+      } catch (e) {
+        studioState.issues = [];
+        studioShowError(e.message);
+      }
       renderStudioSummaryBar();
 
       const files = [...new Set(studioState.issues.map((i) => i.file).filter(Boolean))].sort().map((path) => ({ path, size: 0 }));
@@ -4065,8 +4140,14 @@
       } catch { /* documents are a bonus view — a failed fetch just leaves the buttons hidden */ }
     }
 
+    // Screen to restore when Studio closes (e.g. the flagged-issues popup
+    // it was opened from). Set right before opening, consumed on close.
+    let studioReturnTo = null;
     function closeStudio() {
       $('studioView').classList.add('hidden');
+      const returnTo = studioReturnTo;
+      studioReturnTo = null;
+      if (returnTo) returnTo();
       if (studioState.dirty) {
         // Unsaved edits are only ever written on explicit Save — closing
         // Studio never silently persists (or silently discards) a pending
@@ -4084,7 +4165,12 @@
     }
     $('studioCloseBtn').addEventListener('click', closeStudio);
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !$('studioView').classList.contains('hidden')) closeStudio();
+      if (e.key === 'Escape' && !$('studioView').classList.contains('hidden')) {
+        // Stop here so the same Esc doesn't also close whatever Studio was
+        // opened from (history drawer, issues popup) — Esc goes back one step.
+        e.stopImmediatePropagation();
+        closeStudio();
+      }
     });
 
     // Keeps the cosmetic "open file" tab chip (studioTabBar) in sync with
@@ -7074,7 +7160,7 @@
               <button type="button" class="hist-view-checks-report text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}">${t('history.checksBtn')}</button>
               ${p.status !== 'running' ? `<button type="button" class="hist-view-performance text-[11px] font-semibold text-slate-500 hover:underline shrink-0" data-id="${p.id}">${t('pipeline.performance')}</button>` : ''}
               ${p.issue_count > 0 ? `<button type="button" class="hist-open-studio text-[11px] font-semibold text-violet-600 hover:underline shrink-0" data-id="${p.id}" data-job-id="${escapeAttr(p.job_id || '')}" data-retained="${p.retained ? '1' : ''}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" title="${escapeAttr(p.retained ? t('history.fullStudioTitle') : t('history.readOnlyStudioTitle'))}">${p.retained ? `${t('history.studioBtn')}${p.retained_tier === 'pruned' ? ` (${t('history.flaggedFilesOnly')})` : ` (${t('common.full')})`}` : t('history.studioBtn')}</button>` : ''}
-              ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" data-job-id="${escapeAttr(p.job_id || '')}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
+              ${p.issue_count > 0 ? `<button type="button" class="hist-view-issues text-[11px] font-semibold text-brand-600 hover:underline shrink-0" data-id="${p.id}" data-retained="${p.retained ? '1' : ''}" data-count="${p.issue_count}" data-org="${escapeHtml(p.org)}" data-repo="${escapeHtml(p.repo)}" data-job-id="${escapeAttr(p.job_id || '')}">${t('history.issueCount', { count: p.issue_count })}</button>` : ''}
               ${p.issue_count > 0 && p.job_id ? `<button type="button" class="hist-fix-pr text-[11px] font-semibold text-brand-700 hover:underline shrink-0" data-job-id="${escapeAttr(p.job_id)}" title="${escapeAttr(t('pipeline.generateFixPrTitle'))}">${t('history.fixPrBtn')}</button>` : ''}
               <button type="button" class="hist-delete text-slate-300 hover:text-rose-500 transition-colors shrink-0 text-sm font-bold ml-auto" data-id="${p.id}" title="${escapeAttr(t('history.deleteProjectTitle'))}">✕</button>
             </div>
@@ -7134,7 +7220,7 @@
             const res = await fetch(`/api/projects/${id}/issues`);
             const data = await res.json();
             openIssuesViewer(data.issues || [], `Read-only — ${data.issues?.length || 0} issue(s) flagged for this project.`,
-              { org: btn.dataset.org, repo: btn.dataset.repo, projectId: id, jobId: btn.dataset.jobId || undefined });
+              { org: btn.dataset.org, repo: btn.dataset.repo, projectId: id, jobId: btn.dataset.jobId || undefined, retained: btn.dataset.retained === '1' });
           } catch {
             openIssuesViewer([], 'Could not load issues for this project.');
           }
@@ -7368,7 +7454,7 @@
           try {
             const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
             const data = await res.json();
-            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId });
+            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId, projectId: r.latestProjectId });
           } catch {
             openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
           }
@@ -7735,7 +7821,7 @@
           try {
             const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
             const data = await res.json();
-            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId });
+            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId, projectId: r.latestProjectId });
           } catch {
             openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
           }
@@ -8891,15 +8977,42 @@
       $('historyDrawer').classList.remove('hidden');
       showHint('hint.screen.history');
     }
+    function isHistoryPinned() { return document.body.classList.contains('history-pinned'); }
     function closeHistoryDrawer() {
+      // Pinned = permanent sidebar; only the unpin button takes it away.
+      if (isHistoryPinned()) return;
       $('historyDrawerBackdrop').classList.add('hidden');
       $('historyDrawer').classList.add('hidden');
     }
+    // Pin to the right edge — remembered per browser (a convenience only).
+    function setHistoryPinned(pinned) {
+      document.body.classList.toggle('history-pinned', pinned);
+      $('historyDrawerPinBtn').setAttribute('aria-pressed', String(pinned));
+      $('historyDrawerPinBtn').title = t(pinned ? 'history.unpin' : 'history.pin');
+      $('historyDrawerBackdrop').classList.add('hidden');
+      $('historyDrawer').classList.toggle('hidden', !pinned);
+      try { localStorage.setItem('ignite-history-pinned', pinned ? '1' : '0'); } catch { /* storage unavailable */ }
+    }
+    $('historyDrawerPinBtn').addEventListener('click', () => setHistoryPinned(!isHistoryPinned()));
+    $('historyDrawerPinBtn').title = t('history.pin');
+    try { if (localStorage.getItem('ignite-history-pinned') === '1') setHistoryPinned(true); } catch { /* storage unavailable */ }
     $('historyDrawerBtn').addEventListener('click', openHistoryDrawer);
     $('historyDrawerCloseBtn').addEventListener('click', closeHistoryDrawer);
     $('historyDrawerBackdrop').addEventListener('click', closeHistoryDrawer);
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !$('historyDrawer').classList.contains('hidden')) closeHistoryDrawer();
+    });
+    // "r" toggles the Recent checks drawer — skipped while typing, with a
+    // modifier held (Cmd+R reload), or while Studio is open over the page.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'r' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = e.target?.tagName;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) || e.target?.isContentEditable) return;
+      if (!$('studioView').classList.contains('hidden')) return;
+      if (isHistoryPinned()) return;
+      e.preventDefault();
+      if ($('historyDrawer').classList.contains('hidden')) openHistoryDrawer();
+      else closeHistoryDrawer();
     });
 
     // Nav rail view switch — Dashboard, Onboarded Repos, Governance and
@@ -8955,6 +9068,15 @@
         loadAutoRescanState();
       }
     }
+    // Rail expand/collapse — remembered per browser (a convenience only).
+    function setNavRailExpanded(expanded) {
+      $('navRail').classList.toggle('rail-expanded', expanded);
+      document.body.classList.toggle('nav-expanded', expanded);
+      $('navRailToggle').setAttribute('aria-expanded', String(expanded));
+      try { localStorage.setItem('ignite-nav-expanded', expanded ? '1' : '0'); } catch { /* storage unavailable */ }
+    }
+    $('navRailToggle').addEventListener('click', () => setNavRailExpanded(!$('navRail').classList.contains('rail-expanded')));
+    try { if (localStorage.getItem('ignite-nav-expanded') === '1') setNavRailExpanded(true); } catch { /* storage unavailable */ }
     $('dashboardNavBtn').addEventListener('click', showDashboardView);
     $('onboardedReposNavBtn').addEventListener('click', showOnboardedReposView);
     $('governanceNavBtn').addEventListener('click', showGovernanceView);
