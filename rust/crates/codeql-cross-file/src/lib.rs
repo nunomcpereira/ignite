@@ -335,6 +335,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `codeql database create`'s exit code when the extractor saw no
+/// processable source for the language.
+const NO_SOURCE_CODE_SEEN_EXIT: i32 = 32;
+
 async fn run_one_language(
     root: &Path,
     language: &str,
@@ -369,10 +373,21 @@ async fn run_one_language(
         }
         let mut env = HashMap::new();
         env.insert("LGTM_INDEX_FILTERS".to_string(), codeql_index_filters());
-        runner
-            .run_tool_streaming("codeql", &create_args, &root.to_string_lossy(), |l| create_lines.push(l.to_string()), &env, config.timeout_ms)
-            .await
-            .map_err(|e| CodeqlError::Message(format!("{e} Last output: {}", create_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | "))))?;
+        match runner.run_tool_streaming("codeql", &create_args, &root.to_string_lossy(), |l| create_lines.push(l.to_string()), &env, config.timeout_ms).await {
+            Ok(_) => {}
+            // Exit 32 = "no source code seen": every file discovery counted
+            // for this language is one CodeQL's own extractor skips by
+            // design (minified/bundled `*.min.js`, generated code, ...).
+            // Nothing extractable means nothing to analyze — not a failed
+            // scan that should block the gate.
+            Err(ignite_tool_runner::ToolError::ExitedNonZero { code: NO_SOURCE_CODE_SEEN_EXIT, .. }) => {
+                log(&format!("  ℹ codeql found no extractable {language} source (only minified/generated files) — nothing to analyze."));
+                return Ok(vec![]);
+            }
+            Err(e) => {
+                return Err(CodeqlError::Message(format!("{e} Last output: {}", create_lines.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | "))));
+            }
+        }
 
         // Keep this database around (outside work_dir, which is always wiped
         // below) so Studio's ad-hoc query runner (run_custom_codeql_query)
@@ -852,6 +867,28 @@ mod tests {
         let result = check_codeql_cross_file(root, &runner(), &config, CodeqlContext { org: None, repo: None, store: None, keep_db_dir: None }).await.unwrap();
         assert_eq!(result.engine, "codeql");
         assert_eq!(result.languages, vec!["javascript".to_string()]);
+        ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[tokio::test]
+    async fn minified_only_javascript_is_not_a_failed_language() {
+        let mut check = std::process::Command::new("codeql");
+        check.arg("version");
+        if check.output().map(|o| !o.status.success()).unwrap_or(true) {
+            eprintln!("skipping: codeql not installed on PATH");
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // One huge single-line file — CodeQL's JS extractor skips it as
+        // minified, so `database create` exits 32 ("no source code seen").
+        fs::write(root.join("app.min.js"), "var a=1;".repeat(3000)).unwrap();
+
+        let config = CodeqlConfig { query_suites: default_query_suites(), timeout_ms: 5 * 60_000, ..Default::default() };
+        let result = check_codeql_cross_file(root, &runner(), &config, CodeqlContext { org: None, repo: None, store: None, keep_db_dir: None }).await.unwrap();
+        assert!(result.failed_languages.is_empty(), "minified-only source must not be a failed language, got {:?}", result.failed_languages);
+        assert!(result.findings.is_empty());
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 
