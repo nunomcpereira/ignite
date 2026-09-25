@@ -564,7 +564,7 @@
        its latest scan snapshot. Sibling to #dashboardView, toggled by the
        lateral nav rail's second icon (same mutually-exclusive show/hide
        pattern, see the nav-switching script below). -->
-  <div id="onboardedReposView" class="hidden max-w-6xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+  <div id="onboardedReposView" class="hidden max-w-screen-2xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
     <div class="flex items-center justify-between mb-8 gap-4 flex-wrap">
       <div>
         <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="onboardedRepos.title">Onboarded Repos</h2>
@@ -581,16 +581,16 @@
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-slate-50 border-b border-slate-200">
-            <tr class="text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
-              <th class="px-5 py-3" data-i18n="onboardedRepos.colOrg">Org</th>
-              <th class="px-5 py-3" data-i18n="onboardedRepos.colRepo">Repo</th>
-              <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colLicense">License problems</th>
-              <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colFindings">Findings</th>
-              <th class="px-5 py-3 text-right" data-i18n="onboardedRepos.colSla">SLA</th>
-              <th class="px-5 py-3" data-i18n="onboardedRepos.colAcks">Acknowledgments</th>
-              <th class="px-5 py-3" data-i18n="onboardedRepos.colPrs">Recent PRs</th>
-              <th class="px-5 py-3" data-i18n="onboardedRepos.colLastScan">Last scan</th>
-              <th class="px-5 py-3" data-i18n="onboardedRepos.colAction">Action</th>
+            <tr class="text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">
+              <th class="px-3 py-3" data-i18n="onboardedRepos.colOrg">Org</th>
+              <th class="px-3 py-3" data-i18n="onboardedRepos.colRepo">Repo</th>
+              <th class="px-3 py-3 text-right whitespace-normal" data-i18n="onboardedRepos.colLicense">License problems</th>
+              <th class="px-3 py-3 text-right" data-i18n="onboardedRepos.colFindings">Findings</th>
+              <th class="px-3 py-3 text-right" data-i18n="onboardedRepos.colSla">SLA</th>
+              <th class="px-3 py-3" data-i18n="onboardedRepos.colAcks">Acknowledgments</th>
+              <th class="px-3 py-3" data-i18n="onboardedRepos.colPrs">Recent PRs</th>
+              <th class="px-3 py-3" data-i18n="onboardedRepos.colLastScan">Last scan</th>
+              <th class="px-3 py-3" data-i18n="onboardedRepos.colAction">Action</th>
             </tr>
           </thead>
           <tbody id="onboardedReposTableBody" class="divide-y divide-slate-100"></tbody>
@@ -7398,7 +7398,7 @@
     function renderOnboardedRepos(repos) {
       $('onboardedReposEmpty').classList.toggle('hidden', repos.length > 0);
       $('onboardedReposTableBody').innerHTML = repos.map((r, i) => {
-        const orgCell = `<a href="https://github.com/${escapeAttr(r.org)}" target="_blank" rel="noopener" class="text-slate-600 hover:text-brand-600 hover:underline">${escapeHtml(r.org)}</a>`;
+        const orgCell = `<a href="https://github.com/${escapeAttr(r.org)}" target="_blank" rel="noopener" title="${escapeAttr(r.org)}" class="block max-w-[180px] truncate text-slate-600 hover:text-brand-600 hover:underline">${escapeHtml(r.org)}</a>`;
         const repoCell = r.repoUrl && /^https?:\/\//i.test(r.repoUrl)
           ? `<a href="${escapeAttr(r.repoUrl)}" target="_blank" rel="noopener" class="font-semibold text-slate-800 hover:text-brand-600 hover:underline">${escapeHtml(r.repo)}</a>`
           : `<span class="font-semibold text-slate-800">${escapeHtml(r.repo)}</span>`;
@@ -7411,7 +7411,7 @@
             }).join(' ');
         const acksCell = r.acknowledgments.length === 0
           ? '<span class="text-slate-300">—</span>'
-          : `<button type="button" class="onboarded-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.downloadAcksTitle'))}">⬇ ${t('onboardedRepos.acknowledgmentsCount', { count: r.acknowledgments.length })}</button>`;
+          : `<button type="button" class="onboarded-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.acknowledgmentsCount', { count: r.acknowledgments.length }) + ' — ' + t('onboardedRepos.downloadAcksTitle'))}">⬇ ${r.acknowledgments.length}</button>`;
         // Findings review: the in-app read-only issues viewer for this
         // repo's latest run, same modal the live pipeline's "View flagged
         // issues" button opens — not a GitHub link, there's no committed
@@ -7428,15 +7428,15 @@
           : '<span class="text-slate-300">—</span>';
         return `
         <tr>
-          <td class="px-5 py-3.5">${orgCell}</td>
-          <td class="px-5 py-3.5">${repoCell}</td>
-          <td class="px-5 py-3.5 text-right ${r.licenseProblems > 0 ? 'font-semibold text-amber-600' : 'text-slate-400'}">${r.licenseProblems}</td>
-          <td class="px-5 py-3.5 text-right">${findingsCell}</td>
-          <td class="px-5 py-3.5 text-right">${slaCell}</td>
-          <td class="px-5 py-3.5">${acksCell}</td>
-          <td class="px-5 py-3.5"><div class="flex flex-wrap gap-1 max-w-[220px]">${prsCell}</div></td>
-          <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>
-          <td class="px-5 py-3.5">
+          <td class="px-3 py-3.5 whitespace-nowrap">${orgCell}</td>
+          <td class="px-3 py-3.5 whitespace-nowrap">${repoCell}</td>
+          <td class="px-3 py-3.5 text-right ${r.licenseProblems > 0 ? 'font-semibold text-amber-600' : 'text-slate-400'}">${r.licenseProblems}</td>
+          <td class="px-3 py-3.5 text-right">${findingsCell}</td>
+          <td class="px-3 py-3.5 text-right">${slaCell}</td>
+          <td class="px-3 py-3.5 whitespace-nowrap">${acksCell}</td>
+          <td class="px-3 py-3.5"><div class="flex flex-wrap gap-1 max-w-[180px]">${prsCell}</div></td>
+          <td class="px-3 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>
+          <td class="px-3 py-3.5">
             <button type="button" class="onboarded-repo-scan-now text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed" data-i="${i}" title="${escapeAttr(t('onboardedRepos.scanNowTitle'))}">
               <span class="onboarded-repo-scan-now-label">${t('onboardedRepos.scanNow')}</span>
             </button>
@@ -8743,9 +8743,9 @@
           <td class="px-4 py-3 text-[11px] text-slate-500 whitespace-nowrap font-mono">${escapeHtml(e.createdAt)}</td>
           <td class="px-4 py-3 text-slate-700 font-mono text-[11px]">${escapeHtml(e.eventType)}</td>
           <td class="px-4 py-3">${auditLogSeverityBadge(e.severity)}</td>
-          <td class="px-4 py-3 text-slate-700">${escapeHtml(e.summary)}</td>
-          <td class="px-4 py-3 text-[11px] text-slate-500 whitespace-nowrap">${repoCell}</td>
-          <td class="px-4 py-3 text-[11px] text-slate-500">${e.actor ? escapeHtml(e.actor) : '<span class="text-slate-300">—</span>'}</td>
+          <td class="px-4 py-3 text-slate-700 min-w-[14rem] [overflow-wrap:anywhere]">${escapeHtml(e.summary)}</td>
+          <td class="px-4 py-3 text-[11px] text-slate-500 min-w-[10rem] [overflow-wrap:anywhere]">${repoCell}</td>
+          <td class="px-4 py-3 text-[11px] text-slate-500 [overflow-wrap:anywhere]">${e.actor ? escapeHtml(e.actor) : '<span class="text-slate-300">—</span>'}</td>
           <td class="px-4 py-3 text-[11px] whitespace-nowrap">${logCell}</td>
         </tr>`;
       }).join('');
