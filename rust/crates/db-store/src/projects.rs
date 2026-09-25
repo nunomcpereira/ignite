@@ -117,7 +117,9 @@ impl DbStore {
         // pathological case where it somehow isn't, rather than this
         // metadata field lying about it either way.
         let metadata = json!({ "error": error, "hasLogArchive": true }).to_string();
-        match self.record_audit_event("scan.completed", severity, &summary, None, Some(&org), Some(&repo), Some(&metadata)) {
+        let initiator: Option<String> =
+            self.conn.lock().query_row("SELECT initiator FROM scan_runs WHERE legacy_project_id = ?", params![project_id], |row| row.get(0)).optional().ok().flatten().flatten();
+        match self.record_audit_event("scan.completed", severity, &summary, initiator.as_deref(), Some(&org), Some(&repo), Some(&metadata)) {
             Ok(event_id) => self.archive_project_logs(event_id, project_id),
             Err(e) => tracing::error!("record_audit_event failed for {org}/{repo}: {e}"),
         }

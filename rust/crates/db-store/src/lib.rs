@@ -115,6 +115,18 @@ mod tests {
     }
 
     #[test]
+    fn finish_project_attributes_its_audit_event_to_the_scan_run_initiator() {
+        let (_dir, store) = open_test_db();
+        let id = store.create_project("job-4", "acme", "widgets", false, "ui", None).unwrap();
+        let run_id = store.get_scan_run_for_legacy_project(id).unwrap().id;
+        store.set_scan_run_initiator(run_id, "alice@example.com");
+        store.finish_project("success", None, None, None, id);
+
+        let events = store.list_audit_events(None, None, Some("scan.completed"), None, None, None, None, 10);
+        assert_eq!(events[0].actor.as_deref(), Some("alice@example.com"));
+    }
+
+    #[test]
     fn finish_project_with_pr_url_records_an_onboarding_pull_request() {
         let (_dir, store) = open_test_db();
         let id = store.create_project("job-pr", "acme", "widgets", false, "ui", None).unwrap();

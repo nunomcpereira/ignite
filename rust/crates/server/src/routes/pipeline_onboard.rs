@@ -303,6 +303,9 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
         if let Some(rid) = run_id {
             state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Scanning);
+            if let Some(actor) = resolve_actor(&headers, &state.db) {
+                state.db.set_scan_run_initiator(rid, &actor.email);
+            }
             if let Some(key) = idempotency_key.as_deref() {
                 state.db.set_scan_run_idempotency(rid, key, &super::pipeline_validate::idempotency_payload_hash(&body));
             }

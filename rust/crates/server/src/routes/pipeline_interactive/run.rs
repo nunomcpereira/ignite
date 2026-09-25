@@ -85,6 +85,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         run_id = state.db.get_scan_run_for_legacy_project(pid).map(|r| r.id);
                         if let Some(rid) = run_id {
                             state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Scanning);
+                            state.db.set_scan_run_initiator(rid, &owner_email);
                         }
                         log.set_project_id(pid);
                         if let Some(live) = state.running_runs.lock().get_mut(&job_id) {

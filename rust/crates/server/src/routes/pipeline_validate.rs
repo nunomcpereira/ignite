@@ -326,6 +326,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
         if let Some(rid) = run_id {
             state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::Scanning);
+            if let Some((email, _)) = resolve_actor(&headers, &state.db, &body) {
+                state.db.set_scan_run_initiator(rid, &email);
+            }
             if let Some(key) = body.get("idempotencyKey").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
                 state.db.set_scan_run_idempotency(rid, key, &idempotency_payload_hash(&body));
             }

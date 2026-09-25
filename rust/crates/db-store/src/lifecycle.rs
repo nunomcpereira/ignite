@@ -185,6 +185,15 @@ impl DbStore {
             tracing::error!("set_scan_run_idempotency({run_id}) failed: {e}");
         }
     }
+
+    /// Records who started this run (session/API-key email, or a synthetic
+    /// actor) — surfaced as the `actor` of its `scan.completed` audit event.
+    pub fn set_scan_run_initiator(&self, run_id: i64, initiator: &str) {
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute("UPDATE scan_runs SET initiator = ? WHERE id = ?", params![initiator, run_id]) {
+            tracing::error!("set_scan_run_initiator({run_id}) failed: {e}");
+        }
+    }
 }
 
 fn conn_job_id(conn: &rusqlite::Connection, project_id: i64) -> Option<String> {
