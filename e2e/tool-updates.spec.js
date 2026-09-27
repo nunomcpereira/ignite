@@ -40,7 +40,9 @@ const available = () => ({ checking: false, checkedAt: '2026-09-26T10:00:00Z', t
 
 test('updates managed tools, shows manual releases, and refreshes completion', async ({ page }) => {
   const snapshot = available();
+  snapshot.container = false;
   const requests = await setup(page, snapshot);
+  await expect(page.locator('#toolsRuntime')).toContainText('Host install');
   await expect(page.locator('[data-tool-update="jscpd"]')).toHaveCount(1);
   await expect(page.locator('[data-tool-update="trivy"]')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'CodeQL release information' })).toHaveAttribute('href', snapshot.tools.codeql.releaseUrl);
@@ -79,6 +81,7 @@ test('container mode shows a rebuild command instead of in-place updates', async
   const requests = await setup(page, snapshot);
   await expect(page.locator('[data-tool-update]')).toHaveCount(0);
   await expect(page.locator('[data-tool-rebuild="jscpd"]')).toHaveCount(1);
+  await expect(page.locator('#toolsRuntime')).toContainText('Docker container');
   await expect(page.locator('#toolsRebuildHint code').last()).toHaveText('docker compose build --pull --no-cache --build-arg TRIVY_VERSION=v0.75.0 && docker compose up -d');
   expect(requests).toEqual([]);
 });

@@ -3880,6 +3880,7 @@
           <span class="text-[10px] font-semibold text-slate-500">${t('tools.connectedCount', { n: connectedCount, total })} <span id="toolsBarChevron">▾</span></span>
         </button>
         <div id="toolsBarList" class="${expanded ? 'flex' : 'hidden'} flex-col gap-1.5 mt-1.5">
+          ${typeof toolsUpdateState.container === 'boolean' ? `<span id="toolsRuntime" class="text-[10px] text-slate-500" title="${escapeAttr(toolsUpdateState.container ? 'Tools live in the container image: update them by rebuilding the image.' : 'Tools are installed on this machine: Update runs their package manager.')}">Running: <span class="font-semibold text-slate-700">${toolsUpdateState.container ? 'Docker container' : 'Host install'}</span></span>` : ''}
           ${rows}
           <button type="button" id="toolsCheckUpdatesBtn" class="text-left text-[10px] font-semibold text-brand-600 disabled:opacity-50" ${updateBusy ? 'disabled' : ''}>${toolsUpdateState.checking ? 'Checking for updates…' : 'Check for updates'}</button>
           <span class="text-[10px] text-slate-400">${toolsUpdateState.checkedAt ? `Last checked: ${escapeHtml(new Date(toolsUpdateState.checkedAt).toLocaleString())}` : 'Updates have not been checked.'}</span>
