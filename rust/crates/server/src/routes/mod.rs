@@ -37,3 +37,5 @@ pub mod runtime_coverage;
 pub mod sarif;
 pub mod studio;
 pub mod tools_status;
+
+pub mod tool_updates;

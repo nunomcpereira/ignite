@@ -29,10 +29,13 @@ impl Default for CodeDuplicationConfig {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DuplicateRef {
     pub file: String,
     pub line: usize,
     pub end_line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<Snippet>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,7 +68,18 @@ fn relative(root: &Path, name: &str) -> String {
     if name.is_empty() {
         return String::new();
     }
-    relative_to_root(root, name).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
+    let rel = relative_to_root(root, name).to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+    // jscpd can identify a tokenized document as "file.md:markdown".
+    // Prefer a real filename (which can itself contain a colon), otherwise
+    // resolve the virtual document back to the source on disk.
+    if !root.join(&rel).is_file() {
+        if let Some((source, _format)) = rel.rsplit_once(':') {
+            if root.join(source).is_file() {
+                return source.to_string();
+            }
+        }
+    }
+    rel
 }
 
 fn parse_jscpd_report(root: &Path, data: &serde_json::Value, min_lines: u32) -> Vec<CodeDuplicationFinding> {
@@ -129,7 +143,12 @@ fn parse_jscpd_report(root: &Path, data: &serde_json::Value, min_lines: u32) -> 
             severity: "warning",
             message: format!("{}-line duplicate block, also found in {}:{}.", dup_lines, other_file, other_range),
             code: content.as_deref().and_then(|c| build_snippet(c, line, SnippetOptions { end_line: Some(end_line), ..Default::default() })),
-            duplicate_ref: DuplicateRef { file: other_file, line: other_line, end_line: other_end_line },
+            duplicate_ref: DuplicateRef {
+                snippet: std::fs::read_to_string(root.join(&other_file)).ok().and_then(|c| build_snippet(&c, other_line, SnippetOptions { end_line: Some(other_end_line), ..Default::default() })),
+                file: other_file,
+                line: other_line,
+                end_line: other_end_line,
+            },
         });
     }
     findings
@@ -259,6 +278,36 @@ mod tests {
     }
 
     #[test]
+    fn virtual_document_paths_capture_both_occurrences() {
+        let dir = tempdir().unwrap();
+        let content = (1..=20).map(|i| format!("Interview question {i}\n")).collect::<String>();
+        fs::write(dir.path().join("Interview Notes.md"), &content).unwrap();
+        fs::write(dir.path().join("Other Notes.md"), &content).unwrap();
+        let mut report = sample_report();
+        report["duplicates"][0]["firstFile"]["name"] = serde_json::json!("Interview Notes.md:markdown");
+        report["duplicates"][0]["secondFile"]["name"] = serde_json::json!("Other Notes.md:markdown");
+        let findings = parse_jscpd_report(dir.path(), &report, 5);
+        let finding = &findings[0];
+        assert_eq!(finding.file, "Interview Notes.md");
+        assert_eq!(finding.code.as_ref().unwrap().highlight_line, 2);
+        assert_eq!(finding.code.as_ref().unwrap().highlight_end_line, Some(11));
+        assert_eq!(finding.duplicate_ref.file, "Other Notes.md");
+        let json = serde_json::to_value(&finding.duplicate_ref).unwrap();
+        assert_eq!(json["endLine"], 14);
+        assert_eq!(json["snippet"]["highlightLine"], 5);
+        assert_eq!(json["snippet"]["highlightEndLine"], 14);
+        assert!(json["snippet"]["lines"].as_array().unwrap().iter().any(|l| l["text"] == "Interview question 5"));
+    }
+
+    #[test]
+    fn preserves_real_filenames_containing_colons() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("notes.md"), "source").unwrap();
+        fs::write(dir.path().join("notes.md:markdown"), "real file").unwrap();
+        assert_eq!(relative(dir.path(), "notes.md:markdown"), "notes.md:markdown");
+    }
+
+    #[test]
     fn skips_punctuation_only_duplicate_span() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -293,11 +342,20 @@ mod tests {
         let block = "function doWork(x) {\n  const a = x + 1;\n  const b = a * 2;\n  const c = b - 3;\n  console.log(a, b, c);\n  return c;\n}\n";
         fs::write(root.join("one.js"), format!("{}\n// filler\n", block)).unwrap();
         fs::write(root.join("two.js"), format!("{}\n// filler\n", block)).unwrap();
+        let notes = (1..=20).map(|i| format!("Interview question {i}: describe your experience building data integration pipelines.\n")).collect::<String>();
+        fs::write(root.join("Interview Notes.md"), &notes).unwrap();
+        fs::write(root.join("Other Notes.md"), &notes).unwrap();
 
         let config = CodeDuplicationConfig { enabled: true, min_lines: 5, min_tokens: 10, ignore_patterns: vec![] };
         let result = check_code_duplication(root, &runner_with_jscpd(), &config).await;
         assert_eq!(result.engine, "jscpd");
         assert!(!result.findings.is_empty(), "expected jscpd to flag the duplicated block between one.js and two.js");
+        assert!(result.findings.iter().any(|f| f.file.ends_with(".md")), "expected Markdown duplicates");
+        for finding in &result.findings {
+            assert!(root.join(&finding.file).is_file(), "{} must resolve to a source file", finding.file);
+            assert!(finding.code.is_some(), "{} must capture source code", finding.file);
+            assert!(finding.duplicate_ref.snippet.is_some(), "{} must capture matching code", finding.duplicate_ref.file);
+        }
         ignite_fs_utils::invalidate_walk_cache(root);
     }
 }

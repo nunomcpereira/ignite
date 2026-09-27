@@ -34,6 +34,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
     axum::Router::new()
         .merge(auth::router())
         .merge(routes::tools_status::router())
+        .merge(routes::tool_updates::router())
         .merge(routes::sarif::router())
         .merge(routes::github_annotations::router())
         .merge(routes::baseline::router())
@@ -144,6 +145,7 @@ async fn main() {
     }
 
     routes::daily_report::spawn_scheduler(state.clone());
+    routes::tool_updates::spawn_startup_check(state.clone());
 
     let app = build_router(state, &public_dir);
 

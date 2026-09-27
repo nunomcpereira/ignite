@@ -175,6 +175,25 @@ uses, and any individual tool can be skipped with `INSTALL_<TOOL>=false`
 (e.g. `INSTALL_GUARDDOG=false`). Docker itself isn't installed for you - it
 needs its GUI installer - the script just flags it if missing.
 
+### Checking and updating tools
+
+Set `TOOLS_CHECK_UPDATES_ON_STARTUP=true` in `.env` to check installed scanner
+versions against their official release services in the background at startup.
+Set it to `false` (or leave it unset) to skip startup checks. Checks never install
+updates. In the account menu, expand **External tools** to see installed versions,
+check manually, and use **Update** when a newer stable release is available.
+
+For installations owned by Homebrew, global npm, or pipx, **Update** runs that
+package manager for the selected tool, then checks its installed version again.
+Tool updates are available without signing in. Updates are rejected while an
+interactive pipeline is active. Package-manager permissions and version pins
+still apply. A package manager may lag behind the upstream release.
+Installations Ignite cannot safely associate with a supported package manager
+show a disabled **Update** button; the adjacent **?** opens that tool's release
+information for manual updating or an image rebuild. Unknown versions and
+failed release checks never count as an available update. Trivy's two entries
+share one installation and update state.
+
 ### Installing ORT
 
 ORT isn't on Homebrew. Download a release archive and symlink the binary onto `PATH`:

@@ -2201,8 +2201,8 @@
       // this used to hardcode amber/rose regardless of issue.severity,
       // so a blocking (error) finding's historical snippet view showed
       // the same amber highlight as an advisory warning.
-      const markClass = issue.severity === 'error' ? 'bg-rose-200 text-rose-900' : 'bg-amber-200 text-amber-900';
-      const rowClass = issue.severity === 'error' ? 'bg-rose-50' : 'bg-amber-50';
+      const markClass = issue.severity === 'error' ? 'bg-rose-200 text-rose-900' : issue.category === 'code-duplication' ? 'bg-emerald-200 text-emerald-900' : 'bg-amber-200 text-amber-900';
+      const rowClass = issue.severity === 'error' ? 'bg-rose-50' : issue.category === 'code-duplication' ? 'bg-emerald-50' : 'bg-amber-50';
       const rows = snippet.lines.map((l) => {
         const raw = l.text || '';
         const isHl = l.number >= snippet.highlightLine && l.number <= highlightEnd;
@@ -3787,15 +3787,59 @@
       </div>`;
     }
 
+    let toolsUpdateState = { tools: {} };
+    let toolsLastStatus = null;
+    let toolsUpdateTimer = null;
+    let toolsUpdateMessage = '';
+
+    async function loadToolUpdates() {
+      clearTimeout(toolsUpdateTimer);
+      try {
+        const response = await fetch('/api/tools/updates');
+        if (!response.ok) return;
+        toolsUpdateState = await response.json();
+        if (toolsLastStatus) renderToolsBar(toolsLastStatus);
+        if (toolsUpdateState.checking || Object.values(toolsUpdateState.tools || {}).some(u => u.updating)) {
+          toolsUpdateTimer = setTimeout(loadToolUpdates, 2000);
+        }
+      } catch { /* Availability probes remain usable when release checks fail. */ }
+    }
+
+    async function requestToolUpdate(key) {
+      toolsUpdateMessage = '';
+      try {
+        const response = await fetch(key ? `/api/tools/${encodeURIComponent(key)}/update` : '/api/tools/updates/check', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          let detail = '';
+          try { detail = JSON.parse(body).error || ''; } catch { /* A stale server may return its HTML 404 page. */ }
+          if (!detail && response.status === 404) detail = 'This Ignite service is running an older build without tool updates. Restart Ignite to load the new endpoint.';
+          throw new Error(detail || `Could not start the tool update operation (HTTP ${response.status}).`);
+        }
+        await loadToolUpdates();
+      } catch (error) {
+        toolsUpdateMessage = error.message;
+        if (toolsLastStatus) renderToolsBar(toolsLastStatus);
+      }
+    }
+
     function renderToolsBar(status, authRequired) {
       const bar = $('toolsBar');
       if (!status) {
         bar.innerHTML = `<div class="px-0 py-2 text-[10px] font-semibold text-slate-400">${escapeHtml(authRequired ? t('common.signInToView') : t('tools.loadError'))}</div>`;
         return;
       }
+      toolsLastStatus = status;
+      const expanded = $('toolsBarList')?.classList.contains('flex');
+      const updateBusy = toolsUpdateState.checking || Object.values(toolsUpdateState.tools || {}).some(u => u.updating);
       let connectedCount = 0;
       const rows = Object.entries(TOOLS_META).map(([key, meta]) => {
         const s = status[key] || { ok: false };
+        const updateKey = key === 'trivyImage' ? 'trivy' : key;
+        const update = toolsUpdateState.tools?.[updateKey] || {};
+        const canStartUpdate = !!update.canUpdate;
         const connected = !!s.ok && s.enabled !== false;
         if (connected) connectedCount++;
         const dotClass = connected ? 'bg-emerald-500' : 'bg-slate-300';
@@ -3807,6 +3851,10 @@
           <span class="text-[11px] font-semibold text-slate-700">${escapeHtml(meta.label)}</span>
           <span class="text-[11px] ${textClass}">${escapeHtml(statusLabel)}</span>
           ${authTooltip(s.ok ? meta.info : `${meta.info} (${s.reason || 'not detected'})`)}
+          <span class="text-[10px] text-slate-500" title="${escapeAttr(update.error || '')}">${escapeHtml(update.installedVersion || '')}${update.error ? ' ⚠' : ''}</span>
+          ${update.updating ? '<span class="text-[10px] text-brand-600">Updating…</span>' : update.updateAvailable ? `
+            <button type="button" ${canStartUpdate ? `data-tool-update="${escapeAttr(updateKey)}"` : 'disabled'} class="text-[10px] font-semibold text-brand-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50" ${updateBusy || !canStartUpdate ? 'disabled' : ''} title="${escapeAttr(!update.canUpdate ? 'This installation method cannot be updated from Ignite. See release information.' : `Update via ${update.manager} (latest release: ${update.latestVersion})`)}">Update</button>
+            <a class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 text-slate-500 text-[10px] font-bold hover:bg-slate-200" href="${escapeAttr(update.releaseUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(`${meta.label} release information`)}" title="${escapeAttr(`View ${meta.label} release information (latest: ${update.latestVersion})`)}">?</a>` : ''}
         </div>`;
       }).join('');
       const total = Object.keys(TOOLS_META).length;
@@ -3818,10 +3866,19 @@
           <span class="text-[9px] font-bold uppercase tracking-wide text-slate-400">${t('tools.externalTools')}</span>
           <span class="text-[10px] font-semibold text-slate-500">${t('tools.connectedCount', { n: connectedCount, total })} <span id="toolsBarChevron">▾</span></span>
         </button>
-        <div id="toolsBarList" class="hidden flex-col gap-1.5 mt-1.5">
+        <div id="toolsBarList" class="${expanded ? 'flex' : 'hidden'} flex-col gap-1.5 mt-1.5">
           ${rows}
+          <button type="button" id="toolsCheckUpdatesBtn" class="text-left text-[10px] font-semibold text-brand-600 disabled:opacity-50" ${updateBusy ? 'disabled' : ''}>${toolsUpdateState.checking ? 'Checking for updates…' : 'Check for updates'}</button>
+          <span class="text-[10px] text-slate-400">${toolsUpdateState.checkedAt ? `Last checked: ${escapeHtml(new Date(toolsUpdateState.checkedAt).toLocaleString())}` : 'Updates have not been checked.'}</span>
+          ${toolsUpdateMessage ? `<p role="alert" class="text-[10px] text-rose-700">${escapeHtml(toolsUpdateMessage)}</p>` : ''}
         </div>
       </div>`;
+      $('toolsCheckUpdatesBtn').addEventListener('click', () => requestToolUpdate(null));
+      bar.querySelectorAll('[data-tool-update]').forEach(btn => btn.addEventListener('click', () => {
+        btn.disabled = true;
+        requestToolUpdate(btn.dataset.toolUpdate);
+      }));
+      if (expanded) $('toolsBarChevron').textContent = '▴';
       $('toolsBarToggle').addEventListener('click', () => {
         const list = $('toolsBarList');
         const chevron = $('toolsBarChevron');
@@ -3834,6 +3891,7 @@
     }
 
     async function loadToolsStatus() {
+      loadToolUpdates();
       const total = Object.keys(TOOLS_META).length;
       renderToolsBarLoading(0, total);
       let res;
@@ -4116,7 +4174,7 @@
       }
       renderStudioSummaryBar();
 
-      const files = [...new Set(studioState.issues.map((i) => i.file).filter(Boolean))].sort().map((path) => ({ path, size: 0 }));
+      const files = [...new Set(studioState.issues.flatMap((i) => [i.file, i.duplicateRef?.file]).filter(Boolean))].sort().map((path) => ({ path, size: 0 }));
       renderStudioTree(files);
       $('studioCodeWrap').innerHTML = files.length > 0
         ? '<p class="p-4 text-slate-400">Select a file from the tree.</p>'
@@ -4923,7 +4981,10 @@
     // context around each flagged line, so this is the most that can
     // honestly be reconstructed for a past run.
     function renderStudioHistoricalFileView(relPath) {
-      const issues = studioIssuesForFile(relPath).filter((i) => i.snippet && Array.isArray(i.snippet.lines) && i.snippet.lines.length > 0);
+      const referencedIssues = studioState.issues
+        .filter((i) => i.duplicateRef?.file === relPath && i.duplicateRef.snippet)
+        .map((i) => ({ ...i, file: relPath, line: i.duplicateRef.line, snippet: i.duplicateRef.snippet }));
+      const issues = [...studioIssuesForFile(relPath), ...referencedIssues].filter((i) => i.snippet && Array.isArray(i.snippet.lines) && i.snippet.lines.length > 0);
       if (issues.length === 0) {
         $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">No code snippet was captured for this finding.</p>';
         return;
@@ -5034,10 +5095,22 @@
     async function studioNavigateToDuplicateRef(ref) {
       if (!ref || !ref.file) return;
       await openStudioFile(ref.file);
-      studioState.jumpHighlightRange = { line: ref.line, endLine: ref.endLine || ref.line };
-      renderStudioCodeView(studioState.originalContent);
+      const endLine = ref.endLine || ref.end_line || ref.line;
+      studioState.jumpHighlightRange = { line: ref.line, endLine };
+      if (studioState.historical) {
+        if (ref.snippet?.lines?.length && !$('studioCodeWrap').querySelector(`[data-line="${Number(ref.line)}"]`)) {
+          $('studioCodeWrap').insertAdjacentHTML('beforeend', renderSnippet(ref.snippet, {
+            category: 'code-duplication', severity: 'warning', file: ref.file,
+            line: ref.line, summary: 'Matching duplicate block',
+          }));
+        } else if (!$('studioCodeWrap').querySelector(`[data-line="${Number(ref.line)}"]`)) {
+          $('studioCodeWrap').insertAdjacentHTML('afterbegin', '<p class="p-4 text-slate-400">The matching duplicate block was not captured in this run. Re-run the pipeline to capture its code.</p>');
+        }
+      } else {
+        renderStudioCodeView(studioState.originalContent);
+      }
       renderStudioIssueListForFile(ref.file);
-      const rangeLabel = ref.endLine > ref.line ? `${ref.line}-${ref.endLine}` : String(ref.line);
+      const rangeLabel = endLine > ref.line ? `${ref.line}-${endLine}` : String(ref.line);
       $('studioIssuePanel').insertAdjacentHTML('afterbegin',
         `<div class="border border-indigo-200 bg-indigo-50 text-indigo-800 text-[11px] rounded-lg p-2 mb-2">Viewing the matching duplicate block at line ${escapeHtml(rangeLabel)}.</div>`);
       scrollStudioToLine(ref.line);

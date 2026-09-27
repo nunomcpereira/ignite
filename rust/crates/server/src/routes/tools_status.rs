@@ -41,6 +41,10 @@ const TOOLS_STATUS_TTL: Duration = Duration::from_secs(10 * 60);
 /// cache the first caller populated.
 static TOOLS_STATUS_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
+pub(super) fn invalidate_cache() {
+    *TOOLS_STATUS_CACHE.lock() = None;
+}
+
 fn cached_tools_status() -> Option<Value> {
     let cache = TOOLS_STATUS_CACHE.lock();
     cache.as_ref().filter(|(at, _)| at.elapsed() < TOOLS_STATUS_TTL).map(|(_, v)| v.clone())
