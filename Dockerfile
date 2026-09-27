@@ -355,5 +355,8 @@ RUN mkdir -p /app/data && chown -R ignite:ignite /app
 
 USER ignite
 ENV PATH="/home/ignite/.local/bin:${PATH}"
+# Tool updates are applied by rebuilding this image, never in place (see
+# crates/server/src/routes/tool_updates.rs).
+ENV IGNITE_IN_CONTAINER=1
 EXPOSE 51337 51338
 CMD ["ignite-server"]

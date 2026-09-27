@@ -194,6 +194,23 @@ information for manual updating or an image rebuild. Unknown versions and
 failed release checks never count as an available update. Trivy's two entries
 share one installation and update state.
 
+**Docker:** a container's filesystem is recreated from the image on
+`docker compose down`/`up`, so an in-place update would be lost. When Ignite
+runs in a container (`IGNITE_IN_CONTAINER=1`, set by the Dockerfile, or a
+`/.dockerenv`/`/run/.containerenv` marker), release checks still run but
+**Update** is replaced by **Rebuild image**, and the panel shows one command
+that covers every outdated tool, for example:
+
+```bash
+docker compose build --pull --no-cache --build-arg TRIVY_VERSION=v0.75.0 && docker compose up -d
+```
+
+Tools pinned by a Dockerfile `ARG` (trivy, gitleaks, hadolint, syft, cosign,
+oasdiff, codeql, gocloc, ORT) get a `--build-arg`; bump the same `ARG` in the
+Dockerfile to keep the new version on later rebuilds. Unpinned tools
+(pipx/npm/gem/install-script) pick up their latest release from `--no-cache`.
+Set `IGNITE_IN_CONTAINER=0` to force in-place updates anyway.
+
 ### Installing ORT
 
 ORT isn't on Homebrew. Download a release archive and symlink the binary onto `PATH`:

@@ -43,7 +43,7 @@ test('updates managed tools, shows manual releases, and refreshes completion', a
   const requests = await setup(page, snapshot);
   await expect(page.locator('[data-tool-update="jscpd"]')).toHaveCount(1);
   await expect(page.locator('[data-tool-update="trivy"]')).toHaveCount(0);
-  await expect(page.locator('#toolsBarList a')).toHaveAttribute('href', snapshot.tools.codeql.releaseUrl);
+  await expect(page.getByRole('link', { name: 'CodeQL release information' })).toHaveAttribute('href', snapshot.tools.codeql.releaseUrl);
   await page.locator('[data-tool-update="jscpd"]').click();
   await expect(page.locator('#toolsBarList')).toContainText('Updating…');
   expect(requests).toEqual(['/api/tools/jscpd/update']);
@@ -69,4 +69,16 @@ test('failed update displays the server error and can be retried', async ({ page
   await page.locator('[data-tool-update="jscpd"]').click();
   await expect(page.locator('#toolsBarList [role="alert"]')).toContainText('Wait for active pipeline runs');
   await expect(page.locator('[data-tool-update="jscpd"]')).toBeEnabled();
+});
+
+test('container mode shows a rebuild command instead of in-place updates', async ({ page }) => {
+  const snapshot = { container: true, checking: false, checkedAt: '2026-09-26T10:00:00Z', tools: {
+    jscpd: { installedVersion: '1.9.0', latestVersion: '1.10.0', updateAvailable: true, canUpdate: false, releaseUrl: 'https://www.npmjs.com/package/jscpd', rebuild: { buildArg: null, command: 'docker compose build --pull --no-cache && docker compose up -d' } },
+    trivy: { installedVersion: '0.74.0', latestVersion: 'v0.75.0', updateAvailable: true, canUpdate: false, releaseUrl: 'https://github.com/aquasecurity/trivy/releases/latest', rebuild: { buildArg: 'TRIVY_VERSION=v0.75.0', command: 'x' } },
+  } };
+  const requests = await setup(page, snapshot);
+  await expect(page.locator('[data-tool-update]')).toHaveCount(0);
+  await expect(page.locator('[data-tool-rebuild="jscpd"]')).toHaveCount(1);
+  await expect(page.locator('#toolsRebuildHint code').last()).toHaveText('docker compose build --pull --no-cache --build-arg TRIVY_VERSION=v0.75.0 && docker compose up -d');
+  expect(requests).toEqual([]);
 });

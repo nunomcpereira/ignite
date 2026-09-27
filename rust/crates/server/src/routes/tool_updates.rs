@@ -19,6 +19,10 @@ struct Tool {
     source: &'static str,
     package: &'static str,
     version_arg: &'static str,
+    /// Dockerfile `ARG` pinning this tool's release in the published image.
+    /// `None` = unpinned there (pipx/npm/gem/install-script): a `--no-cache`
+    /// rebuild picks up the latest release.
+    docker_arg: Option<&'static str>,
 }
 const TOOLS: &[Tool] = &[
     Tool {
@@ -26,108 +30,126 @@ const TOOLS: &[Tool] = &[
         source: "github",
         package: "oss-review-toolkit/ort",
         version_arg: "--version",
+        docker_arg: Some("ORT_VERSION"),
     },
     Tool {
         key: "licensee",
         source: "gem",
         package: "licensee",
         version_arg: "version",
+        docker_arg: None,
     },
     Tool {
         key: "gitleaks",
         source: "github",
         package: "gitleaks/gitleaks",
         version_arg: "version",
+        docker_arg: Some("GITLEAKS_VERSION"),
     },
     Tool {
         key: "trivy",
         source: "github",
         package: "aquasecurity/trivy",
         version_arg: "--version",
+        docker_arg: Some("TRIVY_VERSION"),
     },
     Tool {
         key: "checkov",
         source: "pypi",
         package: "checkov",
         version_arg: "--version",
+        docker_arg: None,
     },
     Tool {
         key: "hadolint",
         source: "github",
         package: "hadolint/hadolint",
         version_arg: "--version",
+        docker_arg: Some("HADOLINT_VERSION"),
     },
     Tool {
         key: "syft",
         source: "github",
         package: "anchore/syft",
         version_arg: "version",
+        docker_arg: Some("SYFT_VERSION"),
     },
     Tool {
         key: "cosign",
         source: "github",
         package: "sigstore/cosign",
         version_arg: "version",
+        docker_arg: Some("COSIGN_VERSION"),
     },
     Tool {
         key: "semgrep",
         source: "pypi",
         package: "semgrep",
         version_arg: "--version",
+        docker_arg: None,
     },
     Tool {
         key: "bearer",
         source: "github",
         package: "Bearer/bearer",
         version_arg: "version",
+        docker_arg: None,
     },
     Tool {
         key: "jscpd",
         source: "npm",
         package: "jscpd",
         version_arg: "--version",
+        docker_arg: None,
     },
     Tool {
         key: "gocloc",
         source: "github",
         package: "hhatto/gocloc",
         version_arg: "--version",
+        docker_arg: Some("GOCLOC_VERSION"),
     },
     Tool {
         key: "spectral",
         source: "npm",
         package: "@stoplight/spectral-cli",
         version_arg: "--version",
+        docker_arg: None,
     },
     Tool {
         key: "guarddog",
         source: "pypi",
         package: "guarddog",
         version_arg: "--version",
+        docker_arg: None,
     },
     Tool {
         key: "codeql",
         source: "github",
         package: "github/codeql-cli-binaries",
         version_arg: "version",
+        docker_arg: Some("CODEQL_VERSION"),
     },
     Tool {
         key: "picklescan",
         source: "pypi",
         package: "picklescan",
         version_arg: "--version",
+        docker_arg: None,
     },
     Tool {
         key: "oasdiff",
         source: "github",
         package: "oasdiff/oasdiff",
         version_arg: "--version",
+        docker_arg: Some("OASDIFF_VERSION"),
     },
     Tool {
         key: "zizmor",
         source: "pypi",
         package: "zizmor",
         version_arg: "--version",
+        docker_arg: None,
     },
 ];
 static SNAPSHOT: Lazy<Mutex<Value>> = Lazy::new(|| Mutex::new(json!({"checking": false, "checkedAt": null, "tools": {}})));
@@ -159,6 +181,33 @@ impl FromRequestParts<Arc<AppState>> for ToolUpdateCheckAccess {
                 .into_response())
         }
     }
+}
+
+// A container's filesystem is recreated from its image on `docker compose
+// down`/`up`, so an in-place package-manager upgrade would silently vanish.
+// There the image is the unit of update: checks still run, upgrades don't.
+static IN_CONTAINER: Lazy<bool> = Lazy::new(|| {
+    detect_container(
+        std::env::var("IGNITE_IN_CONTAINER").ok().as_deref(),
+        ["/.dockerenv", "/run/.containerenv"].iter().any(|p| std::path::Path::new(p).exists()),
+    )
+});
+pub fn detect_container(env: Option<&str>, marker_exists: bool) -> bool {
+    match env.map(str::trim) {
+        Some(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+        Some(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
+        _ => marker_exists,
+    }
+}
+const CONTAINER_UPDATE_MESSAGE: &str = "Ignite is running in a container: updates installed inside it are lost when the container is recreated. Rebuild the image instead.";
+fn rebuild_hint(t: &Tool, latest: &str) -> Value {
+    json!({
+        "buildArg": t.docker_arg.map(|arg| format!("{arg}={latest}")),
+        "command": match t.docker_arg {
+            Some(arg) => format!("docker compose build --pull --build-arg {arg}={latest} && docker compose up -d"),
+            None => "docker compose build --pull --no-cache && docker compose up -d".into(),
+        },
+    })
 }
 
 pub fn startup_enabled(value: Option<&str>) -> bool {
@@ -349,7 +398,9 @@ async fn check_tool(state: &AppState, t: &Tool) -> Value {
         Ok(v) => {
             result["latestVersion"] = json!(v);
             result["updateAvailable"] = json!(matches!((version(&current), version(&v)), (Some(a), Some(b)) if b > a));
-            if let Some(plan) = upgrade_plan(state, t).await {
+            if *IN_CONTAINER {
+                result["rebuild"] = rebuild_hint(t, &v);
+            } else if let Some(plan) = upgrade_plan(state, t).await {
                 result["canUpdate"] = json!(true);
                 result["manager"] = json!(plan.program);
             }
@@ -359,7 +410,9 @@ async fn check_tool(state: &AppState, t: &Tool) -> Value {
     result
 }
 async fn status(_access: ToolUpdateCheckAccess) -> Json<Value> {
-    Json(SNAPSHOT.lock().clone())
+    let mut snapshot = SNAPSHOT.lock().clone();
+    snapshot["container"] = json!(*IN_CONTAINER);
+    Json(snapshot)
 }
 async fn check(State(state): State<Arc<AppState>>, _access: ToolUpdateCheckAccess, Json(_): Json<Value>) -> Result<StatusCode, ApiError> {
     if start_check(state) {
@@ -370,6 +423,9 @@ async fn check(State(state): State<Arc<AppState>>, _access: ToolUpdateCheckAcces
 }
 async fn update(State(state): State<Arc<AppState>>, Path(key): Path<String>, Json(_): Json<Value>) -> Result<StatusCode, ApiError> {
     let tool = TOOLS.iter().find(|t| t.key == key).ok_or_else(|| error(StatusCode::NOT_FOUND, "Unknown tool"))?;
+    if *IN_CONTAINER {
+        return Err(error(StatusCode::CONFLICT, CONTAINER_UPDATE_MESSAGE));
+    }
     let guard = OPERATION
         .clone()
         .try_lock_owned()
@@ -426,6 +482,41 @@ mod tests {
         assert!(!startup_enabled(Some("false")));
         assert!(startup_enabled(Some("true")));
     }
+    #[test]
+    fn container_detection_prefers_explicit_env_over_marker_files() {
+        assert!(detect_container(None, true));
+        assert!(!detect_container(None, false));
+        assert!(detect_container(Some("1"), false));
+        assert!(detect_container(Some("TRUE"), false));
+        assert!(!detect_container(Some("0"), true));
+        assert!(!detect_container(Some("false"), true));
+        assert!(detect_container(Some("garbage"), true));
+    }
+
+    #[test]
+    fn rebuild_hint_uses_dockerfile_pin_or_no_cache_rebuild() {
+        let trivy = TOOLS.iter().find(|t| t.key == "trivy").unwrap();
+        let hint = rebuild_hint(trivy, "v0.75.0");
+        assert_eq!(hint["buildArg"], "TRIVY_VERSION=v0.75.0");
+        assert_eq!(hint["command"], "docker compose build --pull --build-arg TRIVY_VERSION=v0.75.0 && docker compose up -d");
+        let semgrep = TOOLS.iter().find(|t| t.key == "semgrep").unwrap();
+        let hint = rebuild_hint(semgrep, "1.100.0");
+        assert!(hint["buildArg"].is_null());
+        assert_eq!(hint["command"], "docker compose build --pull --no-cache && docker compose up -d");
+    }
+
+    #[test]
+    fn docker_args_match_the_dockerfile() {
+        // Read at runtime: the image's own build stage may not copy the Dockerfile in.
+        let Ok(dockerfile) = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../Dockerfile")) else {
+            eprintln!("skipping: Dockerfile not present");
+            return;
+        };
+        for arg in TOOLS.iter().filter_map(|t| t.docker_arg) {
+            assert!(dockerfile.contains(&format!("ARG {arg}=")), "Dockerfile has no ARG {arg}");
+        }
+    }
+
     #[test]
     fn compares_numeric_versions_and_rejects_prereleases() {
         assert!(version("v1.10.0") > version("tool version 1.9.9"));

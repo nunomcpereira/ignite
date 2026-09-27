@@ -3825,6 +3825,16 @@
       }
     }
 
+    // One rebuild covers every outdated tool: pinned ones via --build-arg,
+    // unpinned (pipx/npm/gem) ones via --no-cache.
+    function toolsRebuildCommand() {
+      if (!toolsUpdateState.container) return '';
+      const outdated = Object.values(toolsUpdateState.tools || {}).filter(u => u.updateAvailable && u.rebuild);
+      if (!outdated.length) return '';
+      const args = [...new Set(outdated.map(u => u.rebuild.buildArg).filter(Boolean))].map(a => ` --build-arg ${a}`).join('');
+      return `docker compose build --pull --no-cache${args} && docker compose up -d`;
+    }
+
     function renderToolsBar(status, authRequired) {
       const bar = $('toolsBar');
       if (!status) {
@@ -3852,12 +3862,15 @@
           <span class="text-[11px] ${textClass}">${escapeHtml(statusLabel)}</span>
           ${authTooltip(s.ok ? meta.info : `${meta.info} (${s.reason || 'not detected'})`)}
           <span class="text-[10px] text-slate-500" title="${escapeAttr(update.error || '')}">${escapeHtml(update.installedVersion || '')}${update.error ? ' ⚠' : ''}</span>
-          ${update.updating ? '<span class="text-[10px] text-brand-600">Updating…</span>' : update.updateAvailable ? `
+          ${update.updating ? '<span class="text-[10px] text-brand-600">Updating…</span>' : update.updateAvailable && update.rebuild ? `
+            <span class="text-[10px] font-semibold text-amber-700" data-tool-rebuild="${escapeAttr(updateKey)}" title="${escapeAttr(`Latest: ${update.latestVersion}. Rebuild the image: ${update.rebuild.command}`)}">Rebuild image</span>
+            <a class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 text-slate-500 text-[10px] font-bold hover:bg-slate-200" href="${escapeAttr(update.releaseUrl || '')}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(`${meta.label} release information`)}" title="${escapeAttr(`View ${meta.label} release information (latest: ${update.latestVersion})`)}">?</a>` : update.updateAvailable ? `
             <button type="button" ${canStartUpdate ? `data-tool-update="${escapeAttr(updateKey)}"` : 'disabled'} class="text-[10px] font-semibold text-brand-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50" ${updateBusy || !canStartUpdate ? 'disabled' : ''} title="${escapeAttr(!update.canUpdate ? 'This installation method cannot be updated from Ignite. See release information.' : `Update via ${update.manager} (latest release: ${update.latestVersion})`)}">Update</button>
-            <a class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 text-slate-500 text-[10px] font-bold hover:bg-slate-200" href="${escapeAttr(update.releaseUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(`${meta.label} release information`)}" title="${escapeAttr(`View ${meta.label} release information (latest: ${update.latestVersion})`)}">?</a>` : ''}
+            <a class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 text-slate-500 text-[10px] font-bold hover:bg-slate-200" href="${escapeAttr(update.releaseUrl || '')}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(`${meta.label} release information`)}" title="${escapeAttr(`View ${meta.label} release information (latest: ${update.latestVersion})`)}">?</a>` : ''}
         </div>`;
       }).join('');
       const total = Object.keys(TOOLS_META).length;
+      const rebuildCommand = toolsRebuildCommand();
       // The account-menu popover is a fixed, narrow width regardless of
       // viewport, so the full tool list is always collapsed behind a
       // tap-to-expand summary rather than shown inline.
@@ -3870,10 +3883,18 @@
           ${rows}
           <button type="button" id="toolsCheckUpdatesBtn" class="text-left text-[10px] font-semibold text-brand-600 disabled:opacity-50" ${updateBusy ? 'disabled' : ''}>${toolsUpdateState.checking ? 'Checking for updates…' : 'Check for updates'}</button>
           <span class="text-[10px] text-slate-400">${toolsUpdateState.checkedAt ? `Last checked: ${escapeHtml(new Date(toolsUpdateState.checkedAt).toLocaleString())}` : 'Updates have not been checked.'}</span>
+          ${rebuildCommand ? `<div id="toolsRebuildHint" class="flex flex-col gap-1 rounded bg-amber-50 p-1.5 text-[10px] text-amber-800">
+            <span>Running in Docker: updates installed inside the container are lost when it is recreated. Rebuild the image, and bump the matching <code>ARG</code> in the Dockerfile to keep pinned versions:</span>
+            <code class="break-all rounded bg-white/70 p-1 text-slate-700">${escapeHtml(rebuildCommand)}</code>
+            <button type="button" id="toolsRebuildCopyBtn" class="self-start font-semibold text-brand-600 hover:underline">Copy command</button>
+          </div>` : ''}
           ${toolsUpdateMessage ? `<p role="alert" class="text-[10px] text-rose-700">${escapeHtml(toolsUpdateMessage)}</p>` : ''}
         </div>
       </div>`;
       $('toolsCheckUpdatesBtn').addEventListener('click', () => requestToolUpdate(null));
+      $('toolsRebuildCopyBtn')?.addEventListener('click', e => {
+        navigator.clipboard?.writeText(rebuildCommand).then(() => { e.target.textContent = 'Copied'; }, () => {});
+      });
       bar.querySelectorAll('[data-tool-update]').forEach(btn => btn.addEventListener('click', () => {
         btn.disabled = true;
         requestToolUpdate(btn.dataset.toolUpdate);
