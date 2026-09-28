@@ -1,0 +1,27 @@
+# Base non-secret configuration for ignite-server on Kubernetes.
+# Load it into the container with:
+#   envFrom:
+#     - configMapRef: { name: ignite-config }
+#     - secretRef:    { name: ignite-secrets }
+# Secrets never go here. Put them in a Secret named ignite-secrets, e.g.:
+#   kubectl -n ignite create secret generic ignite-secrets \
+#     --from-literal=GITHUB_OAUTH_CLIENT_SECRET=... \
+#     --from-literal=GH_TOKEN=... \
+#     --from-literal=ANTHROPIC_API_KEY=... \
+#     --from-literal=SMTP_PASS=...
+# Every variable is documented in .env.example.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ignite-config
+  namespace: ignite
+data:
+  # GitHub
+  GITHUB_ORGS: "my-org,my-other-org"
+  GITHUB_BOOTSTRAP_BRANCH: "ignite"
+  GITHUB_REMOTE_PROTOCOL: "https"
+  GITHUB_OAUTH_CLIENT_ID: ""
+  GITHUB_OAUTH_REDIRECT_URI: "https://ignite.example.com/api/auth/github/callback"
+  GITHUB_OAUTH_SCOPE: "repo"
+  # Auth
+  AUTH_MODE: "github"

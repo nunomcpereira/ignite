@@ -984,12 +984,6 @@ ID: image-provenance::Dockerfile::30
 # Code: FROM node:24-bookworm-slim
 Acknowledge: 
 
-ID: secret::config.json::20
-# [ERROR] secret - Base64 High Entropy String
-#   config.json:20
-# Code: "clientSecret": "59121bde39f195d1d18562a131e1e7d05d32175d",
-Acknowledge: config.json is gitignored (.gitignore:3) and confirmed untracked (git ls-files returns nothing for it) - it never leaves this machine via git. The pre-push scan covers the whole working tree regardless of what's actually being pushed, so this local-only file still surfaces here.
-
 ID: secret::docs-site/docs/ci-integration.md::493
 # [ERROR] secret - Hardcoded token
 #   docs-site/docs/ci-integration.md:493

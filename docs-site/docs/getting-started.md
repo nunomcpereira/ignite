@@ -61,6 +61,35 @@ locally or behind authentication — never expose it unauthenticated to a
 network.
 :::
 
+## GitHub settings and Kubernetes
+
+GitHub settings come from environment variables, not `config.json`, so a
+deployment can inject them. Locally, put them in `.env` next to
+`config.json` (loaded from `IGNITE_CONFIG_DIR`; a variable already set in the
+process environment always wins):
+
+```bash
+GITHUB_ORGS=my-org,my-other-org          # push targets, first is the default
+GITHUB_BOOTSTRAP_BRANCH=ignite
+GITHUB_OAUTH_CLIENT_ID=Ov23...
+GITHUB_OAUTH_CLIENT_SECRET=...            # secret
+GITHUB_OAUTH_REDIRECT_URI=http://localhost:51337/api/auth/github/callback
+GITHUB_OAUTH_SCOPE=repo
+```
+
+On Kubernetes, put the non-secret values in a ConfigMap (the repo ships
+`configmap.example.yaml`) and the secrets in a Secret, then load both:
+
+```yaml
+envFrom:
+  - configMapRef: { name: ignite-config }
+  - secretRef:    { name: ignite-secrets }  # GITHUB_OAUTH_CLIENT_SECRET, GH_TOKEN, ANTHROPIC_API_KEY, SMTP_PASS, ...
+```
+
+One GitHub OAuth App covers every org in `GITHUB_ORGS` — it signs in the
+user, whose token then acts in each org they belong to. An org with OAuth
+app access restrictions must approve the app once.
+
 ## Pushing over HTTPS (gh) or SSH
 
 By default Phase 6 pushes over `https://github.com/...`, authenticated

@@ -486,15 +486,9 @@ All settings live in `config.json` at the repo root, read by `ignite-server` via
     "mode": "warn",              // "warn" | "block"
     "maxFiles": 40
   },
-  "github": {
-    // Optional. Comma-separated list (or JSON array) of GitHub orgs.
-    // One entry: prefills the org field. Two or more: the org field
-    // becomes a dropdown, first entry selected by default.
-    "orgs": "ai-governance-poc-2026",
-    // Branch the compliant code is pushed to before PRing into the
-    // repo's default branch.
-    "bootstrapBranch": "ignite"
-  },
+  // GitHub settings (orgs, bootstrap branch, remote protocol, OAuth app)
+  // are configured through environment variables, not this file — see
+  // "GitHub settings via environment variables" below.
   "governance": {                // central org workflows run locally via act
     "repo": "ai-governance-poc-2026/devops-governance",
     "workflow": "ai-guardrails-orchestrator.yml",
@@ -571,9 +565,31 @@ When any phase fails, Ignite emails a detailed report to `notifications.to`: tar
 
    Whichever you use, the account needs permission to create repositories in the target organization. Per-onboarding-request auth (the "Connect GitHub" button / OAuth) is separate from either of these and always required for the interactive/API onboarding flows regardless - see [Authentication](#authentication--standalone-accounts-or-company-idp).
 
+### GitHub settings via environment variables
+
+GitHub settings are not kept in `config.json`; set them in the environment
+(`.env` locally, a ConfigMap + Secret on Kubernetes -
+see [`configmap.example.yaml`](configmap.example.yaml)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GITHUB_ORGS` | _(empty)_ | Comma-separated orgs offered as push targets. One entry prefills the org field; two or more make it a dropdown (first selected). |
+| `GITHUB_BOOTSTRAP_BRANCH` | `ignite` | Branch compliant code is pushed to before the PR into the default branch. |
+| `GITHUB_REMOTE_PROTOCOL` | `https` | `https` or `ssh` (see below). |
+| `GITHUB_OAUTH_CLIENT_ID` | _(empty)_ | OAuth App client id (GitHub login / "Connect GitHub"). |
+| `GITHUB_OAUTH_CLIENT_SECRET` | _(empty)_ | OAuth App client secret - inject from a Secret, never a ConfigMap. |
+| `GITHUB_OAUTH_REDIRECT_URI` | _(empty)_ | `https://<public-host>/api/auth/github/callback`. |
+| `GITHUB_OAUTH_SCOPE` | `repo` | OAuth scope requested. |
+
+One OAuth App serves every org in `GITHUB_ORGS`: it signs in the *user*,
+and the user's token acts in each org they belong to. An org with OAuth app
+access restrictions must approve the app once (Org settings -> Third-party
+access). A legacy `"github"` node in `config.json` is still read as a
+fallback, but environment variables win.
+
 ### Pushing via SSH instead of gh's credential helper
 
-By default, Phase 6 pushes over `https://github.com/...`, authenticated through `gh auth git-credential` using the connected account's token. Set `GITHUB_REMOTE_PROTOCOL=ssh` (or `"github": { "remoteProtocol": "ssh" }` in `config.json`) to push over `git@github.com:...` instead, authenticated by whatever SSH key/agent is already configured for `github.com` on this machine - no git credential helper involved for the push itself.
+By default, Phase 6 pushes over `https://github.com/...`, authenticated through `gh auth git-credential` using the connected account's token. Set `GITHUB_REMOTE_PROTOCOL=ssh` to push over `git@github.com:...` instead, authenticated by whatever SSH key/agent is already configured for `github.com` on this machine - no git credential helper involved for the push itself.
 
 This only replaces the **git push transport** - repo creation, enabling auto-merge, and creating the `main` ref still go through the GitHub REST API in both modes, since SSH keys authenticate git operations, not GitHub API calls. See the next section for running those API calls without `gh` installed at all.
 

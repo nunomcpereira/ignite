@@ -1335,6 +1335,9 @@ fn apply_env_overrides(merged: &mut Config) {
     // local dev (e.g. http://localhost:<port>/...) silently stays in force
     // on every other deployment unless one of these env vars is set —
     // matching the escape hatch every other config.json value already has.
+    if let Some(v) = env_str("GITHUB_ORGS") { merged.github.orgs = v; }
+    if let Some(v) = env_str("GITHUB_BOOTSTRAP_BRANCH") { merged.github.bootstrap_branch = v; }
+    if let Some(v) = env_str("GITHUB_REMOTE_PROTOCOL") { merged.github.remote_protocol = v; }
     if let Some(v) = env_str("GITHUB_OAUTH_CLIENT_ID") { merged.github.oauth.client_id = v; }
     if let Some(v) = env_str("GITHUB_OAUTH_CLIENT_SECRET") { merged.github.oauth.client_secret = v; }
     if let Some(v) = env_str("GITHUB_OAUTH_REDIRECT_URI") { merged.github.oauth.redirect_uri = v; }
@@ -1743,6 +1746,9 @@ mod tests {
         assert_eq!(load_with_env("OIDC_CLIENT_SECRET", "pin-OIDC_CLIENT_SECRET").auth.oidc.client_secret, "pin-OIDC_CLIENT_SECRET", "OIDC_CLIENT_SECRET");
         assert_eq!(load_with_env("OIDC_REDIRECT_URI", "pin-OIDC_REDIRECT_URI").auth.oidc.redirect_uri, "pin-OIDC_REDIRECT_URI", "OIDC_REDIRECT_URI");
         assert_eq!(load_with_env("OIDC_ISSUER", "pin-OIDC_ISSUER").auth.oidc.issuer, "pin-OIDC_ISSUER", "OIDC_ISSUER");
+        assert_eq!(load_with_env("GITHUB_ORGS", "org-a,org-b").github.orgs, "org-a,org-b", "GITHUB_ORGS");
+        assert_eq!(load_with_env("GITHUB_BOOTSTRAP_BRANCH", "pin-GITHUB_BOOTSTRAP_BRANCH").github.bootstrap_branch, "pin-GITHUB_BOOTSTRAP_BRANCH", "GITHUB_BOOTSTRAP_BRANCH");
+        assert_eq!(load_with_env("GITHUB_REMOTE_PROTOCOL", "ssh").github.remote_protocol, "ssh", "GITHUB_REMOTE_PROTOCOL");
         assert_eq!(load_with_env("GITHUB_OAUTH_CLIENT_ID", "pin-GITHUB_OAUTH_CLIENT_ID").github.oauth.client_id, "pin-GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_ID");
         assert_eq!(load_with_env("GITHUB_OAUTH_CLIENT_SECRET", "pin-GITHUB_OAUTH_CLIENT_SECRET").github.oauth.client_secret, "pin-GITHUB_OAUTH_CLIENT_SECRET", "GITHUB_OAUTH_CLIENT_SECRET");
         assert_eq!(load_with_env("GITHUB_OAUTH_REDIRECT_URI", "pin-GITHUB_OAUTH_REDIRECT_URI").github.oauth.redirect_uri, "pin-GITHUB_OAUTH_REDIRECT_URI", "GITHUB_OAUTH_REDIRECT_URI");
@@ -1922,6 +1928,6 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 129, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 132, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
     }
 }

@@ -67,7 +67,7 @@ async fn github_status(State(state): State<Arc<AppState>>, headers: axum::http::
 fn start_github_oauth(state: &Arc<AppState>, user_id: Option<i64>, is_login: bool) -> Response {
     let oauth = &state.config.github.oauth;
     if oauth.client_id.is_empty() || oauth.redirect_uri.is_empty() {
-        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "GitHub OAuth is not configured: set github.oauth.clientId, clientSecret, and redirectUri." }))).into_response();
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "GitHub OAuth is not configured: set GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, and GITHUB_OAUTH_REDIRECT_URI." }))).into_response();
     }
     let state_token = ignite_auth::generate_session_id();
     {
