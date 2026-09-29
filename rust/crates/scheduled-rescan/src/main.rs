@@ -27,7 +27,7 @@
 //! exactly the large/slow repos this job most needs to cover.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use ignite_scheduled_rescan::{auto_fix_mode_from_env, default_runner, dedupe_projects, find_sla_breaches, open_db, rescan_one, AutoFixMode};
+use ignite_scheduled_rescan::{auto_fix_mode_from_env, default_runner, dedupe_projects, find_sla_breaches, open_db, rescan_one_with, AutoFixMode, RescanOptions};
 
 #[tokio::main]
 async fn main() {
@@ -35,7 +35,6 @@ async fn main() {
 
     let db_path = std::env::var("IGNITE_DB_PATH").unwrap_or_else(|_| "ignite.db".to_string());
     let server_base = std::env::var("IGNITE_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:51337".to_string());
-    let gh_token = ignite_github_api::resolve_server_github_token();
 
     let db = match open_db(&db_path) {
         Ok(db) => db,
@@ -64,7 +63,10 @@ async fn main() {
     let mut had_error = false;
 
     for target in &targets {
-        let outcome = rescan_one(&runner, &http, &server_base, &gh_token, target, auto_fix_mode).await;
+        // GitHub App installation token for this org when configured
+        // (GITHUB_APP_ID + key), else GH_TOKEN/GITHUB_TOKEN.
+        let gh_token = ignite_github_api::resolve_token_for_owner_from_env(&target.org).await;
+        let outcome = rescan_one_with(&runner, &http, &server_base, &gh_token, target, auto_fix_mode, &RescanOptions { background: true, lease: None }).await;
         match &outcome.error {
             Some(e) => {
                 eprintln!("{}/{}: FAILED — {e}", outcome.org, outcome.repo);

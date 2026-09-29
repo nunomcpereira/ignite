@@ -37,7 +37,7 @@
 //! the spawn starts, which is exactly what makes the scan show up in the
 //! existing "Recent Checks" history feed too — no extra wiring needed for
 //! that.
-use crate::auth::{resolve_effective_github_token, RequireAuth};
+use crate::auth::RequireAuth;
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -46,7 +46,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use ignite_github_api::GithubApi;
 use ignite_org_onboard::discover_org;
-use ignite_scheduled_rescan::{auto_fix_mode_from_env, rescan_one, RescanTarget};
+use ignite_scheduled_rescan::{auto_fix_mode_from_env, rescan_one_with, RescanOptions, RescanTarget};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -70,44 +70,7 @@ use std::sync::Arc;
 /// scan is kicked off for that repo, so retrying never shows a stale error.
 static RECENT_SCAN_FAILURES: Lazy<Mutex<HashMap<(String, String), String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Repos whose `rescan_one` is executing right now. The real `projects`
-/// row only appears once `validate-all` starts (after the clone), so
-/// without this a poll landing in that gap reports no status and the UI
-/// flips "Scanning…" back to "Never scanned" (or a stale old status).
-static IN_FLIGHT_SCANS: Lazy<Mutex<std::collections::HashSet<(String, String)>>> = Lazy::new(|| Mutex::new(std::collections::HashSet::new()));
-
-/// Repos accepted for scanning but still waiting for a free slot (see
-/// `enqueue_scans`); reported as status `"queued"`.
-static QUEUED_SCANS: Lazy<Mutex<std::collections::HashSet<(String, String)>>> = Lazy::new(|| Mutex::new(std::collections::HashSet::new()));
-
-/// Global cap on concurrently executing scans, sized once from
-/// `orgRepos.maxConcurrentScans`. A tokio `Semaphore` hands out permits
-/// FIFO, so the queue order is the order scans were requested in.
-static SCAN_SLOTS: once_cell::sync::OnceCell<Arc<tokio::sync::Semaphore>> = once_cell::sync::OnceCell::new();
-
-fn scan_slots(max: u32) -> Arc<tokio::sync::Semaphore> {
-    SCAN_SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(max.max(1) as usize))).clone()
-}
-
-fn scan_key(org: &str, repo: &str) -> (String, String) {
-    (org.to_ascii_lowercase(), repo.to_ascii_lowercase())
-}
-
-/// True while a scan of this repo is queued or executing — a second
-/// trigger (double click, overlapping sweep) is dropped instead of stacked.
-fn is_scan_active(org: &str, repo: &str) -> bool {
-    let k = scan_key(org, repo);
-    IN_FLIGHT_SCANS.lock().contains(&k) || QUEUED_SCANS.lock().contains(&k)
-}
-
-/// Removes the repo from `IN_FLIGHT_SCANS` on drop, so a panicking scan
-/// task can't leave it stuck on "Scanning…" forever.
-struct InFlightGuard((String, String));
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        IN_FLIGHT_SCANS.lock().remove(&self.0);
-    }
-}
+use super::scan_queue::{is_scan_active, Priority};
 
 #[derive(Debug, Deserialize)]
 struct DiscoverQuery {
@@ -146,6 +109,11 @@ struct RepoStatus {
     error_count: Option<i64>,
     warning_count: Option<i64>,
     nice_to_have_count: Option<i64>,
+    /// `"github_sso"` when `scan_error` is GitHub refusing the token for the
+    /// org's SAML SSO, so the UI can offer the fix instead of raw text.
+    scan_error_code: Option<&'static str>,
+    /// GitHub's one-time link authorizing the failing token, when known.
+    scan_error_sso_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -199,13 +167,15 @@ fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoSta
                     error_count,
                     warning_count,
                     nice_to_have_count,
+                    scan_error_code: None,
+                    scan_error_sso_url: None,
                 },
             },
         );
     }
     let org_lc = org.to_ascii_lowercase();
     // Live state wins over whatever the last finished scan's row says.
-    for (set, label) in [(QUEUED_SCANS.lock().clone(), "queued"), (IN_FLIGHT_SCANS.lock().clone(), "running")] {
+    for (set, label) in [(super::scan_queue::queued_keys(), "queued"), (super::scan_queue::running_keys(), "running")] {
         for (o, repo) in set.into_iter().filter(|(o, _)| *o == org_lc) {
             let _ = o;
             out.entry(repo.clone()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status.status = Some(label.to_string());
@@ -213,7 +183,12 @@ fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoSta
     }
     for ((o, repo), err) in RECENT_SCAN_FAILURES.lock().iter() {
         if o.eq_ignore_ascii_case(org) {
-            out.entry(repo.to_ascii_lowercase()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status.scan_error = Some(err.clone());
+            let status = &mut out.entry(repo.to_ascii_lowercase()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status;
+            status.scan_error = Some(err.clone());
+            if ignite_github_api::is_sso_error(err) {
+                status.scan_error_code = Some("github_sso");
+                status.scan_error_sso_url = ignite_github_api::sso_authorization_url(err);
+            }
         }
     }
     out
@@ -232,24 +207,30 @@ async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): 
     if !ignite_github_api::is_valid_github_owner(&org) {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
     }
-    let token = resolve_effective_github_token(&headers, &state.db);
+    let org_token = org_token(&state, &headers, &org).await;
+    let token = org_token.token.clone();
     if token.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "No GitHub token available — connect GitHub or set GH_TOKEN/GITHUB_TOKEN on the server." })),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": NO_TOKEN }))).into_response();
     }
 
     let api = GithubApi::new(&state.runner);
     let raw = match api.gh_list_org_repos(&org, &token).await {
         Ok(raw) => raw,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": format!("Failed to list repositories for {org}: {e}") }))).into_response(),
+        Err(e) => {
+            let text = e.to_string();
+            let sso = ignite_github_api::is_sso_error(&text);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("Failed to list repositories for {org}: {text}"), "code": if sso { Some("sso_required") } else { None }, "ssoUrl": ignite_github_api::sso_authorization_url(&text) })),
+            )
+                .into_response();
+        }
     };
     let discovered = ignite_org_onboard::filter_discovered_repos(&raw, q.include_archived, q.include_forks);
     // Never hand back an empty org: the UI would add a dead "0 of 0" entry.
     // Say why nothing is visible instead.
     if discovered.is_empty() {
+        let mut sso_url: Option<String> = None;
         let (code, error) = if !raw.is_empty() {
             ("all_filtered", format!("All {} repositories in {org} are archived or forks. Tick \"Include archived\" / \"Include forks\" to list them.", raw.len()))
         } else {
@@ -259,7 +240,10 @@ async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): 
                 None => ("no_visible_repos", format!("No repositories in {org} are visible to the GitHub token Ignite uses. Check that the token's account can access {org} (organization membership, or SAML SSO authorization for the token) and that the token has the repo scope.")),
             }
         };
-        return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "error": error, "code": code }))).into_response();
+        if code == "sso_required" {
+            sso_url = ignite_github_api::sso_authorization_url(&error);
+        }
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "error": error, "code": code, "ssoUrl": sso_url }))).into_response();
     }
 
     let mut statuses = collect_repo_statuses(&state, &org);
@@ -290,10 +274,10 @@ async fn is_empty_repo(api: &GithubApi<'_>, full_name: &str, token: &str) -> boo
 /// `RECENT_SCAN_FAILURES` — the one piece of work `scan_org_repo` and
 /// both `scan_selected_org_repos` modes (sequential/parallel) all need done
 /// identically per repo, so it only lives in one place.
-async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner, server_base: &str, token: &str, target: &RescanTarget, db: &ignite_db_store::DbStore) {
+pub(super) async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner, server_base: &str, token: &str, target: &RescanTarget, db: &ignite_db_store::DbStore, lease: &str, background: bool) {
     let http = reqwest::Client::new();
-    let _in_flight = InFlightGuard(scan_key(&target.org, &target.repo));
-    let outcome = rescan_one(runner, &http, server_base, token, target, auto_fix_mode_from_env()).await;
+    let opts = RescanOptions { background, lease: Some(lease.to_string()) };
+    let outcome = rescan_one_with(runner, &http, server_base, token, target, auto_fix_mode_from_env(), &opts).await;
     // Org scans keep only the latest scan per repo — see
     // `DbStore::prune_superseded_scans` for what is (and isn't) deleted.
     if let Some(job_id) = &outcome.job_id {
@@ -311,7 +295,7 @@ async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner, server_bas
     }
 }
 
-fn resolve_server_base(state: &AppState) -> String {
+pub(super) fn resolve_server_base(state: &AppState) -> String {
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
     std::env::var("IGNITE_SERVER_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"))
 }
@@ -320,13 +304,10 @@ async fn scan_org_repo(State(state): State<Arc<AppState>>, RequireAuth(_user): R
     if !ignite_github_api::is_valid_github_owner(&org) || !ignite_github_api::is_valid_github_repo(&repo) {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org/repo name." }))).into_response();
     }
-    let token = resolve_effective_github_token(&headers, &state.db);
+    let org_token = org_token(&state, &headers, &org).await;
+    let token = org_token.token.clone();
     if token.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "No GitHub token available — connect GitHub or set GH_TOKEN/GITHUB_TOKEN on the server." })),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": NO_TOKEN }))).into_response();
     }
 
     let full_name = format!("{org}/{repo}");
@@ -340,15 +321,12 @@ async fn scan_org_repo(State(state): State<Arc<AppState>>, RequireAuth(_user): R
     // showing that stale error once a new scan is actually in flight.
     RECENT_SCAN_FAILURES.lock().remove(&(org.clone(), repo.clone()));
 
-    let runner = state.runner.clone();
-    let server_base = resolve_server_base(&state);
     let target = RescanTarget { org: org.clone(), repo: repo.clone() };
     if is_scan_active(&org, &repo) {
         return (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "alreadyActive": true, "state": "queued", "org": org, "repo": repo }))).into_response();
     }
-    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
-    let state_str = if slots.available_permits() == 0 { "queued" } else { "running" };
-    enqueue_scans(runner, server_base, token, vec![target], state.clone(), false, slots);
+    let state_str = if super::scan_queue::user_would_wait() { "queued" } else { "running" };
+    enqueue_scans(&state, &org_token, vec![target], Priority::User, false, "manual");
 
     (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "state": state_str, "org": org, "repo": repo }))).into_response()
 }
@@ -383,23 +361,22 @@ async fn scan_selected_org_repos(State(state): State<Arc<AppState>>, RequireAuth
     if body.orgs.is_empty() || body.orgs.iter().any(|o| !ignite_github_api::is_valid_github_owner(&o.org)) {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid or missing GitHub org name." }))).into_response();
     }
-    let token = resolve_effective_github_token(&headers, &state.db);
-    if token.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "No GitHub token available — connect GitHub or set GH_TOKEN/GITHUB_TOKEN on the server." })),
-        )
-            .into_response();
-    }
 
     let api = GithubApi::new(&state.runner);
-    let mut targets: Vec<RescanTarget> = Vec::new();
+    let mut groups: Vec<(OrgToken, Vec<RescanTarget>)> = Vec::new();
     let mut failed_orgs: Vec<serde_json::Value> = Vec::new();
     for sel in &body.orgs {
-        let discovered = match discover_org(&api, &sel.org, &token, body.include_archived, body.include_forks).await {
+        let tok = org_token(&state, &headers, &sel.org).await;
+        if tok.token.is_empty() {
+            failed_orgs.push(serde_json::json!({ "org": sel.org, "error": NO_TOKEN }));
+            continue;
+        }
+        let mut targets: Vec<RescanTarget> = Vec::new();
+        let discovered = match discover_org(&api, &sel.org, &tok.token, body.include_archived, body.include_forks).await {
             Ok(repos) => repos,
             Err(e) => {
-                failed_orgs.push(serde_json::json!({ "org": sel.org, "error": e.to_string() }));
+                let text = e.to_string();
+                failed_orgs.push(serde_json::json!({ "org": sel.org, "error": text, "ssoUrl": ignite_github_api::sso_authorization_url(&text) }));
                 continue;
             }
         };
@@ -419,55 +396,45 @@ async fn scan_selected_org_repos(State(state): State<Arc<AppState>>, RequireAuth
         if state.db.list_auto_rescan_selection().iter().any(|(o, _)| o.eq_ignore_ascii_case(&sel.org)) {
             state.db.set_auto_rescan_org_selection(&sel.org, &excluded);
         }
+        groups.push((tok, targets));
     }
-    if targets.is_empty() {
+    if groups.iter().all(|(_, t)| t.is_empty()) {
         return (StatusCode::OK, Json(serde_json::json!({ "queued": false, "count": 0, "failedOrgs": failed_orgs }))).into_response();
     }
 
-    targets.retain(|t| !is_scan_active(&t.org, &t.repo));
-    let count = targets.len();
-    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
-    enqueue_scans(state.runner.clone(), resolve_server_base(&state), token, targets, state.clone(), false, slots);
-    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "count": count, "maxConcurrent": state.config.org_repos.max_concurrent_scans.max(1), "failedOrgs": failed_orgs }))).into_response()
+    let mut count = 0;
+    for (tok, targets) in groups {
+        count += enqueue_scans(&state, &tok, targets, Priority::Background, false, "scan-all");
+    }
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": true, "count": count, "maxConcurrent": state.config.scan_queue.max_concurrent.max(1), "failedOrgs": failed_orgs }))).into_response()
 }
 
-/// Queues every target behind the global `SCAN_SLOTS` cap. All targets are
-/// marked queued synchronously (so the very next poll shows "Queued"), then
-/// one dispatcher task walks them in order: wait for a free slot, move the
-/// repo queued -> in-flight, run it in its own task holding the slot, and
-/// move straight on to waiting for the next slot — so when a scan ends the
-/// next one in the queue starts. When `sweep` is set (auto-rescan),
-/// a repo unchecked/removed from the auto-rescan selection while it waited
-/// is skipped instead of started.
-fn enqueue_scans(runner: ignite_tool_runner::ToolRunner, server_base: String, token: String, targets: Vec<RescanTarget>, state: Arc<AppState>, sweep: bool, slots: Arc<tokio::sync::Semaphore>) {
+/// Clears any stale failure for each target and appends it to the server-wide
+/// scan queue (`routes/scan_queue.rs`) in the given priority lane. When
+/// `sweep` is set (auto-rescan), a repo removed from the auto-rescan
+/// selection while it waited is skipped instead of started.
+fn enqueue_scans(state: &Arc<AppState>, token: &OrgToken, targets: Vec<RescanTarget>, priority: Priority, sweep: bool, source: &'static str) -> usize {
     for t in &targets {
         RECENT_SCAN_FAILURES.lock().remove(&(t.org.clone(), t.repo.clone()));
-        QUEUED_SCANS.lock().insert(scan_key(&t.org, &t.repo));
     }
-    tokio::spawn(async move {
-        for target in targets {
-            let key = scan_key(&target.org, &target.repo);
-            let Ok(permit) = slots.clone().acquire_owned().await else {
-                QUEUED_SCANS.lock().remove(&key);
-                continue;
-            };
-            if sweep && !state.db.is_auto_rescan_repo_selected(&target.org, &target.repo) {
-                tracing::info!("auto-rescan: skipping {}/{} — removed from the auto-rescan selection while queued", target.org, target.repo);
-                QUEUED_SCANS.lock().remove(&key);
-                continue;
-            }
-            IN_FLIGHT_SCANS.lock().insert(key.clone());
-            QUEUED_SCANS.lock().remove(&key);
-            let runner = runner.clone();
-            let server_base = server_base.clone();
-            let token = token.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                run_and_record_scan(&runner, &server_base, &token, &target, &state.db).await;
-                drop(permit);
-            });
-        }
-    });
+    super::scan_queue::enqueue_org_scans(state, &token.token, token.from_app, targets, priority, sweep, source)
+}
+
+const NO_TOKEN: &str = "No GitHub token available — install the Ignite GitHub App on the org, connect GitHub, or set GH_TOKEN/GITHUB_TOKEN on the server.";
+
+/// The GitHub token for server-side work on one org, and whether it's a
+/// GitHub App installation token (those expire after ~1h, so a queued scan
+/// re-mints one when it actually starts).
+struct OrgToken {
+    token: String,
+    from_app: bool,
+}
+
+async fn org_token(state: &AppState, headers: &HeaderMap, org: &str) -> OrgToken {
+    match crate::auth::resolve_github_token_for_owner(state, headers, org).await {
+        Some((token, source)) => OrgToken { token, from_app: source == crate::auth::GithubTokenSource::GithubApp },
+        None => OrgToken { token: String::new(), from_app: false },
+    }
 }
 
 async fn get_auto_rescan_config(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth) -> Response {
@@ -516,20 +483,14 @@ async fn set_auto_rescan_org(State(state): State<Arc<AppState>>, RequireAuth(_us
         state.db.save_org(&org);
         state.db.set_auto_rescan_org_selection(&org, &body.excluded_repos);
         if body.trigger_scan {
-            let token = resolve_effective_github_token(&headers, &state.db);
-            if !token.is_empty() {
-                let targets = collect_stale_targets(&state, &token, &[(org.clone(), body.excluded_repos.clone())]).await;
-                triggered = targets.len();
-                if triggered > 0 {
-                    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
-                    enqueue_scans(state.runner.clone(), resolve_server_base(&state), token, targets, state.clone(), true, slots);
-                }
+            for (tok, targets) in collect_stale_targets(&state, &headers, &[(org.clone(), body.excluded_repos.clone())]).await {
+                triggered += enqueue_scans(&state, &tok, targets, Priority::Background, true, "auto-rescan");
             }
         }
     } else {
         state.db.unenroll_auto_rescan_org(&org);
     }
-    Json(serde_json::json!({ "orgs": auto_rescan_selection_json(&state), "triggered": triggered, "maxConcurrent": state.config.org_repos.max_concurrent_scans.max(1) })).into_response()
+    Json(serde_json::json!({ "orgs": auto_rescan_selection_json(&state), "triggered": triggered, "maxConcurrent": state.config.scan_queue.max_concurrent.max(1) })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -559,14 +520,20 @@ fn auto_rescan_selection_json(state: &AppState) -> Vec<serde_json::Value> {
 /// was never scanned or last scanned longer ago than
 /// `orgRepos.autoRescanStaleAfterHours`. Shared by the hourly sweep and the
 /// per-org "Auto-rescan on" toggle (which queues these immediately).
-async fn collect_stale_targets(state: &Arc<AppState>, token: &str, selection: &[(String, Vec<String>)]) -> Vec<RescanTarget> {
+async fn collect_stale_targets(state: &Arc<AppState>, headers: &HeaderMap, selection: &[(String, Vec<String>)]) -> Vec<(OrgToken, Vec<RescanTarget>)> {
     let api = GithubApi::new(&state.runner);
     let sla = &state.config.sla;
     let stale_before = chrono::Utc::now() - chrono::Duration::hours(state.config.org_repos.auto_rescan_stale_after_hours as i64);
     let stale_before_str = stale_before.format("%Y-%m-%d %H:%M:%S").to_string();
-    let mut targets: Vec<RescanTarget> = Vec::new();
+    let mut groups: Vec<(OrgToken, Vec<RescanTarget>)> = Vec::new();
     for (org, excluded) in selection {
-        let discovered = match discover_org(&api, org, token, false, false).await {
+        let tok = org_token(state, headers, org).await;
+        if tok.token.is_empty() {
+            tracing::warn!("auto-rescan: no GitHub token for {org}, skipping it");
+            continue;
+        }
+        let mut targets: Vec<RescanTarget> = Vec::new();
+        let discovered = match discover_org(&api, org, &tok.token, false, false).await {
             Ok(repos) => repos,
             Err(e) => {
                 tracing::warn!("auto-rescan: failed to list repositories for {org}: {e}");
@@ -592,9 +559,10 @@ async fn collect_stale_targets(state: &Arc<AppState>, token: &str, selection: &[
                 targets.push(RescanTarget { org: r.org, repo: r.repo });
             }
         }
+        groups.push((tok, targets));
     }
 
-    targets
+    groups
 }
 
 /// `POST /api/org-repos/auto-rescan/run` — meant to be hit once an hour by
@@ -617,23 +585,18 @@ async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user):
     if selection.is_empty() {
         return Json(serde_json::json!({ "skipped": true, "reason": "no orgs enrolled (click Scan all on an org)" })).into_response();
     }
-    let token = resolve_effective_github_token(&headers, &state.db);
-    if token.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "No GitHub token available — connect GitHub or set GH_TOKEN/GITHUB_TOKEN on the server." })),
-        )
-            .into_response();
+    let groups = collect_stale_targets(&state, &headers, &selection).await;
+    if groups.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": NO_TOKEN }))).into_response();
     }
-    let targets = collect_stale_targets(&state, &token, &selection).await;
-
-    if targets.is_empty() {
+    let mut count = 0;
+    for (tok, targets) in groups {
+        count += enqueue_scans(&state, &tok, targets, Priority::Background, true, "auto-rescan");
+    }
+    if count == 0 {
         return Json(serde_json::json!({ "skipped": false, "triggered": 0 })).into_response();
     }
-    let count = targets.len();
-    let slots = scan_slots(state.config.org_repos.max_concurrent_scans);
-    enqueue_scans(state.runner.clone(), resolve_server_base(&state), token, targets, state.clone(), true, slots);
-    (StatusCode::ACCEPTED, Json(serde_json::json!({ "skipped": false, "triggered": count, "maxConcurrent": state.config.org_repos.max_concurrent_scans.max(1) }))).into_response()
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "skipped": false, "triggered": count, "maxConcurrent": state.config.scan_queue.max_concurrent.max(1) }))).into_response()
 }
 
 pub fn router() -> Router<Arc<AppState>> {

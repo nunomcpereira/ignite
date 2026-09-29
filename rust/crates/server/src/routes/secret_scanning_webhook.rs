@@ -140,7 +140,10 @@ async fn secret_scanning_webhook(State(state): State<Arc<AppState>>, headers: He
     let Some(alert_number) = alert.get("number").and_then(|v| v.as_u64()) else {
         return err(StatusCode::BAD_REQUEST, "Missing alert.number in payload.".to_string());
     };
-    let token = ignite_github_api::resolve_server_github_token();
+    let token = match crate::auth::github_app_token(&state, &org).await {
+        Some(t) => t,
+        None => ignite_github_api::resolve_server_github_token(),
+    };
     let Some((path, start_line)) = fetch_first_location(&state.runner, &full_name, alert_number, &token).await else {
         return axum::Json(json!({ "ok": true, "ignored": "no_location_data" })).into_response();
     };

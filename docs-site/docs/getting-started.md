@@ -90,6 +90,40 @@ One GitHub OAuth App covers every org in `GITHUB_ORGS` — it signs in the
 user, whose token then acts in each org they belong to. An org with OAuth
 app access restrictions must approve the app once.
 
+### GitHub App for org scans (recommended with SAML SSO)
+
+In an org that enforces SAML SSO, a user's OAuth token only works while that
+user has an active SSO session (often 24 hours), so unattended org scans
+start failing with "Resource protected by organization SAML enforcement"
+until they sign in again. A GitHub App avoids that: its installation tokens
+belong to the App, not a person, and don't depend on an SSO session.
+
+1. In the org: **Settings → Developer settings → GitHub Apps → New GitHub App**.
+   No callback or webhook is needed for this. Repository permissions:
+   - Contents: **Read** (Read & write if Ignite should open fix PRs or submit dependency snapshots)
+   - Metadata: **Read**
+   - Commit statuses: **Read & write** (the `ignite/gate` status)
+   - Pull requests: **Read & write** (dependency-review comment, suggestions)
+   - Code scanning alerts: **Read & write** (SARIF upload, dismissal sync)
+   - Secret scanning alerts: **Read** (secret-scanning webhook sync)
+   - Issues: **Read & write** (only for push-protection auto-filed issues)
+2. Note the **App ID**, then **Generate a private key** (downloads a `.pem`).
+3. **Install App** on the org, for all repositories or the ones Ignite scans.
+4. Give Ignite the App ID and the key:
+   ```bash
+   GITHUB_APP_ID=123456
+   GITHUB_APP_PRIVATE_KEY_PATH=<path to the .pem>   # or GITHUB_APP_PRIVATE_KEY=<pem contents>
+   ```
+   On Kubernetes, `GITHUB_APP_ID` goes in the ConfigMap and the key in the
+   Secret (`--from-file=GITHUB_APP_PRIVATE_KEY=./app.pem`).
+
+The server log says `GitHub App <id> configured` at startup. For work on an
+org, Ignite then uses, in order: a GitHub token bound to the calling API key,
+the App's installation token for that org, the caller's connected GitHub
+account, then `GH_TOKEN`. Signing in and publishing new repos as a user are
+unchanged (they still use the OAuth app). The `scheduled-rescan` and
+`org-onboard` CLIs read the same `GITHUB_APP_*` variables.
+
 ## Pushing over HTTPS (gh) or SSH
 
 By default Phase 6 pushes over `https://github.com/...`, authenticated

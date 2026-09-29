@@ -5,7 +5,7 @@
 
 use ignite_github_api::GithubApi;
 use ignite_org_onboard::{already_enrolled, discover_org, enroll_repo, parse_args};
-use ignite_scheduled_rescan::{default_runner, open_db, rescan_one, AutoFixMode, RescanTarget};
+use ignite_scheduled_rescan::{default_runner, open_db, rescan_one_with, AutoFixMode, RescanOptions, RescanTarget};
 use std::collections::HashSet;
 
 #[tokio::main]
@@ -22,7 +22,6 @@ async fn main() {
 
     let runner = default_runner();
     let api = GithubApi::new(&runner);
-    let gh_token = ignite_github_api::resolve_server_github_token();
 
     let db_path = std::env::var("IGNITE_DB_PATH").unwrap_or_else(|_| "ignite.db".to_string());
     let db = match open_db(&db_path) {
@@ -47,6 +46,7 @@ async fn main() {
 
     for org in &parsed.orgs {
         println!("Discovering repositories in {org}...");
+        let gh_token = ignite_github_api::resolve_token_for_owner_from_env(org).await;
         let repos = match discover_org(&api, org, &gh_token, parsed.include_archived, parsed.include_forks).await {
             Ok(r) => r,
             Err(e) => {
@@ -107,7 +107,8 @@ async fn main() {
     };
 
     for target in &scan_targets {
-        let outcome = rescan_one(&runner, &http, &server_base, &gh_token, target, AutoFixMode::Off).await;
+        let gh_token = ignite_github_api::resolve_token_for_owner_from_env(&target.org).await;
+        let outcome = rescan_one_with(&runner, &http, &server_base, &gh_token, target, AutoFixMode::Off, &RescanOptions { background: true, lease: None }).await;
         match &outcome.error {
             Some(e) => {
                 eprintln!("{}/{}: FAILED — {e}", outcome.org, outcome.repo);

@@ -137,6 +137,10 @@ async fn tools_status(State(state): State<Arc<AppState>>, crate::auth::AuthOrUna
 /// never silently drift apart if a probe is ever added/removed.
 const TOOL_COUNT: usize = 19;
 
+/// Upper bound on a single probe in the streaming endpoint. ORT/CodeQL JVM
+/// startup can legitimately take over a minute on a cold machine.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
+
 async fn tools_status_stream(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation) -> Response {
     let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     if let Some(cached) = cached_tools_status() {
@@ -188,7 +192,12 @@ async fn run_tools_status_stream(state: Arc<AppState>, out_tx: tokio::sync::mpsc
         ($key:literal, $future:expr) => {{
             let tx = probe_tx.clone();
             tokio::spawn(async move {
-                let v = $future.await;
+                // Cap each probe so one stalled binary can't leave the UI at
+                // "18/19" indefinitely; a timed-out probe reports as absent.
+                let v = match tokio::time::timeout(PROBE_TIMEOUT, $future).await {
+                    Ok(v) => v,
+                    Err(_) => json!({ "ok": false, "reason": format!("probe timed out after {}s", PROBE_TIMEOUT.as_secs()) }),
+                };
                 let _ = tx.send(($key, v));
             });
         }};

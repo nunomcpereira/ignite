@@ -136,7 +136,7 @@ async fn github_check(State(state): State<Arc<AppState>>, crate::auth::RequireAu
         _ => return err(StatusCode::FORBIDDEN, "Job id does not belong to the given owner/repo.".to_string()),
     }
 
-    let gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
+    let gh_token = crate::auth::github_token_for_owner(&state, &headers, &owner).await;
     if gh_token.is_empty() {
         return err(StatusCode::UNAUTHORIZED, "No GitHub token available — connect a GitHub account, or set GH_TOKEN/GITHUB_TOKEN on the Ignite server.".to_string());
     }

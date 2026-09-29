@@ -257,6 +257,13 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         }
     }
 
+    // Server-wide scan slot (see `scan_queue.rs`); held until this run returns.
+    let queue_info = super::scan_queue::ScanInfo { org: org.clone(), repo: repo.clone(), source: "onboard", actor: body.get(super::scan_queue::ACTOR_FIELD).and_then(|v| v.as_str()).map(str::to_string) };
+    let _scan_slot = match super::scan_queue::acquire_for_request(&state, &headers, super::scan_queue::priority_from_body(&body), queue_info).await {
+        Ok(lease) => lease,
+        Err(e) => return Err((StatusCode::CONFLICT, json!({ "ok": false, "error": e, "removedFromQueue": true }))),
+    };
+
     let job_id = super::async_jobs::injected_job_id(&body).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting onboard pipeline run");
     let staging_dir = std::env::temp_dir().join("gatekeeper-staging").join(format!("{job_id}-onboard"));
@@ -740,6 +747,7 @@ fn gh_api_for_ship(state: &AppState) -> ignite_github_api::GithubApi<'_> {
 
 async fn onboard(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(mut body): Json<Value>) -> Response {
     super::async_jobs::strip_client_job_id(&mut body);
+    super::scan_queue::set_actor(&mut body, user.as_ref().map(|u| u.email.as_str()));
     if super::async_jobs::wants_async(&body) {
         // Scopes are checked here too so a rejected key gets its 403 now,
         // not through a poll; everything else is reported through the result.

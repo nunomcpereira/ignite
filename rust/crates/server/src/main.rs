@@ -60,6 +60,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::history::router())
         .merge(routes::onboarded_repos::router())
         .merge(routes::org_repos::router())
+        .merge(routes::scan_queue::router())
         .merge(routes::pipeline_validate::router())
         .merge(routes::config::router())
         .merge(routes::pipeline_onboard::router())
@@ -100,6 +101,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         runner: phase4_config::runner_from_config(&config),
+        github_app: state::github_app_from_config(&config),
         db,
         running_runs: Mutex::new(HashMap::new()),
         pending_effectivations: Mutex::new(HashMap::new()),
@@ -203,6 +205,7 @@ mod tests {
             package_hallucination_checker: state::default_package_hallucination_checker(),
             fix_pr_previews: Mutex::new(HashMap::new()),
             audit_http: reqwest::Client::new(),
+            github_app: None,
         });
         let public_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../public");
         let app = build_router(state, &public_dir);

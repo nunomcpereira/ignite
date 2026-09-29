@@ -289,6 +289,26 @@ pub fn build_new_review_content(existing_text: &str, findings: &[Finding]) -> Op
     Some(format!("{HEADER}\n{body}"))
 }
 
+/// A complete file for a repo with no existing acknowledgments: a blank
+/// entry for every finding not already overridden, warnings included, in
+/// the same canonical form `regenerate` writes. Unlike
+/// [`build_new_review_content`] this never skips a warnings-only set — it's
+/// for exporting findings (the org Markdown report), not for deciding
+/// whether a pre-push hook should touch the committed file. With nothing to
+/// list it is just [`HEADER`].
+pub fn fresh_review_content(findings: &[Finding]) -> String {
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    for f in findings.iter().filter(|f| f.status.as_deref() != Some("overridden")) {
+        if !blocks.iter().any(|(id, _)| id == &f.id) {
+            blocks.push((f.id.clone(), build_new_block(f, "")));
+        }
+    }
+    if blocks.is_empty() {
+        return HEADER.to_string();
+    }
+    format!("{HEADER}\n{}\n", render_body(blocks))
+}
+
 /// One already-approved override to write into `.ignite/acknowledgments.md`
 /// — the server-side (DB-sourced) counterpart to a hand-filled
 /// `Acknowledge:` line. Deliberately carries no snippet, so the entry has
@@ -391,6 +411,20 @@ mod tests {
 
     fn finding(id: &str, category: &str, file: &str, line: i64, summary: &str) -> Finding {
         Finding { id: id.to_string(), category: category.to_string(), file: Some(file.to_string()), line: Some(line), severity: "error".to_string(), summary: summary.to_string(), status: None, snippet: None }
+    }
+
+    #[test]
+    fn fresh_review_content_lists_warnings_even_when_nothing_blocks() {
+        let mut w = finding("css::b.css::2", "css", "b.css", 2, "unused");
+        w.severity = "warning".to_string();
+        let mut done = finding("secret::c.rs::1", "secret", "c.rs", 1, "token");
+        done.status = Some("overridden".to_string());
+        let text = fresh_review_content(&[w.clone(), w, done]);
+        assert!(text.starts_with(HEADER));
+        let entries = parse_blocks(&text);
+        assert_eq!(entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["css::b.css::2"], "one blank entry per open finding, overridden ones skipped");
+        assert!(regenerate("", &[finding("css::b.css::2", "css", "b.css", 2, "unused")].map(|mut f| { f.severity = "warning".into(); f })).is_none(), "the pre-push path still leaves the file alone for warnings");
+        assert_eq!(fresh_review_content(&[]), HEADER);
     }
 
     #[test]

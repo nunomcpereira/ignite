@@ -195,6 +195,8 @@ pub enum GithubTokenSource {
     UserConnection,
     /// The server process's own `GH_TOKEN` / `GITHUB_TOKEN`.
     ServerEnv,
+    /// An installation token of the configured GitHub App (`github.app.*`).
+    GithubApp,
 }
 
 /// The token bound to the calling *API key*. Only consulted when the request
@@ -244,6 +246,42 @@ pub fn resolve_effective_github_token_with_source(headers: &HeaderMap, db: &igni
     }
     let env_token = ignite_github_api::resolve_server_github_token();
     (!env_token.is_empty()).then_some((env_token, GithubTokenSource::ServerEnv))
+}
+
+/// Token for server-side work bound to one GitHub org/user (`owner`): org
+/// discovery, cloning for scans, the `ignite/gate` status, SARIF, webhooks.
+/// Order: a token bound to the calling API key (an operator's explicit
+/// choice), then the GitHub App's installation token for `owner` (not tied
+/// to a person or an SSO session), then the caller's connected account,
+/// then the server's env token. Publishing a new repo as a user keeps using
+/// `resolve_effective_github_token`, which never picks the App.
+pub async fn resolve_github_token_for_owner(state: &crate::state::AppState, headers: &HeaderMap, owner: &str) -> Option<(String, GithubTokenSource)> {
+    if let Some(token) = api_key_bound_github_token(headers, &state.db) {
+        return Some((token, GithubTokenSource::ApiKey));
+    }
+    if let Some(token) = github_app_token(state, owner).await {
+        return Some((token, GithubTokenSource::GithubApp));
+    }
+    resolve_effective_github_token_with_source(headers, &state.db)
+}
+
+/// Same as [`resolve_github_token_for_owner`], empty when nothing supplies one.
+pub async fn github_token_for_owner(state: &crate::state::AppState, headers: &HeaderMap, owner: &str) -> String {
+    resolve_github_token_for_owner(state, headers, owner).await.map(|(t, _)| t).unwrap_or_default()
+}
+
+/// The GitHub App's installation token for `owner`, when an App is
+/// configured and installed there. Errors are logged, never fatal: the
+/// caller falls back to the other token sources.
+pub async fn github_app_token(state: &crate::state::AppState, owner: &str) -> Option<String> {
+    let app = state.github_app.as_ref()?;
+    match app.installation_token(owner).await {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::warn!("GitHub App token for {owner} unavailable, falling back: {e}");
+            None
+        }
+    }
 }
 
 /// The body of the 401 returned when a real (non-dry-run) publish has no
@@ -744,6 +782,44 @@ mod tests {
         assert!(state.db.revoke_api_key(key_id, uid));
         assert_eq!(resolve_effective_github_token_with_source(&headers, &state.db), Some(("env-token".into(), GithubTokenSource::ServerEnv)));
         std::env::remove_var("GH_TOKEN");
+    }
+
+    /// Org-bound server work prefers the GitHub App over a person's
+    /// connection (which dies with their SSO session); a token explicitly
+    /// bound to the API key still wins, and an org without the App installed
+    /// falls back to the old chain.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn owner_token_prefers_key_then_github_app_then_connection() {
+        use axum::routing::{get, post};
+        use rsa::pkcs1::EncodeRsaPrivateKey;
+        let router = axum::Router::new()
+            .route("/orgs/:org/installation", get(|axum::extract::Path(org): axum::extract::Path<String>| async move {
+                if org == "acme" { (axum::http::StatusCode::OK, axum::Json(json!({ "id": 5 }))) } else { (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({}))) }
+            }))
+            .route("/users/:u/installation", get(|| async { (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({}))) }))
+            .route("/app/installations/:id/access_tokens", post(|| async { (axum::http::StatusCode::CREATED, axum::Json(json!({ "token": "ghs_app", "expires_at": "2999-01-01T00:00:00Z" }))) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let key = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap().to_pkcs1_pem(rsa::pkcs1::LineEnding::LF).unwrap();
+        let app = ignite_github_api::GithubAppAuth::new("99", key.as_bytes()).unwrap().with_api_base(&base);
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = ignite_db_store::DbStore::open(&db_dir.path().join("test.db")).unwrap();
+        let mut state = crate::state::test_state(db, ignite_config::Config::default());
+        state.github_app = Some(Arc::new(app));
+        let uid = state.db.create_local_user("agent@example.com", None, ignite_auth::dummy_hash()).unwrap();
+        let raw = ignite_auth::generate_api_key();
+        let key_id = state.db.create_api_key(uid, &ignite_auth::hash_api_key(&raw), None, None, "test");
+        state.db.upsert_github_connection(uid, "octocat", "connection-token", None);
+        let headers = bearer(&raw);
+
+        assert_eq!(resolve_github_token_for_owner(&state, &headers, "acme").await, Some(("ghs_app".into(), GithubTokenSource::GithubApp)));
+        assert_eq!(resolve_github_token_for_owner(&state, &headers, "elsewhere").await, Some(("connection-token".into(), GithubTokenSource::UserConnection)), "App not installed there");
+        // Publishing as a user never picks the App.
+        assert_eq!(resolve_effective_github_token_with_source(&headers, &state.db), Some(("connection-token".into(), GithubTokenSource::UserConnection)));
+        state.db.set_api_key_github_token(key_id, Some("key-token"));
+        assert_eq!(resolve_github_token_for_owner(&state, &headers, "acme").await, Some(("key-token".into(), GithubTokenSource::ApiKey)));
     }
 
     #[test]

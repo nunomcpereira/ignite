@@ -54,7 +54,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use ignite_github_api::verify_webhook_signature;
-use ignite_scheduled_rescan::{rescan_one, AutoFixMode, RescanTarget};
+use ignite_scheduled_rescan::{rescan_one_with, AutoFixMode, RescanOptions, RescanTarget};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -158,11 +158,15 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
         // possibly be reachable at all if the server isn't actually
         // listening on plain HTTP on that loopback address.
         let server_base = std::env::var("IGNITE_BASE_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"));
+        let app_state = state.clone();
         tokio::spawn(async move {
             let http = reqwest::Client::new();
-            let gh_token = ignite_github_api::resolve_server_github_token();
+            let gh_token = match crate::auth::github_app_token(&app_state, &org).await {
+                Some(t) => t,
+                None => ignite_github_api::resolve_server_github_token(),
+            };
             let target = RescanTarget { org: org.clone(), repo: repo.clone() };
-            let outcome = rescan_one(&runner, &http, &server_base, &gh_token, &target, AutoFixMode::Off).await;
+            let outcome = rescan_one_with(&runner, &http, &server_base, &gh_token, &target, AutoFixMode::Off, &RescanOptions { background: true, lease: None }).await;
             if let Some(e) = &outcome.error {
                 tracing::warn!("repository-events webhook: baseline scan failed for {org}/{repo}: {e}");
                 return;

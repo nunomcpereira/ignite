@@ -4,6 +4,7 @@ use ignite_fix_pr::FixCandidate;
 use ignite_tool_runner::ToolRunner;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use parking_lot::Mutex;
 use std::time::Instant;
 
@@ -96,6 +97,43 @@ pub struct AppState {
     /// (rather than built per-event) for connection pooling, same
     /// rationale as every other shared `reqwest::Client` in this codebase.
     pub audit_http: reqwest::Client,
+    /// GitHub App auth (`github.app.*`), when configured and valid. Mints
+    /// SSO-independent installation tokens for org-bound server work; see
+    /// `crate::auth::resolve_github_token_for_owner`.
+    pub github_app: Option<Arc<ignite_github_api::GithubAppAuth>>,
+}
+
+/// Builds the GitHub App client from config, logging (never failing
+/// startup) when it's configured but unusable.
+pub fn github_app_from_config(config: &ignite_config::Config) -> Option<Arc<ignite_github_api::GithubAppAuth>> {
+    let app = &config.github.app;
+    if app.app_id.trim().is_empty() {
+        return None;
+    }
+    let pem = if !app.private_key.trim().is_empty() {
+        app.private_key.replace("\\n", "\n").into_bytes()
+    } else if !app.private_key_path.trim().is_empty() {
+        match std::fs::read(&app.private_key_path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!("GitHub App disabled: cannot read github.app.privateKeyPath {}: {e}", app.private_key_path);
+                return None;
+            }
+        }
+    } else {
+        tracing::error!("GitHub App disabled: github.app.appId is set but neither privateKey nor privateKeyPath is");
+        return None;
+    };
+    match ignite_github_api::GithubAppAuth::new(&app.app_id, &pem) {
+        Ok(auth) => {
+            tracing::info!("GitHub App {} configured: org scans, gate statuses and webhooks use its installation tokens where installed", app.app_id);
+            Some(Arc::new(auth))
+        }
+        Err(e) => {
+            tracing::error!("GitHub App disabled: {e}");
+            None
+        }
+    }
 }
 
 impl AppState {
@@ -233,6 +271,7 @@ pub fn test_state(db: ignite_db_store::DbStore, config: ignite_config::Config) -
         package_hallucination_checker: default_package_hallucination_checker(),
         fix_pr_previews: Mutex::new(HashMap::new()),
         audit_http: reqwest::Client::new(),
+        github_app: None,
     }
 }
 

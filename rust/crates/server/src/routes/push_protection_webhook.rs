@@ -178,9 +178,12 @@ async fn push_protection_webhook(State(state): State<Arc<AppState>>, headers: He
 
     let mut issue_queued = false;
     if state.config.security.push_protection.auto_file_issue {
-        let token = ignite_github_api::resolve_server_github_token();
+        let token = match crate::auth::github_app_token(&state, &org).await {
+            Some(t) => t,
+            None => ignite_github_api::resolve_server_github_token(),
+        };
         if token.is_empty() {
-            tracing::warn!("push-protection bypass on {org}/{repo}: autoFileIssue is on but no GH_TOKEN/GITHUB_TOKEN is configured — skipping issue creation.");
+            tracing::warn!("push-protection bypass on {org}/{repo}: autoFileIssue is on but no GitHub App installation or GH_TOKEN/GITHUB_TOKEN is configured — skipping issue creation.");
         } else {
             issue_queued = true;
             // Dispatched off the webhook request lifecycle: GitHub retries

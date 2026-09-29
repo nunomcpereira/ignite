@@ -316,6 +316,38 @@
     </button>
   </nav>
 
+  <!-- Scan queue: right-edge tab + slide-out panel over the global org-repo
+       scan queue (GET/POST/DELETE /api/scan-queue). The tab only shows while
+       something is running or waiting. -->
+  <button id="scanQueueTab" type="button" class="hidden fixed right-0 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center gap-1 px-1.5 py-3 rounded-l-lg bg-brand-600 text-white shadow-lg hover:bg-brand-700" aria-controls="scanQueuePanel" aria-expanded="false">
+    <span class="text-[11px] font-semibold [writing-mode:vertical-rl] rotate-180" data-i18n="queue.tab">Queue</span>
+    <span id="scanQueueTabCount" class="min-w-[1.25rem] px-1 rounded-full bg-white text-brand-700 text-[10px] font-bold text-center">0</span>
+  </button>
+  <div id="scanQueuePanel" class="hidden fixed right-0 top-14 bottom-0 w-full max-w-sm bg-white border-l border-slate-200 shadow-2xl z-50 flex flex-col" role="dialog" aria-labelledby="scanQueueTitle">
+    <div class="flex items-center justify-between gap-2 px-4 py-3 border-b border-slate-200 shrink-0">
+      <h2 id="scanQueueTitle" class="text-sm font-bold text-slate-900" data-i18n="queue.title">Scan queue</h2>
+      <div class="flex items-center gap-1">
+        <button id="scanQueueClearBtn" type="button" class="text-[11px] font-semibold px-2 py-1 rounded-md text-rose-700 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed" data-i18n="queue.clear">Clear queue</button>
+        <button id="scanQueueCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+      <p id="scanQueueError" role="alert" class="hidden text-[11px] text-rose-700"></p>
+      <section>
+        <h3 id="scanQueueRunningTitle" class="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5"></h3>
+        <ul id="scanQueueRunning" class="space-y-1"></ul>
+        <p id="scanQueueReserved" class="mt-1 text-[10px] text-slate-400"></p>
+      </section>
+      <section>
+        <h3 id="scanQueueWaitingTitle" class="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5"></h3>
+        <ol id="scanQueueWaiting" class="space-y-1"></ol>
+      </section>
+      <p class="text-[10px] text-slate-400" data-i18n="queue.note">User scans always go first.</p>
+    </div>
+  </div>
+
   <!-- History drawer: slide-over panel (not an inline section) holding
        Recent Checks + Effectivated Repos, opened from the lateral rail. -->
   <div id="historyDrawerBackdrop" class="hidden fixed inset-0 bg-slate-900/40 z-40"></div>
@@ -3917,8 +3949,14 @@
       const total = Object.keys(TOOLS_META).length;
       renderToolsBarLoading(0, total);
       let res;
+      // Watchdog: give up if the stream goes quiet (server probes are
+      // capped at 90s each), rather than showing the loading bar forever.
+      const controller = new AbortController();
+      let watchdog;
+      const kick = () => { clearTimeout(watchdog); watchdog = setTimeout(() => controller.abort(), 120000); };
+      kick();
       try {
-        res = await fetch('/api/tools/status/stream');
+        res = await fetch('/api/tools/status/stream', { signal: controller.signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -3927,6 +3965,7 @@
         while (true) {
           const { done: streamDone, value } = await reader.read();
           if (streamDone) break;
+          kick();
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop();
@@ -3941,6 +3980,8 @@
         renderToolsBar(finalStatus);
       } catch {
         renderToolsBar(null, res && res.status === 401);
+      } finally {
+        clearTimeout(watchdog);
       }
     }
 
@@ -7775,7 +7816,9 @@
           </td>
           <td class="org-repo-status-cell px-5 py-3.5">
             ${statusCell}
-            ${r.scanError ? `<button type="button" class="org-repo-show-error block text-left text-[10px] text-rose-500 hover:text-rose-700 hover:underline mt-1 max-w-[220px] truncate" data-i="${i}" title="${escapeAttr(r.scanError)}">${escapeHtml(r.scanError)}</button>` : ''}
+            ${r.scanError && githubSsoInfo(r.scanError, r.scanErrorSsoUrl)
+              ? `<div class="mt-1 text-[10px] max-w-[260px]">${githubSsoHintHtml(githubSsoInfo(r.scanError, r.scanErrorSsoUrl), r.scanError)}</div>`
+              : r.scanError ? `<button type="button" class="org-repo-show-error block text-left text-[10px] text-rose-500 hover:text-rose-700 hover:underline mt-1 max-w-[220px] truncate" data-i="${i}" title="${escapeAttr(r.scanError)}">${escapeHtml(r.scanError)}</button>` : ''}
           </td>
           <td class="px-5 py-3.5 text-right">${findingsCell}</td>
           <td class="px-5 py-3.5">${acksCell}</td>
@@ -7807,7 +7850,7 @@
               <button type="button" class="org-toggle text-sky-700 hover:text-sky-900 w-6 h-6 flex items-center justify-center rounded hover:bg-sky-200" data-org="${escapeAttr(o)}" aria-expanded="${!collapsed}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg class="w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4l6 6-6 6V4z"/></svg></button>
               <input type="checkbox" class="org-select-all rounded border-slate-300 text-brand-600 focus:ring-brand-500" data-org="${escapeAttr(o)}" ${selectable && selected === selectable ? 'checked' : ''} ${selectable === 0 ? 'disabled' : ''} data-partial="${selected > 0 && selected < selectable}" />
               <span class="font-bold text-slate-800">${escapeHtml(name)}</span>
-              <span class="text-[11px] text-slate-500">${err ? `<span class="text-rose-500">${escapeHtml(err)}</span>` : escapeHtml(t('orgRepos.orgSelectedCount', { selected, total: selectable }))}</span>
+              <span class="text-[11px] text-slate-500">${err ? (githubSsoInfo(err) ? githubSsoHintHtml(githubSsoInfo(err), err) : `<span class="text-rose-500">${escapeHtml(err)}</span>`) : escapeHtml(t('orgRepos.orgSelectedCount', { selected, total: selectable }))}</span>
               <button type="button" ${orgReposAutoRescanBusy.has(o) ? 'disabled' : ''} class="org-autorescan text-[11px] font-semibold px-2.5 py-1 rounded-full border disabled:opacity-50 disabled:cursor-not-allowed ${orgReposAutoRescanBusy.has(o) ? 'bg-slate-100 text-slate-400 border-slate-200' : orgReposAutoRescan.has(o) ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}" data-org="${escapeAttr(o)}" aria-pressed="${orgReposAutoRescan.has(o)}" title="${escapeAttr(t('orgRepos.autoRescanToggleTitle'))}">${escapeHtml(t(orgReposAutoRescanBusy.get(o) === 'starting' ? 'orgRepos.autoRescanStarting' : orgReposAutoRescanBusy.get(o) === 'stopping' ? 'orgRepos.autoRescanStopping' : orgReposAutoRescan.has(o) ? 'orgRepos.autoRescanOn' : 'orgRepos.autoRescanOff'))}</button>
               <button type="button" class="org-report shrink-0 w-7 h-7 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:border-brand-300 disabled:opacity-50 disabled:cursor-not-allowed" data-org="${escapeAttr(o)}" title="${escapeAttr(t('orgRepos.sendReportTitle'))}"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg></button>
               <button type="button" class="org-refresh shrink-0 w-7 h-7 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:border-brand-300" data-org="${escapeAttr(o)}" title="${escapeAttr(t('orgRepos.refreshOrgTitle', { when: orgReposFetchedAt.has(o) ? new Date(orgReposFetchedAt.get(o)).toLocaleString() : '—' }))}"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg></button>
@@ -7935,6 +7978,7 @@
           label.textContent = t('orgRepos.scanning');
           try {
             const res = await fetch(`/api/org-repos/${encodeURIComponent(r.org)}/${encodeURIComponent(r.repo)}/scan`, { method: 'POST' });
+            loadScanQueue();
             const data = await res.json();
             if (data.empty) {
               // Not an error — the server already checked and never even
@@ -7974,6 +8018,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled, excludedRepos, triggerScan: enabled && opts.triggerScan === true }),
       });
+      loadScanQueue();
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
@@ -8327,6 +8372,23 @@
       $('adminAzureUrlInput').placeholder = t('admin.willClear');
     });
 
+    // GitHub refuses a token for an org that enforces SAML SSO until the token
+    // is authorized for it; GitHub's error carries a one-time link for exactly
+    // that token. Turn that error into the fix instead of truncated text.
+    const GITHUB_SSO_URL_RE = /https:\/\/github\.com\/(?:enterprises|orgs)\/[A-Za-z0-9._-]+\/sso\?authorization_request=[A-Za-z0-9._~%=+\/-]+/;
+    function githubSsoInfo(text, url) {
+      if (!text && !url) return null;
+      const link = url || ((text || '').match(GITHUB_SSO_URL_RE) || [])[0] || null;
+      if (!link && !/SAML (?:enforcement|single sign-on|SSO)/i.test(text || '')) return null;
+      return { url: link ? link.replace(/[.,]$/, '') : null };
+    }
+    function githubSsoHintHtml(info, fullText) {
+      const action = info.url
+        ? `<a href="${escapeAttr(info.url)}" target="_blank" rel="noopener noreferrer" class="font-semibold text-brand-600 hover:underline" title="${escapeAttr(t('orgRepos.ssoAuthorizeTitle'))}">${escapeHtml(t('orgRepos.ssoAuthorize'))} ↗</a>`
+        : `<span class="text-slate-500">${escapeHtml(t('orgRepos.ssoNoLink'))}</span>`;
+      return `<span class="inline-flex flex-wrap items-center gap-x-1.5" title="${escapeAttr(fullText || '')}"><span class="font-semibold text-amber-700">${escapeHtml(t('orgRepos.ssoRequired'))}</span> · ${action}</span>`;
+    }
+
     // Per-org repo list cache (localStorage): the GitHub-backed discovery
     // result (org/repo/archived/fork/empty only — scan status is always
     // fetched live from `/api/org-repos/:org/status`). The key carries the
@@ -8334,7 +8396,7 @@
     // an org's refresh button drops every variant and re-lists from GitHub.
     const ORG_REPOS_CACHE_PREFIX = 'ignite-org-repos:v1:';
     const orgReposFetchedAt = new Map();
-    const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null };
+    const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, scanErrorCode: null, scanErrorSsoUrl: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null };
     function orgReposCacheKey(org) {
       return `${ORG_REPOS_CACHE_PREFIX}${org}|a${$('orgReposIncludeArchived').checked ? 1 : 0}f${$('orgReposIncludeForks').checked ? 1 : 0}`;
     }
@@ -8417,6 +8479,7 @@
         if (!res.ok) {
           const err = new Error(data.error || `HTTP ${res.status}`);
           err.status = res.status;
+          err.ssoUrl = data.ssoUrl || null;
           throw err;
         }
         writeOrgReposCache(org, data);
@@ -8494,7 +8557,9 @@
             renderOrgRepos(orgReposCache);
           }
           $('orgReposNotConnected').classList.toggle('hidden', orgReposOrgs.length > 0);
-          $('orgReposError').textContent = result.reason.status === 401 ? t('common.signInToView') : t('orgRepos.loadError') + (result.reason.message ? ` (${result.reason.message})` : '');
+          const sso = result.reason.status !== 401 && githubSsoInfo(result.reason.message, result.reason.ssoUrl);
+          if (sso) $('orgReposError').innerHTML = `<p class="mb-2 text-slate-600">${escapeHtml(t('orgRepos.loadError'))}</p>${githubSsoHintHtml(sso, result.reason.message)}`;
+          else $('orgReposError').textContent = result.reason.status === 401 ? t('common.signInToView') : t('orgRepos.loadError') + (result.reason.message ? ` (${result.reason.message})` : '');
           $('orgReposError').classList.remove('hidden');
         } else {
           $('orgReposOrgInput').value = '';
@@ -8520,6 +8585,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ includeArchived: $('orgReposIncludeArchived').checked, includeForks: $('orgReposIncludeForks').checked, orgs: selection }),
         });
+        loadScanQueue();
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         const failed = (data.failedOrgs || []).map((f) => f.org).join(', ');
@@ -9197,10 +9263,125 @@
     applyStaticTranslations();
     showHint('hint.screen.dashboard');
 
+    /* ------------------------------------------------------------ */
+    /* Scan queue panel — polls /api/scan-queue; waiting entries can be  */
+    /* moved up/down or removed, and the whole wait list cleared.        */
+    /* ------------------------------------------------------------ */
+    let scanQueueTimer = null;
+    let scanQueueClearArmed = null;
+    let scanQueueData = null;
+
+    function scanQueueOpen() { return !$('scanQueuePanel').classList.contains('hidden'); }
+    function setScanQueueOpen(open) {
+      $('scanQueuePanel').classList.toggle('hidden', !open);
+      $('scanQueueTab').setAttribute('aria-expanded', String(open));
+      if (open) renderScanQueue();
+    }
+    function scanQueueSource(src) { return t(`queue.source.${src}`); }
+    // Source, priority and (when known) who started it, as one muted line.
+    function scanQueueMeta(e) {
+      const badge = e.priority === 'background'
+        ? `<span class="px-1 rounded bg-slate-100 text-slate-500">${escapeHtml(t('queue.priority.background'))}</span>`
+        : `<span class="px-1 rounded bg-amber-100 text-amber-800">${escapeHtml(t('queue.priority.user'))}</span>`;
+      const who = e.actor ? ` · ${escapeHtml(e.actor)}` : '';
+      return `${badge} ${escapeHtml(scanQueueSource(e.source))}${who}`;
+    }
+
+    function renderScanQueue() {
+      const data = scanQueueData || { running: [], queued: [], maxConcurrent: 1 };
+      const total = data.running.length + data.queued.length;
+      $('scanQueueTab').classList.toggle('hidden', total === 0 && !scanQueueOpen());
+      $('scanQueueTabCount').textContent = String(data.queued.length || data.running.length);
+      $('scanQueueRunningTitle').textContent = t('queue.running', { n: data.running.length, max: data.maxConcurrent });
+      $('scanQueueReserved').textContent = data.userReservedSlots ? t('queue.reserved', { n: data.userReservedSlots }) : '';
+      $('scanQueueWaitingTitle').textContent = t('queue.waiting', { n: data.queued.length });
+      $('scanQueueClearBtn').disabled = data.queued.length === 0;
+      if (!scanQueueOpen()) return;
+      $('scanQueueRunning').innerHTML = data.running.length
+        ? data.running.map((r) => `<li class="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-brand-50 border border-brand-100">
+            <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse shrink-0"></span>
+            <span class="flex-1 min-w-0 truncate text-[12px] font-semibold text-slate-800" title="${escapeAttr(`${r.org}/${r.repo}`)}">${escapeHtml(`${r.org}/${r.repo}`)}</span>
+            <span class="text-[10px] text-slate-500 truncate max-w-[55%]">${scanQueueMeta(r)}</span>
+          </li>`).join('')
+        : `<li class="text-[11px] text-slate-400">${escapeHtml(t('queue.emptyRunning'))}</li>`;
+      // Entries move only within their own priority lane.
+      const laneStart = (q, i) => i === 0 || data.queued[i - 1].priority !== q.priority;
+      const laneEnd = (q, i) => i === data.queued.length - 1 || data.queued[i + 1].priority !== q.priority;
+      const iconBtn = (action, id, label, path, disabled) => `<button type="button" data-queue-action="${action}" data-queue-id="${id}" ${disabled ? 'disabled' : ''} class="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="${path}"/></svg></button>`;
+      $('scanQueueWaiting').innerHTML = data.queued.length
+        ? data.queued.map((q, i) => `<li class="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-200 bg-white">
+            <span class="w-6 text-right text-[10px] font-semibold text-slate-400 shrink-0">${q.position}</span>
+            <span class="flex-1 min-w-0">
+              <span class="block truncate text-[12px] font-semibold text-slate-800" title="${escapeAttr(`${q.org}/${q.repo}`)}">${escapeHtml(`${q.org}/${q.repo}`)}</span>
+              <span class="block truncate text-[10px] text-slate-400">${scanQueueMeta(q)}</span>
+            </span>
+            ${iconBtn('up', q.id, t('queue.moveUp'), 'M5 15l7-7 7 7', laneStart(q, i))}
+            ${iconBtn('down', q.id, t('queue.moveDown'), 'M19 9l-7 7-7-7', laneEnd(q, i))}
+            ${iconBtn('remove', q.id, t('queue.remove'), 'M6 18L18 6M6 6l12 12', false)}
+          </li>`).join('')
+        : `<li class="text-[11px] text-slate-400">${escapeHtml(t('queue.emptyWaiting'))}</li>`;
+    }
+
+    async function loadScanQueue() {
+      clearTimeout(scanQueueTimer);
+      try {
+        const res = await fetch('/api/scan-queue');
+        if (res.ok) {
+          scanQueueData = await res.json();
+          renderScanQueue();
+        } else if (res.status === 401) {
+          scanQueueData = null;
+          setScanQueueOpen(false);
+          $('scanQueueTab').classList.add('hidden');
+        }
+      } catch { /* transient — next poll retries */ }
+      const busy = scanQueueData && (scanQueueData.running.length || scanQueueData.queued.length);
+      scanQueueTimer = setTimeout(loadScanQueue, scanQueueOpen() || busy ? 3000 : 15000);
+    }
+
+    async function scanQueueRequest(url, init) {
+      $('scanQueueError').classList.add('hidden');
+      try {
+        const res = await fetch(url, init);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        if (body.queued) { scanQueueData = body; renderScanQueue(); }
+      } catch (e) {
+        $('scanQueueError').textContent = t('queue.actionError', { error: e.message });
+        $('scanQueueError').classList.remove('hidden');
+      }
+      loadScanQueue();
+    }
+
+    $('scanQueueTab').addEventListener('click', () => setScanQueueOpen(!scanQueueOpen()));
+    $('scanQueueCloseBtn').addEventListener('click', () => setScanQueueOpen(false));
+    $('scanQueueWaiting').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-queue-action]');
+      if (!btn || btn.disabled) return;
+      const id = encodeURIComponent(btn.dataset.queueId);
+      const action = btn.dataset.queueAction;
+      if (action === 'remove') scanQueueRequest(`/api/scan-queue/${id}`, { method: 'DELETE' });
+      else scanQueueRequest(`/api/scan-queue/${id}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ direction: action }) });
+    });
+    // Two-step clear instead of a confirm() dialog: first click arms it.
+    $('scanQueueClearBtn').addEventListener('click', () => {
+      const btn = $('scanQueueClearBtn');
+      if (!scanQueueClearArmed) {
+        btn.textContent = t('queue.confirmClear');
+        scanQueueClearArmed = setTimeout(() => { scanQueueClearArmed = null; btn.textContent = t('queue.clear'); }, 3000);
+        return;
+      }
+      clearTimeout(scanQueueClearArmed);
+      scanQueueClearArmed = null;
+      btn.textContent = t('queue.clear');
+      scanQueueRequest('/api/scan-queue', { method: 'DELETE' });
+    });
+
     /* Initial render */
     resetPhases();
     loadAuthState();
     loadToolsStatus();
+    loadScanQueue();
     loadProjects();
     loadEffectivated();
 

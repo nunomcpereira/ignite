@@ -279,6 +279,13 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         }
     }
 
+    // Server-wide scan slot (see `scan_queue.rs`); held until this run returns.
+    let queue_info = super::scan_queue::ScanInfo { org: org.clone(), repo: repo.clone(), source: "validate-all", actor: body.get(super::scan_queue::ACTOR_FIELD).and_then(|v| v.as_str()).map(str::to_string) };
+    let _scan_slot = match super::scan_queue::acquire_for_request(&state, &headers, super::scan_queue::priority_from_body(&body), queue_info).await {
+        Ok(lease) => lease,
+        Err(e) => return Err((json!({ "ok": false, "error": e, "removedFromQueue": true }), json!({}))),
+    };
+
     let timings: Mutex<Vec<StageTiming>> = Mutex::new(Vec::new());
     let job_id = super::async_jobs::injected_job_id(&body).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     tracing::info!(job_id = %job_id, org = %org, repo = %repo, project_path = %project_path.display(), "starting validate-all pipeline run");
@@ -954,6 +961,8 @@ pub(crate) fn idempotency_payload_hash(body: &Value) -> String {
     if let Some(obj) = body.as_object_mut() {
         obj.remove("async");
         obj.remove(super::async_jobs::ASYNC_JOB_ID_KEY);
+        obj.remove(super::scan_queue::ACTOR_FIELD);
+        obj.remove("priority");
     }
     let canonical = serde_json::to_string(&body).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
@@ -999,6 +1008,7 @@ fn filter_tagged_by_changed_files(tagged: &[Value], changed_files: Option<&std::
 
 async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, Json(mut body): Json<Value>) -> Response {
     super::async_jobs::strip_client_job_id(&mut body);
+    super::scan_queue::set_actor(&mut body, user.as_ref().map(|u| u.email.as_str()));
     if user.is_none() && !state.config.security.allow_unauthenticated_validate_all {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response();
     }

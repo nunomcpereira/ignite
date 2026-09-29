@@ -47,7 +47,19 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
     let outcome: Result<(), (i64, String)> = 'run: {
         // ---------------- Phase 1: input validation ----------------
         log.status(1, "running", None);
+        // Server-wide scan slot (see `scan_queue.rs`), taken before any heavy
+        // work and handed back while this run waits on a human at the review gate.
+        let queue_info = super::super::scan_queue::ScanInfo { org: org.clone(), repo: repo.clone(), source: "upload", actor: Some(owner_email.clone()) };
+        let queue_log = log.clone();
+        let report: super::super::scan_queue::PositionFn = Box::new(move |pos| queue_log.log(1, &format!("Waiting for a free scan slot — position {pos} in the scan queue.")));
+        let (mut scan_slot, queue_error) = match super::super::scan_queue::acquire(&state, super::super::scan_queue::Priority::User, queue_info, Some(report)).await {
+            Ok(lease) => (Some(lease), None),
+            Err(e) => (None, Some(e)),
+        };
         match (|| -> Result<(), String> {
+            if let Some(e) = &queue_error {
+                return Err(e.clone());
+            }
             if upload.archive.is_none() && upload.dir_files.is_empty() {
                 return Err("No ZIP archive or folder upload received.".to_string());
             }
@@ -471,6 +483,9 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 }
                 state.db.transition_scan_run_or_warn(rid, ignite_run_lifecycle::RunLifecycleState::AwaitingReview);
             }
+
+            // A human may take hours to review; don't hold a scan slot meanwhile.
+            drop(scan_slot.take());
 
             let decision = match rx.await {
                 Ok(d) => d,

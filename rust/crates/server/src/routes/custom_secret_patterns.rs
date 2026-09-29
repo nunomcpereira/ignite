@@ -118,7 +118,7 @@ async fn sweep_pattern(State(state): State<Arc<AppState>>, crate::auth::RequireA
         return err(StatusCode::BAD_REQUEST, format!("Invalid repository name: \"{repo}\""));
     }
 
-    let token = crate::auth::resolve_effective_github_token(&headers, &state.db);
+    let token = crate::auth::github_token_for_owner(&state, &headers, &owner).await;
     if token.is_empty() {
         return err(StatusCode::UNAUTHORIZED, "No GitHub token available — connect a GitHub account or configure a server token.");
     }

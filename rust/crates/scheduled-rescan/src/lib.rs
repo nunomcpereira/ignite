@@ -172,7 +172,23 @@ impl RescanOutcome {
 /// (`routes/github_pr_status.rs`). Never touches a real GitHub org's
 /// settings — only ever a commit status + an optional PR comment on
 /// commits that already exist.
+/// How a `rescan_one` call presents itself to the server's scan queue.
+#[derive(Debug, Clone, Default)]
+pub struct RescanOptions {
+    /// Lower-priority run (sweeps, webhooks, CLIs): the server starts it
+    /// only while user slots stay free. Default `false` = user priority.
+    pub background: bool,
+    /// Slot lease the caller already holds on the server's scan queue
+    /// (in-process org scans). Sent as `X-Ignite-Scan-Lease` so the
+    /// validate-all call doesn't wait for a second slot.
+    pub lease: Option<String>,
+}
+
 pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base: &str, gh_token: &str, target: &RescanTarget, auto_fix_mode: AutoFixMode) -> RescanOutcome {
+    rescan_one_with(runner, http, server_base, gh_token, target, auto_fix_mode, &RescanOptions::default()).await
+}
+
+pub async fn rescan_one_with(runner: &ToolRunner, http: &reqwest::Client, server_base: &str, gh_token: &str, target: &RescanTarget, auto_fix_mode: AutoFixMode, opts: &RescanOptions) -> RescanOutcome {
     let full_name = format!("{}/{}", target.org, target.repo);
     let api = GithubApi::new(runner);
 
@@ -195,8 +211,16 @@ pub async fn rescan_one(runner: &ToolRunner, http: &reqwest::Client, server_base
         Err(e) => return RescanOutcome::failed(&target.org, &target.repo, format!("failed to resolve HEAD sha: {e}")),
     };
 
-    let validate_res = with_ignite_api_key(http.post(format!("{server_base}/api/pipeline/validate-all")))
-        .json(&json!({ "org": target.org, "repo": target.repo, "projectPath": dest.to_string_lossy(), "runLocalCi": false, "unitTestFailuresNonBlocking": true }))
+    let mut request = with_ignite_api_key(http.post(format!("{server_base}/api/pipeline/validate-all")));
+    if let Some(lease) = &opts.lease {
+        request = request.header("X-Ignite-Scan-Lease", lease);
+    }
+    let mut payload = json!({ "org": target.org, "repo": target.repo, "projectPath": dest.to_string_lossy(), "runLocalCi": false, "unitTestFailuresNonBlocking": true });
+    if opts.background {
+        payload["priority"] = json!("background");
+    }
+    let validate_res = request
+        .json(&payload)
         .send()
         .await;
     let body: Value = match validate_res {

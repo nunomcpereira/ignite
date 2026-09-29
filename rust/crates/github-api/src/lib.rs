@@ -19,7 +19,9 @@ use std::io::Write;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
+mod app_auth;
 mod webhook_auth;
+pub use app_auth::{resolve_token_for_owner_from_env, GithubAppAuth};
 pub use webhook_auth::verify_webhook_signature;
 
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +44,23 @@ pub enum GithubApiError {
     ChecksFailed(usize, String),
     #[error("Timed out waiting for required checks.")]
     ChecksTimedOut,
+}
+
+/// GitHub's SAML SSO authorization link, as printed by the `gh` CLI or
+/// carried in the `X-GitHub-SSO: required; url=...` response header.
+static SSO_URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https://github\.com/(?:enterprises|orgs)/[A-Za-z0-9._-]+/sso\?authorization_request=[A-Za-z0-9._~%=+/-]+").unwrap());
+
+/// The one-time link that authorizes the failing token for an SSO-enforced
+/// org, when `error_text` is GitHub's SAML-enforcement rejection.
+pub fn sso_authorization_url(error_text: &str) -> Option<String> {
+    SSO_URL_RE.find(error_text).map(|m| m.as_str().trim_end_matches(['.', ',']).to_string())
+}
+
+/// True when `error_text` is GitHub refusing a token because an org
+/// enforces SAML SSO and the token isn't authorized for it (with or without
+/// the authorization link).
+pub fn is_sso_error(error_text: &str) -> bool {
+    error_text.contains("SAML enforcement") || sso_authorization_url(error_text).is_some()
 }
 
 static PR_URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https://github\.com/\S+/pull/\d+").unwrap());
@@ -214,9 +233,16 @@ impl<'a> GithubApi<'a> {
         }
         let res = req.send().await?;
         let status = res.status();
+        // Only the header carries the SSO authorization link (the JSON body
+        // just says "Resource protected by organization SAML enforcement").
+        let sso_header = res.headers().get("x-github-sso").and_then(|v| v.to_str().ok()).map(str::to_string);
         let text = res.text().await?;
         if !status.is_success() {
-            return Err(GithubApiError::ApiFailed { method: method.to_string(), path: api_path.to_string(), status: status.as_u16(), detail: text.chars().take(300).collect() });
+            let mut detail: String = text.chars().take(300).collect();
+            if let Some(url) = sso_header.as_deref().and_then(sso_authorization_url) {
+                detail.push_str(&format!(" — authorize this token for the organization's SSO: {url}"));
+            }
+            return Err(GithubApiError::ApiFailed { method: method.to_string(), path: api_path.to_string(), status: status.as_u16(), detail });
         }
         if text.is_empty() {
             return Ok(None);
@@ -942,6 +968,19 @@ pub fn parse_sso_required_header(header: &str) -> Option<String> {
 
 #[cfg(test)]
 mod sso_header_tests {
+
+    #[test]
+    fn sso_link_is_extracted_from_gh_and_header_text() {
+        let gh = "gh: Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization. (HTTP 403)\nThe 'Acme' organization has enabled or enforced SAML SSO.\nTo access this repository, visit https://github.com/enterprises/acme-corp/sso?authorization_request=A1b2_C3-d4 and try your request again.";
+        assert_eq!(super::sso_authorization_url(gh).as_deref(), Some("https://github.com/enterprises/acme-corp/sso?authorization_request=A1b2_C3-d4"));
+        assert!(super::is_sso_error(gh));
+        let header = "required; url=https://github.com/orgs/acme/sso?authorization_request=XyZ09";
+        assert_eq!(super::sso_authorization_url(header).as_deref(), Some("https://github.com/orgs/acme/sso?authorization_request=XyZ09"));
+        assert!(super::is_sso_error("HTTP 403 {\"message\":\"Resource protected by organization SAML enforcement.\"}"));
+        assert!(!super::is_sso_error("HTTP 404 Not Found"));
+        assert_eq!(super::sso_authorization_url("https://github.com/orgs/acme/sso"), None);
+    }
+
     use super::parse_sso_required_header;
 
     #[test]

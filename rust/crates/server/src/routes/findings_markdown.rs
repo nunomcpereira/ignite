@@ -19,7 +19,9 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use ignite_acknowledgments::{build_new_review_content, Finding, HEADER};
+use ignite_acknowledgments::{fresh_review_content, Finding};
+#[cfg(test)]
+use ignite_acknowledgments::HEADER;
 use ignite_db_store::RepoDailyReport;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -71,10 +73,7 @@ fn one_line(s: &str) -> String {
 /// Exactly what `.ignite/acknowledgments.md` would hold for this repo
 /// (header + one blank-`Acknowledge:` entry per unjustified finding).
 pub fn repo_acknowledgments(repo: &RepoDailyReport) -> String {
-    match build_new_review_content("", &to_findings(repo)) {
-        Some(content) => format!("{content}\n"),
-        None => HEADER.to_string(),
-    }
+    fresh_review_content(&to_findings(repo))
 }
 
 /// A backtick fence longer than any backtick run inside `body`, so scanned
@@ -208,8 +207,8 @@ mod tests {
         let r = repo("widgets", vec![issue("secret::a.js::3", "error", "hardcoded\nkey", Some("a.js"), Some(3), Some(snippet)), issue("x::b.js::9", "warning", "meh", Some("b.js"), Some(9), None)]);
         let md = repo_acknowledgments(&r);
         assert!(md.starts_with("# Ignite pre-push acknowledgments"));
-        assert!(md.contains("ID: secret::a.js::3\n# Issue #1\n# [ERROR] secret - hardcoded key\n#   a.js:3\n# Code: const key = 'AKIA…';\nAcknowledge: "));
-        assert!(md.contains("ID: x::b.js::9\n# Issue #2\n# [WARNING] secret - meh"));
+        assert!(md.contains("ID: secret::a.js::3\n# [ERROR] secret - hardcoded key\n#   a.js:3\n# Code: const key = 'AKIA…';\nAcknowledge: "));
+        assert!(md.contains("ID: x::b.js::9\n# [WARNING] secret - meh"));
         let parsed = ignite_acknowledgments::parse_blocks(&md);
         assert_eq!(parsed.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["secret::a.js::3", "x::b.js::9"]);
         assert!(parsed.iter().all(|e| e.justification.is_empty()), "exported entries are blank, still blocking");

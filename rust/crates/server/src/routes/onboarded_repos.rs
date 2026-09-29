@@ -12,7 +12,6 @@
 //! repo instead of every onboarded repo on a timer; reuses that crate's
 //! function directly rather than duplicating it.
 
-use crate::auth::resolve_effective_github_token;
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -29,7 +28,7 @@ async fn list_onboarded_repos(State(state): State<Arc<AppState>>, crate::auth::R
 }
 
 async fn rescan_repo(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, headers: HeaderMap, Path((org, repo)): Path<(String, String)>) -> Response {
-    let gh_token = resolve_effective_github_token(&headers, &state.db);
+    let gh_token = crate::auth::github_token_for_owner(&state, &headers, &org).await;
     if gh_token.is_empty() {
         return (
             StatusCode::BAD_REQUEST,

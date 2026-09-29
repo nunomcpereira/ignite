@@ -56,7 +56,10 @@ pub async fn trivy_image_tooling(runner: &ToolRunner) -> TrivyImageToolingProbe 
     if runner.run_tool("trivy", &["--version".to_string()], tmp_str, RunToolOptions::default()).await.is_err() {
         return TrivyImageToolingProbe { ok: false, reason: Some("`trivy` is not installed (brew install trivy).".to_string()) };
     }
-    if runner.run_tool("docker", &["info".to_string(), "--format".to_string(), "{{.ServerVersion}}".to_string()], tmp_str, RunToolOptions::default()).await.is_err() {
+    // `docker info` can stall for minutes while Docker Desktop is starting
+    // or paused; an availability probe shouldn't wait that long.
+    let docker_opts = RunToolOptions { timeout_ms: Some(10_000), ..Default::default() };
+    if runner.run_tool("docker", &["info".to_string(), "--format".to_string(), "{{.ServerVersion}}".to_string()], tmp_str, docker_opts).await.is_err() {
         return TrivyImageToolingProbe { ok: false, reason: Some("Docker daemon is not running (start Docker Desktop) — needed to build the image before scanning it.".to_string()) };
     }
     TrivyImageToolingProbe { ok: true, reason: None }

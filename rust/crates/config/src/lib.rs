@@ -64,6 +64,7 @@ pub struct Config {
     pub audit_log: AuditLogConfig,
     pub policy: PolicyConfig,
     pub org_repos: OrgReposConfig,
+    pub scan_queue: ScanQueueConfig,
     pub daily_report: DailyReportConfig,
 }
 
@@ -91,36 +92,43 @@ impl Default for Config {
             audit_log: AuditLogConfig::default(),
             policy: PolicyConfig::default(),
             org_repos: OrgReposConfig::default(),
+            scan_queue: ScanQueueConfig::default(),
             daily_report: DailyReportConfig::default(),
         }
     }
 }
 
-/// GitHub Org view scan scheduling. `maxConcurrentScans` (default 2) caps
-/// how many `rescan_one` runs (clone -> validate-all -> github-check, 5-16+
-/// minutes each per `rust/MIGRATION_STATUS.md`'s own benchmark) execute at
-/// once across "Scan now", "Scan all" and the auto-rescan sweep alike;
-/// every scan beyond the cap waits in a FIFO queue (shown as "Queued" in
-/// the UI) and starts the moment a running one finishes. Read once at
-/// server startup — changing it needs a restart. `0` is treated as `1`.
+/// GitHub Org view settings. Scan concurrency for these scans (and every
+/// other scan) is `ScanQueueConfig`'s job, not this section's.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OrgReposConfig {
-    pub max_concurrent_scans: u32,
     /// How stale a repo's last scan has to be before the auto-rescan sweep
     /// (`POST /api/org-repos/auto-rescan/run`, meant to be hit hourly by
-    /// an external cron/launchd timer — deliberately not a live in-process
-    /// scheduler, matching `scheduled-rescan`'s own "run by hand/cron/
-    /// systemd" posture) re-triggers it. A repo never scanned at all is
-    /// always considered stale regardless of this value. Whether the
-    /// sweep does anything at all on a given hour is a separate, runtime-
-    /// toggleable flag (`DbStore::get_bool_setting("auto_rescan_enabled")`)
-    /// — not this static config value — since that's meant to be flipped
-    /// live from the UI without a server restart.
+    /// an external cron/launchd timer) re-queues it. A repo never scanned
+    /// at all is always considered stale regardless of this value.
     pub auto_rescan_stale_after_hours: u32,
 }
 impl Default for OrgReposConfig {
-    fn default() -> Self { OrgReposConfig { max_concurrent_scans: 2, auto_rescan_stale_after_hours: 24 } }
+    fn default() -> Self { OrgReposConfig { auto_rescan_stale_after_hours: 24 } }
+}
+
+/// Server-wide scan admission (`server/src/routes/scan_queue.rs`). At most
+/// `maxConcurrent` pipeline runs execute at once across every entry point
+/// (upload, validate-all, onboard, MCP, org scans). User-initiated runs
+/// always go ahead of background ones (auto-rescan, "Scan all", scheduled
+/// sweeps), and a background run only starts when doing so still leaves
+/// `userReservedSlots` slots free, so a user's scan never waits behind the
+/// sweep. Read once at startup. `maxConcurrent` 0 is treated as 1;
+/// `userReservedSlots` is clamped to `maxConcurrent - 1`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ScanQueueConfig {
+    pub max_concurrent: u32,
+    pub user_reserved_slots: u32,
+}
+impl Default for ScanQueueConfig {
+    fn default() -> Self { ScanQueueConfig { max_concurrent: 3, user_reserved_slots: 1 } }
 }
 
 /// Org-level daily findings digest: once a day, one email per org listing
@@ -389,6 +397,8 @@ pub struct GithubConfig {
     /// 'https' | 'ssh'
     pub remote_protocol: String,
     pub oauth: OauthConfig,
+    #[serde(default)]
+    pub app: GithubAppConfig,
 }
 impl Default for GithubConfig {
     fn default() -> Self {
@@ -400,7 +410,28 @@ impl Default for GithubConfig {
                 scope: "repo".into(),
                 ..Default::default()
             },
+            app: GithubAppConfig::default(),
         }
+    }
+}
+
+/// A GitHub App Ignite authenticates as for server-side, org-bound work
+/// (org discovery, clone for scans, the `ignite/gate` status, SARIF,
+/// webhooks). Its installation tokens aren't tied to a person or to an SSO
+/// session, unlike a user's OAuth token. Unset `appId` = no App; the
+/// OAuth/PAT chain is used as before. `privateKey` is the PEM itself
+/// (`\n` escapes accepted), `privateKeyPath` a file holding it; keep either
+/// in a secret store, never in a committed config.json.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GithubAppConfig {
+    pub app_id: String,
+    pub private_key: String,
+    pub private_key_path: String,
+}
+impl std::fmt::Debug for GithubAppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GithubAppConfig").field("app_id", &self.app_id).field("private_key", &redact_str(&self.private_key)).field("private_key_path", &self.private_key_path).finish()
     }
 }
 
@@ -1342,6 +1373,9 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("GITHUB_OAUTH_CLIENT_SECRET") { merged.github.oauth.client_secret = v; }
     if let Some(v) = env_str("GITHUB_OAUTH_REDIRECT_URI") { merged.github.oauth.redirect_uri = v; }
     if let Some(v) = env_str("GITHUB_OAUTH_SCOPE") { merged.github.oauth.scope = v; }
+    if let Some(v) = env_str("GITHUB_APP_ID") { merged.github.app.app_id = v; }
+    if let Some(v) = env_str("GITHUB_APP_PRIVATE_KEY") { merged.github.app.private_key = v; }
+    if let Some(v) = env_str("GITHUB_APP_PRIVATE_KEY_PATH") { merged.github.app.private_key_path = v; }
     if let Some(v) = env_bool("GITLEAKS_ENABLED") { merged.security.gitleaks.enabled = v; }
     if let Some(v) = env_bool("GITLEAKS_SCAN_HISTORY") { merged.security.gitleaks.scan_history = v; }
     if let Some(v) = env_str("GITLEAKS_BINARY") { merged.security.gitleaks.binary = v; }
@@ -1388,7 +1422,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }
     if let Some(v) = env_num::<u32>("SLA_MEDIUM_DAYS") { merged.sla.medium_days = v; }
     if let Some(v) = env_bool("AUDIT_LOG_ENABLED") { merged.audit_log.enabled = v; }
-    if let Some(v) = env_num::<u32>("ORG_REPOS_MAX_CONCURRENT_SCANS") { merged.org_repos.max_concurrent_scans = v; }
+    if let Some(v) = env_num::<u32>("SCAN_QUEUE_MAX_CONCURRENT") { merged.scan_queue.max_concurrent = v; }
+    if let Some(v) = env_num::<u32>("SCAN_QUEUE_USER_RESERVED_SLOTS") { merged.scan_queue.user_reserved_slots = v; }
     if let Some(v) = env_num::<u32>("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS") { merged.org_repos.auto_rescan_stale_after_hours = v; }
     if let Some(v) = env_bool("DAILY_REPORT_ENABLED") { merged.daily_report.enabled = v; }
     if let Some(v) = env_str("DAILY_REPORT_TIME") { merged.daily_report.time = v; }
@@ -1751,6 +1786,9 @@ mod tests {
         assert_eq!(load_with_env("GITHUB_REMOTE_PROTOCOL", "ssh").github.remote_protocol, "ssh", "GITHUB_REMOTE_PROTOCOL");
         assert_eq!(load_with_env("GITHUB_OAUTH_CLIENT_ID", "pin-GITHUB_OAUTH_CLIENT_ID").github.oauth.client_id, "pin-GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_ID");
         assert_eq!(load_with_env("GITHUB_OAUTH_CLIENT_SECRET", "pin-GITHUB_OAUTH_CLIENT_SECRET").github.oauth.client_secret, "pin-GITHUB_OAUTH_CLIENT_SECRET", "GITHUB_OAUTH_CLIENT_SECRET");
+        assert_eq!(load_with_env("GITHUB_APP_ID", "123456").github.app.app_id, "123456", "GITHUB_APP_ID");
+        assert_eq!(load_with_env("GITHUB_APP_PRIVATE_KEY", "pin-GITHUB_APP_PRIVATE_KEY").github.app.private_key, "pin-GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_PRIVATE_KEY");
+        assert_eq!(load_with_env("GITHUB_APP_PRIVATE_KEY_PATH", "/secrets/app.pem").github.app.private_key_path, "/secrets/app.pem", "GITHUB_APP_PRIVATE_KEY_PATH");
         assert_eq!(load_with_env("GITHUB_OAUTH_REDIRECT_URI", "pin-GITHUB_OAUTH_REDIRECT_URI").github.oauth.redirect_uri, "pin-GITHUB_OAUTH_REDIRECT_URI", "GITHUB_OAUTH_REDIRECT_URI");
         assert_eq!(load_with_env("GITHUB_OAUTH_SCOPE", "pin-GITHUB_OAUTH_SCOPE").github.oauth.scope, "pin-GITHUB_OAUTH_SCOPE", "GITHUB_OAUTH_SCOPE");
         assert!(load_with_env("GITLEAKS_ENABLED", "true").security.gitleaks.enabled, "GITLEAKS_ENABLED=true");
@@ -1816,7 +1854,8 @@ mod tests {
         assert_eq!(load_with_env("SLA_MEDIUM_DAYS", "7").sla.medium_days.to_string(), "7", "SLA_MEDIUM_DAYS");
         assert!(load_with_env("AUDIT_LOG_ENABLED", "true").audit_log.enabled, "AUDIT_LOG_ENABLED=true");
         assert!(!load_with_env("AUDIT_LOG_ENABLED", "false").audit_log.enabled, "AUDIT_LOG_ENABLED=false");
-        assert_eq!(load_with_env("ORG_REPOS_MAX_CONCURRENT_SCANS", "7").org_repos.max_concurrent_scans.to_string(), "7", "ORG_REPOS_MAX_CONCURRENT_SCANS");
+        assert_eq!(load_with_env("SCAN_QUEUE_MAX_CONCURRENT", "7").scan_queue.max_concurrent.to_string(), "7", "SCAN_QUEUE_MAX_CONCURRENT");
+        assert_eq!(load_with_env("SCAN_QUEUE_USER_RESERVED_SLOTS", "2").scan_queue.user_reserved_slots.to_string(), "2", "SCAN_QUEUE_USER_RESERVED_SLOTS");
         assert_eq!(load_with_env("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS", "7").org_repos.auto_rescan_stale_after_hours.to_string(), "7", "ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS");
         assert!(load_with_env("DAILY_REPORT_ENABLED", "true").daily_report.enabled, "DAILY_REPORT_ENABLED=true");
         assert!(!load_with_env("DAILY_REPORT_ENABLED", "false").daily_report.enabled, "DAILY_REPORT_ENABLED=false");
@@ -1928,6 +1967,6 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 132, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 136, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
     }
 }

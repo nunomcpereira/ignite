@@ -6,6 +6,7 @@
 # Secrets never go here. Put them in a Secret named ignite-secrets, e.g.:
 #   kubectl -n ignite create secret generic ignite-secrets \
 #     --from-literal=GITHUB_OAUTH_CLIENT_SECRET=... \
+#     --from-file=GITHUB_APP_PRIVATE_KEY=./app.pem \
 #     --from-literal=GH_TOKEN=... \
 #     --from-literal=ANTHROPIC_API_KEY=... \
 #     --from-literal=SMTP_PASS=...
@@ -23,5 +24,7 @@ data:
   GITHUB_OAUTH_CLIENT_ID: ""
   GITHUB_OAUTH_REDIRECT_URI: "https://ignite.example.com/api/auth/github/callback"
   GITHUB_OAUTH_SCOPE: "repo"
+  # GitHub App used for org scans/statuses (its private key goes in the Secret)
+  GITHUB_APP_ID: ""
   # Auth
   AUTH_MODE: "github"

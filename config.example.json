@@ -218,8 +218,11 @@
     "strict": false
   },
   "orgRepos": {
-    "maxConcurrentScans": 2,
     "autoRescanStaleAfterHours": 24
+  },
+  "scanQueue": {
+    "maxConcurrent": 3,
+    "userReservedSlots": 1
   },
   "dailyReport": {
     "enabled": false,
