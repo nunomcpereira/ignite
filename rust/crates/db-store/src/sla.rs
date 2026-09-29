@@ -124,6 +124,7 @@ mod tests {
             tool: None,
             references: None,
             duplicate_ref: None,
+            author: None,
         }
     }
 

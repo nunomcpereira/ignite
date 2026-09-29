@@ -300,6 +300,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let mut unit_test_warning: Option<String> = None;
     let mut phase4_task_timings: Vec<(&'static str, u64)> = vec![];
     let mut phase4_coverage: Vec<ignite_policy::CheckCoverage> = vec![];
+    let mut rule_acknowledgments: Vec<(String, String)> = vec![];
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut project_id: i64 = 0;
     let mut run_id: Option<i64> = None;
@@ -428,6 +429,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                     issues.extend(output.issues);
                     phase4_task_timings.extend(output.task_timings);
                     phase4_coverage.extend(output.coverage);
+                    rule_acknowledgments = output.rule_acknowledgments;
                 }
                 Err(e) => return Err(PipelineError::new(4, e.to_string())),
             }
@@ -435,12 +437,52 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             phase4_coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
         }
 
+        // Line-level author of every finding (who last changed that line,
+        // not the latest committer), before anything is persisted or
+        // returned so both the pass and the blocked paths carry it.
+        if state.config.blame.enabled {
+            // Blame the caller's checkout, not the staged copy (staging
+            // leaves `.git` behind); finding paths are relative to `root`,
+            // so resolve the same directory inside `projectPath`.
+            let blame_root = project_path.join(root.strip_prefix(&staging_dir).unwrap_or(std::path::Path::new("")));
+            // Only a shallow clone needs GitHub (and so a token).
+            let token = if project_path.join(".git").join("shallow").exists() && GITHUB_NAME_RE.is_match(&org) {
+                crate::auth::resolve_github_token_for_owner(&state, &headers, &org).await.map(|(t, _)| t)
+            } else {
+                None
+            };
+            let remote = token.as_deref().map(|token| ignite_blame::RemoteRepo { org: &org, repo: &repo, token });
+            let opts = ignite_blame::BlameOptions { max_remote_files: state.config.blame.max_remote_files_per_scan, min_rate_limit_remaining: state.config.blame.min_rate_limit_remaining };
+            let stats = time_stage(&timings, "blame", ignite_blame::attribute_issues(&state.runner, &state.db, &blame_root, &project_path, remote, &opts, &mut issues)).await;
+            if stats.source != "none" {
+                let mut msg = format!("Authors: {} of {} finding(s) attributed via {} ({} file(s)", stats.attributed, issues.len(), stats.source, stats.files);
+                if stats.source == "github" {
+                    msg.push_str(&format!(", {} cached, {} looked up", stats.cache_hits, stats.remote_files));
+                    if stats.deferred_files > 0 {
+                        msg.push_str(&format!(", {} deferred to the next scan", stats.deferred_files));
+                    }
+                }
+                msg.push(')');
+                logger.log(4, &msg);
+            }
+        }
+
+        // Findings matched by config.json `ignoreRules`: still reported,
+        // but acknowledged with the rule's reason so they never block.
+        if !rule_acknowledgments.is_empty() {
+            let applied = ignite_pipeline_core::persist_rule_acknowledgments(&state.db, &issues, &rule_acknowledgments, project_id, &job_id, 4);
+            for (issue, _) in &applied {
+                overridden_ids.insert(issue.id.clone());
+            }
+            logger.log(4, &format!("{} finding(s) acknowledged by config.json ignoreRules.", applied.len()));
+        }
+
         let gated_issues: Vec<&Issue> = match baseline_mode.as_deref() {
             Some("gate") => {
                 let ids = baseline_issue_ids.as_ref().unwrap();
-                issues.iter().filter(|i| !ids.contains(&i.id)).collect()
+                issues.iter().filter(|i| !ids.contains(&i.id) && !overridden_ids.contains(&i.id)).collect()
             }
-            _ => issues.iter().collect(),
+            _ => issues.iter().filter(|i| !overridden_ids.contains(&i.id)).collect(),
         };
         let error_issues: Vec<&Issue> = gated_issues.iter().filter(|i| i.severity == Severity::Error).copied().collect();
         let issues_requiring_override: Vec<&Issue> = if warning_decision == "continue" { error_issues } else { gated_issues };
@@ -1111,6 +1153,63 @@ mod phase_gating_tests {
 
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
         assert!(!issues.iter().any(|i| i["category"] == "secret"), "secrets check should not have run when phase 4 is disabled: {issues:?}");
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str], who: &str) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", who)
+            .env("GIT_AUTHOR_EMAIL", format!("{}@example.com", who.to_lowercase()))
+            .env("GIT_COMMITTER_NAME", who)
+            .env("GIT_COMMITTER_EMAIL", format!("{}@example.com", who.to_lowercase()))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[tokio::test]
+    async fn findings_name_the_author_of_their_line_not_the_latest_committer() {
+        let dir = secret_fixture_dir();
+        let p = dir.path();
+        git(p, &["init", "-q", "-b", "main"], "Alice");
+        git(p, &["add", "package.json"], "Alice");
+        git(p, &["commit", "-q", "-m", "init"], "Alice");
+        git(p, &["add", "config.js"], "Bob");
+        git(p, &["commit", "-q", "-m", "config"], "Bob");
+        std::fs::write(p.join("README.md"), "later\n").unwrap();
+        git(p, &["add", "README.md"], "Carol");
+        git(p, &["commit", "-q", "-m", "docs"], "Carol");
+
+        let (state, _db_dir) = build_state(ignite_config::Config::default());
+        let user_id = state.db.create_local_user("tester@example.com", None, "unused-hash").unwrap();
+        let token = format!("{}{}", ignite_auth::API_KEY_PREFIX, uuid::Uuid::new_v4());
+        state.db.create_api_key(user_id, &ignite_auth::hash_api_key(&token), None, None, "test");
+        let db_state = state.clone();
+        let base = spawn_test_server(state).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+        let body: Value = client
+            .post(format!("{base}/api/pipeline/validate-all"))
+            .bearer_auth(token)
+            .json(&json!({ "projectPath": p.to_string_lossy(), "fast": true, "runLocalCi": false, "org": "acme", "repo": "widgets" }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let issues = body["issues"].as_array().cloned().unwrap_or_default();
+        let secret = issues.iter().find(|i| i["category"] == "secret").unwrap_or_else(|| panic!("expected a secret finding: {body}"));
+        assert_eq!(secret["author"]["name"], "Bob", "{secret}");
+        assert_eq!(secret["author"]["email"], "bob@example.com");
+        assert_eq!(secret["author"]["commit"].as_str().map(str::len), Some(40));
+
+        // Persisted too, so reports (daily report, Sentinel) can name the owner.
+        let reports = db_state.db.list_latest_scan_unjustified_findings(Some("acme"));
+        let stored = reports.iter().flat_map(|r| &r.unjustified).find(|i| i.category == "secret").expect("persisted secret finding");
+        assert_eq!(stored.author.as_ref().and_then(|a| a["name"].as_str()), Some("Bob"));
     }
 
     #[tokio::test]

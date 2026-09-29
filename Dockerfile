@@ -71,6 +71,7 @@ ARG INSTALL_ORT=true
 ARG INSTALL_ACT=true
 ARG INSTALL_GH=true
 ARG INSTALL_DOCKER_CLI=true
+ARG INSTALL_WEASYPRINT=true
 # GID of the `docker` group inside the container, so the non-root app user
 # can read the bind-mounted host /var/run/docker.sock (needed for Phase 5's
 # `act` runs and the multi-language unit-test runner, both of which shell
@@ -262,6 +263,17 @@ RUN if [ "$INSTALL_CODEQL" = "true" ]; then \
         && unzip -q /tmp/codeql.zip -d /opt \
         && ln -s /opt/codeql/codeql /usr/local/bin/codeql && rm /tmp/codeql.zip; \
       fi; \
+    fi
+
+# --- Daily report PDF export -----------------------------------------------
+# WeasyPrint renders the report HTML to PDF without a browser: no Chromium
+# (~350MB, frequent CVEs), no `--no-sandbox` as the non-root user, no
+# /dev/shm sizing. BSD-3-Clause; Debian's package pulls in Pango. DejaVu so
+# a slim image has real glyphs. Without it the server falls back to a
+# browser if one is present, else PDF export reports it is unavailable.
+RUN if [ "$INSTALL_WEASYPRINT" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends weasyprint fonts-dejavu-core \
+      && rm -rf /var/lib/apt/lists/*; \
     fi
 
 # --- Code metrics / API schema (npm-based) --------------------------------

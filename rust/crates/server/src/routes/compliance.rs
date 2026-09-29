@@ -199,6 +199,7 @@ mod tests {
             tool: None,
             references: None,
             duplicate_ref: None,
+            author: None,
         };
         state.db.replace_project_issues(project_id, &[issue], &std::collections::HashSet::new());
         state.db.add_override(ignite_db_store::AddOverrideArgs { project_id, job_id: "job-1", phase: 4, issue_id: "secret::a.js::1", category: "secret", severity: "error", summary: "hardcoded secret", file: Some("a.js"), line: Some(1), justification: "reviewed", actor_email: "dev@acme.com", actor_name: None, email_sent: false });

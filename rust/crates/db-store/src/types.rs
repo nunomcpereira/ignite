@@ -177,6 +177,8 @@ pub struct IssueInput {
     /// A code-duplication finding's "also found at" pointer (`{file, line,
     /// endLine}`) — same loose-JSON-blob treatment as `snippet`/`chain`.
     pub duplicate_ref: Option<serde_json::Value>,
+    /// Serialized `ignite_override_engine::IssueAuthor` (line-level git blame).
+    pub author: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -211,6 +213,9 @@ pub struct IssueRow {
     pub justification: Option<String>,
     pub actor_email: Option<String>,
     pub actor_name: Option<String>,
+    /// Line-level git author of the finding (`IssueInput::author`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -349,6 +354,9 @@ pub struct OnboardedRepoSummary {
     pub last_scan_at: String,
     pub license_problems: i64,
     pub findings_count: i64,
+    /// Findings on the latest run that are flagged but justified
+    /// (`status = 'overridden'`), not included in `findings_count`.
+    pub justified_count: i64,
     pub sla_breaches: i64,
     pub acknowledgments: Vec<OverrideRow>,
     pub recent_prs: Vec<PullRequestRow>,

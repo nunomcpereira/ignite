@@ -653,4 +653,9 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     (36, "CREATE TABLE IF NOT EXISTS async_jobs (job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, owner_user_id INTEGER, state TEXT NOT NULL DEFAULT 'running', http_status INTEGER, result_json TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT);"),
     // Self-service keys are short-lived; NULL = never expires (every CLI-minted/pre-existing key).
     (37, "ALTER TABLE api_keys ADD COLUMN expires_at TEXT;"),
+    // Line-level git authorship: (38) the author of each finding's line,
+    // and a cache of per-file blame ranges keyed by the file's git blob SHA,
+    // so a file unchanged since the last scan is never blamed again (GitHub's
+    // GraphQL blame is rate-limited). `last_used_at` lets old blobs age out.
+    (38, "ALTER TABLE issues ADD COLUMN author_json TEXT; CREATE TABLE IF NOT EXISTS blame_cache (org TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL, blob_sha TEXT NOT NULL, ranges_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_used_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (org, repo, path, blob_sha));"),
 ];

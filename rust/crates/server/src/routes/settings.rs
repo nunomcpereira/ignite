@@ -141,7 +141,7 @@ fn view(state: &AppState) -> Value {
             "azureBlobContainerUrl": r.sources.azure_blob_container_url.as_str(),
         },
         "notificationsEnabled": state.config.notifications.enabled,
-        "pdfBrowserAvailable": state.runner.binary_for("chrome").is_some(),
+        "pdfBrowserAvailable": crate::routes::daily_report::pdf_renderer_available(&state.runner),
     })
 }
 

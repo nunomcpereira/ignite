@@ -1,0 +1,21 @@
+[package]
+name = "ignite-blame"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ignite-db-store = { path = "../db-store" }
+ignite-github-api = { path = "../github-api" }
+ignite-override-engine = { path = "../override-engine" }
+ignite-tool-runner = { path = "../tool-runner" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+futures = "0.3"
+once_cell = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

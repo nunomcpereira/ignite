@@ -146,7 +146,7 @@ impl PipelineError {
 use ignite_pipeline_core::panic_message;
 
 pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
-    ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone(), owasp: i.owasp.clone(), tool: i.tool.clone(), references: if i.references.is_empty() { None } else { Some(serde_json::to_value(&i.references).unwrap()) }, duplicate_ref: i.duplicate_ref.clone() }
+    ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone(), owasp: i.owasp.clone(), tool: i.tool.clone(), references: if i.references.is_empty() { None } else { Some(serde_json::to_value(&i.references).unwrap()) }, duplicate_ref: i.duplicate_ref.clone(), author: i.author.as_ref().and_then(|a| serde_json::to_value(a).ok()) }
 }
 
 // `default_phase4_config` (this file used to define its own thin wrapper,
@@ -371,6 +371,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
 
         logger.status(4, "running", None);
         let mut issues: Vec<Issue> = license_issues.clone();
+        let mut rule_acknowledgments: Vec<(String, String)> = Vec::new();
         coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
         if !phase_enabled(&phase_meta, 4) {
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
@@ -381,15 +382,23 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
                 .await
                 .map_err(|e| PipelineError::new(4, e.to_string()))?;
             coverage.extend(output.coverage);
+            rule_acknowledgments = output.rule_acknowledgments;
             issues = output.issues;
             issues.extend(license_issues);
         }
         let issue_inputs: Vec<ignite_db_store::IssueInput> = issues.iter().map(issue_to_input).collect();
-        state.db.replace_project_issues(project_id, &issue_inputs, &HashSet::new());
-
-        let error_issues: Vec<&Issue> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
-        let issues_requiring_override: Vec<&Issue> = if warning_decision == "continue" { error_issues } else { issues.iter().collect() };
+        // Findings matched by config.json `ignoreRules`: still reported,
+        // but acknowledged with the rule's reason so they never block.
         let mut applied_override_ids: HashSet<String> = HashSet::new();
+        if !rule_acknowledgments.is_empty() {
+            let applied = ignite_pipeline_core::persist_rule_acknowledgments(&state.db, &issues, &rule_acknowledgments, project_id, &job_id, 4);
+            applied_override_ids.extend(applied.iter().map(|(issue, _)| issue.id.clone()));
+            logger.log(4, &format!("{} finding(s) acknowledged by config.json ignoreRules.", applied.len()));
+        }
+        state.db.replace_project_issues(project_id, &issue_inputs, &applied_override_ids);
+
+        let error_issues: Vec<&Issue> = issues.iter().filter(|i| i.severity == Severity::Error && !applied_override_ids.contains(&i.id)).collect();
+        let issues_requiring_override: Vec<&Issue> = if warning_decision == "continue" { error_issues } else { issues.iter().filter(|i| !applied_override_ids.contains(&i.id)).collect() };
 
         if !issues_requiring_override.is_empty() {
             let owned: Vec<Issue> = issues_requiring_override.iter().map(|i| (*i).clone()).collect();

@@ -209,6 +209,29 @@ pub struct Issue {
     /// applies — see `IssueReferences`.
     #[serde(skip_serializing_if = "IssueReferences::is_empty")]
     pub references: IssueReferences,
+    /// Who last changed the flagged line (`git blame`, not the latest
+    /// committer) — filled after the scan by `ignite-blame`, `None` when the
+    /// source has no git history or the line couldn't be attributed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<IssueAuthor>,
+}
+
+/// Line-level authorship of a finding (see `Issue::author`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueAuthor {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// GitHub login, when known (GitHub's blame API, or a `users.noreply` email).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+    /// The commit that last changed the line.
+    pub commit: String,
+    /// Author date of that commit, RFC 3339.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
 }
 
 /// One shape covers every check's raw finding here (mirrors the loosely-

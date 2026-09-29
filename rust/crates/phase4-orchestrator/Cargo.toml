@@ -8,6 +8,7 @@ ignite-fs-utils = { path = "../fs-utils" }
 ignite-tool-runner = { path = "../tool-runner" }
 ignite-db-store = { path = "../db-store" }
 ignite-override-engine = { path = "../override-engine" }
+ignite-issue-filter = { path = "../issue-filter" }
 ignite-ai-governance = { path = "../ai-governance" }
 ignite-secrets = { path = "../secrets" }
 ignite-secret-verifier = { path = "../secret-verifier" }

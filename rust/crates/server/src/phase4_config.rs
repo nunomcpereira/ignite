@@ -40,6 +40,11 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
 
     ignite_phase4_orchestrator::Phase4Config {
         fast,
+        ignore_rules: cfg
+            .ignore_rules_for(org, repo)
+            .into_iter()
+            .map(|r| ignite_issue_filter::IgnoreRule { file_patterns: r.file_patterns, line_patterns: r.line_patterns, categories: r.categories, reason: r.reason.unwrap_or_default() })
+            .collect(),
         org: org.to_string(),
         repo: repo.to_string(),
         project_id,
@@ -159,6 +164,13 @@ pub fn runner_from_config(cfg: &ignite_config::Config) -> ignite_tool_runner::To
     ]
     .into_iter()
     .collect();
+    // PDF export: WeasyPrint wins over an auto-detected browser, but an
+    // explicitly configured browser wins over WeasyPrint.
+    if cfg.daily_report.pdf_browser_binary.trim().is_empty() {
+        if let Some(weasyprint) = crate::routes::daily_report::detect_weasyprint() {
+            binaries.insert("weasyprint", weasyprint);
+        }
+    }
     if let Some(browser) = crate::routes::daily_report::detect_pdf_browser(&cfg.daily_report.pdf_browser_binary) {
         binaries.insert("chrome", browser);
     }

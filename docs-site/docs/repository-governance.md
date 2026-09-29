@@ -29,6 +29,52 @@ and can propose fixes for eligible findings; the unattended flow only updates
 dependency vulnerabilities with a safe, non-major version bump discovered
 during a scheduled rescan.
 
+## Acknowledge known false positives by policy
+
+Some findings are benign across a whole organization — for example SAP CPI
+packages whose `*_Credential_Name=` lines hold credential *alias names*, not
+secrets. Instead of every team justifying the same line in every repository,
+an operator declares the exception once in `config.json`'s `ignoreRules`,
+scoped by organization, repository, file, and flagged line:
+
+```json
+"ignoreRules": {
+  "acme-corp": {
+    "sap-*": [
+      {
+        "filePatterns": ["^Preparations? Steps/", "(^|/)parameters\\.prop$"],
+        "linePatterns": ["^\\s*[A-Za-z0-9_]*Credential[A-Za-z0-9_]*\\s*=\\s*[A-Za-z0-9_.-]+\\s*$"],
+        "categories": ["secret"],
+        "reason": "SAP CPI *Credential* parameters hold security-material alias names, not secrets"
+      }
+    ]
+  }
+}
+```
+
+- Organization and repository keys are case-insensitive and accept `*`
+  wildcards (`"*"` for every repository of the org, or every org).
+- `filePatterns` are regular expressions matched against the repo-relative
+  path; `linePatterns` are matched against the flagged source line itself.
+  Leave `linePatterns` empty to cover a whole file; `categories` is optional
+  (empty means any category). A rule with neither pattern list, or an invalid
+  regex, is skipped and logged, never fatal.
+- A matched finding is **not hidden**. It stays in the results, but is
+  recorded as acknowledged with the rule's `reason` as its justification
+  (actor `ignore-rules@ignite.internal`, origin `config_rule`), so it no
+  longer blocks the gate. The repository shows as passing, the Findings
+  count still includes it (violet with a ✓ when every finding is
+  acknowledged), and Studio and the findings viewer show the reason with an
+  **⚙ Org rule** badge.
+- Policy acknowledgments are never carried forward on their own: remove or
+  narrow a rule and the next scan flags those findings again. Rule changes
+  apply after a server restart and take effect on each repository's next
+  scan.
+
+Rules apply to Phase 4 findings on every scan path — validate-all (CLI,
+pre-push hook, organization scans, scheduled rescans), onboarding, and the
+interactive upload. Phase 3 license and dependency findings are not matched.
+
 ## Track the repository portfolio
 
 **Onboarded Repos** keeps one current row for every repository Ignite has
@@ -44,6 +90,12 @@ trigger that endpoint from your scheduler, and it only rescans repositories
 whose last scan is older than the configured threshold.
 
 ![GitHub organization repository portfolio](/img/screenshots/17-org-repository-portfolio.png)
+
+Each organization is a collapsible parent row with its repositories nested
+beneath it. Filter chips above the table narrow the list to **Errors** (scan
+failed or could not run), **Aborted**, or **Empty** repositories, with a live
+count on each. The **Scan queue** panel on the right edge lists running and
+waiting scans with the full repository name.
 
 The screen is designed for an organization that already has repositories on
 GitHub before Ignite is introduced. A scan started here becomes an ordinary
@@ -74,6 +126,16 @@ console's **Settings** menu. Delivery can use email, an HTTPS webhook,
 Microsoft Sentinel, and Azure Blob Storage; configuration secrets are stored
 server-side and test delivery is available before the schedule is enabled.
 
+Each finding names its owner: the person who last changed the flagged line
+(`git blame`), not the repository's latest committer. Reports list it per
+finding, and the Microsoft Sentinel payload carries it on every finding plus
+an `owners` rollup (findings count, highest score and repositories per
+person), so a Logic App can assign or route incidents per owner. Scans of a
+shallow clone (organization scans, scheduled rescans) look the line up
+through GitHub's blame API; results are cached per file version, so a file
+that hasn't changed is never looked up again, and each scan stays within a
+configurable share of the GitHub API budget (`blame` in `config.json`).
+
 The reporting endpoints support the same evidence outside the console:
 
 ```text
@@ -83,8 +145,9 @@ GET  /api/reports/daily/markdown?org=acme
 ```
 
 The PDF endpoint creates the same per-organization report as the scheduled
-delivery. It needs Chrome, Chromium, or Edge on the Ignite host (or
-`dailyReport.pdfBrowserBinary` in `config.json`). The Markdown endpoint
+delivery. It uses WeasyPrint when installed (the Docker image includes it),
+otherwise Chrome, Chromium, or Edge on the Ignite host. Setting
+`dailyReport.pdfBrowserBinary` in `config.json` forces that browser. The Markdown endpoint
 exports each repository's open findings in Ignite's
 `.ignite/acknowledgments.md` format, ready for an engineer to add a
 justification and submit through the normal review path.

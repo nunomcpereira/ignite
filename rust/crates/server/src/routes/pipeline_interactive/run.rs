@@ -19,6 +19,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
     let workflow_dir = PathBuf::from(format!("{}-workflows", staging_dir.to_string_lossy()));
 
     let mut all_issues: Vec<Issue> = Vec::new();
+    let mut rule_acknowledgments: Vec<(String, String)> = Vec::new();
     let mut project_id: Option<i64> = None;
     // US-04: the normalized `scan_runs.id` for this run, resolved once
     // `project_id` is known — `None` for the (rare) case Phase 1 itself
@@ -284,6 +285,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     let issue_count = output.issues.len();
                     let blocking_count = output.issues.iter().filter(|i| i.severity == Severity::Error).count();
                     all_issues.extend(output.issues);
+                    rule_acknowledgments = output.rule_acknowledgments;
                     if issue_count > 0 {
                         log.log(4, &format!("⚠ {issue_count} flagged issue(s) ({blocking_count} blocking) — will be presented for final review before push."));
                     }
@@ -364,9 +366,25 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
         // from `IssueRow` — `all_issues` itself carries no override fields.
         let mut pre_meta: std::collections::HashMap<String, (String, &'static str, &'static str)> = std::collections::HashMap::new();
         if let Some(pid) = project_id {
+            // Findings matched by config.json `ignoreRules`: acknowledged
+            // with the rule's reason, ahead of carry-forward/AI assist.
+            if !rule_acknowledgments.is_empty() {
+                let applied = ignite_pipeline_core::persist_rule_acknowledgments(&state.db, &all_issues, &rule_acknowledgments, pid, &job_id, 4);
+                for (issue, justification) in &applied {
+                    pre_meta.insert(issue.id.clone(), (justification.clone(), ignite_pipeline_core::RULE_ACK_ACTOR_EMAIL, ignite_pipeline_core::RULE_ACK_ACTOR_NAME));
+                    pre_overrides.push(SubmittedOverride { issue_id: issue.id.clone(), justification: justification.clone(), code: None });
+                    pre_ids.insert(issue.id.clone());
+                }
+                if !applied.is_empty() {
+                    log.log(6, &format!("{} finding(s) acknowledged by config.json ignoreRules.", applied.len()));
+                }
+            }
             let carried_forward = state.db.get_carry_forward_overrides(&org, &repo, pid);
             let mut carried_count = 0;
             for issue in &all_issues {
+                if pre_ids.contains(&issue.id) {
+                    continue;
+                }
                 let Some(prior) = carried_forward.get(&issue.id) else { continue };
                 let justification = format!("Carried forward from a previous scan of {org}/{repo}: {}", prior.justification);
                 state.db.add_override_with_origin(ignite_db_store::AddOverrideArgs {

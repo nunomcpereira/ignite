@@ -105,7 +105,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn github_check(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn github_check(State(state): State<Arc<AppState>>, crate::auth::AuthOrScanLease(_user): crate::auth::AuthOrScanLease, Path(job_id): Path<String>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let job_id = job_id.trim();
     let owner = body.get("owner").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
@@ -136,7 +136,14 @@ async fn github_check(State(state): State<Arc<AppState>>, crate::auth::RequireAu
         _ => return err(StatusCode::FORBIDDEN, "Job id does not belong to the given owner/repo.".to_string()),
     }
 
-    let gh_token = crate::auth::github_token_for_owner(&state, &headers, &owner).await;
+    let mut gh_token = crate::auth::github_token_for_owner(&state, &headers, &owner).await;
+    if gh_token.is_empty() {
+        // An in-process org scan authenticated by its lease: use the token
+        // that scan itself resolved for this org.
+        if let Some(t) = headers.get(super::scan_queue::LEASE_HEADER).and_then(|v| v.to_str().ok()).and_then(super::scan_queue::github_token_for_lease) {
+            gh_token = t;
+        }
+    }
     if gh_token.is_empty() {
         return err(StatusCode::UNAUTHORIZED, "No GitHub token available — connect a GitHub account, or set GH_TOKEN/GITHUB_TOKEN on the Ignite server.".to_string());
     }
@@ -313,7 +320,7 @@ mod tests {
     use super::*;
 
     fn issue(category: &str, severity: &str, status: &str, file: Option<&str>, line: Option<i64>) -> IssueRow {
-        IssueRow { id: format!("{category}::x"), phase: Some(4), category: category.to_string(), severity: severity.to_string(), score: Some(5), summary: "test finding".to_string(), file: file.map(str::to_string), line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, status: status.to_string(), created_at: String::new(), justification: None, actor_email: None, actor_name: None }
+        IssueRow { id: format!("{category}::x"), phase: Some(4), category: category.to_string(), severity: severity.to_string(), score: Some(5), summary: "test finding".to_string(), file: file.map(str::to_string), line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, status: status.to_string(), created_at: String::new(), justification: None, actor_email: None, actor_name: None, author: None }
     }
 
     fn alert(number: u64, rule_id: &str, state: &str, path: &str, start_line: i64) -> Value {

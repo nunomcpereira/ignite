@@ -169,8 +169,31 @@ impl ScanLease {
 impl Drop for ScanLease {
     fn drop(&mut self) {
         SCHED.lock().running.remove(&self.id);
+        LEASE_GITHUB_TOKENS.lock().remove(&self.id);
         dispatch();
     }
+}
+
+/// GitHub token an in-process org scan resolved for its target, keyed by
+/// the lease it holds — lets that scan's own `github-check` call (which
+/// authenticates with the lease, not a user) post with the same token.
+/// Removed when the lease drops; never serialized or returned by any API.
+static LEASE_GITHUB_TOKENS: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Binds `token` to a currently held `lease` (no-op for an unknown lease).
+pub(crate) fn bind_github_token(lease: &str, token: &str) {
+    if token.is_empty() || !lease_is_active(lease) {
+        return;
+    }
+    LEASE_GITHUB_TOKENS.lock().insert(lease.to_string(), token.to_string());
+}
+
+/// The token bound to `lease`, only while that lease is still held.
+pub(crate) fn github_token_for_lease(lease: &str) -> Option<String> {
+    if !lease_is_active(lease) {
+        return None;
+    }
+    LEASE_GITHUB_TOKENS.lock().get(lease).cloned()
 }
 
 /// Starts as many waiting entries as the slot rule allows. Channel sends and

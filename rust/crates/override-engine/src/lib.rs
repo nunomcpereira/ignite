@@ -76,6 +76,7 @@ mod tests {
             owasp: None,
             tool: Some("codeql".to_string()),
             references: IssueReferences::default(),
+            author: None,
         };
         let json = serde_json::to_value(&issue).unwrap();
         assert_eq!(json["crossFile"], serde_json::json!(true));
@@ -357,7 +358,7 @@ mod tests {
     }
 
     fn issue_with_score(id: &str, score: i32) -> Issue {
-        Issue { id: id.to_string(), category: "secret".into(), severity: Severity::Error, score, summary: "s".into(), file: None, line: None, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None, tool: None, references: IssueReferences::default() }
+        Issue { id: id.to_string(), category: "secret".into(), severity: Severity::Error, score, summary: "s".into(), file: None, line: None, snippet: None, cross_file: false, chain: None, duplicate_ref: None, cwe: None, owasp: None, tool: None, references: IssueReferences::default(), author: None }
     }
 
     #[test]

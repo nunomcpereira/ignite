@@ -115,6 +115,7 @@ mod tests {
             owasp: None,
             tool: None,
             references: IssueReferences::default(),
+            author: None,
         }
     }
 

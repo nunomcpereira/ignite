@@ -325,6 +325,31 @@ fn unauthorized() -> Response {
     (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Authentication required." }))).into_response()
 }
 
+/// `github-check`: a real session/API key, or an in-process org scan
+/// presenting the scan-queue lease it currently holds
+/// (`X-Ignite-Scan-Lease`). The server calls its own HTTP API for those
+/// scans and has no credential of its own; lease ids are random UUIDs only
+/// ever handed to in-process tasks and are checked against the live lease
+/// set, so an outside client can't forge one.
+pub struct AuthOrScanLease(pub Option<AttachedUser>);
+
+#[async_trait::async_trait]
+impl FromRequestParts<Arc<AppState>> for AuthOrScanLease {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        if let Some(user) = resolve_user(&parts.headers, &state.db) {
+            return Ok(AuthOrScanLease(Some(user)));
+        }
+        let lease = parts.headers.get(crate::routes::scan_queue::LEASE_HEADER).and_then(|v| v.to_str().ok());
+        if lease.is_some_and(crate::routes::scan_queue::lease_is_active) {
+            Ok(AuthOrScanLease(None))
+        } else {
+            Err(unauthorized())
+        }
+    }
+}
+
 /// Read-only scan-support routes (tools status, project history/progress)
 /// a scan-only client like the VS Code extension needs alongside a scan:
 /// a real session/API key, or — when the operator opted into unauthenticated
@@ -619,6 +644,35 @@ mod tests {
         assert_eq!(me_res.status(), StatusCode::OK);
         let body = json_body(me_res).await;
         assert_eq!(body["user"]["email"], "dev@example.com");
+    }
+
+    #[tokio::test]
+    async fn auth_or_scan_lease_accepts_only_a_live_lease() {
+        let state = test_state();
+        let app = Router::new().route("/gc", get(|AuthOrScanLease(_u): AuthOrScanLease| async { "ok" })).with_state(state.clone());
+        let status = |lease: Option<String>| {
+            let app = app.clone();
+            async move {
+                let mut req = Request::get("/gc");
+                if let Some(l) = lease {
+                    req = req.header(crate::routes::scan_queue::LEASE_HEADER, l);
+                }
+                app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap().status()
+            }
+        };
+        assert_eq!(status(None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(Some("not-a-lease".into())).await, StatusCode::UNAUTHORIZED);
+        let info = crate::routes::scan_queue::ScanInfo { org: "o".into(), repo: "r".into(), source: "test", actor: None };
+        let lease = crate::routes::scan_queue::acquire(&state, crate::routes::scan_queue::Priority::User, info, None).await.unwrap();
+        let id = lease.id().to_string();
+        assert_eq!(status(Some(id.clone())).await, StatusCode::OK);
+        crate::routes::scan_queue::bind_github_token(&id, "gho_test");
+        crate::routes::scan_queue::bind_github_token("not-a-lease", "gho_other");
+        assert_eq!(crate::routes::scan_queue::github_token_for_lease(&id).as_deref(), Some("gho_test"));
+        assert_eq!(crate::routes::scan_queue::github_token_for_lease("not-a-lease"), None);
+        drop(lease);
+        assert_eq!(status(Some(id.clone())).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(crate::routes::scan_queue::github_token_for_lease(&id), None);
     }
 
     fn simulation_app(validate_all: bool, interactive: bool) -> Router {

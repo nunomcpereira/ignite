@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const IGNITE_VERSION: &str = "0.1.0";
+const IGNITE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // `/api/config` is public/unauthenticated and was probing the configured
 // LLM provider live on every single request with no caching or rate

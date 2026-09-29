@@ -347,6 +347,10 @@ impl DbStore {
             .into_iter()
             .map(|latest| {
                 let findings_count: i64 = count_stmt.query_row(params![latest.id, Option::<&str>::None], |row| row.get(0)).unwrap_or(0);
+                let justified_count: i64 = conn
+                    .prepare_cached("SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND status = 'overridden'")
+                    .and_then(|mut st| st.query_row(params![latest.id], |row| row.get(0)))
+                    .unwrap_or(0);
                 let license_problems: i64 = count_stmt.query_row(params![latest.id, Some("license-compliance")], |row| row.get(0)).unwrap_or(0);
                 let sla_breaches: i64 = sla_stmt.query_row(params![latest.org, latest.repo, latest.id, sla_critical_days, sla_high_days, sla_medium_days], |row| row.get(0)).unwrap_or(0);
                 let acknowledgments = acks_stmt
@@ -385,6 +389,7 @@ impl DbStore {
                     last_scan_at: latest.last_scan_at,
                     license_problems,
                     findings_count,
+                    justified_count,
                     sla_breaches,
                     acknowledgments,
                     recent_prs,

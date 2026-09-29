@@ -9,7 +9,7 @@
 //!
 //! Four delivery channels, each independent and best-effort (one failing
 //! never aborts the others): `email` (HTML digest; needs
-//! `notifications.enabled`), `pdf` (headless Chrome render), `webhook` (JSON
+//! `notifications.enabled`), `pdf` (WeasyPrint, else headless Chrome), `webhook` (JSON
 //! POST carrying a pre-built Microsoft Sentinel incident object) and
 //! `azure_blob` (`.json` + `.pdf` PUT into a container via its SAS URL).
 //!
@@ -30,7 +30,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{Local, NaiveTime};
-use ignite_notifications::{DailyReportCodeLine, DailyReportDetails, DailyReportFinding, DailyReportRepo};
+use ignite_notifications::{DailyReportAuthor, DailyReportCodeLine, DailyReportDetails, DailyReportFinding, DailyReportRepo};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -168,7 +168,7 @@ pub async fn run_daily_report(state: &AppState, opts: &RunOptions<'_>) -> Vec<Or
 
         let findings: Vec<Vec<DailyReportFinding>> = org_repos
             .iter()
-            .map(|r| r.unjustified.iter().map(|i| DailyReportFinding { severity: &i.severity, category: &i.category, file: i.file.as_deref(), line: i.line, summary: &i.summary, score: i.score, code: code_context(i.snippet.as_ref()) }).collect())
+            .map(|r| r.unjustified.iter().map(|i| DailyReportFinding { severity: &i.severity, category: &i.category, file: i.file.as_deref(), line: i.line, summary: &i.summary, score: i.score, code: code_context(i.snippet.as_ref()), author: report_author(i.author.as_ref()) }).collect())
             .collect();
         let repos: Vec<DailyReportRepo> = org_repos.iter().zip(&findings).map(|(r, f)| DailyReportRepo { repo: &r.repo, status: &r.status, last_scan_at: &r.last_scan_at, findings: f }).collect();
         let details = DailyReportDetails { org, date: opts.date, repos: &repos };
@@ -237,8 +237,8 @@ async fn deliver_org(state: &AppState, settings: &ResolvedDailyReport, client: &
     let mut pdf_bytes: Option<Vec<u8>> = None;
     // No point launching a browser for a blob nobody can upload.
     if want_pdf || (want_blob && !settings.azure_blob_container_url.is_empty()) {
-        if state.runner.binary_for("chrome").is_none() {
-            let msg = "no Chrome/Chromium/Edge found on the server (or set dailyReport.pdfBrowserBinary)".to_string();
+        if !pdf_renderer_available(&state.runner) {
+            let msg = NO_PDF_RENDERER.to_string();
             if want_pdf {
                 outcome.pdf_error = Some(msg);
             } else {
@@ -300,6 +300,53 @@ async fn deliver_org(state: &AppState, settings: &ResolvedDailyReport, client: &
     }
     outcome
 }
+
+/// The stored `IssueAuthor` JSON as a borrowed report author; `None` when
+/// the finding was never attributed.
+fn report_author(v: Option<&Value>) -> Option<DailyReportAuthor<'_>> {
+    let v = v?;
+    let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let a = DailyReportAuthor { name: s("name"), email: s("email"), login: s("login"), commit: s("commit") };
+    (a.name.is_some() || a.email.is_some() || a.login.is_some()).then_some(a)
+}
+
+fn author_json(a: &DailyReportAuthor<'_>) -> Value {
+    json!({ "name": a.name, "email": a.email, "login": a.login, "commit": a.commit })
+}
+
+/// One owner's share of the report: every author with at least one
+/// unjustified finding, keyed by email (else login, else name). Most
+/// findings first, then highest score.
+#[derive(Debug)]
+struct OwnerSummary<'a> {
+    author: DailyReportAuthor<'a>,
+    findings: usize,
+    highest: i64,
+    repos: std::collections::BTreeSet<&'a str>,
+}
+
+fn owner_summaries<'a>(details: &'a DailyReportDetails<'a>) -> Vec<OwnerSummary<'a>> {
+    let mut by_key: std::collections::HashMap<String, OwnerSummary<'a>> = std::collections::HashMap::new();
+    for r in details.repos {
+        for f in r.findings {
+            let Some(a) = f.author else { continue };
+            let Some(key) = a.email.or(a.login).or(a.name).map(str::to_ascii_lowercase) else { continue };
+            let o = by_key.entry(key).or_insert_with(|| OwnerSummary { author: a, findings: 0, highest: 0, repos: Default::default() });
+            o.findings += 1;
+            o.highest = o.highest.max(f.score.unwrap_or(0));
+            o.repos.insert(r.repo);
+            // Fill gaps (e.g. a login only GitHub's blame knew) from later rows.
+            o.author.name = o.author.name.or(a.name);
+            o.author.login = o.author.login.or(a.login);
+        }
+    }
+    let mut owners: Vec<OwnerSummary> = by_key.into_values().collect();
+    owners.sort_by(|a, b| b.findings.cmp(&a.findings).then(b.highest.cmp(&a.highest)).then_with(|| a.author.label().cmp(&b.author.label())));
+    owners
+}
+
+/// Owners listed in the incident description.
+const MAX_OWNERS_IN_DESCRIPTION: usize = 10;
 
 // ---------------- Sentinel payload ----------------
 
@@ -368,10 +415,21 @@ pub fn build_sentinel_payload(details: &DailyReportDetails<'_>, timestamp: &str)
                 (Some(file), None) => file.to_string(),
                 _ => "(project-wide)".to_string(),
             };
-            md.push_str(&format!("- **{}** `{}` `{}` — {} (score {})\n", repo.repo, loc, f.category, truncate_chars(&one_line(f.summary), 200), f.score.unwrap_or(0)));
+            let owner = f.author.map(|a| format!(" — owner {}", a.label())).unwrap_or_default();
+            md.push_str(&format!("- **{}** `{}` `{}` — {} (score {}){owner}\n", repo.repo, loc, f.category, truncate_chars(&one_line(f.summary), 200), f.score.unwrap_or(0)));
         }
         if top.len() > MAX_TOP_FINDINGS {
             md.push_str(&format!("- …and {} more\n", top.len() - MAX_TOP_FINDINGS));
+        }
+    }
+    let owners = owner_summaries(details);
+    if !owners.is_empty() {
+        md.push_str("\n### Owners (last author of the flagged line)\n");
+        for o in owners.iter().take(MAX_OWNERS_IN_DESCRIPTION) {
+            md.push_str(&format!("- {} — {} finding(s), highest score {}\n", o.author.label(), o.findings, o.highest));
+        }
+        if owners.len() > MAX_OWNERS_IN_DESCRIPTION {
+            md.push_str(&format!("- …and {} more\n", owners.len() - MAX_OWNERS_IN_DESCRIPTION));
         }
     }
     let with_findings: Vec<&DailyReportRepo> = details.repos.iter().filter(|r| !r.findings.is_empty()).collect();
@@ -393,7 +451,7 @@ pub fn build_sentinel_payload(details: &DailyReportDetails<'_>, timestamp: &str)
             let shown: Vec<Value> = r
                 .findings
                 .iter()
-                .map(|f| json!({ "severity": f.severity, "category": f.category, "file": f.file, "line": f.line, "summary": one_line(f.summary), "score": f.score }))
+                .map(|f| json!({ "severity": f.severity, "category": f.category, "file": f.file, "line": f.line, "summary": one_line(f.summary), "score": f.score, "author": f.author.as_ref().map(author_json) }))
                 .collect();
             json!({
                 "repo": r.repo,
@@ -414,6 +472,13 @@ pub fn build_sentinel_payload(details: &DailyReportDetails<'_>, timestamp: &str)
         "unjustifiedFindingsCount": total,
         "highestScore": highest,
         "severityCounts": { "critical": critical, "high": high, "medium": medium, "low": low },
+        "owners": owners.iter().map(|o| {
+            let mut v = author_json(&o.author);
+            v["unjustifiedFindings"] = json!(o.findings);
+            v["highestScore"] = json!(o.highest);
+            v["repos"] = json!(o.repos);
+            v
+        }).collect::<Vec<Value>>(),
         "sentinelIncident": {
             "title": format!("[Ignite] Daily Security Report: {} ({} unjustified finding{})", details.org, total, if total == 1 { "" } else { "s" }),
             "severity": severity,
@@ -439,6 +504,7 @@ pub fn build_test_payload(timestamp: &str) -> Value {
         "unjustifiedFindingsCount": 0,
         "highestScore": 0.0,
         "severityCounts": { "critical": 0, "high": 0, "medium": 0, "low": 0 },
+        "owners": [],
         "sentinelIncident": {
             "title": "[Ignite] Connection test",
             "severity": "Informational",
@@ -730,6 +796,23 @@ pub fn detect_pdf_browser(configured: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// WeasyPrint (HTML/CSS to PDF: no browser, so no sandbox or `/dev/shm`
+/// needs in a container). `PATH`, then Homebrew's prefixes, which a
+/// launchd-run server's `PATH` doesn't include.
+pub fn detect_weasyprint() -> Option<String> {
+    let on_path = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|dir| dir.join("weasyprint")).find(|p| p.is_file()));
+    on_path
+        .or_else(|| ["/opt/homebrew/bin/weasyprint", "/usr/local/bin/weasyprint"].iter().map(std::path::PathBuf::from).find(|p| p.is_file()))
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+const NO_PDF_RENDERER: &str = "No PDF renderer on the server: install WeasyPrint or Chrome/Chromium/Edge (or set dailyReport.pdfBrowserBinary)";
+
+/// A PDF can be rendered: WeasyPrint or a browser was registered at startup.
+pub fn pdf_renderer_available(runner: &ignite_tool_runner::ToolRunner) -> bool {
+    runner.binary_for("weasyprint").is_some() || runner.binary_for("chrome").is_some()
+}
+
 /// True once `bytes` look like a finished PDF (header present, `%%EOF` trailer written).
 fn is_complete_pdf(bytes: &[u8]) -> bool {
     let tail = &bytes[bytes.len().saturating_sub(64)..];
@@ -758,7 +841,29 @@ async fn wait_for_pdf(path: &std::path::Path) -> Vec<u8> {
 /// timeout. Instead the output file is watched and, once it is a complete
 /// PDF, the run future is dropped — `ToolRunner` spawns with `kill_on_drop`,
 /// which ends the lingering browser.
+/// WeasyPrint when registered (see `phase4_config`: it only is when no
+/// browser was configured explicitly), else the browser.
 async fn render_pdf(runner: &ignite_tool_runner::ToolRunner, html: &str) -> Result<Vec<u8>, String> {
+    if runner.binary_for("weasyprint").is_some() {
+        render_pdf_weasyprint(runner, html).await
+    } else {
+        render_pdf_chrome(runner, html).await
+    }
+}
+
+async fn render_pdf_weasyprint(runner: &ignite_tool_runner::ToolRunner, html: &str) -> Result<Vec<u8>, String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let html_path = dir.path().join("report.html");
+    let pdf_path = dir.path().join("report.pdf");
+    std::fs::write(&html_path, html).map_err(|e| e.to_string())?;
+    let args = vec![html_path.display().to_string(), pdf_path.display().to_string()];
+    let opts = ignite_tool_runner::RunToolOptions { timeout_ms: Some(300_000), ..Default::default() };
+    runner.run_tool("weasyprint", &args, &dir.path().to_string_lossy(), opts).await.map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(&pdf_path).map_err(|e| format!("WeasyPrint produced no PDF: {e}"))?;
+    if is_complete_pdf(&bytes) { Ok(bytes) } else { Err("WeasyPrint produced an incomplete PDF".to_string()) }
+}
+
+async fn render_pdf_chrome(runner: &ignite_tool_runner::ToolRunner, html: &str) -> Result<Vec<u8>, String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let html_path = dir.path().join("report.html");
     let pdf_path = dir.path().join("report.pdf");
@@ -802,10 +907,10 @@ async fn export_pdf(State(state): State<Arc<AppState>>, RequireAuth(_user): Requ
     let Some(outcome) = outcomes.into_iter().find(|o| o.pdf_html.is_some()) else {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": format!("{org} has no scanned repositories yet — nothing to report.") }))).into_response();
     };
-    if state.runner.binary_for("chrome").is_none() {
+    if !pdf_renderer_available(&state.runner) {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            Json(serde_json::json!({ "error": "PDF export needs Chrome, Chromium or Edge on the server (or set dailyReport.pdfBrowserBinary in config.json)." })),
+            Json(serde_json::json!({ "error": format!("{NO_PDF_RENDERER}.") })),
         )
             .into_response();
     }
@@ -870,6 +975,26 @@ mod tests {
         let bytes = render_pdf(&runner, "<html><body><h1>Ignite</h1></body></html>").await.expect("render");
         assert!(is_complete_pdf(&bytes));
         assert!(started.elapsed() < Duration::from_secs(45), "took {:?}", started.elapsed());
+    }
+
+    /// Real WeasyPrint through the real `ToolRunner`. Skips when it isn't installed.
+    #[tokio::test]
+    async fn render_pdf_prefers_weasyprint_and_returns_a_real_pdf() {
+        let Some(weasyprint) = detect_weasyprint() else {
+            eprintln!("skipping: WeasyPrint not installed");
+            return;
+        };
+        // A bogus browser proves the browser is never tried when WeasyPrint is there.
+        let runner = ignite_tool_runner::ToolRunner::new([("weasyprint", weasyprint), ("chrome", "/nonexistent/chrome".to_string())].into());
+        let bytes = render_pdf(&runner, "<html><body><h1>Ignite</h1><table><tr><td>a &amp; b</td></tr></table></body></html>").await.expect("render");
+        assert!(is_complete_pdf(&bytes));
+    }
+
+    #[test]
+    fn no_renderer_means_unavailable() {
+        assert!(!pdf_renderer_available(&ignite_tool_runner::ToolRunner::new(Default::default())));
+        assert!(pdf_renderer_available(&ignite_tool_runner::ToolRunner::new([("weasyprint", "w".to_string())].into())));
+        assert!(pdf_renderer_available(&ignite_tool_runner::ToolRunner::new([("chrome", "c".to_string())].into())));
     }
 
     #[test]
@@ -941,7 +1066,7 @@ mod tests {
         let acme = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             acme,
-            &[ignite_db_store::IssueInput { id: "secret::a.rs::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("a.rs".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &[ignite_db_store::IssueInput { id: "secret::a.rs::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("a.rs".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
             &Default::default(),
         );
         state.db.create_project("job-2", "acme", "clean", false, "ui", None).unwrap();
@@ -971,7 +1096,7 @@ mod tests {
     // ---------------- Sentinel payload / Azure / channels ----------------
 
     fn finding<'a>(severity: &'a str, summary: &'a str, score: i64) -> DailyReportFinding<'a> {
-        DailyReportFinding { severity, category: "secret", file: Some("a.rs"), line: Some(3), summary, score: Some(score), code: vec![] }
+        DailyReportFinding { severity, category: "secret", file: Some("a.rs"), line: Some(3), summary, score: Some(score), code: vec![], author: None }
     }
 
     fn payload_for(scores: &[i64]) -> (Value, String) {
@@ -990,6 +1115,38 @@ mod tests {
         assert_eq!(sentinel_severity(4.0), "Low");
         assert_eq!(sentinel_severity(3.0), "Informational");
         assert_eq!(sentinel_severity(0.0), "Informational");
+    }
+
+    #[test]
+    fn findings_carry_their_line_author_and_owners_roll_up_per_person() {
+        let ann = DailyReportAuthor { name: Some("Ann"), email: Some("ann@x.io"), login: Some("ann"), commit: Some("c1") };
+        let bob = DailyReportAuthor { name: Some("Bob"), email: Some("bob@x.io"), login: None, commit: Some("c2") };
+        let mut findings: Vec<DailyReportFinding> = [9, 7, 3].iter().map(|s| finding("error", "leaked key", *s)).collect();
+        findings[0].author = Some(ann);
+        findings[1].author = Some(bob);
+        findings[2].author = Some(ann);
+        let repos = [DailyReportRepo { repo: "widgets", status: "success", last_scan_at: "2026-09-19 10:00:00", findings: &findings }];
+        let (p, md) = build_sentinel_payload(&DailyReportDetails { org: "acme", date: "2026-09-19", repos: &repos }, "2026-09-19T14:00:00Z");
+        assert_eq!(p["repos"][0]["findings"][0]["author"], json!({ "name": "Ann", "email": "ann@x.io", "login": "ann", "commit": "c1" }));
+        assert_eq!(p["repos"][0]["findings"][1]["author"]["login"], Value::Null);
+        let owners = p["owners"].as_array().unwrap();
+        assert_eq!(owners.len(), 2);
+        assert_eq!((owners[0]["email"].as_str(), owners[0]["unjustifiedFindings"].as_i64(), owners[0]["highestScore"].as_i64()), (Some("ann@x.io"), Some(2), Some(9)));
+        assert_eq!(owners[0]["repos"], json!(["widgets"]));
+        assert_eq!(owners[1]["email"], "bob@x.io");
+        assert!(md.contains("### Owners") && md.contains("- Ann (@ann) — 2 finding(s), highest score 9"));
+        assert!(md.contains("owner Bob <bob@x.io>"), "top findings name their owner: {md}");
+        let (unattributed, _) = payload_for(&[9]);
+        assert_eq!(unattributed["owners"], json!([]));
+        assert_eq!(unattributed["repos"][0]["findings"][0]["author"], Value::Null);
+    }
+
+    #[test]
+    fn stored_author_json_maps_to_a_report_author() {
+        let v = json!({ "name": "Ann", "email": "ann@x.io", "commit": "c1" });
+        assert_eq!(report_author(Some(&v)), Some(DailyReportAuthor { name: Some("Ann"), email: Some("ann@x.io"), login: None, commit: Some("c1") }));
+        assert_eq!(report_author(Some(&json!({ "commit": "c1" }))), None, "a commit with no person is no owner");
+        assert_eq!(report_author(None), None);
     }
 
     #[test]

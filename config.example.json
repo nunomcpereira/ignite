@@ -214,6 +214,11 @@
     "highDays": 30,
     "mediumDays": 90
   },
+  "blame": {
+    "enabled": true,
+    "maxRemoteFilesPerScan": 300,
+    "minRateLimitRemaining": 1000
+  },
   "policy": {
     "strict": false
   },
@@ -245,5 +250,41 @@
   "mcp": {
     "autoStart": true,
     "httpPort": 51338
+  },
+  "ignoreRules": {
+    "example-org": {
+      "*": [
+        {
+          "filePatterns": ["\\.txt$"],
+          "linePatterns": ["SAP_IDOC_REC_Credential_Name=(.*)"],
+          "categories": ["secret"],
+          "reason": "SAP IDoc credential *names* (logical destination ids), not secrets"
+        }
+      ],
+      "sap-*": [
+        {
+          "filePatterns": ["^Preparation Steps/.*\\.(txt|properties)$"],
+          "linePatterns": ["_Credential_Name=", "^\\s*#"],
+          "categories": ["secret"],
+          "reason": "Every sap-* repo: credential alias names and commented lines in IDoc prep files"
+        }
+      ],
+      "payments-api": [
+        {
+          "filePatterns": ["^src/test/resources/fixtures/"],
+          "reason": "Whole fixtures folder: fake keys/cards used only by unit tests (all categories)"
+        }
+      ]
+    },
+    "*": {
+      "*": [
+        {
+          "filePatterns": ["(^|/)docs/.*\\.md$"],
+          "linePatterns": ["(?i)example|placeholder|<your-.*>"],
+          "categories": ["secret"],
+          "reason": "Every org and repo: placeholder credentials in markdown docs"
+        }
+      ]
+    }
   }
 }

@@ -391,7 +391,7 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 mod override_submission;
-pub use override_submission::{plan_overrides, persist_applied_overrides, persist_overrides, persist_pending_overrides, submit_overrides, OverridesPlan, PersistOverridesRequest, PlanOverridesRequest};
+pub use override_submission::{persist_rule_acknowledgments, plan_overrides, persist_applied_overrides, persist_overrides, persist_pending_overrides, submit_overrides, OverridesPlan, PersistOverridesRequest, PlanOverridesRequest, RULE_ACK_ACTOR_EMAIL, RULE_ACK_ACTOR_NAME};
 
 #[cfg(test)]
 mod tests {

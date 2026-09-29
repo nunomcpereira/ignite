@@ -142,6 +142,7 @@ mod tests {
             owasp: None,
             tool: None,
             references: Default::default(),
+            author: None,
         }
     }
 

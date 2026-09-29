@@ -88,6 +88,9 @@ fn to_oe_codeql_finding(f: &ignite_codeql_cross_file::CodeqlFinding) -> OeCodeql
 
 pub struct Phase4Config {
     pub fast: bool,
+    /// `config.json`'s `ignoreRules` already resolved for `org` — applied
+    /// to the final issue list in both fast and full mode.
+    pub ignore_rules: Vec<ignite_issue_filter::IgnoreRule>,
     pub org: String,
     pub repo: String,
     pub project_id: Option<i64>,
@@ -169,6 +172,10 @@ pub struct Phase4Output {
     /// empty findings list still gets a `Completed` coverage entry here,
     /// so "found nothing" and "never ran" are never conflated downstream.
     pub coverage: Vec<ignite_policy::CheckCoverage>,
+    /// Findings in `issues` matched by an org `ignoreRules` entry, as
+    /// `(issue id, rule reason)`. They stay flagged; callers record the
+    /// reason as an automatic override so they don't block the gate.
+    pub rule_acknowledgments: Vec<(String, String)>,
 }
 
 /// Maps this codebase's existing `engine: &'static str` convention
@@ -478,7 +485,7 @@ pub async fn run_phase4_checks(
             ignite_ignore: None,
             env_var_drift: None,
         };
-        let issues = ignite_override_engine::collect_phase4_issues(&inputs);
+        let (issues, rule_acknowledgments) = apply_org_ignore_rules(ignite_override_engine::collect_phase4_issues(&inputs), root, config, log);
         task_timings.push(("phase4Total", __t0.elapsed().as_millis() as u64));
         coverage.push(coverage_for_engine("semanticSast", semantic_sast_result.engine, semantic_sast_result.findings.len()));
         coverage.push(coverage_for_engine("fileEncapsulation", file_encapsulation_result.engine, file_encapsulation_result.findings.len()));
@@ -489,7 +496,7 @@ pub async fn run_phase4_checks(
         for check_id in FULL_MODE_ONLY_CHECKS {
             coverage.push(ignite_policy::CheckCoverage::disabled_with_reason(*check_id, "skipped: fast mode only runs secrets/governance/semanticSast/fileEncapsulation"));
         }
-        return Ok(Phase4Output { issues, documents: Phase4Documents { sbom: None, provenance: None, loc_metrics: None, posture_report: None, ai_act_documents_report: None }, task_timings, coverage });
+        return Ok(Phase4Output { issues, documents: Phase4Documents { sbom: None, provenance: None, loc_metrics: None, posture_report: None, ai_act_documents_report: None }, task_timings, coverage, rule_acknowledgments });
     }
 
     let http_client = reqwest::Client::new();
@@ -1050,7 +1057,7 @@ pub async fn run_phase4_checks(
         ignite_ignore: igniteignore_check,
         env_var_drift: env_var_drift_check,
     };
-    let issues = ignite_override_engine::collect_phase4_issues(&inputs);
+    let (issues, rule_acknowledgments) = apply_org_ignore_rules(ignite_override_engine::collect_phase4_issues(&inputs), root, config, log);
     let _ = http_client;
     let total_ms = __t0.elapsed().as_millis() as u64;
     task_timings.push(("phase4Total", total_ms));
@@ -1061,7 +1068,38 @@ pub async fn run_phase4_checks(
         documents: Phase4Documents { sbom: sbom_doc, provenance: provenance_doc, loc_metrics: loc_metrics_doc, posture_report: posture_doc, ai_act_documents_report: ai_act_docs_doc },
         task_timings,
         coverage,
+        rule_acknowledgments,
     })
+}
+
+/// Matches findings against the org's `ignoreRules` (operator-configured
+/// false-positive rules in config.json). Matched findings stay in the list;
+/// their ids come back with the rule's reason so the caller can record it
+/// as an automatic acknowledgment. Logs the count and any rule that failed
+/// to compile.
+fn apply_org_ignore_rules(issues: Vec<Issue>, root: &Path, config: &Phase4Config, log: &(dyn Fn(&str) + Sync)) -> (Vec<Issue>, Vec<(String, String)>) {
+    if config.ignore_rules.is_empty() {
+        return (issues, Vec::new());
+    }
+    let order: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
+    let out = ignite_issue_filter::apply_ignore_rules(issues, root, &config.ignore_rules);
+    for e in &out.errors {
+        log(&format!("⚠ ignoreRules for org {}: {e}", config.org));
+    }
+    if !out.ignored.is_empty() {
+        log(&format!("Auto-acknowledged {} finding(s) via ignoreRules for org {}.", out.ignored.len(), config.org));
+    }
+    let mut acks = Vec::with_capacity(out.ignored.len());
+    let mut all = out.kept;
+    for (issue, reason) in out.ignored {
+        let reason = if reason.is_empty() { format!("Matched a config.json ignoreRules entry for org {}.", config.org) } else { reason };
+        acks.push((issue.id.clone(), reason));
+        all.push(issue);
+    }
+    // Keep the collector's original ordering.
+    let pos: std::collections::HashMap<&str, usize> = order.iter().enumerate().map(|(n, id)| (id.as_str(), n)).collect();
+    all.sort_by_key(|i| pos.get(i.id.as_str()).copied().unwrap_or(usize::MAX));
+    (all, acks)
 }
 
 /// Only called when `eu_ai_act_report_as_findings` is true — turns the
@@ -1127,6 +1165,7 @@ mod tests {
 
     fn test_config(project_id: Option<i64>) -> Phase4Config {
         Phase4Config {
+            ignore_rules: Vec::new(),
             fast: false,
             org: "test-org".to_string(),
             repo: "test-repo".to_string(),

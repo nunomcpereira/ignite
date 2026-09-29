@@ -56,14 +56,15 @@ impl DbStore {
             let chain_json = issue.chain.as_ref().map(|c| serde_json::to_string(c).unwrap());
             let references_json = issue.references.as_ref().map(|r| serde_json::to_string(r).unwrap());
             let duplicate_ref_json = issue.duplicate_ref.as_ref().map(|d| serde_json::to_string(d).unwrap());
+            let author_json = issue.author.as_ref().map(|a| serde_json::to_string(a).unwrap());
             let status = if overridden_ids.contains(&issue.id) { "overridden" } else { "open" };
             tx.execute(
-                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status, author_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     project_id, issue.id, issue.phase, issue.category, issue.severity, issue.score,
                     issue.summary, issue.file, issue.line, snippet_json, issue.cross_file as i64, chain_json,
-                    issue.cwe, issue.owasp, issue.tool, references_json, duplicate_ref_json, status,
+                    issue.cwe, issue.owasp, issue.tool, references_json, duplicate_ref_json, status, author_json,
                 ],
             )
             .unwrap();
@@ -78,7 +79,8 @@ impl DbStore {
                 "SELECT i.issue_id, i.phase, i.category, i.severity, i.score, i.summary, i.file, i.line, i.snippet_json, i.cross_file, i.chain_json, i.cwe, i.owasp, i.tool, i.references_json, i.duplicate_ref_json, i.status, i.created_at,
                         (SELECT o.justification FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
                         (SELECT o.actor_email FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
-                        (SELECT o.actor_name FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1)
+                        (SELECT o.actor_name FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
+                        i.author_json
                  FROM issues i WHERE i.project_id = ? ORDER BY i.id",
             )
             .unwrap();
@@ -104,6 +106,7 @@ impl DbStore {
                 let chain_json: Option<String> = row.get(10)?;
                 let references_json: Option<String> = row.get(14)?;
                 let duplicate_ref_json: Option<String> = row.get(15)?;
+                let author_json: Option<String> = row.get(21)?;
                 Ok(IssueRow {
                     phase: row.get(1)?,
                     category: row.get(2)?,
@@ -125,6 +128,7 @@ impl DbStore {
                     justification: row.get(18)?,
                     actor_email: row.get(19)?,
                     actor_name: row.get(20)?,
+                    author: parse_or_log("author", &id, author_json),
                     id,
                 })
             })

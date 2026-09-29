@@ -270,7 +270,13 @@ pub async fn rescan_one_with(runner: &ToolRunner, http: &reqwest::Client, server
     // this rescan is about to post.
     let auto_fix = run_auto_fix(runner, http, server_base, &full_name, &default_branch, &dest, gh_token, auto_fix_mode).await;
 
-    let check_res = with_ignite_api_key(http.post(format!("{server_base}/api/pipeline/{job_id}/github-check")))
+    let mut check_req = with_ignite_api_key(http.post(format!("{server_base}/api/pipeline/{job_id}/github-check")));
+    // In-process org scans authenticate this call with the queue lease they
+    // hold (the server has no API key of its own to send).
+    if let Some(lease) = &opts.lease {
+        check_req = check_req.header("X-Ignite-Scan-Lease", lease);
+    }
+    let check_res = check_req
         .json(&json!({ "owner": target.org, "repo": target.repo, "sha": sha }))
         .send()
         .await;

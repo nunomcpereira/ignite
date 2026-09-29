@@ -77,7 +77,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn issue(id: &str, score: i64) -> IssueInput {
-        IssueInput { id: id.into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(score), summary: format!("finding {id}"), file: Some("a.rs".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }
+        IssueInput { id: id.into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(score), summary: format!("finding {id}"), file: Some("a.rs".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }
     }
 
     fn open_db() -> (tempfile::TempDir, DbStore) {

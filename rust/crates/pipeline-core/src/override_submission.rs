@@ -125,6 +125,24 @@ pub fn persist_pending_overrides(db: &DbStore, newly_pending: &[AppliedOverride]
     }
 }
 
+/// Actor recorded on overrides created from `config.json`'s `ignoreRules`.
+pub const RULE_ACK_ACTOR_EMAIL: &str = "ignore-rules@ignite.internal";
+pub const RULE_ACK_ACTOR_NAME: &str = "config.json ignoreRules";
+
+/// Records every `(issue id, reason)` from Phase 4's `rule_acknowledgments`
+/// as an approved override (origin `config_rule`, the rule's reason as the
+/// justification) and returns what was applied. The findings stay flagged
+/// but no longer block: an operator-configured rule is an administrative
+/// acknowledgment, so it never waits on dual custody. Ids not present in
+/// `issues` are skipped.
+pub fn persist_rule_acknowledgments<'a>(db: &DbStore, issues: &'a [Issue], acks: &[(String, String)], project_id: i64, job_id: &str, phase: i64) -> Vec<AppliedOverride<'a>> {
+    let reasons: std::collections::HashMap<&str, &str> = acks.iter().map(|(id, reason)| (id.as_str(), reason.as_str())).collect();
+    let applied: Vec<AppliedOverride<'a>> = issues.iter().filter_map(|i| reasons.get(i.id.as_str()).map(|r| (i, r.to_string()))).collect();
+    let req = PersistOverridesRequest { project_id, job_id, phase, actor_email: RULE_ACK_ACTOR_EMAIL, actor_name: RULE_ACK_ACTOR_NAME, origin: "config_rule", email_sent: false };
+    persist_applied_overrides(db, &applied, &req);
+    applied
+}
+
 fn override_args<'a>(issue: &'a Issue, justification: &'a str, req: &'a PersistOverridesRequest, email_sent: bool) -> AddOverrideArgs<'a> {
     AddOverrideArgs {
         project_id: req.project_id,
@@ -164,7 +182,7 @@ mod tests {
     use ignite_override_engine::Severity;
 
     fn issue(id: &str, category: &str, severity: Severity, score: i32) -> Issue {
-        Issue { id: id.to_string(), category: category.to_string(), severity, score, summary: format!("summary of {id}"), file: Some("app.js".to_string()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".to_string()), references: Default::default(), duplicate_ref: None }
+        Issue { id: id.to_string(), category: category.to_string(), severity, score, summary: format!("summary of {id}"), file: Some("app.js".to_string()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".to_string()), references: Default::default(), duplicate_ref: None, author: None }
     }
 
     fn submitted(id: &str) -> SubmittedOverride {
@@ -185,7 +203,7 @@ mod tests {
     fn seed_issue(db: &DbStore, project_id: i64, issue: &Issue) {
         db.replace_project_issues(
             project_id,
-            &[ignite_db_store::IssueInput { id: issue.id.clone(), phase: Some(4), category: issue.category.clone(), severity: severity_str(issue).to_string(), score: Some(issue.score as i64), summary: issue.summary.clone(), file: issue.file.clone(), line: issue.line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &[ignite_db_store::IssueInput { id: issue.id.clone(), phase: Some(4), category: issue.category.clone(), severity: severity_str(issue).to_string(), score: Some(issue.score as i64), summary: issue.summary.clone(), file: issue.file.clone(), line: issue.line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
             &HashSet::new(),
         );
     }
@@ -209,6 +227,21 @@ mod tests {
         assert!(out.needs_approval.is_empty());
         let rows = db.get_project_overrides(pid);
         assert_eq!((rows[0].severity.as_str(), rows[0].origin.as_str(), rows[0].actor_email.as_str(), rows[0].email_sent), ("warning", "api_key", "owner@example.com", true));
+        assert_eq!(db.get_project_issues(pid).into_iter().find(|i| i.id == "secret::app.js::1").map(|i| i.status), Some("overridden".to_string()));
+    }
+
+    #[test]
+    fn rule_acknowledgments_override_matched_issues_with_the_rule_reason_even_when_critical() {
+        let (db, pid, _dir) = open_test_db();
+        let issues = vec![issue("secret::app.js::1", "secret", Severity::Error, 10), issue("secret::app.js::2", "secret", Severity::Error, 10)];
+        seed_issue(&db, pid, &issues[0]);
+        let acks = vec![("secret::app.js::1".to_string(), "credential alias names, not secrets".to_string()), ("gone::x::1".to_string(), "n/a".to_string())];
+        let applied = persist_rule_acknowledgments(&db, &issues, &acks, pid, "job-1", 4);
+        assert_eq!(applied.iter().map(|(i, _)| i.id.as_str()).collect::<Vec<_>>(), vec!["secret::app.js::1"]);
+        let rows = db.get_project_overrides(pid);
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].origin.as_str(), rows[0].actor_email.as_str(), rows[0].justification.as_str()), ("config_rule", RULE_ACK_ACTOR_EMAIL, "credential alias names, not secrets"));
+        assert!(db.list_pending_overrides(pid).is_empty());
         assert_eq!(db.get_project_issues(pid).into_iter().find(|i| i.id == "secret::app.js::1").map(|i| i.status), Some("overridden".to_string()));
     }
 

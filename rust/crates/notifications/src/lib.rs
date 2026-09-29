@@ -402,6 +402,31 @@ pub struct DailyReportFinding<'a> {
     /// The line before, the flagged line(s) and the line after. Empty when
     /// the finding has no source snippet (e.g. a repo-level finding).
     pub code: Vec<DailyReportCodeLine>,
+    /// Who last changed the flagged line (git blame), when known.
+    pub author: Option<DailyReportAuthor<'a>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DailyReportAuthor<'a> {
+    pub name: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub login: Option<&'a str>,
+    pub commit: Option<&'a str>,
+}
+
+impl DailyReportAuthor<'_> {
+    /// `Name (@login)`, else `Name <email>`, else whatever is known.
+    pub fn label(&self) -> String {
+        let name = self.name.filter(|n| !n.is_empty());
+        match (name, self.login, self.email) {
+            (Some(n), Some(l), _) => format!("{n} (@{l})"),
+            (Some(n), None, Some(e)) => format!("{n} <{e}>"),
+            (Some(n), None, None) => n.to_string(),
+            (None, Some(l), _) => format!("@{l}"),
+            (None, None, Some(e)) => e.to_string(),
+            (None, None, None) => String::new(),
+        }
+    }
 }
 
 /// Longest source line rendered as-is; a minified bundle's single
@@ -421,7 +446,7 @@ fn render_code_block(code: &[DailyReportCodeLine]) -> String {
             format!("<div style=\"{bg}padding:0 8px;white-space:pre-wrap;word-break:break-all;\">{marker} {:>width$} | {}</div>", l.number, escape_html_mail(&text))
         })
         .collect();
-    format!("\n        <tr>\n          <td colspan=\"5\" style=\"padding:0 12px 10px;border-bottom:1px solid #e2e8f0;\">\n            <div style=\"background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;\">{lines}</div>\n          </td>\n        </tr>")
+    format!("\n        <tr>\n          <td colspan=\"6\" style=\"padding:0 12px 10px;border-bottom:1px solid #e2e8f0;\">\n            <div style=\"background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;\">{lines}</div>\n          </td>\n        </tr>")
 }
 
 pub struct DailyReportRepo<'a> {
@@ -474,8 +499,9 @@ fn build_daily_report_html(details: &DailyReportDetails, max_per_repo: Option<us
                     let color = if f.severity == "error" { "#e11d48" } else { "#b45309" };
                     let location = format!("{}{}", escape_html_mail(f.file.unwrap_or("")), f.line.map(|l| format!(":{l}")).unwrap_or_default());
                     let score = f.score.map(|s| s.to_string()).unwrap_or_default();
+                    let author = f.author.map(|a| escape_html_mail(&a.label())).unwrap_or_default();
                     format!(
-                        "\n        <tr>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;text-transform:uppercase;font-weight:600;color:{color};\">{}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{score}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;font-family:monospace;\">{location}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{}</td>\n        </tr>",
+                        "\n        <tr>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;text-transform:uppercase;font-weight:600;color:{color};\">{}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{score}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;font-family:monospace;\">{location}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{}</td>\n          <td style=\"padding:6px 12px;border-bottom:1px solid #e2e8f0;\">{author}</td>\n        </tr>",
                         escape_html_mail(f.severity),
                         escape_html_mail(f.category),
                         escape_html_mail(f.summary),
@@ -485,7 +511,7 @@ fn build_daily_report_html(details: &DailyReportDetails, max_per_repo: Option<us
             let omitted = r.findings.len().saturating_sub(limit);
             let omitted_note = if omitted > 0 { format!("\n      <p style=\"color:#94a3b8;font-size:12px;\">… and {omitted} more finding(s) not shown — open this repo in Ignite for the full list.</p>") } else { String::new() };
             format!(
-                "\n      <h3 style=\"margin:24px 0 4px;color:#0f172a;\">{}/{} — {} unjustified</h3>\n      <p style=\"margin:0 0 8px;color:#64748b;font-size:12px;\">Last scan: {} ({})</p>\n      <table style=\"border-collapse:collapse;width:100%;font-size:13px;\">\n        <tr style=\"background:#f1f5f9;\">\n          <th style=\"padding:6px 12px;text-align:left;\">Severity</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Score</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Category</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Location</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Finding</th>\n        </tr>\n        {rows}\n      </table>{omitted_note}",
+                "\n      <h3 style=\"margin:24px 0 4px;color:#0f172a;\">{}/{} — {} unjustified</h3>\n      <p style=\"margin:0 0 8px;color:#64748b;font-size:12px;\">Last scan: {} ({})</p>\n      <table style=\"border-collapse:collapse;width:100%;font-size:13px;\">\n        <tr style=\"background:#f1f5f9;\">\n          <th style=\"padding:6px 12px;text-align:left;\">Severity</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Score</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Category</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Location</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Finding</th>\n          <th style=\"padding:6px 12px;text-align:left;\">Author</th>\n        </tr>\n        {rows}\n      </table>{omitted_note}",
                 escape_html_mail(details.org),
                 escape_html_mail(r.repo),
                 r.findings.len(),
@@ -807,7 +833,7 @@ mod tests {
     }
 
     fn finding<'a>(severity: &'a str, summary: &'a str, score: i64) -> DailyReportFinding<'a> {
-        DailyReportFinding { severity, category: "secret", file: Some("a.js"), line: Some(3), summary, score: Some(score), code: vec![] }
+        DailyReportFinding { severity, category: "secret", file: Some("a.js"), line: Some(3), summary, score: Some(score), code: vec![], author: None }
     }
 
     fn code(n: i64, text: &str, flagged: bool) -> DailyReportCodeLine {

@@ -73,6 +73,7 @@ mod tests {
             justification: None,
             actor_email: None,
             actor_name: None,
+            author: None,
         }
     }
 

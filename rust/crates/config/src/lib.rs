@@ -61,11 +61,65 @@ pub struct Config {
     pub mcp: McpConfig,
     pub ai_auto_justify: AiAutoJustifyConfig,
     pub sla: SlaConfig,
+    pub blame: BlameConfig,
     pub audit_log: AuditLogConfig,
     pub policy: PolicyConfig,
     pub org_repos: OrgReposConfig,
     pub scan_queue: ScanQueueConfig,
     pub daily_report: DailyReportConfig,
+    /// False-positive suppression: `org -> repo -> rules`. Org and repo keys
+    /// match case-insensitively and may use `*` wildcards (`"*"` = any,
+    /// `"sap-*"` = prefix). See [`IgnoreRuleConfig`] and
+    /// `ignite_issue_filter::apply_ignore_rules`.
+    #[serde(default)]
+    pub ignore_rules: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<IgnoreRuleConfig>>>,
+}
+
+/// One `ignoreRules.<org>.<repo>[]` entry: a finding is dropped when its
+/// repo-relative path matches one of `filePatterns` (regex, e.g.
+/// `\\.txt$`), its category one of `categories` (empty = any) and its
+/// flagged source line one of `linePatterns` (regex; empty = whole file).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IgnoreRuleConfig {
+    pub file_patterns: Vec<String>,
+    pub line_patterns: Vec<String>,
+    pub categories: Vec<String>,
+    /// Free-text note for humans reading config.json; not used for matching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl Config {
+    /// Every ignore rule whose org key and repo key both match `org`/`repo`.
+    pub fn ignore_rules_for(&self, org: &str, repo: &str) -> Vec<IgnoreRuleConfig> {
+        self.ignore_rules
+            .iter()
+            .filter(|(k, _)| wildcard_match(k, org))
+            .flat_map(|(_, repos)| repos.iter().filter(|(k, _)| wildcard_match(k, repo)).flat_map(|(_, v)| v.iter().cloned()))
+            .collect()
+    }
+}
+
+/// Case-insensitive match where `*` stands for any run of characters.
+fn wildcard_match(pattern: &str, name: &str) -> bool {
+    let (p, n) = (pattern.trim().to_ascii_lowercase(), name.to_ascii_lowercase());
+    let parts: Vec<&str> = p.split('*').collect();
+    if parts.len() == 1 {
+        return p == n;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !n.starts_with(first) || n.len() < first.len() + last.len() || !n.ends_with(last) {
+        return false;
+    }
+    let mut rest = &n[first.len()..n.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 impl Default for Config {
@@ -89,11 +143,13 @@ impl Default for Config {
             mcp: McpConfig::default(),
             ai_auto_justify: AiAutoJustifyConfig::default(),
             sla: SlaConfig::default(),
+            blame: BlameConfig::default(),
             audit_log: AuditLogConfig::default(),
             policy: PolicyConfig::default(),
             org_repos: OrgReposConfig::default(),
             scan_queue: ScanQueueConfig::default(),
             daily_report: DailyReportConfig::default(),
+            ignore_rules: Default::default(),
         }
     }
 }
@@ -241,6 +297,23 @@ pub struct SlaConfig {
 }
 impl Default for SlaConfig {
     fn default() -> Self { SlaConfig { enabled: true, critical_days: 7, high_days: 30, medium_days: 90 } }
+}
+
+/// Line-level git authorship of findings (`ignite-blame`). A full-history
+/// checkout is blamed locally for free; a shallow clone (org scans,
+/// scheduled rescans) asks GitHub's rate-limited GraphQL blame API, so each
+/// scan asks about at most `maxRemoteFilesPerScan` not-yet-cached files and
+/// stops once the token's remaining GraphQL budget drops below
+/// `minRateLimitRemaining` — whatever is left is picked up by the next scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameConfig {
+    pub enabled: bool,
+    pub max_remote_files_per_scan: usize,
+    pub min_rate_limit_remaining: i64,
+}
+impl Default for BlameConfig {
+    fn default() -> Self { BlameConfig { enabled: true, max_remote_files_per_scan: 300, min_rate_limit_remaining: 1000 } }
 }
 
 /// Auto-justification of low-risk blocking findings via the configured LLM
@@ -1421,6 +1494,9 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_num::<u32>("SLA_CRITICAL_DAYS") { merged.sla.critical_days = v; }
     if let Some(v) = env_num::<u32>("SLA_HIGH_DAYS") { merged.sla.high_days = v; }
     if let Some(v) = env_num::<u32>("SLA_MEDIUM_DAYS") { merged.sla.medium_days = v; }
+    if let Some(v) = env_bool("BLAME_ENABLED") { merged.blame.enabled = v; }
+    if let Some(v) = env_num::<usize>("BLAME_MAX_REMOTE_FILES_PER_SCAN") { merged.blame.max_remote_files_per_scan = v; }
+    if let Some(v) = env_num::<i64>("BLAME_MIN_RATE_LIMIT_REMAINING") { merged.blame.min_rate_limit_remaining = v; }
     if let Some(v) = env_bool("AUDIT_LOG_ENABLED") { merged.audit_log.enabled = v; }
     if let Some(v) = env_num::<u32>("SCAN_QUEUE_MAX_CONCURRENT") { merged.scan_queue.max_concurrent = v; }
     if let Some(v) = env_num::<u32>("SCAN_QUEUE_USER_RESERVED_SLOTS") { merged.scan_queue.user_reserved_slots = v; }
@@ -1852,6 +1928,9 @@ mod tests {
         assert_eq!(load_with_env("SLA_CRITICAL_DAYS", "7").sla.critical_days.to_string(), "7", "SLA_CRITICAL_DAYS");
         assert_eq!(load_with_env("SLA_HIGH_DAYS", "7").sla.high_days.to_string(), "7", "SLA_HIGH_DAYS");
         assert_eq!(load_with_env("SLA_MEDIUM_DAYS", "7").sla.medium_days.to_string(), "7", "SLA_MEDIUM_DAYS");
+        assert!(!load_with_env("BLAME_ENABLED", "false").blame.enabled, "BLAME_ENABLED=false");
+        assert_eq!(load_with_env("BLAME_MAX_REMOTE_FILES_PER_SCAN", "7").blame.max_remote_files_per_scan, 7, "BLAME_MAX_REMOTE_FILES_PER_SCAN");
+        assert_eq!(load_with_env("BLAME_MIN_RATE_LIMIT_REMAINING", "7").blame.min_rate_limit_remaining, 7, "BLAME_MIN_RATE_LIMIT_REMAINING");
         assert!(load_with_env("AUDIT_LOG_ENABLED", "true").audit_log.enabled, "AUDIT_LOG_ENABLED=true");
         assert!(!load_with_env("AUDIT_LOG_ENABLED", "false").audit_log.enabled, "AUDIT_LOG_ENABLED=false");
         assert_eq!(load_with_env("SCAN_QUEUE_MAX_CONCURRENT", "7").scan_queue.max_concurrent.to_string(), "7", "SCAN_QUEUE_MAX_CONCURRENT");
@@ -1967,6 +2046,28 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 136, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 139, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+    }
+
+    #[test]
+    fn ignore_rules_resolve_by_org_then_repo_with_wildcards() {
+        let mut v = serde_json::to_value(Config::default()).unwrap();
+        merge_json(&mut v, &serde_json::json!({
+            "ignoreRules": {
+                "Acme": {
+                    "*": [{ "filePatterns": ["\\.txt$"], "linePatterns": ["X=(.*)"], "reason": "fp" }],
+                    "sap-*": [{ "filePatterns": ["^idoc/"] }],
+                    "web": [{ "filePatterns": ["\\.md$"] }]
+                },
+                "*": { "*": [{ "filePatterns": ["^fixtures/"] }] }
+            }
+        }));
+        let cfg: Config = serde_json::from_value(v).unwrap();
+        assert_eq!(cfg.ignore_rules_for("acme", "SAP-orders").len(), 3);
+        assert_eq!(cfg.ignore_rules_for("acme", "web").len(), 3);
+        assert_eq!(cfg.ignore_rules_for("acme", "api").len(), 2);
+        assert_eq!(cfg.ignore_rules_for("other", "sap-orders").len(), 1);
+        assert!(cfg.ignore_rules_for("acme", "api").iter().any(|r| r.line_patterns == vec!["X=(.*)".to_string()] && r.categories.is_empty()));
+        assert!(wildcard_match("a*b*c", "axxbyyc") && !wildcard_match("a*b", "ab-c") && wildcard_match("*", ""));
     }
 }

@@ -36,7 +36,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20260919"></script>
+  <script src="i18n.js?v=20260929b"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -186,6 +186,31 @@
     #orgReposResults .org-repo-action-cell button {
       flex: 0 0 auto;
     }
+    /* Tree guides: each repo row hangs off its org's checkbox with an
+       elbow connector, so the org row reads as the parent node. */
+    #orgReposResults tr.org-tree-child > td:first-child {
+      position: relative;
+      padding-left: 5.25rem;
+    }
+    #orgReposResults tr.org-tree-child > td:first-child::before {
+      content: '';
+      position: absolute;
+      left: 63px;
+      top: 0;
+      bottom: 0;
+      border-left: 2px solid #cbd5e1;
+    }
+    #orgReposResults tr.org-tree-child.org-tree-last > td:first-child::before {
+      bottom: calc(100% - 27px);
+    }
+    #orgReposResults tr.org-tree-child > td:first-child::after {
+      content: '';
+      position: absolute;
+      left: 63px;
+      top: 26px;
+      width: 15px;
+      border-top: 2px solid #cbd5e1;
+    }
   </style>
   <script>
     // Applied before first paint (synchronous, in <head>) so the page never
@@ -323,7 +348,7 @@
     <span class="text-[11px] font-semibold [writing-mode:vertical-rl] rotate-180" data-i18n="queue.tab">Queue</span>
     <span id="scanQueueTabCount" class="min-w-[1.25rem] px-1 rounded-full bg-white text-brand-700 text-[10px] font-bold text-center">0</span>
   </button>
-  <div id="scanQueuePanel" class="hidden fixed right-0 top-14 bottom-0 w-full max-w-sm bg-white border-l border-slate-200 shadow-2xl z-50 flex flex-col" role="dialog" aria-labelledby="scanQueueTitle">
+  <div id="scanQueuePanel" class="hidden fixed right-0 top-14 bottom-0 w-full max-w-2xl bg-white border-l border-slate-200 shadow-2xl z-50 flex flex-col" role="dialog" aria-labelledby="scanQueueTitle">
     <div class="flex items-center justify-between gap-2 px-4 py-3 border-b border-slate-200 shrink-0">
       <h2 id="scanQueueTitle" class="text-sm font-bold text-slate-900" data-i18n="queue.title">Scan queue</h2>
       <div class="flex items-center gap-1">
@@ -826,6 +851,13 @@
     <div id="orgReposNotConnected" class="bg-white border border-slate-200 rounded-2xl shadow-sm p-10 text-center text-sm text-slate-400" data-i18n="orgRepos.notConnected">Enter a GitHub org above and click Connect to list its repositories.</div>
 
     <div id="orgReposResults" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+      <div id="orgReposFilters" class="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-slate-200">
+        <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mr-1" data-i18n="orgRepos.filterLabel">Show</span>
+        <button type="button" class="org-filter text-[11px] font-semibold px-2.5 py-1 rounded-full border" data-filter="all"></button>
+        <button type="button" class="org-filter text-[11px] font-semibold px-2.5 py-1 rounded-full border" data-filter="errors"></button>
+        <button type="button" class="org-filter text-[11px] font-semibold px-2.5 py-1 rounded-full border" data-filter="aborted"></button>
+        <button type="button" class="org-filter text-[11px] font-semibold px-2.5 py-1 rounded-full border" data-filter="empty"></button>
+      </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <colgroup>
@@ -850,6 +882,7 @@
         </table>
       </div>
       <div id="orgReposEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="orgRepos.empty">No repositories found for this org.</div>
+      <div id="orgReposFilterEmpty" class="hidden p-10 text-center text-sm text-slate-400" data-i18n="orgRepos.filterNoMatch">No repositories match this filter.</div>
     </div>
     <div id="orgReposLoading" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm p-10 text-center text-xs text-slate-400" data-i18n="common.loading">Loading…</div>
     <div id="orgReposError" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm p-10 text-center text-sm text-rose-500"></div>
@@ -2208,6 +2241,15 @@
       if (ev.target.id === 'phaseMaxModal') $('phaseMaxModal').classList.add('hidden');
     });
 
+    // Line-level git author of a finding (`issue.author`, from git blame):
+    // "Name (@login)", else "Name <email>", else whatever is known.
+    function issueAuthorLabel(a) {
+      if (!a) return '';
+      if (a.name && a.login) return `${a.name} (@${a.login})`;
+      if (a.name && a.email) return `${a.name} <${a.email}>`;
+      return a.name || (a.login ? '@' + a.login : '') || a.email || '';
+    }
+
     function escapeHtml(s) {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
@@ -2469,9 +2511,9 @@
       // vs. a real reviewer's email). Mirrors studioRenderIssuePanel's
       // badge so a read-only issue list (Onboarded Repos "view findings",
       // history) doesn't hide that a finding was already justified by AI.
-      const isSystemActor = issue.status === 'overridden' && /^(carried-forward|ai-assist)@ignite\.internal$/.test(issue.actorEmail || '');
+      const isSystemActor = issue.status === 'overridden' && /^(carried-forward|ai-assist|ignore-rules)@ignite\.internal$/.test(issue.actorEmail || '');
       const overrideActorLabel = isSystemActor
-        ? (issue.actorEmail === 'ai-assist@ignite.internal' ? '✨ AI-justified' : '↻ Carried forward')
+        ? (issue.actorEmail === 'ai-assist@ignite.internal' ? '✨ AI-justified' : issue.actorEmail === 'ignore-rules@ignite.internal' ? '⚙ Org rule' : '↻ Carried forward')
         : (issue.actorName || issue.actorEmail || 'a reviewer');
       const statusBadge = !interactive && issue.status === 'overridden'
         ? isSystemActor
@@ -6114,9 +6156,9 @@
       // actorName) either way, distinguished only by which actor string
       // comes back (`carried-forward@ignite.internal` /
       // `ai-assist@ignite.internal` vs. a real reviewer's email).
-      const isSystemActor = isOverridden && /^(carried-forward|ai-assist)@ignite\.internal$/.test(issue.actorEmail || '');
+      const isSystemActor = isOverridden && /^(carried-forward|ai-assist|ignore-rules)@ignite\.internal$/.test(issue.actorEmail || '');
       const overrideActorLabel = isSystemActor
-        ? (issue.actorEmail === 'ai-assist@ignite.internal' ? '✨ AI-justified' : '↻ Carried forward from a previous scan')
+        ? (issue.actorEmail === 'ai-assist@ignite.internal' ? '✨ AI-justified' : issue.actorEmail === 'ignore-rules@ignite.internal' ? '⚙ Org rule (config.json ignoreRules)' : '↻ Carried forward from a previous scan')
         : (issue.actorName || issue.actorEmail || 'a reviewer');
       const justificationHtml = isOverridden && issue.justification
         ? `<div class="border rounded-lg p-3 mb-3 ${isSystemActor ? 'border-violet-200 bg-violet-50' : 'border-slate-200 bg-slate-50'}">
@@ -6148,6 +6190,7 @@
           <p class="text-xs text-slate-600 leading-relaxed">${escapeHtml(issue.summary)}</p>
           <p class="text-[10px] font-mono text-slate-400 mt-2">${escapeHtml(issue.file || '')}${issue.line ? ':' + issue.line : ''}</p>
           ${issue.tool ? `<p class="text-[10px] text-slate-400 mt-1">Detected by <span class="font-semibold text-slate-600">${escapeHtml(issue.tool)}</span></p>` : ''}
+          ${issueAuthorLabel(issue.author) ? `<p class="text-[10px] text-slate-400 mt-1" title="${escapeHtml(issue.author.commit || '')}">${t('studio.lastChangedBy')} <span class="font-semibold text-slate-600">${escapeHtml(issueAuthorLabel(issue.author))}</span></p>` : ''}
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
         ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
@@ -7657,6 +7700,14 @@
     // the org's running scans have finished (the waiting queue is dropped at once).
     const orgReposAutoRescanBusy = new Map();
     const orgReposLoadErrors = new Map();
+    let orgReposFilter = 'all'; // all | errors | aborted | empty
+    const ORG_REPO_FILTERS = {
+      all: () => true,
+      // Scan could not run (clone/auth error) or the gate failed.
+      errors: (r) => !!r.scanError || (!r.empty && r.status === 'failed'),
+      aborted: (r) => !r.scanError && r.status === 'aborted',
+      empty: (r) => !!r.empty,
+    };
     const orgKey = (org) => String(org).toLowerCase();
     const orgRepoKey = (r) => `${orgKey(r.org)}/${String(r.repo).toLowerCase()}`;
     const orgRepoChecked = (r) => !r.empty && !orgReposUnchecked.has(orgRepoKey(r));
@@ -7787,14 +7838,21 @@
         // to-haves, matching the same "worst case wins" semaphore logic
         // Studio's own severity chips use, just collapsed to one number
         // here since this table has no room for a per-tier breakdown.
+        // Justified (overridden) findings are still findings: they're
+        // counted and clickable, shown in violet with a ✓ when nothing
+        // else is open, so a passing repo's findings stay reachable.
         let findingsCell;
+        const justified = r.justifiedCount || 0;
         if (running || r.findingsCount == null) {
           findingsCell = '<span class="text-slate-300">—</span>';
-        } else if (r.findingsCount === 0) {
+        } else if (r.findingsCount === 0 && justified === 0) {
           findingsCell = '<span class="text-slate-400">0</span>';
+        } else if (r.findingsCount === 0) {
+          findingsCell = `<button type="button" class="org-repo-view-findings font-semibold text-violet-600 hover:underline" data-i="${i}" title="${escapeAttr(t('orgRepos.findingsAllJustified', { count: justified }))}">${justified} <span class="text-[10px]">✓</span></button>`;
         } else {
           const tierColor = (r.errorCount || 0) > 0 ? 'text-rose-600' : (r.warningCount || 0) > 0 ? 'text-amber-600' : 'text-emerald-600';
-          findingsCell = `<button type="button" class="org-repo-view-findings font-semibold ${tierColor} hover:underline" data-i="${i}">${r.findingsCount}</button>`;
+          const title = justified > 0 ? ` title="${escapeAttr(t('orgRepos.findingsOpenJustified', { open: r.findingsCount, justified }))}"` : '';
+          findingsCell = `<button type="button" class="org-repo-view-findings font-semibold ${tierColor} hover:underline" data-i="${i}"${title}>${r.findingsCount + justified}</button>`;
         }
         const studioBtn = !running && r.latestProjectId
           ? `<button type="button" class="org-repo-open-studio text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-violet-600 hover:bg-slate-50 whitespace-nowrap" data-i="${i}" title="${escapeAttr(t('orgRepos.openStudioTitle'))}">${t('orgRepos.openStudio')}</button>`
@@ -7805,7 +7863,7 @@
           : `<button type="button" class="org-repo-download-acks text-[11px] font-semibold text-brand-600 hover:underline" data-i="${i}" title="${escapeAttr(t('onboardedRepos.downloadAcksTitle'))}">⬇ ${t('onboardedRepos.acknowledgmentsCount', { count: acks.length })}</button>`;
         return `
         <tr class="align-top">
-          <td class="px-5 py-3.5 pl-10">
+          <td class="px-5 py-3.5">
             <div class="flex items-start gap-2.5">
               <input type="checkbox" class="org-repo-select mt-1 rounded border-slate-300 text-brand-600 focus:ring-brand-500" data-i="${i}" ${orgRepoChecked(r) ? 'checked' : ''} ${r.empty ? 'disabled' : ''} />
               <div class="min-w-0">
@@ -7834,22 +7892,37 @@
         </tr>`;
       });
 
+      const matches = ORG_REPO_FILTERS[orgReposFilter] || ORG_REPO_FILTERS.all;
+      $('orgReposFilters').querySelectorAll('.org-filter').forEach((btn) => {
+        const f = btn.dataset.filter;
+        const active = f === orgReposFilter;
+        btn.textContent = `${t('orgRepos.filter.' + f)} (${repos.filter(ORG_REPO_FILTERS[f]).length})`;
+        btn.setAttribute('aria-pressed', String(active));
+        btn.className = `org-filter text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-colors ${active ? 'bg-brand-600 text-white border-brand-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`;
+      });
+      const filtering = orgReposFilter !== 'all';
+      $('orgReposFilterEmpty').classList.toggle('hidden', !filtering || repos.some(matches));
+
       // Tree: one header row per org (checkbox = select/deselect all its
       // repos, chevron = collapse), then that org's repo rows.
       $('orgReposTableBody').innerHTML = orgReposOrgs.map((o) => {
         const idx = repos.map((r, i) => (orgKey(r.org) === o ? i : -1)).filter((i) => i >= 0);
+        const shown = idx.filter((i) => matches(repos[i]));
+        if (filtering && shown.length === 0) return '';
         const selectable = idx.filter((i) => !repos[i].empty).length;
         const selected = idx.filter((i) => orgRepoChecked(repos[i])).length;
         const name = idx.length ? repos[idx[0]].org : o;
         const collapsed = orgReposCollapsed.has(o);
         const err = orgReposLoadErrors.get(o);
         const header = `
-        <tr class="org-header bg-sky-100 hover:bg-sky-200/70 border-y border-sky-200 cursor-pointer transition-colors" data-org="${escapeAttr(o)}">
+        <tr class="org-header bg-slate-50 hover:bg-sky-50 border-y border-slate-200 cursor-pointer transition-colors" data-org="${escapeAttr(o)}">
           <td colspan="6" class="px-5 py-2.5">
             <div class="flex items-center gap-3">
-              <button type="button" class="org-toggle text-sky-700 hover:text-sky-900 w-6 h-6 flex items-center justify-center rounded hover:bg-sky-200" data-org="${escapeAttr(o)}" aria-expanded="${!collapsed}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg class="w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4l6 6-6 6V4z"/></svg></button>
+              <button type="button" class="org-toggle text-slate-600 hover:text-slate-900 w-6 h-6 flex items-center justify-center rounded hover:bg-slate-200" data-org="${escapeAttr(o)}" aria-expanded="${!collapsed}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg class="w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4l6 6-6 6V4z"/></svg></button>
               <input type="checkbox" class="org-select-all rounded border-slate-300 text-brand-600 focus:ring-brand-500" data-org="${escapeAttr(o)}" ${selectable && selected === selectable ? 'checked' : ''} ${selectable === 0 ? 'disabled' : ''} data-partial="${selected > 0 && selected < selectable}" />
+              <svg class="w-5 h-5 text-slate-500 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
               <span class="font-bold text-slate-800">${escapeHtml(name)}</span>
+              ${filtering ? `<span class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-brand-50 text-brand-700 border border-brand-200">${escapeHtml(t('orgRepos.filterShownCount', { shown: shown.length, total: idx.length }))}</span>` : ''}
               <span class="text-[11px] text-slate-500">${err ? (githubSsoInfo(err) ? githubSsoHintHtml(githubSsoInfo(err), err) : `<span class="text-rose-500">${escapeHtml(err)}</span>`) : escapeHtml(t('orgRepos.orgSelectedCount', { selected, total: selectable }))}</span>
               <button type="button" ${orgReposAutoRescanBusy.has(o) ? 'disabled' : ''} class="org-autorescan text-[11px] font-semibold px-2.5 py-1 rounded-full border disabled:opacity-50 disabled:cursor-not-allowed ${orgReposAutoRescanBusy.has(o) ? 'bg-slate-100 text-slate-400 border-slate-200' : orgReposAutoRescan.has(o) ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}" data-org="${escapeAttr(o)}" aria-pressed="${orgReposAutoRescan.has(o)}" title="${escapeAttr(t('orgRepos.autoRescanToggleTitle'))}">${escapeHtml(t(orgReposAutoRescanBusy.get(o) === 'starting' ? 'orgRepos.autoRescanStarting' : orgReposAutoRescanBusy.get(o) === 'stopping' ? 'orgRepos.autoRescanStopping' : orgReposAutoRescan.has(o) ? 'orgRepos.autoRescanOn' : 'orgRepos.autoRescanOff'))}</button>
               <button type="button" class="org-report shrink-0 w-7 h-7 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:border-brand-300 disabled:opacity-50 disabled:cursor-not-allowed" data-org="${escapeAttr(o)}" title="${escapeAttr(t('orgRepos.sendReportTitle'))}"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg></button>
@@ -7858,7 +7931,7 @@
             </div>
           </td>
         </tr>`;
-        return header + (collapsed ? '' : idx.map((i) => rowHtml[i]).join(''));
+        return header + (collapsed ? '' : shown.map((i, n) => rowHtml[i].replace('<tr class="align-top">', `<tr class="align-top org-tree-child${n === shown.length - 1 ? ' org-tree-last' : ''}">`)).join(''));
       }).join('');
 
       $('orgReposTableBody').querySelectorAll('.org-select-all').forEach((cb) => {
@@ -7871,6 +7944,9 @@
           syncAutoRescanSelection(o);
           renderOrgRepos(orgReposCache);
         });
+      });
+      $('orgReposFilters').querySelectorAll('.org-filter').forEach((btn) => {
+        btn.onclick = () => { orgReposFilter = btn.dataset.filter; renderOrgRepos(orgReposCache); };
       });
       // Whole header row toggles expand/collapse (checkbox and remove excluded).
       $('orgReposTableBody').querySelectorAll('.org-header').forEach((row) => {
@@ -7918,7 +7994,7 @@
         });
       });
       // The envelope opens a small dialog: email the org's report, or
-      // download the same report as a PDF (server-side headless Chrome).
+      // download the same report as a PDF (server-side WeasyPrint, else headless Chrome).
       $('orgReposTableBody').querySelectorAll('.org-report').forEach((btn) => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -9300,8 +9376,8 @@
       $('scanQueueRunning').innerHTML = data.running.length
         ? data.running.map((r) => `<li class="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-brand-50 border border-brand-100">
             <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse shrink-0"></span>
-            <span class="flex-1 min-w-0 truncate text-[12px] font-semibold text-slate-800" title="${escapeAttr(`${r.org}/${r.repo}`)}">${escapeHtml(`${r.org}/${r.repo}`)}</span>
-            <span class="text-[10px] text-slate-500 truncate max-w-[55%]">${scanQueueMeta(r)}</span>
+            <span class="flex-1 min-w-0 text-[12px] font-semibold text-slate-800 [overflow-wrap:anywhere]" title="${escapeAttr(`${r.org}/${r.repo}`)}">${escapeHtml(r.repo)}<span class="block text-[10px] font-normal text-slate-400">${escapeHtml(r.org)}</span></span>
+            <span class="shrink-0 text-[10px] text-slate-500">${scanQueueMeta(r)}</span>
           </li>`).join('')
         : `<li class="text-[11px] text-slate-400">${escapeHtml(t('queue.emptyRunning'))}</li>`;
       // Entries move only within their own priority lane.
@@ -9312,8 +9388,8 @@
         ? data.queued.map((q, i) => `<li class="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-200 bg-white">
             <span class="w-6 text-right text-[10px] font-semibold text-slate-400 shrink-0">${q.position}</span>
             <span class="flex-1 min-w-0">
-              <span class="block truncate text-[12px] font-semibold text-slate-800" title="${escapeAttr(`${q.org}/${q.repo}`)}">${escapeHtml(`${q.org}/${q.repo}`)}</span>
-              <span class="block truncate text-[10px] text-slate-400">${scanQueueMeta(q)}</span>
+              <span class="block text-[12px] font-semibold text-slate-800 [overflow-wrap:anywhere]" title="${escapeAttr(`${q.org}/${q.repo}`)}">${escapeHtml(q.repo)}</span>
+              <span class="block text-[10px] text-slate-400">${escapeHtml(q.org)} · ${scanQueueMeta(q)}</span>
             </span>
             ${iconBtn('up', q.id, t('queue.moveUp'), 'M5 15l7-7 7 7', laneStart(q, i))}
             ${iconBtn('down', q.id, t('queue.moveDown'), 'M19 9l-7 7-7-7', laneEnd(q, i))}

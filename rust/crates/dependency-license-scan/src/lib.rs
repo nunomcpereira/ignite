@@ -1001,6 +1001,7 @@ pub fn collect_license_issues(root: &Path, manifests: &[LicenseScanManifest], li
                 cwe: None,
                 owasp: None,
                 tool: Some(manifest.source.to_string()),
+                author: None,
             });
         }
     }
@@ -1026,6 +1027,7 @@ pub fn collect_license_issues(root: &Path, manifests: &[LicenseScanManifest], li
             // Ignite's built-in scanner directly — not a per-dependency
             // manifest lookup, so neither ORT nor deps.dev produced this one.
             tool: Some("built-in".to_string()),
+            author: None,
         });
     }
 
@@ -1174,6 +1176,7 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
                     cwe: hint.cwe,
                     owasp: hint.owasp,
                     tool: Some("deps.dev".to_string()),
+                    author: None,
                 });
             }
         }

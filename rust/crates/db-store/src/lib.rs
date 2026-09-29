@@ -23,6 +23,7 @@ mod api_keys;
 mod audit_events;
 mod auth;
 mod baseline;
+mod blame_cache;
 mod caches;
 mod daily_report;
 mod dependency_and_fixpr;
@@ -177,8 +178,8 @@ mod tests {
         store.replace_project_issues(
             new_id,
             &[
-                IssueInput { id: "secret::app.py::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("app.py".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None },
-                IssueInput { id: "license-compliance::pom.xml::1".into(), phase: Some(3), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "commercial dependency".into(), file: Some("pom.xml".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None },
+                IssueInput { id: "secret::app.py::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("app.py".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None },
+                IssueInput { id: "license-compliance::pom.xml::1".into(), phase: Some(3), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "commercial dependency".into(), file: Some("pom.xml".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None },
             ],
             &HashSet::new(),
         );
@@ -322,6 +323,7 @@ mod tests {
                 tool: Some("built-in".into()),
                 references: Some(serde_json::json!({"cwe": ["CWE-798"]})),
                 duplicate_ref: None,
+                author: None,
             },
             IssueInput {
                 id: "codeql-sast::b.js::10".into(),
@@ -340,6 +342,7 @@ mod tests {
                 tool: Some("codeql".into()),
                 references: None,
                 duplicate_ref: Some(serde_json::json!({"file": "c.js", "line": 21, "endLine": 29})),
+                author: None,
             },
         ];
         let mut overridden = HashSet::new();
@@ -381,7 +384,7 @@ mod tests {
         let id = store.create_project("job-8", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(
             id,
-            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
             &HashSet::new(),
         );
         // Not yet overridden — no justification/actor to show.
@@ -409,7 +412,7 @@ mod tests {
         overridden.insert("license-compliance::requirements.txt::0::PyMuPDF".to_string());
         store.replace_project_issues(
             id,
-            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
             &overridden,
         );
 
@@ -592,7 +595,7 @@ mod tests {
         let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(
             project_id,
-            &[IssueInput { id: "secret::app.js::5".to_string(), phase: Some(4), category: "secret".to_string(), severity: "error".to_string(), score: Some(9), summary: "hardcoded key".to_string(), file: Some("app.js".to_string()), line: Some(5), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None }],
+            &[IssueInput { id: "secret::app.js::5".to_string(), phase: Some(4), category: "secret".to_string(), severity: "error".to_string(), score: Some(9), summary: "hardcoded key".to_string(), file: Some("app.js".to_string()), line: Some(5), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
             &HashSet::new(),
         );
         assert_eq!(store.get_project_issues(project_id)[0].status, "open");

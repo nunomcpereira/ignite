@@ -91,6 +91,8 @@ struct RepoStatus {
     status: Option<String>,
     last_scan_at: Option<String>,
     findings_count: Option<i64>,
+    /// Justified (overridden) findings on the latest run, not in `findings_count`.
+    justified_count: Option<i64>,
     latest_job_id: Option<String>,
     latest_project_id: Option<i64>,
     scan_error: Option<String>,
@@ -160,6 +162,7 @@ fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoSta
                     status: Some(s.status.clone()),
                     last_scan_at: Some(s.last_scan_at.clone()),
                     findings_count: Some(s.findings_count),
+                    justified_count: Some(s.justified_count),
                     latest_job_id: Some(s.latest_job_id.clone()),
                     latest_project_id: Some(s.latest_project_id),
                     scan_error: None,
@@ -276,6 +279,9 @@ async fn is_empty_repo(api: &GithubApi<'_>, full_name: &str, token: &str) -> boo
 /// identically per repo, so it only lives in one place.
 pub(super) async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner, server_base: &str, token: &str, target: &RescanTarget, db: &ignite_db_store::DbStore, lease: &str, background: bool) {
     let http = reqwest::Client::new();
+    // This scan's own github-check call authenticates with the lease, not a
+    // user — bind the token so it posts to GitHub with the same one.
+    super::scan_queue::bind_github_token(lease, token);
     let opts = RescanOptions { background, lease: Some(lease.to_string()) };
     let outcome = rescan_one_with(runner, &http, server_base, token, target, auto_fix_mode_from_env(), &opts).await;
     // Org scans keep only the latest scan per repo — see

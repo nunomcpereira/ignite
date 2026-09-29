@@ -81,6 +81,7 @@ async fn main() {
     let npm_http = reqwest::Client::new();
 
     let config = ignite_phase4_orchestrator::Phase4Config {
+        ignore_rules: Vec::new(),
         fast: false,
         org: "bench-org".to_string(),
         repo: "bench-repo".to_string(),

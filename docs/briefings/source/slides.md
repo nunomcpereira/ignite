@@ -352,6 +352,22 @@ layout: default
 layout: default
 ---
 
+<div class="eyebrow mono">— 05 · What's New (cont.)</div>
+<h1>Known false positives, acknowledged by policy — not hidden</h1>
+<p class="lede">Some findings are structurally benign across a whole estate — e.g. SAP integration packages whose <code style="font-family:'JetBrains Mono',monospace;font-size:11px;">*_Credential_Name=</code> lines hold alias names, not secrets. Security now declares that once, centrally, instead of asking hundreds of teams to justify the same line.</p>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--teal) 20%, transparent);color:var(--teal);">🎯</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Scoped org / repo / file rules</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">A rule targets an organization, a repository (wildcards allowed), file paths, the exact flagged line, and optionally a finding category — narrow enough that a real secret on a different line is still caught.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--indigo) 20%, transparent);color:var(--indigo);">✅</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Pass the gate, keep the evidence</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Matched findings are still reported and fully navigable, but arrive pre-acknowledged with the rule's written reason — the repository shows as passing, and an auditor sees exactly what was accepted and why.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--purple) 20%, transparent);color:var(--purple);">↩</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Revocable in one edit</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Policy acknowledgments are never carried forward on their own: remove or tighten a rule and the next scan re-flags every finding it used to cover. Each one is attributed to the policy, not to a person.</div></div>
+</div>
+<div class="card" style="margin-top:12px;border-color:color-mix(in srgb, var(--teal) 40%, var(--border));"><div style="font-weight:700;font-size:13px;">⚙ Distinct from a human override</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Policy acknowledgments carry their own "Org rule" label wherever findings are reviewed — Studio and the organization view — so a board or auditor can always separate centrally-approved exceptions from individual engineers' justifications.</div></div>
+
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">11 · CONFIDENTIAL</span></div>
+
+---
+layout: default
+---
+
 <div class="eyebrow mono">— 07 · Enterprise Readiness</div>
 <h1>Deploys as your own product, in your team's language</h1>
 <p class="lede">The onboarding console isn't a third-party vendor tool bolted onto the workflow — every customer-facing surface is themeable and localized out of the box, so it sits inside your organization's tooling as if you built it.</p>
@@ -361,7 +377,7 @@ layout: default
 </div>
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🧩 Config, not a fork</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Both brand and language are runtime configuration — a customer deployment never diverges from upstream source, so every future Ignite release still applies cleanly on top.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">11 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">12 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -380,4 +396,4 @@ layout: default
   <div class="mono" style="font-size:9.5px;letter-spacing:.14em;color:var(--faint);white-space:nowrap;">END OF BRIEFING</div>
 </div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">12 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">13 · CONFIDENTIAL</span></div>
