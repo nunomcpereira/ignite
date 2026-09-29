@@ -426,17 +426,17 @@ fn enqueue_scans(state: &Arc<AppState>, token: &OrgToken, targets: Vec<RescanTar
     super::scan_queue::enqueue_org_scans(state, &token.token, token.from_app, targets, priority, sweep, source)
 }
 
-const NO_TOKEN: &str = "No GitHub token available — install the Ignite GitHub App on the org, connect GitHub, or set GH_TOKEN/GITHUB_TOKEN on the server.";
+pub(super) const NO_TOKEN: &str = "No GitHub token available — install the Ignite GitHub App on the org, connect GitHub, or set GH_TOKEN/GITHUB_TOKEN on the server.";
 
 /// The GitHub token for server-side work on one org, and whether it's a
 /// GitHub App installation token (those expire after ~1h, so a queued scan
 /// re-mints one when it actually starts).
-struct OrgToken {
-    token: String,
-    from_app: bool,
+pub(super) struct OrgToken {
+    pub(super) token: String,
+    pub(super) from_app: bool,
 }
 
-async fn org_token(state: &AppState, headers: &HeaderMap, org: &str) -> OrgToken {
+pub(super) async fn org_token(state: &AppState, headers: &HeaderMap, org: &str) -> OrgToken {
     match crate::auth::resolve_github_token_for_owner(state, headers, org).await {
         Some((token, source)) => OrgToken { token, from_app: source == crate::auth::GithubTokenSource::GithubApp },
         None => OrgToken { token: String::new(), from_app: false },
@@ -605,8 +605,58 @@ async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user):
     (StatusCode::ACCEPTED, Json(serde_json::json!({ "skipped": false, "triggered": count, "maxConcurrent": state.config.scan_queue.max_concurrent.max(1) }))).into_response()
 }
 
+#[derive(Debug, Deserialize)]
+struct QueueOrderedBody {
+    repos: Vec<String>,
+}
+
+/// `POST /api/org-repos/:org/queue-ordered` — queues scans for `repos` in
+/// exactly the given order (the AI triage's attack order), background lane.
+/// Like "Scan all", only repos discovery returns are ever queued, but unlike
+/// it nothing about the org's saved selection/exclusions changes.
+async fn queue_ordered_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path(org): Path<String>, Json(body): Json<QueueOrderedBody>) -> Response {
+    if !ignite_github_api::is_valid_github_owner(&org) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
+    }
+    let tok = org_token(&state, &headers, &org).await;
+    if tok.token.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": NO_TOKEN }))).into_response();
+    }
+    let api = GithubApi::new(&state.runner);
+    let discovered = match discover_org(&api, &org, &tok.token, true, true).await {
+        Ok(repos) => repos,
+        Err(e) => {
+            let text = e.to_string();
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": text, "ssoUrl": ignite_github_api::sso_authorization_url(&text) }))).into_response();
+        }
+    };
+    let (targets, skipped) = ordered_targets(&body.repos, &discovered);
+    let count = if targets.is_empty() { 0 } else { enqueue_scans(&state, &tok, targets, Priority::Background, false, "ai-triage") };
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "queued": count > 0, "count": count, "skipped": skipped }))).into_response()
+}
+
+/// `requested` in order, deduped, resolved to discovered non-empty repos
+/// (with GitHub's own casing); everything else is returned as skipped.
+fn ordered_targets(requested: &[String], discovered: &[ignite_org_onboard::DiscoveredRepo]) -> (Vec<RescanTarget>, Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut targets = Vec::new();
+    let mut skipped = Vec::new();
+    for name in requested {
+        let key = name.trim().to_ascii_lowercase();
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
+        match discovered.iter().find(|d| d.repo.to_ascii_lowercase() == key && !d.empty) {
+            Some(d) => targets.push(RescanTarget { org: d.org.clone(), repo: d.repo.clone() }),
+            None => skipped.push(name.trim().to_string()),
+        }
+    }
+    (targets, skipped)
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/org-repos/:org/queue-ordered", post(queue_ordered_org_repos))
         .route("/api/org-repos/:org", get(list_org_repos))
         .route("/api/org-repos/:org/status", get(org_repo_statuses))
         .route("/api/org-repos/scan-selected", post(scan_selected_org_repos))
@@ -615,4 +665,19 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/org-repos/auto-rescan", get(get_auto_rescan_config))
         .route("/api/org-repos/auto-rescan/orgs/:org", axum::routing::delete(remove_auto_rescan_org).put(set_auto_rescan_org))
         .route("/api/org-repos/auto-rescan/run", post(run_auto_rescan))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordered_targets_keep_request_order_and_skip_missing_empty_and_duplicate_repos() {
+        let d = |repo: &str, empty: bool| ignite_org_onboard::DiscoveredRepo { org: "Acme".into(), repo: repo.into(), archived: false, fork: false, empty };
+        let discovered = vec![d("Web", false), d("api", false), d("blank", true)];
+        let req: Vec<String> = ["api", "web", "API", "ghost", "blank"].iter().map(|s| s.to_string()).collect();
+        let (targets, skipped) = ordered_targets(&req, &discovered);
+        assert_eq!(targets.iter().map(|t| t.repo.as_str()).collect::<Vec<_>>(), vec!["api", "Web"]);
+        assert_eq!(skipped, vec!["ghost", "blank"]);
+    }
 }

@@ -8145,6 +8145,142 @@
     const downloadOrgReportPdf = (org) => downloadOrgFile(`/api/reports/daily/pdf?org=${encodeURIComponent(org)}`, `ignite-report-${org}.pdf`);
     // Findings in Ignite's .ignite/acknowledgments.md format, one block per repo.
     const downloadOrgReportMarkdown = (org) => downloadOrgFile(`/api/reports/daily/markdown?org=${encodeURIComponent(org)}`, `ignite-findings-${org}.md`);
+    // AI triage: the configured LLM ranks the org's repos by what to fix first.
+    // Results live only in this page's memory (keyed by org), so a browser
+    // reload clears them; "Re-run" asks the model again.
+    const aiTriageCache = new Map();
+    // The server runs triage as a background job (a local model can take
+    // minutes); poll its status, reporting elapsed seconds to `onProgress`.
+    async function fetchOrgAiTriage(org, onProgress) {
+      const q = `org=${encodeURIComponent(org)}`;
+      const start = await fetch(`/api/reports/daily/ai-triage?${q}`, { method: 'POST' });
+      let job = await start.json().catch(() => ({}));
+      if (!start.ok) throw new Error(job.error || `HTTP ${start.status}`);
+      while (job.status === 'running') {
+        if (onProgress) onProgress(job.elapsedSecs || 0);
+        await new Promise((r) => setTimeout(r, 3000));
+        const res = await fetch(`/api/reports/daily/ai-triage/status?${q}`);
+        job = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(job.error || `HTTP ${res.status}`);
+      }
+      const data = job.result || {};
+      if (job.status !== 'done') throw new Error(data.error || `HTTP ${job.httpStatus || 500}`);
+      data.generatedAt = new Date();
+      data.durationSecs = job.elapsedSecs;
+      aiTriageCache.set(org.toLowerCase(), data);
+      return data;
+    }
+    const aiTriageWorkingLabel = (secs) => t('orgRepos.aiTriageWorking', { time: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` });
+    async function runOrgAiTriage(org, onProgress) {
+      const data = aiTriageCache.get(org.toLowerCase()) || await fetchOrgAiTriage(org, onProgress);
+      showOrgAiTriageResult(org, data);
+      return null;
+    }
+    function aiTriageMeta(data) {
+      if (!data.findings) return '';
+      return t('orgRepos.aiTriageMeta', { repos: data.reposWithFindings, findings: data.findings, provider: data.provider || '' }) + (data.truncated ? ' ' + t('orgRepos.aiTriageTruncated') : '');
+    }
+    function saveBlob(blob, name) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }
+    function showOrgAiTriageResult(org, data) {
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4';
+      const btn = 'px-3 py-2 rounded-xl text-sm font-semibold border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed';
+      const meta = aiTriageMeta(data);
+      const order = data.attackOrder || [];
+      const removed = data.removedRepos || [];
+      const when = data.generatedAt ? data.generatedAt.toLocaleTimeString() : '';
+      const notes = [
+        removed.length ? t('orgRepos.aiTriageRemoved', { repos: removed.join(', ') }) : '',
+        data.existenceNote || '',
+      ].filter(Boolean);
+      overlay.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-3xl p-6 flex flex-col max-h-[90vh]" role="dialog" aria-modal="true">
+          <div class="flex items-start justify-between gap-3">
+            <h3 class="text-base font-bold text-slate-900">${escapeHtml(t('orgRepos.aiTriageTitle', { org }))}</h3>
+            <span class="text-[11px] text-slate-400 whitespace-nowrap">${escapeHtml(when ? t('orgRepos.aiTriageGeneratedAt', { time: when }) + (data.durationSecs ? ` (${data.durationSecs}s)` : '') : '')}</span>
+          </div>
+          <p class="mt-1 text-xs text-slate-500">${escapeHtml(meta)}</p>
+          ${notes.map((n) => `<p class="mt-1 text-xs text-amber-700">${escapeHtml(n)}</p>`).join('')}
+          <pre class="mt-4 flex-1 overflow-auto whitespace-pre-wrap break-words text-sm text-slate-800 font-sans bg-slate-50 border border-slate-200 rounded-xl p-4">${escapeHtml(data.recommendation || '')}</pre>
+          ${order.length ? `<p class="mt-2 text-xs text-slate-600"><span class="font-semibold">${escapeHtml(t('orgRepos.aiTriageOrderLabel'))}</span> ${order.map((r, i) => `${i + 1}. ${escapeHtml(r)}`).join(' → ')}</p>` : ''}
+          <p class="mt-2 text-[11px] text-slate-400">${escapeHtml(t('orgRepos.aiTriageDisclaimer'))}</p>
+          <p data-role="status" class="mt-2 text-xs hidden"></p>
+          <div class="mt-4 flex flex-wrap justify-end gap-2">
+            <button type="button" data-act="rerun" class="${btn}">${escapeHtml(t('orgRepos.aiTriageRerun'))}</button>
+            <button type="button" data-act="copy" class="${btn}">${escapeHtml(t('orgRepos.aiTriageCopy'))}</button>
+            <button type="button" data-act="download" class="${btn}">${escapeHtml(t('orgRepos.aiTriageDownload'))}</button>
+            <button type="button" data-act="pdf" class="${btn}">${escapeHtml(t('orgRepos.aiTriagePdf'))}</button>
+            ${order.length ? `<button type="button" data-act="queue" class="${btn} border-brand-300 text-brand-700">${escapeHtml(t('orgRepos.aiTriageQueue', { n: order.length }))}</button>` : ''}
+            <button type="button" data-act="close" class="px-3 py-2 rounded-xl text-sm font-semibold bg-brand-600 text-white hover:bg-brand-700">${escapeHtml(t('common.close'))}</button>
+          </div>
+        </div>`;
+      const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+      const onKey = (e) => { if (e.key === 'Escape') close(); };
+      document.addEventListener('keydown', onKey);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+      overlay.querySelector('[data-act="close"]').addEventListener('click', close);
+      const statusEl = overlay.querySelector('[data-role="status"]');
+      const status = (text, ok) => {
+        statusEl.textContent = text;
+        statusEl.className = `mt-2 text-xs break-words ${ok ? 'text-emerald-700' : 'text-red-600'}`;
+      };
+      // Runs one button's async action with the button disabled and a "Working…" label.
+      const busy = (sel, work) => overlay.querySelector(sel)?.addEventListener('click', async (e) => {
+        const b = e.currentTarget;
+        const label = b.textContent;
+        b.disabled = true;
+        b.textContent = t('orgRepos.reportWorking');
+        try { await work(b); } catch (err) { status(err.message, false); }
+        b.disabled = false;
+        if (b.textContent === t('orgRepos.reportWorking')) b.textContent = label;
+      });
+      busy('[data-act="rerun"]', async (b) => {
+        const fresh = await fetchOrgAiTriage(org, (secs) => { b.textContent = aiTriageWorkingLabel(secs); });
+        close();
+        showOrgAiTriageResult(org, fresh);
+      });
+      overlay.querySelector('[data-act="copy"]').addEventListener('click', async (e) => {
+        try { await navigator.clipboard.writeText(data.recommendation || ''); e.currentTarget.textContent = t('orgRepos.aiTriageCopied'); } catch (_) {}
+      });
+      overlay.querySelector('[data-act="download"]').addEventListener('click', () => {
+        const doc = `# Ignite AI triage — ${org} (${data.date || ''})\n\n${meta}\n\n${data.recommendation || ''}\n`;
+        saveBlob(new Blob([doc], { type: 'text/markdown' }), `ignite-ai-triage-${org}-${data.date || 'today'}.md`);
+      });
+      busy('[data-act="pdf"]', async () => {
+        const res = await fetch('/api/reports/daily/ai-triage/pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ org, date: data.date || '', meta, recommendation: data.recommendation || '' }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(t('orgRepos.reportPdfFailed', { error: err.error || `HTTP ${res.status}` }));
+        }
+        saveBlob(await res.blob(), `ignite-ai-triage-${org}-${data.date || 'today'}.pdf`);
+      });
+      busy('[data-act="queue"]', async (b) => {
+        const res = await fetch(`/api/org-repos/${encodeURIComponent(org)}/queue-ordered`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repos: order }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(t('orgRepos.aiTriageQueueFailed', { error: body.error || `HTTP ${res.status}` }));
+        const skipped = (body.skipped || []).length ? ' ' + t('orgRepos.aiTriageQueueSkipped', { repos: body.skipped.join(', ') }) : '';
+        status(t('orgRepos.aiTriageQueued', { n: body.count || 0 }) + skipped, true);
+        b.textContent = t('orgRepos.aiTriageQueuedShort');
+        if (typeof loadScanQueue === 'function') loadScanQueue();
+      });
+      document.body.appendChild(overlay);
+    }
     function openOrgReportDialog(org) {
       const overlay = document.createElement('div');
       overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4';
@@ -8159,6 +8295,7 @@
             <button type="button" data-act="azure_blob" class="${secondary}">${escapeHtml(t('orgRepos.reportViaAzure'))}</button>
             <button type="button" data-act="pdf" class="${secondary}">${escapeHtml(t('orgRepos.reportViaPdf'))}</button>
             <button type="button" data-act="markdown" class="${secondary}">${escapeHtml(t('orgRepos.reportViaMarkdown'))}</button>
+            <button type="button" data-act="ai_triage" class="${secondary}">✨ ${escapeHtml(t('orgRepos.reportViaAiTriage'))}</button>
             <button type="button" data-act="email" class="${secondary}">${escapeHtml(t('orgRepos.reportViaEmail'))}</button>
             <button type="button" data-act="cancel" class="px-4 py-2 rounded-xl text-sm font-semibold text-slate-500 hover:text-slate-700">${escapeHtml(t('common.cancel'))}</button>
           </div>
@@ -8186,6 +8323,9 @@
       overlay.querySelector('[data-act="email"]').addEventListener('click', run('email', () => sendOrgReportEmail(org), 'orgRepos.sendReportFailed'));
       overlay.querySelector('[data-act="pdf"]').addEventListener('click', run('pdf', () => downloadOrgReportPdf(org), 'orgRepos.reportPdfFailed'));
       overlay.querySelector('[data-act="markdown"]').addEventListener('click', run('markdown', () => downloadOrgReportMarkdown(org), 'orgRepos.reportMarkdownFailed'));
+      const aiBtn = overlay.querySelector('[data-act="ai_triage"]');
+      if (aiTriageCache.has(org.toLowerCase())) aiBtn.textContent = `✨ ${t('orgRepos.aiTriageShowCached')}`;
+      aiBtn.addEventListener('click', run('ai_triage', () => runOrgAiTriage(org, (secs) => { aiBtn.textContent = aiTriageWorkingLabel(secs); }), 'orgRepos.aiTriageFailed'));
       document.body.appendChild(overlay);
     }
 

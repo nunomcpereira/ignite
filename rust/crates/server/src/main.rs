@@ -42,6 +42,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::campaigns::router())
         .merge(routes::compliance::router())
         .merge(routes::daily_report::router())
+        .merge(routes::ai_triage::router())
         .merge(routes::findings_markdown::router())
         .merge(routes::settings::router())
         .merge(routes::audit_log::router())

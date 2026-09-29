@@ -7,6 +7,7 @@ pub mod api_keys;
 pub mod campaigns;
 pub mod compliance;
 pub mod daily_report;
+pub mod ai_triage;
 pub mod findings_markdown;
 pub mod settings;
 pub mod custom_secret_patterns;

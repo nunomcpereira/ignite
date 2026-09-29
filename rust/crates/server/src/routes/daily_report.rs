@@ -806,7 +806,7 @@ pub fn detect_weasyprint() -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-const NO_PDF_RENDERER: &str = "No PDF renderer on the server: install WeasyPrint or Chrome/Chromium/Edge (or set dailyReport.pdfBrowserBinary)";
+pub(crate) const NO_PDF_RENDERER: &str = "No PDF renderer on the server: install WeasyPrint or Chrome/Chromium/Edge (or set dailyReport.pdfBrowserBinary)";
 
 /// A PDF can be rendered: WeasyPrint or a browser was registered at startup.
 pub fn pdf_renderer_available(runner: &ignite_tool_runner::ToolRunner) -> bool {
@@ -843,7 +843,7 @@ async fn wait_for_pdf(path: &std::path::Path) -> Vec<u8> {
 /// which ends the lingering browser.
 /// WeasyPrint when registered (see `phase4_config`: it only is when no
 /// browser was configured explicitly), else the browser.
-async fn render_pdf(runner: &ignite_tool_runner::ToolRunner, html: &str) -> Result<Vec<u8>, String> {
+pub(crate) async fn render_pdf(runner: &ignite_tool_runner::ToolRunner, html: &str) -> Result<Vec<u8>, String> {
     if runner.binary_for("weasyprint").is_some() {
         render_pdf_weasyprint(runner, html).await
     } else {

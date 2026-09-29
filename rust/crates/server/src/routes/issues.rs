@@ -132,7 +132,7 @@ fn narrow_snippet_for_edit(category: &str, snippet: Snippet, line: Option<i64>) 
     Snippet { start_line: target.number, lines: vec![target] }
 }
 
-fn friendly_llm_error_message(e: &LlmError) -> String {
+pub(crate) fn friendly_llm_error_message(e: &LlmError) -> String {
     match e {
         LlmError::Timeout(ms) => format!("The AI took too long to respond (over {}s) and the request was cancelled. Try again, or check whether the local LLM is overloaded.", (*ms as f64 / 1000.0).round() as u64),
         LlmError::NetworkError(msg) => format!("Could not reach the AI service: {msg}"),
