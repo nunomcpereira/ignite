@@ -2299,9 +2299,9 @@
           const before = escapeHtml(raw.slice(0, snippet.highlightStart));
           const mid = escapeHtml(raw.slice(snippet.highlightStart, snippet.highlightEnd)) || ' ';
           const after = escapeHtml(raw.slice(snippet.highlightEnd));
-          text = `${before}<mark class="${markClass} rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${mid}</mark>${after}`;
+          text = `${before}<mark class="${markClass} rounded px-0.5 cursor-help ai-explain-mark">${mid}</mark>${after}`;
         } else if (isHl) {
-          text = `<mark class="${markClass} rounded px-0.5 cursor-help ai-explain-mark" data-issue="${payload}">${escapeHtml(raw) || ' '}</mark>`;
+          text = `<mark class="${markClass} rounded px-0.5 cursor-help ai-explain-mark">${escapeHtml(raw) || ' '}</mark>`;
         } else {
           text = escapeHtml(raw);
         }
@@ -2309,7 +2309,11 @@
           `<span class="w-9 shrink-0 text-right pr-2 text-slate-400 select-none">${l.number}</span>` +
           `<span class="flex-1 whitespace-pre-wrap break-all">${text}</span>${l.number === snippet.highlightLine ? lineAuthorNoteHtml([issue?.author]) : ''}</div>`;
       }).join('');
-      return `<pre class="mt-2 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-mono overflow-x-auto p-2 leading-5">${rows}</pre>`;
+      // The AI-tooltip payload lives once on the <pre>, not on every
+      // highlighted line: a long duplicate block highlights hundreds of
+      // lines, and repeating the whole snippet per line grew quadratically
+      // (enough to crash the tab on a 1000+ finding list).
+      return `<pre class="mt-2 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-mono overflow-x-auto p-2 leading-5" data-issue="${payload}">${rows}</pre>`;
     }
 
     /* ------------------------------------------------------------ */
@@ -2359,7 +2363,7 @@
         if (mark.dataset.aiBound) return;
         mark.dataset.aiBound = '1';
         mark.addEventListener('mouseenter', async () => {
-          const issue = JSON.parse(mark.dataset.issue);
+          const issue = JSON.parse(mark.closest('[data-issue]').dataset.issue);
           const requestKey = issueExplainKey(issue);
           const rect = mark.getBoundingClientRect();
           tooltip.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 280))}px`;
@@ -2575,7 +2579,7 @@
         ? `<button type="button" class="open-studio-dup-btn text-[11px] font-semibold text-violet-600 hover:underline" data-dup="${escapeAttr(JSON.stringify(issue.duplicateRef))}">Jump to duplicate ⧉</button>`
         : '';
       const snippetHtml = hasSnippet
-        ? `<div class="code-preview hidden" data-idx="${idx}">${renderSnippet(issue.snippet, issue)}</div>`
+        ? `<div class="code-preview hidden" data-idx="${idx}"></div>`
         : '';
       const checkboxHtml = canOverride
         ? `<input type="checkbox" class="override-check mt-1" data-idx="${idx}" ${issue.severity === 'error' ? 'data-required="1"' : ''} />`
@@ -2663,18 +2667,28 @@
       });
     }
 
+    // Snippets render on first expand, not with the card — a large scan's
+    // hidden snippets alone can be tens of MB of DOM.
     function setViewCodeState(list, btn, expanded) {
       const block = list.querySelector(`.code-preview[data-idx="${btn.dataset.idx}"]`);
       if (!block) return;
+      const issue = list._issues?.[Number(btn.dataset.idx)];
+      if (expanded && !block.dataset.rendered && issue) {
+        block.innerHTML = renderSnippet(issue.snippet, issue);
+        block.dataset.rendered = '1';
+        attachAiTooltips(block);
+      }
       block.classList.toggle('hidden', !expanded);
       btn.textContent = expanded ? 'Hide code ▾' : 'View code ▸';
     }
 
-    function wireIssueListInteractions(list, expandAllBtn) {
+    // `issues` is the array each card's `idx` indexes into.
+    function wireIssueListInteractions(list, expandAllBtn, issues) {
+      list._issues = issues;
       const toggles = Array.from(list.querySelectorAll('.view-code-toggle'));
       toggles.forEach((btn) => {
         btn.addEventListener('click', () => {
-          const nowHidden = list.querySelector(`.code-preview[data-idx="${btn.dataset.idx}"]`).classList.contains('hidden');
+          const nowHidden = list.querySelector(`.code-preview[data-idx="${btn.dataset.idx}"]`)?.classList.contains('hidden');
           setViewCodeState(list, btn, nowHidden);
           if (expandAllBtn) expandAllBtn.textContent = toggles.every((b) => b.textContent.startsWith('Hide')) ? 'Collapse all code ▾' : 'Expand all code ▸';
         });
@@ -2767,7 +2781,7 @@
         : issuesViewState.issues.length
           ? '<p class="text-xs text-slate-400">No issues match this filter.</p>'
           : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
-      wireIssueListInteractions(list, $('issuesViewExpandAllBtn'));
+      wireIssueListInteractions(list, $('issuesViewExpandAllBtn'), filtered);
       wireIssuesViewJustifyBar(list, issuesViewState.issues);
     }
 
@@ -3613,7 +3627,7 @@
       // already-AI-acknowledged finding apart from one still needing a
       // human justification.
       list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: issues[idx].status !== 'overridden' })).join('');
-      wireIssueListInteractions(list, $('reviewExpandAllBtn'));
+      wireIssueListInteractions(list, $('reviewExpandAllBtn'), issues);
       wireIssueFilterLinks($('reviewFilterErrors'), $('reviewFilterWarnings'), list);
 
       const downloadBtn = $('reviewDownloadBtn');
@@ -6644,7 +6658,7 @@
       stopBtn.textContent = 'Cancel';
 
       list.innerHTML = sortedIssueIndices(issues).map((idx) => safeRenderIssueCard(issues[idx], idx, { interactive: issues[idx].status !== 'overridden' })).join('');
-      wireIssueListInteractions(list, $('reviewExpandAllBtn'));
+      wireIssueListInteractions(list, $('reviewExpandAllBtn'), issues);
       wireIssueFilterLinks($('reviewFilterErrors'), $('reviewFilterWarnings'), list);
 
       const downloadBtn = $('reviewDownloadBtn');
