@@ -447,7 +447,13 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let blame_root = project_path.join(root.strip_prefix(&staging_dir).unwrap_or(std::path::Path::new("")));
             // Only a shallow clone needs GitHub (and so a token).
             let token = if project_path.join(".git").join("shallow").exists() && GITHUB_NAME_RE.is_match(&org) {
-                crate::auth::resolve_github_token_for_owner(&state, &headers, &org).await.map(|(t, _)| t)
+                // An in-process org scan authenticates with its scan-queue
+                // lease, not a user: fall back to the token that scan
+                // resolved for this org (same as its `github-check` call).
+                crate::auth::resolve_github_token_for_owner(&state, &headers, &org)
+                    .await
+                    .map(|(t, _)| t)
+                    .or_else(|| headers.get(super::scan_queue::LEASE_HEADER).and_then(|v| v.to_str().ok()).and_then(super::scan_queue::github_token_for_lease))
             } else {
                 None
             };

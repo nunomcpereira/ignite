@@ -332,6 +332,44 @@ impl<'a> GithubApi<'a> {
         parse_sso_required_header(&header)
     }
 
+    /// Whether `token` can currently see `org` past its SAML single sign-on:
+    /// `Some(true)` on a `2xx` with no `X-GitHub-SSO: required` header,
+    /// `Some(false)` when GitHub still asks for SSO authorization (the header,
+    /// or a `403` naming SAML enforcement), `None` when the probe can't tell
+    /// (network error, any other status). One `per_page=1` REST call — used to
+    /// notice that a user has authorized the token since a scan failed on SSO.
+    pub async fn sso_access_ok(&self, org: &str, token: &str) -> Option<bool> {
+        if token.is_empty() {
+            return None;
+        }
+        let res = self
+            .http
+            .get(format!("https://api.github.com/orgs/{org}/repos?per_page=1"))
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "ignite")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .ok()?;
+        let sso_required = res.headers().get("x-github-sso").and_then(|h| h.to_str().ok()).and_then(parse_sso_required_header).is_some();
+        let status = res.status();
+        if sso_required {
+            return Some(false);
+        }
+        if status.is_success() {
+            return Some(true);
+        }
+        if status.as_u16() == 403 {
+            let body = res.text().await.unwrap_or_default();
+            if is_sso_error(&body) {
+                return Some(false);
+            }
+        }
+        None
+    }
+
     pub async fn gh_api_get(&self, api_path: &str, token: &str) -> Result<Option<Value>, GithubApiError> {
         if self.is_gh_cli_available().await {
             let env = gh_token_env(token);

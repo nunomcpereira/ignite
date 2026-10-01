@@ -2580,6 +2580,7 @@
               ${issue.phase ? `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200">PHASE ${displayPhaseNumber(issue.phase)}</span>` : ''}
               <span class="text-[10px] font-semibold text-slate-400 uppercase">${escapeHtml(issue.category)}</span>
               <span class="text-[11px] font-mono text-slate-400">${loc}</span>
+              ${issueAuthorLabel(issue.author) ? `<span class="text-[11px] text-slate-400" title="${escapeAttr(issue.author.commit || '')}">· ${escapeHtml(t('studio.lastChangedBy'))} <span class="font-semibold text-slate-600">${escapeHtml(issueAuthorLabel(issue.author))}</span></span>` : ''}
               ${issue.cwe ? `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-slate-50 text-slate-500 border-slate-200" title="${escapeAttr(issue.owasp || '')}">${escapeHtml(issue.cwe)}</span>` : ''}
               ${issue.references?.cve?.length ? `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-rose-50 text-rose-700 border-rose-200" title="${escapeAttr(issue.references.cve.join(', '))}">${escapeHtml(issue.references.cve[0])}${issue.references.cve.length > 1 ? ` +${issue.references.cve.length - 1}` : ''}</span>` : ''}
               ${viewCodeBtn}
@@ -7629,15 +7630,7 @@
       });
       $('onboardedReposTableBody').querySelectorAll('.onboarded-repo-view-findings').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
-        btn.addEventListener('click', async () => {
-          try {
-            const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
-            const data = await res.json();
-            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId, projectId: r.latestProjectId });
-          } catch {
-            openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
-          }
-        });
+        btn.addEventListener('click', () => viewRepoFindings(btn, r));
       });
       $('onboardedReposTableBody').querySelectorAll('.onboarded-repo-scan-now').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
@@ -8031,15 +8024,7 @@
       });
       $('orgReposTableBody').querySelectorAll('.org-repo-view-findings').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
-        btn.addEventListener('click', async () => {
-          try {
-            const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
-            const data = await res.json();
-            openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId, projectId: r.latestProjectId });
-          } catch {
-            openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
-          }
-        });
+        btn.addEventListener('click', () => viewRepoFindings(btn, r));
       });
       $('orgReposTableBody').querySelectorAll('.org-repo-open-studio').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
@@ -8604,6 +8589,22 @@
         : `<span class="text-slate-500">${escapeHtml(t('orgRepos.ssoNoLink'))}</span>`;
       return `<span class="inline-flex flex-wrap items-center gap-x-1.5" title="${escapeAttr(fullText || '')}"><span class="font-semibold text-amber-700">${escapeHtml(t('orgRepos.ssoRequired'))}</span> · ${action}</span>`;
     }
+    // Authorizing happens in another tab, so nothing here knows when it's
+    // done. After an Authorize link is clicked, re-check every org the next
+    // time this tab regains focus: the server re-probes GitHub and drops the
+    // stale SSO errors once the token gets through.
+    let githubSsoAuthorizePending = false;
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (a && GITHUB_SSO_URL_RE.test(a.href)) githubSsoAuthorizePending = true;
+    });
+    function recheckAfterSsoAuthorize() {
+      if (!githubSsoAuthorizePending || document.visibilityState !== 'visible') return;
+      githubSsoAuthorizePending = false;
+      if (orgReposOrgs.length) refreshOrgs(orgReposOrgs);
+    }
+    window.addEventListener('focus', recheckAfterSsoAuthorize);
+    document.addEventListener('visibilitychange', recheckAfterSsoAuthorize);
 
     // Per-org repo list cache (localStorage): the GitHub-backed discovery
     // result (org/repo/archived/fork/empty only — scan status is always
@@ -8612,6 +8613,30 @@
     // an org's refresh button drops every variant and re-lists from GitHub.
     const ORG_REPOS_CACHE_PREFIX = 'ignite-org-repos:v1:';
     const orgReposFetchedAt = new Map();
+    // Findings-count button → issues viewer. A large run (thousands of
+    // findings) takes seconds to fetch and render, so the button shows a
+    // spinner and ignores repeat clicks until the viewer is open.
+    async function viewRepoFindings(btn, r) {
+      if (btn.disabled) return;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.classList.add('cursor-wait', 'opacity-70');
+      btn.innerHTML = `<span class="inline-flex items-center gap-1"><svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>${originalHtml}</span>`;
+      // Let the spinner paint before the (possibly long) fetch + render.
+      await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      try {
+        const res = await fetch(`/api/pipeline/${r.latestJobId}/issues`);
+        const data = await res.json();
+        openIssuesViewer(data.issues || [], t('onboardedRepos.viewFindingsNote'), { org: r.org, repo: r.repo, jobId: r.latestJobId, projectId: r.latestProjectId });
+      } catch {
+        openIssuesViewer([], t('onboardedRepos.viewFindingsError'));
+      } finally {
+        btn.innerHTML = originalHtml;
+        btn.disabled = false;
+        btn.classList.remove('cursor-wait', 'opacity-70');
+      }
+    }
+
     const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, scanErrorCode: null, scanErrorSsoUrl: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null };
     function orgReposCacheKey(org) {
       return `${ORG_REPOS_CACHE_PREFIX}${org}|a${$('orgReposIncludeArchived').checked ? 1 : 0}f${$('orgReposIncludeForks').checked ? 1 : 0}`;

@@ -70,6 +70,43 @@ use std::sync::Arc;
 /// scan is kicked off for that repo, so retrying never shows a stale error.
 static RECENT_SCAN_FAILURES: Lazy<Mutex<HashMap<(String, String), String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Last time `clear_sso_failures_if_authorized` asked GitHub about an org,
+/// keyed by lowercased org — the status endpoint is polled, so the probe is
+/// rate-limited to one per `SSO_RECHECK_INTERVAL` per org.
+static SSO_RECHECKED_AT: Lazy<Mutex<HashMap<String, std::time::Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+const SSO_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn has_sso_failures(org: &str) -> bool {
+    RECENT_SCAN_FAILURES.lock().iter().any(|((o, _), e)| o.eq_ignore_ascii_case(org) && ignite_github_api::is_sso_error(e))
+}
+
+fn clear_sso_failures(org: &str) {
+    RECENT_SCAN_FAILURES.lock().retain(|(o, _), e| !(o.eq_ignore_ascii_case(org) && ignite_github_api::is_sso_error(e)));
+}
+
+/// An SSO scan failure only says the token *was* unauthorized. Once the user
+/// follows the Authorize link it works, but the failure would otherwise keep
+/// showing until each repo is rescanned. When `org` has any, ask GitHub
+/// whether the token gets through now and drop them if it does.
+async fn clear_sso_failures_if_authorized(state: &AppState, headers: &HeaderMap, org: &str) {
+    if !has_sso_failures(org) {
+        return;
+    }
+    let key = org.to_ascii_lowercase();
+    {
+        let mut checked = SSO_RECHECKED_AT.lock();
+        if checked.get(&key).is_some_and(|t| t.elapsed() < SSO_RECHECK_INTERVAL) {
+            return;
+        }
+        checked.insert(key, std::time::Instant::now());
+    }
+    let token = org_token(state, headers, org).await.token;
+    if GithubApi::new(&state.runner).sso_access_ok(org, &token).await == Some(true) {
+        tracing::info!("org-repos: {org} token now passes SAML SSO — clearing stale SSO scan errors");
+        clear_sso_failures(org);
+    }
+}
+
 use super::scan_queue::{is_scan_active, Priority};
 
 #[derive(Debug, Deserialize)]
@@ -199,10 +236,11 @@ fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoSta
 
 /// `GET /api/org-repos/:org/status` — scan status only, no GitHub call.
 /// The browser caches the repo list itself and polls this.
-async fn org_repo_statuses(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, Path(org): Path<String>) -> Response {
+async fn org_repo_statuses(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path(org): Path<String>) -> Response {
     if !ignite_github_api::is_valid_github_owner(&org) {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
     }
+    clear_sso_failures_if_authorized(&state, &headers, &org).await;
     Json(collect_repo_statuses(&state, &org).into_values().collect::<Vec<_>>()).into_response()
 }
 
@@ -249,6 +287,7 @@ async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): 
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "error": error, "code": code, "ssoUrl": sso_url }))).into_response();
     }
 
+    clear_sso_failures_if_authorized(&state, &headers, &org).await;
     let mut statuses = collect_repo_statuses(&state, &org);
     let rows: Vec<OrgRepoRow> = discovered
         .into_iter()
