@@ -2250,6 +2250,20 @@
       return a.name || (a.login ? '@' + a.login : '') || a.email || '';
     }
 
+    // Blame note shown at the right edge of a finding's line in a code view:
+    // "Last changed by Name, date" — one entry per distinct author.
+    function lineAuthorNoteHtml(authorList) {
+      const authors = [...new Map((authorList || []).filter((a) => issueAuthorLabel(a)).map((a) => [issueAuthorLabel(a), a])).values()];
+      if (!authors.length) return '';
+      const title = authors.map((a) => `${issueAuthorLabel(a)}${a.commit ? ' — ' + a.commit : ''}`).join('\n');
+      const names = authors.map((a) => {
+        const d = a.date ? new Date(a.date) : null;
+        const when = d && !Number.isNaN(d.getTime()) ? `, ${d.toLocaleDateString()}` : '';
+        return `<span class="font-semibold not-italic text-slate-500">${escapeHtml(a.name || a.login || a.email || '')}</span>${escapeHtml(when)}`;
+      }).join('; ');
+      return `<span class="shrink-0 pl-6 pr-3 text-[11px] italic text-slate-400 select-none whitespace-nowrap" title="${escapeAttr(title)}">${escapeHtml(t('studio.lastChangedBy'))} ${names}</span>`;
+    }
+
     function escapeHtml(s) {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
@@ -2293,7 +2307,7 @@
         }
         return `<div class="flex ${isHl ? rowClass : ''}" data-line="${l.number}">` +
           `<span class="w-9 shrink-0 text-right pr-2 text-slate-400 select-none">${l.number}</span>` +
-          `<span class="flex-1 whitespace-pre-wrap break-all">${text}</span></div>`;
+          `<span class="flex-1 whitespace-pre-wrap break-all">${text}</span>${l.number === snippet.highlightLine ? lineAuthorNoteHtml([issue?.author]) : ''}</div>`;
       }).join('');
       return `<pre class="mt-2 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-mono overflow-x-auto p-2 leading-5">${rows}</pre>`;
     }
@@ -5089,7 +5103,7 @@
     function renderStudioHistoricalFileView(relPath) {
       const referencedIssues = studioState.issues
         .filter((i) => i.duplicateRef?.file === relPath && i.duplicateRef.snippet)
-        .map((i) => ({ ...i, file: relPath, line: i.duplicateRef.line, snippet: i.duplicateRef.snippet }));
+        .map((i) => ({ ...i, file: relPath, line: i.duplicateRef.line, snippet: i.duplicateRef.snippet, author: null }));
       const issues = [...studioIssuesForFile(relPath), ...referencedIssues].filter((i) => i.snippet && Array.isArray(i.snippet.lines) && i.snippet.lines.length > 0);
       if (issues.length === 0) {
         $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">No code snippet was captured for this finding.</p>';
@@ -5158,9 +5172,10 @@
           ? (isSelected ? (hasError ? 'bg-rose-100' : hasOnlyNiceToHave ? 'bg-emerald-100' : 'bg-amber-100') : (hasError ? 'bg-rose-50' : hasOnlyNiceToHave ? 'bg-emerald-50' : 'bg-amber-50'))
           : (inJumpRange ? 'bg-indigo-50' : '');
         const badges = hits.filter((h) => !h.noBadge).map((h) => `<button type="button" class="studio-line-issue-badge inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1 shrink-0 cursor-pointer hover:ring-2 hover:ring-offset-1 ${h.issue.severity === 'error' ? 'bg-rose-600 text-white hover:ring-rose-300' : h.issue.category === 'code-duplication' ? 'bg-emerald-600 text-white hover:ring-emerald-300' : 'bg-amber-500 text-white hover:ring-amber-300'}" title="${escapeAttr(h.issue.summary)}" data-issue-index="${h.num - 1}">${h.num}</button>`).join('');
+        const authorNote = lineAuthorNoteHtml(hits.filter((h) => !h.noBadge).map((h) => h.issue.author));
         return `<div class="flex ${bg}" data-line="${n}">` +
           `<span class="w-10 shrink-0 text-right pr-2 text-slate-400 select-none border-r border-slate-100">${n}</span>` +
-          `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span></div>`;
+          `<span class="flex-1 whitespace-pre pl-2 flex items-start">${badges}<span class="whitespace-pre">${escapeHtml(text) || ' '}</span></span>${authorNote}</div>`;
       }).join('');
       $('studioCodeWrap').innerHTML = `<pre class="m-0">${rows}</pre>`;
       // Each numbered gutter badge is the same issue the panel lists at
