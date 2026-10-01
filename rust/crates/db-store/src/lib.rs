@@ -24,6 +24,7 @@ mod audit_events;
 mod auth;
 mod baseline;
 mod blame_cache;
+mod org_report_runs;
 mod caches;
 mod daily_report;
 mod dependency_and_fixpr;
@@ -54,6 +55,7 @@ mod settings;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
 pub use daily_report::RepoDailyReport;
+pub use org_report_runs::OrgReportRun;
 pub use api_keys::{parse_api_key_scopes, API_KEY_SCOPES};
 pub use async_jobs::AsyncJobRow;
 pub use store::DbStore;

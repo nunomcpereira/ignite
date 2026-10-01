@@ -90,6 +90,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
 async-trait = "0.1"
+croner = "4.0.0"
 
 [dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }

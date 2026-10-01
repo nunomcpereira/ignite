@@ -428,6 +428,52 @@ impl<'a> GithubApi<'a> {
         Ok(all)
     }
 
+    /// Logins and public profile emails of `org`'s owners
+    /// (`GET orgs/{org}/members?role=admin`, then `GET users/{login}` each).
+    /// GitHub only exposes an email a user made public, so owners without one
+    /// are returned with `None`. A personal account (no `orgs/` endpoint) is
+    /// its own single owner. Errors only when the owner list itself can't be
+    /// read (missing `read:org`/members permission, SSO, ...).
+    pub async fn gh_list_org_owner_emails(&self, org: &str, token: &str) -> Result<Vec<(String, Option<String>)>, GithubApiError> {
+        let mut logins: Vec<String> = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let res = match self.gh_api_get(&format!("orgs/{org}/members?role=admin&per_page=100&page={page}"), token).await {
+                Ok(res) => res,
+                Err(e) if page == 1 => {
+                    // Personal account: `users/{org}` is the one owner.
+                    match self.gh_api_get(&format!("users/{org}"), token).await {
+                        Ok(Some(user)) if user.get("type").and_then(Value::as_str) == Some("User") => {
+                            logins.push(org.to_string());
+                            break;
+                        }
+                        _ => return Err(e),
+                    }
+                }
+                Err(e) => return Err(e),
+            };
+            let batch = match res {
+                Some(Value::Array(items)) => items,
+                _ => Vec::new(),
+            };
+            let got = batch.len();
+            logins.extend(batch.iter().filter_map(|m| m.get("login").and_then(Value::as_str)).map(str::to_string));
+            if got < 100 {
+                break;
+            }
+            page += 1;
+        }
+        let mut out = Vec::with_capacity(logins.len());
+        for login in logins {
+            let email = match self.gh_api_get(&format!("users/{login}"), token).await {
+                Ok(Some(user)) => user.get("email").and_then(Value::as_str).map(str::trim).filter(|e| e.contains('@')).map(str::to_string),
+                _ => None,
+            };
+            out.push((login, email));
+        }
+        Ok(out)
+    }
+
     pub async fn gh_fetch_file_raw(&self, repo_full_name: &str, file_path: &str, token: &str) -> Result<Option<String>, GithubApiError> {
         if self.is_gh_cli_available().await {
             let env = gh_token_env(token);

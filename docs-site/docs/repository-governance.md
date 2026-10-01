@@ -152,6 +152,39 @@ exports each repository's open findings in Ignite's
 `.ignite/acknowledgments.md` format, ready for an engineer to add a
 justification and submit through the normal review path.
 
+### Per-organization report schedules
+
+`orgReports` in `config.json` emails each organization's findings report on
+its own cron schedule. The org key matches case-insensitively; a `*` wildcard
+key applies to every organization saved in the GitHub Org view that matches it,
+and an exact key overrides a wildcard.
+
+```json
+"orgReports": {
+  "acme":  { "cron": "0 8 * * MON", "recipients": "admins", "to": ["security@acme.com"] },
+  "sap-*": { "cron": "0 7 * * 1-5", "recipients": "fixed",  "to": ["sap-dl@acme.com"] },
+  "legacy-org": { "enabled": false }
+}
+```
+
+- `recipients: "admins"` (the default) sends to the organization's GitHub
+  owners, using each owner's public profile email. If no owner email can be
+  found (the owner list can't be read, or no owner has a public email), the
+  report goes to `to` instead.
+- `recipients: "fixed"` sends only to the distribution lists in `to`.
+- `cron` has 5 fields (`minute hour day-of-month month day-of-week`) or 6 with
+  leading seconds, in the server's local time zone. Default: `0 8 * * MON`.
+
+Reading the owner list needs a token that can see organization members: the
+GitHub App (with *Members: read*) or `GH_TOKEN`. Email delivery uses the
+`notifications` SMTP settings. Schedules are read-only over the API:
+
+```text
+GET  /api/org-repos/report-schedules              # every org a schedule applies to, next run, last result
+GET  /api/org-repos/report-schedules/acme/recipients   # who would receive it now
+POST /api/org-repos/report-schedules/acme/send         # send now, ignoring the cron
+```
+
 ## Keep GitHub and Ignite aligned
 
 GitHub webhooks can keep the records current between scans: code-scanning and

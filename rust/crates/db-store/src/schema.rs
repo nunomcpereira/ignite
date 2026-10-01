@@ -658,4 +658,5 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // so a file unchanged since the last scan is never blamed again (GitHub's
     // GraphQL blame is rate-limited). `last_used_at` lets old blobs age out.
     (38, "ALTER TABLE issues ADD COLUMN author_json TEXT; CREATE TABLE IF NOT EXISTS blame_cache (org TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL, blob_sha TEXT NOT NULL, ranges_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_used_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (org, repo, path, blob_sha));"),
+    (39, "CREATE TABLE IF NOT EXISTS org_report_runs (org TEXT PRIMARY KEY, last_run_at TEXT NOT NULL, last_recipients TEXT, last_recipient_source TEXT, last_error TEXT);"),
 ];

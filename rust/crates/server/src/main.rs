@@ -42,6 +42,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::campaigns::router())
         .merge(routes::compliance::router())
         .merge(routes::daily_report::router())
+        .merge(routes::org_report_schedule::router())
         .merge(routes::ai_triage::router())
         .merge(routes::findings_markdown::router())
         .merge(routes::settings::router())
@@ -148,6 +149,7 @@ async fn main() {
     }
 
     routes::daily_report::spawn_scheduler(state.clone());
+    routes::org_report_schedule::spawn_scheduler(state.clone());
     routes::tool_updates::spawn_startup_check(state.clone());
 
     let app = build_router(state, &public_dir);

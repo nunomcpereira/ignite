@@ -368,6 +368,22 @@ layout: default
 layout: default
 ---
 
+<div class="eyebrow mono">— 05 · What's New (cont.)</div>
+<h1>Every finding has an owner — and the owner hears about it</h1>
+<p class="lede">A finding nobody owns doesn't get fixed. Ignite now names who last changed each flagged line and delivers each organization's open findings to the people accountable for it, on a schedule security sets once.</p>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--teal) 20%, transparent);color:var(--teal);">👤</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Line-level ownership</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Every finding shows who last changed that exact line — not just the last committer to the repository — in review, in reports and in the SIEM feed, so remediation goes straight to the right engineer.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--indigo) 20%, transparent);color:var(--indigo);">📬</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Reports to the org's owners</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Each organization's open findings are emailed to its GitHub owners — or to fixed distribution lists, where a business unit prefers a team inbox — with an automatic fallback when no owner can be reached.</div></div>
+  <div class="card"><div class="icon" style="background:color-mix(in srgb, var(--purple) 20%, transparent);color:var(--purple);">🗓</div><div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">Cadence per organization</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Weekly for one portfolio, every working day for another: each organization gets its own schedule, defined centrally in configuration and versioned with it — not scattered across personal settings.</div></div>
+</div>
+<div class="card" style="margin-top:12px;border-color:color-mix(in srgb, var(--teal) 40%, var(--border));"><div style="font-weight:700;font-size:13px;">Accountability without chasing</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Security stops forwarding spreadsheets: owners receive their organization's findings directly, each one traceable to the line and the person who introduced it, while every delivery is recorded for audit.</div></div>
+
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">12 · CONFIDENTIAL</span></div>
+
+---
+layout: default
+---
+
 <div class="eyebrow mono">— 07 · Enterprise Readiness</div>
 <h1>Deploys as your own product, in your team's language</h1>
 <p class="lede">The onboarding console isn't a third-party vendor tool bolted onto the workflow — every customer-facing surface is themeable and localized out of the box, so it sits inside your organization's tooling as if you built it.</p>
@@ -377,7 +393,7 @@ layout: default
 </div>
 <div class="card" style="margin-top:12px;"><div style="font-weight:700;font-size:13px;">🧩 Config, not a fork</div><div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;">Both brand and language are runtime configuration — a customer deployment never diverges from upstream source, so every future Ignite release still applies cleanly on top.</div></div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">12 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">13 · CONFIDENTIAL</span></div>
 
 ---
 layout: default
@@ -396,4 +412,4 @@ layout: default
   <div class="mono" style="font-size:9.5px;letter-spacing:.14em;color:var(--faint);white-space:nowrap;">END OF BRIEFING</div>
 </div>
 
-<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">13 · CONFIDENTIAL</span></div>
+<div class="footer"><span>IGNITE / EXECUTIVE BRIEFING</span><span class="mono">14 · CONFIDENTIAL</span></div>

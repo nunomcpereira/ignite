@@ -237,6 +237,10 @@
     "webhookToken": "",
     "azureBlobContainerUrl": ""
   },
+  "orgReports": {
+    "example-org": { "enabled": true, "cron": "0 8 * * MON", "recipients": "admins", "to": ["security-team@example.com"] },
+    "sap-*": { "enabled": true, "cron": "0 7 * * 1-5", "recipients": "fixed", "to": ["sap-integration-dl@example.com"] }
+  },
   "auditLog": {
     "enabled": false,
     "sinks": [

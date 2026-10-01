@@ -73,6 +73,42 @@ pub struct Config {
     /// `ignite_issue_filter::apply_ignore_rules`.
     #[serde(default)]
     pub ignore_rules: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<IgnoreRuleConfig>>>,
+    /// Scheduled per-org findings email: `org -> settings`. Org keys match
+    /// case-insensitively and may use `*` wildcards (applied to every org
+    /// saved in the GitHub Org view that matches); an exact key wins over a
+    /// wildcard. See [`OrgReportConfig`].
+    #[serde(default)]
+    pub org_reports: std::collections::BTreeMap<String, OrgReportConfig>,
+}
+
+/// How an org's findings report is addressed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgReportRecipients {
+    /// The org's GitHub owners (public profile emails); `to` is the fallback
+    /// when none can be found.
+    #[default]
+    Admins,
+    /// Only the fixed distribution lists in `to`.
+    Fixed,
+}
+
+/// One `orgReports.<org>` entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OrgReportConfig {
+    pub enabled: bool,
+    /// Cron expression (5 fields, or 6 with leading seconds), server local time.
+    pub cron: String,
+    pub recipients: OrgReportRecipients,
+    /// Fixed DLs (`recipients: "fixed"`) or the fallback list (`"admins"`).
+    pub to: Vec<String>,
+}
+
+impl Default for OrgReportConfig {
+    fn default() -> Self {
+        OrgReportConfig { enabled: true, cron: "0 8 * * MON".to_string(), recipients: OrgReportRecipients::Admins, to: Vec::new() }
+    }
 }
 
 /// One `ignoreRules.<org>.<repo>[]` entry: a finding is dropped when its
@@ -91,6 +127,16 @@ pub struct IgnoreRuleConfig {
 }
 
 impl Config {
+    /// The `orgReports` entry for `org`: an exact (case-insensitive) key,
+    /// else the first wildcard key that matches.
+    pub fn org_report_for(&self, org: &str) -> Option<&OrgReportConfig> {
+        self.org_reports
+            .iter()
+            .find(|(k, _)| !k.contains('*') && k.trim().eq_ignore_ascii_case(org))
+            .or_else(|| self.org_reports.iter().find(|(k, _)| k.contains('*') && wildcard_match(k, org)))
+            .map(|(_, v)| v)
+    }
+
     /// Every ignore rule whose org key and repo key both match `org`/`repo`.
     pub fn ignore_rules_for(&self, org: &str, repo: &str) -> Vec<IgnoreRuleConfig> {
         self.ignore_rules
@@ -150,6 +196,7 @@ impl Default for Config {
             scan_queue: ScanQueueConfig::default(),
             daily_report: DailyReportConfig::default(),
             ignore_rules: Default::default(),
+            org_reports: Default::default(),
         }
     }
 }
@@ -2047,6 +2094,26 @@ mod tests {
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
         assert_eq!(direct, 139, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+    }
+
+    #[test]
+    fn org_reports_resolve_exact_before_wildcard() {
+        let mut v = serde_json::to_value(Config::default()).unwrap();
+        merge_json(&mut v, &serde_json::json!({
+            "orgReports": {
+                "sap-*": { "cron": "0 7 * * *", "recipients": "fixed", "to": ["sap-dl@x.com"] },
+                "SAP-Core": { "enabled": false },
+                "acme": {}
+            }
+        }));
+        let cfg: Config = serde_json::from_value(v).unwrap();
+        let core = cfg.org_report_for("sap-core").unwrap();
+        assert!(!core.enabled, "exact key wins over the wildcard");
+        let other = cfg.org_report_for("SAP-Billing").unwrap();
+        assert_eq!((other.cron.as_str(), other.recipients, other.to.clone()), ("0 7 * * *", OrgReportRecipients::Fixed, vec!["sap-dl@x.com".to_string()]));
+        let acme = cfg.org_report_for("ACME").unwrap();
+        assert!(acme.enabled && acme.recipients == OrgReportRecipients::Admins && acme.cron == "0 8 * * MON", "defaults apply");
+        assert!(cfg.org_report_for("nobody").is_none());
     }
 
     #[test]
