@@ -2433,6 +2433,9 @@
       $('historyViewLabel').textContent = `${p.org}/${p.repo}`;
       $('historyViewBanner').classList.remove('hidden');
       renderPipeline();
+      // The run renders into the dashboard; opened from another view (e.g.
+      // the GitHub Org view) it would otherwise stay hidden behind it.
+      showDashboardView();
       pipelineEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
@@ -7373,6 +7376,7 @@
           }
           await switchToJob(btn.dataset.jobId);
           closeHistoryDrawer();
+          showDashboardView();
           pipelineEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
       });
