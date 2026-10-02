@@ -8,6 +8,8 @@
 //!   `smtp.secure`, required STARTTLS otherwise).
 //! - If only `smtp.host` is set, sends unauthenticated to that relay
 //!   (TLS-on-connect when `smtp.secure`, opportunistic STARTTLS otherwise).
+//! - `smtp.caCertPath` (PEM bundle) adds trusted roots for a relay whose
+//!   certificate comes from an internal CA.
 //! - Otherwise falls back to the local `sendmail` binary, matching
 //!   `nodemailer.createTransport({ sendmail: true })`.
 //!
@@ -20,9 +22,9 @@
 
 use std::collections::BTreeMap;
 
-use ignite_config::NotificationsConfig;
+use ignite_config::{NotificationsConfig, SmtpConfig};
 use lettre::message::{header::ContentType, Mailbox};
-use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
 use lettre::{
     AsyncSendmailTransport, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
@@ -95,50 +97,55 @@ enum Transport {
     Sendmail(AsyncSendmailTransport<Tokio1Executor>),
 }
 
-fn build_transport(config: &NotificationsConfig) -> Transport {
+/// TLS parameters for `smtp.host`, trusting the PEM bundle at
+/// `smtp.caCertPath` in addition to the built-in public roots — needed for a
+/// relay whose certificate is issued by an internal/corporate CA.
+fn tls_parameters(smtp: &SmtpConfig) -> Result<TlsParameters, NotificationError> {
+    let mut builder = TlsParameters::builder(smtp.host.clone());
+    if let Some(path) = smtp.ca_cert_path.as_deref().filter(|p| !p.is_empty()) {
+        let pem = std::fs::read(path).map_err(|e| NotificationError {
+            message: format!("cannot read smtp.caCertPath {path:?}: {e}"),
+        })?;
+        let cert = Certificate::from_pem(&pem).map_err(|e| NotificationError {
+            message: format!("invalid PEM in smtp.caCertPath {path:?}: {e}"),
+        })?;
+        builder = builder.add_root_certificate(cert);
+    }
+    Ok(builder.build()?)
+}
+
+fn build_transport(config: &NotificationsConfig) -> Result<Transport, NotificationError> {
     let smtp = &config.smtp;
-    let has_creds = !smtp.user.is_empty() && smtp.pass.as_ref().map_or(false, |p| !p.is_empty());
-    if !smtp.host.is_empty() && !has_creds {
-        // Unauthenticated relay (e.g. an Exchange anonymous receive connector
-        // that trusts the sender's IP): no login, STARTTLS only if the relay
-        // offers it, or TLS-on-connect when `smtp.secure`.
-        let tls = if smtp.secure {
-            TlsParameters::new(smtp.host.clone()).map(Tls::Wrapper)
-        } else {
-            TlsParameters::new(smtp.host.clone()).map(Tls::Opportunistic)
-        }
-        .unwrap_or(Tls::None);
-        let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp.host)
-            .port(smtp.port)
-            .tls(tls)
-            .build();
-        Transport::Smtp(transport)
-    } else if !smtp.host.is_empty() {
-        let creds = lettre::transport::smtp::authentication::Credentials::new(
-            smtp.user.clone(),
-            smtp.pass.clone().unwrap_or_default(),
-        );
-        let transport = if smtp.secure {
-            // Direct TLS on connect (port 465 convention)
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp.host)
-                .unwrap_or_else(|_| AsyncSmtpTransport::<Tokio1Executor>::relay("localhost").unwrap())
-                .port(smtp.port)
-                .credentials(creds)
-                .build()
-        } else {
-            // STARTTLS upgrade (port 587 convention)
-            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp.host)
-                .unwrap_or_else(|_| AsyncSmtpTransport::<Tokio1Executor>::starttls_relay("localhost").unwrap())
-                .port(smtp.port)
-                .credentials(creds)
-                .build()
-        };
-        Transport::Smtp(transport)
-    } else {
+    if smtp.host.is_empty() {
         // No SMTP host — fall back to local sendmail binary,
         // matching `nodemailer.createTransport({ sendmail: true })`.
-        Transport::Sendmail(AsyncSendmailTransport::<Tokio1Executor>::new())
+        return Ok(Transport::Sendmail(AsyncSendmailTransport::<Tokio1Executor>::new()));
     }
+    let params = tls_parameters(smtp)?;
+    let creds = match smtp.pass.as_deref() {
+        Some(pass) if !smtp.user.is_empty() && !pass.is_empty() => {
+            Some(lettre::transport::smtp::authentication::Credentials::new(smtp.user.clone(), pass.to_string()))
+        }
+        _ => None,
+    };
+    let tls = if smtp.secure {
+        // Direct TLS on connect (port 465 convention)
+        Tls::Wrapper(params)
+    } else if creds.is_some() {
+        // STARTTLS required before sending a password (port 587 convention)
+        Tls::Required(params)
+    } else {
+        // Unauthenticated relay (e.g. an Exchange anonymous receive
+        // connector that trusts the sender's IP): STARTTLS only if offered.
+        Tls::Opportunistic(params)
+    };
+    let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp.host)
+        .port(smtp.port)
+        .tls(tls);
+    if let Some(creds) = creds {
+        builder = builder.credentials(creds);
+    }
+    Ok(Transport::Smtp(builder.build()))
 }
 
 /// Build a `lettre::Message` from subject + HTML body + from/to addresses.
@@ -181,7 +188,7 @@ async fn send_message(
     config: &NotificationsConfig,
     message: Message,
 ) -> Result<(), NotificationError> {
-    match build_transport(config) {
+    match build_transport(config)? {
         Transport::Smtp(t) => {
             t.send(message).await?;
         }
@@ -772,6 +779,28 @@ mod tests {
             seen
         });
         (port, handle)
+    }
+
+    fn smtp_with_ca(path: &str) -> SmtpConfig {
+        SmtpConfig { host: "relay.internal".into(), port: 25, ca_cert_path: Some(path.into()), ..SmtpConfig::default() }
+    }
+
+    #[test]
+    fn ca_cert_path_with_a_valid_pem_builds_tls_parameters() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test-ca.pem");
+        assert!(tls_parameters(&smtp_with_ca(path)).is_ok());
+    }
+
+    #[test]
+    fn ca_cert_path_missing_or_invalid_is_a_clear_error() {
+        let err = tls_parameters(&smtp_with_ca("/nonexistent/ca.pem")).err().unwrap();
+        assert!(err.message.contains("cannot read smtp.caCertPath"), "{}", err.message);
+
+        let bad = std::env::temp_dir().join(format!("ignite-bad-ca-{}.pem", std::process::id()));
+        std::fs::write(&bad, "-----BEGIN CERTIFICATE-----\nnot base64!!\n-----END CERTIFICATE-----\n").unwrap();
+        let err = tls_parameters(&smtp_with_ca(bad.to_str().unwrap())).err().unwrap();
+        let _ = std::fs::remove_file(&bad);
+        assert!(err.message.contains("invalid PEM in smtp.caCertPath"), "{}", err.message);
     }
 
     #[tokio::test]

@@ -583,10 +583,14 @@ pub struct SmtpConfig {
     pub user: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<String>,
+    /// PEM file (one or more certs) trusted in addition to the public roots,
+    /// for a relay whose TLS certificate is issued by an internal CA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_path: Option<String>,
 }
 impl std::fmt::Debug for SmtpConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SmtpConfig").field("host", &self.host).field("port", &self.port).field("secure", &self.secure).field("user", &self.user).field("pass", &redact_opt(&self.pass)).finish()
+        f.debug_struct("SmtpConfig").field("host", &self.host).field("port", &self.port).field("secure", &self.secure).field("user", &self.user).field("pass", &redact_opt(&self.pass)).field("ca_cert_path", &self.ca_cert_path).finish()
     }
 }
 
@@ -1470,6 +1474,11 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_str("NOTIFICATIONS_SMTP_PASS").or_else(|| env_str("SMTP_PASS")).or_else(|| env_str("SMTP_PASSWORD")) {
         if !v.is_empty() {
             merged.notifications.smtp.pass = Some(v);
+        }
+    }
+    if let Some(v) = env_str("NOTIFICATIONS_SMTP_CA_CERT_PATH").or_else(|| env_str("SMTP_CA_CERT_PATH")) {
+        if !v.is_empty() {
+            merged.notifications.smtp.ca_cert_path = Some(v);
         }
     }
     if let Some(v) = env_str("GOVERNANCE_REPO") { merged.governance.repo = v; }
