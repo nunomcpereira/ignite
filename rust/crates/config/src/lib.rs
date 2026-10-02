@@ -587,10 +587,14 @@ pub struct SmtpConfig {
     /// for a relay whose TLS certificate is issued by an internal CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert_path: Option<String>,
+    /// Skip TLS certificate verification for the relay. Insecure (anyone on
+    /// the path can impersonate the relay); prefer `ca_cert_path`.
+    #[serde(default)]
+    pub allow_invalid_certs: bool,
 }
 impl std::fmt::Debug for SmtpConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SmtpConfig").field("host", &self.host).field("port", &self.port).field("secure", &self.secure).field("user", &self.user).field("pass", &redact_opt(&self.pass)).field("ca_cert_path", &self.ca_cert_path).finish()
+        f.debug_struct("SmtpConfig").field("host", &self.host).field("port", &self.port).field("secure", &self.secure).field("user", &self.user).field("pass", &redact_opt(&self.pass)).field("ca_cert_path", &self.ca_cert_path).field("allow_invalid_certs", &self.allow_invalid_certs).finish()
     }
 }
 
@@ -1480,6 +1484,9 @@ fn apply_env_overrides(merged: &mut Config) {
         if !v.is_empty() {
             merged.notifications.smtp.ca_cert_path = Some(v);
         }
+    }
+    if let Some(v) = env_bool("NOTIFICATIONS_SMTP_ALLOW_INVALID_CERTS").or_else(|| env_bool("SMTP_ALLOW_INVALID_CERTS")) {
+        merged.notifications.smtp.allow_invalid_certs = v;
     }
     if let Some(v) = env_str("GOVERNANCE_REPO") { merged.governance.repo = v; }
     if let Some(v) = env_str("GOVERNANCE_WORKFLOW") { merged.governance.workflow = v; }

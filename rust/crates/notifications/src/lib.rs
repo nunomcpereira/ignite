@@ -9,7 +9,8 @@
 //! - If only `smtp.host` is set, sends unauthenticated to that relay
 //!   (TLS-on-connect when `smtp.secure`, opportunistic STARTTLS otherwise).
 //! - `smtp.caCertPath` (PEM bundle) adds trusted roots for a relay whose
-//!   certificate comes from an internal CA.
+//!   certificate comes from an internal CA; `smtp.allowInvalidCerts` skips
+//!   verification entirely (insecure, opt-in).
 //! - Otherwise falls back to the local `sendmail` binary, matching
 //!   `nodemailer.createTransport({ sendmail: true })`.
 //!
@@ -110,6 +111,10 @@ fn tls_parameters(smtp: &SmtpConfig) -> Result<TlsParameters, NotificationError>
             message: format!("invalid PEM in smtp.caCertPath {path:?}: {e}"),
         })?;
         builder = builder.add_root_certificate(cert);
+    }
+    if smtp.allow_invalid_certs {
+        tracing::warn!(host = %smtp.host, "smtp.allowInvalidCerts is on: SMTP relay TLS certificate is NOT verified");
+        builder = builder.dangerous_accept_invalid_certs(true);
     }
     Ok(builder.build()?)
 }
@@ -789,6 +794,12 @@ mod tests {
     fn ca_cert_path_with_a_valid_pem_builds_tls_parameters() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test-ca.pem");
         assert!(tls_parameters(&smtp_with_ca(path)).is_ok());
+    }
+
+    #[test]
+    fn allow_invalid_certs_builds_tls_parameters() {
+        let smtp = SmtpConfig { host: "relay.internal".into(), port: 25, allow_invalid_certs: true, ..SmtpConfig::default() };
+        assert!(tls_parameters(&smtp).is_ok());
     }
 
     #[test]

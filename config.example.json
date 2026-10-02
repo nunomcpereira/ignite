@@ -38,7 +38,9 @@
       "host": "smtp.gmail.com",
       "port": 465,
       "secure": true,
-      "user": "you@example.com"
+      "user": "you@example.com",
+      "caCertPath": "",
+      "allowInvalidCerts": false
     }
   },
   "auth": {
@@ -139,6 +141,7 @@
       "approverEmails": []
     },
     "allowUnauthenticatedValidateAll": false,
+    "allowUnauthenticatedInteractiveDryRun": false,
     "codeql": {
       "enabled": true,
       "binary": "codeql",
