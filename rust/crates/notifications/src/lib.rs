@@ -4,8 +4,10 @@
 //!
 //! Transport selection mirrors Node's `buildMailTransport`:
 //! - If `smtp.host`, `smtp.user`, and `smtp.pass` are all non-empty,
-//!   builds a real SMTP transport (TLS-on-connect when `smtp.secure`,
-//!   STARTTLS otherwise).
+//!   builds an authenticated SMTP transport (TLS-on-connect when
+//!   `smtp.secure`, required STARTTLS otherwise).
+//! - If only `smtp.host` is set, sends unauthenticated to that relay
+//!   (TLS-on-connect when `smtp.secure`, opportunistic STARTTLS otherwise).
 //! - Otherwise falls back to the local `sendmail` binary, matching
 //!   `nodemailer.createTransport({ sendmail: true })`.
 //!
@@ -20,6 +22,7 @@ use std::collections::BTreeMap;
 
 use ignite_config::NotificationsConfig;
 use lettre::message::{header::ContentType, Mailbox};
+use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{
     AsyncSendmailTransport, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
@@ -94,10 +97,23 @@ enum Transport {
 
 fn build_transport(config: &NotificationsConfig) -> Transport {
     let smtp = &config.smtp;
-    if !smtp.host.is_empty()
-        && !smtp.user.is_empty()
-        && smtp.pass.as_ref().map_or(false, |p| !p.is_empty())
-    {
+    let has_creds = !smtp.user.is_empty() && smtp.pass.as_ref().map_or(false, |p| !p.is_empty());
+    if !smtp.host.is_empty() && !has_creds {
+        // Unauthenticated relay (e.g. an Exchange anonymous receive connector
+        // that trusts the sender's IP): no login, STARTTLS only if the relay
+        // offers it, or TLS-on-connect when `smtp.secure`.
+        let tls = if smtp.secure {
+            TlsParameters::new(smtp.host.clone()).map(Tls::Wrapper)
+        } else {
+            TlsParameters::new(smtp.host.clone()).map(Tls::Opportunistic)
+        }
+        .unwrap_or(Tls::None);
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp.host)
+            .port(smtp.port)
+            .tls(tls)
+            .build();
+        Transport::Smtp(transport)
+    } else if !smtp.host.is_empty() {
         let creds = lettre::transport::smtp::authentication::Credentials::new(
             smtp.user.clone(),
             smtp.pass.clone().unwrap_or_default(),
@@ -119,7 +135,7 @@ fn build_transport(config: &NotificationsConfig) -> Transport {
         };
         Transport::Smtp(transport)
     } else {
-        // No SMTP credentials — fall back to local sendmail binary,
+        // No SMTP host — fall back to local sendmail binary,
         // matching `nodemailer.createTransport({ sendmail: true })`.
         Transport::Sendmail(AsyncSendmailTransport::<Tokio1Executor>::new())
     }
@@ -715,6 +731,63 @@ pub fn phase_titles_map(meta: &[(i64, String)]) -> BTreeMap<i64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal SMTP server (no STARTTLS, no AUTH advertised) that records
+    /// every command line it receives.
+    fn spawn_fake_smtp() -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut out = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut seen = Vec::new();
+            out.write_all(b"220 fake ESMTP\r\n").unwrap();
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 {
+                let cmd = line.trim_end().to_string();
+                line.clear();
+                let upper = cmd.to_ascii_uppercase();
+                seen.push(cmd);
+                if upper.starts_with("EHLO") {
+                    out.write_all(b"250-fake\r\n250 8BITMIME\r\n").unwrap();
+                } else if upper == "DATA" {
+                    out.write_all(b"354 go\r\n").unwrap();
+                    while reader.read_line(&mut line).unwrap() > 0 {
+                        let done = line == ".\r\n";
+                        line.clear();
+                        if done {
+                            break;
+                        }
+                    }
+                    out.write_all(b"250 queued\r\n").unwrap();
+                } else if upper == "QUIT" {
+                    out.write_all(b"221 bye\r\n").unwrap();
+                    break;
+                } else {
+                    out.write_all(b"250 OK\r\n").unwrap();
+                }
+            }
+            seen
+        });
+        (port, handle)
+    }
+
+    #[tokio::test]
+    async fn host_without_credentials_sends_unauthenticated_smtp_not_sendmail() {
+        let (port, server) = spawn_fake_smtp();
+        let mut config = NotificationsConfig { enabled: true, ..NotificationsConfig::default() };
+        config.from = "Ignite <ignite@example.com>".into();
+        config.smtp.host = "127.0.0.1".into();
+        config.smtp.port = port;
+        let message = build_message(&config.from, "ops@example.com", "subject", "<p>hi</p>").unwrap();
+        send_message(&config, message).await.unwrap();
+        let seen = server.join().unwrap();
+        assert!(seen.iter().any(|c| c.starts_with("MAIL FROM:<ignite@example.com>")), "{seen:?}");
+        assert!(seen.iter().any(|c| c.starts_with("RCPT TO:<ops@example.com>")), "{seen:?}");
+        assert!(!seen.iter().any(|c| c.to_ascii_uppercase().starts_with("AUTH")), "{seen:?}");
+    }
 
     fn titles() -> BTreeMap<i64, String> {
         BTreeMap::from([(1, "Structure audit".to_string()), (2, "Secret scan".to_string()), (3, "AI governance".to_string())])
