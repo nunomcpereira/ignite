@@ -394,11 +394,11 @@ Keep external `jobId` and legacy `projectId` resolvable through a compatibility 
 
 **Acceptance criteria**
 
-- [ ] `sast-bench --mode full|fallback|both` produces JSON and markdown with per-CWE and overall scores.
-- [ ] Re-running against the same Benchmark commit, Ignite commit and tool versions gives identical numbers.
-- [ ] Scores state which engines actually ran; a missing tool shows as such, not as a silent drop in recall.
-- [ ] Unmapped findings are listed separately and excluded from TP/FP.
-- [ ] The Benchmark source is never committed to this repository.
+- [x] `sast-bench --mode full|fallback|both` produces JSON and markdown with per-CWE and overall scores.
+- [x] Re-running against the same Benchmark commit, Ignite commit and tool versions gives identical numbers (scores identical across two full runs; raw finding counts outside the scored set varied by 2).
+- [x] Scores state which engines actually ran; a missing tool shows as such, not as a silent drop in recall.
+- [x] Unmapped findings are listed separately and excluded from TP/FP.
+- [x] The Benchmark source is never committed to this repository.
 
 **Verification:** Unit tests for the CSV parser, the finding-to-test-case matcher and score arithmetic against a small hand-written fixture of expected results. One real run in each mode recorded in the docs page.
 

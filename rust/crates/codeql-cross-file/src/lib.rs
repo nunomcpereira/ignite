@@ -339,6 +339,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// processable source for the language.
 const NO_SOURCE_CODE_SEEN_EXIT: i32 = 32;
 
+/// `--build-mode` for languages that can be extracted without building
+/// the project. Go has no `none` mode; JavaScript/Python never build.
+fn build_mode_for(language: &str) -> Option<&'static str> {
+    matches!(language, "java" | "csharp").then_some("none")
+}
+
 async fn run_one_language(
     root: &Path,
     language: &str,
@@ -370,6 +376,12 @@ async fn run_one_language(
         ];
         if config.ram_mb != 0 {
             create_args.push(format!("--ram={}", config.ram_mb));
+        }
+        // Java otherwise autobuilds (Maven/Gradle), which fails on any repo
+        // whose build can't run in the scanner's sandbox — the extraction
+        // then dies with exit 2 and the language is never analyzed.
+        if let Some(mode) = build_mode_for(language) {
+            create_args.push(format!("--build-mode={mode}"));
         }
         let mut env = HashMap::new();
         env.insert("LGTM_INDEX_FILTERS".to_string(), codeql_index_filters());
@@ -473,9 +485,19 @@ pub async fn check_codeql_cross_file_with_log(
         return Ok(CodeqlCrossFileResult { findings: vec![], engine: "disabled", languages: vec![], failed_languages: vec![] });
     }
 
-    let languages = discover_codeql_languages(root, &config.languages)?;
-    if languages.is_empty() {
+    let detected = discover_codeql_languages(root, &config.languages)?;
+    if detected.is_empty() {
         return Ok(CodeqlCrossFileResult { findings: vec![], engine: "codeql", languages: vec![], failed_languages: vec![] });
+    }
+    // A detected language with no configured query suite is never analyzed;
+    // when that's every language, the check didn't run at all and must not
+    // be reported as a completed (trustworthy, zero-finding) scan.
+    let (languages, unconfigured): (Vec<String>, Vec<String>) = detected.into_iter().partition(|l| config.query_suites.contains_key(l));
+    for l in &unconfigured {
+        log(&format!("  ⚠ codeql: no query suite configured for {l} — skipped"));
+    }
+    if languages.is_empty() {
+        return Ok(CodeqlCrossFileResult { findings: vec![], engine: "unconfigured", languages: vec![], failed_languages: vec![] });
     }
 
     let mut findings = Vec::new();
@@ -522,7 +544,10 @@ pub async fn check_codeql_cross_file_with_log(
         findings.extend(lang_findings);
     }
 
-    Ok(CodeqlCrossFileResult { findings, engine: "codeql", languages, failed_languages })
+    // Every language failing means nothing was analyzed: report the check
+    // as failed, never as a completed zero-finding scan.
+    let engine = if !languages.is_empty() && failed_languages.len() == languages.len() { "failed" } else { "codeql" };
+    Ok(CodeqlCrossFileResult { findings, engine, languages, failed_languages })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -833,6 +858,28 @@ mod tests {
         assert!(result.findings.is_empty());
     }
 
+    #[test]
+    fn only_java_and_csharp_extract_without_a_build() {
+        assert_eq!(build_mode_for("java"), Some("none"));
+        assert_eq!(build_mode_for("csharp"), Some("none"));
+        assert_eq!(build_mode_for("go"), None);
+        assert_eq!(build_mode_for("javascript"), None);
+    }
+
+    #[tokio::test]
+    async fn a_language_with_no_query_suite_is_reported_unconfigured_not_completed() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("app.js"), "export function add(a, b) { return a + b; }\n").unwrap();
+        let config = CodeqlConfig { query_suites: HashMap::new(), ..Default::default() };
+        let result = check_codeql_cross_file(dir.path(), &runner(), &config, CodeqlContext { org: None, repo: None, store: None, keep_db_dir: None }).await.unwrap();
+        if result.engine == "disabled" {
+            eprintln!("skipping: codeql not installed");
+            return;
+        }
+        assert_eq!(result.engine, "unconfigured");
+        assert!(result.languages.is_empty());
+    }
+
     #[tokio::test]
     async fn no_supported_language_files_short_circuits() {
         let dir = tempdir().unwrap();
@@ -917,6 +964,7 @@ mod tests {
         assert!(result.findings.is_empty(), "a failed analyze should produce no findings, not fabricated ones");
         assert_eq!(result.failed_languages.len(), 1, "expected javascript's failed analyze to be recorded, got {:?}", result.failed_languages);
         assert_eq!(result.failed_languages[0].0, "javascript");
+        assert_eq!(result.engine, "failed", "every language failing must not read as a completed scan");
 
         ignite_fs_utils::invalidate_walk_cache(root);
     }

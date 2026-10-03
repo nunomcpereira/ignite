@@ -1,0 +1,35 @@
+name: SAST benchmark (OWASP Benchmark)
+
+# Scores Ignite's Phase 4 against the OWASP Benchmark for Java in fallback
+# mode (built-in checks only, no external tools). Manual or weekly; never
+# part of the regular test run. The Benchmark (GPL-2.0) is fetched into the
+# runner's cache directory, never committed. Full-mode numbers need the
+# external tools installed and are produced locally with the same binary.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build sast-bench
+        working-directory: rust
+        run: cargo build --release -p ignite-sast-bench
+      - name: Run benchmark (fallback mode)
+        run: |
+          mkdir -p bench-out
+          rust/target/release/sast-bench --mode fallback --ignite-root . --cache-dir "$RUNNER_TEMP/sast-bench" --out-dir bench-out
+      - name: Publish scorecard to the job summary
+        run: cat bench-out/sast-bench-scorecard.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sast-bench-results
+          path: bench-out/

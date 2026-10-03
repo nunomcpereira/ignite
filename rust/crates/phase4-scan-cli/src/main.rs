@@ -10,13 +10,8 @@
 //! git/gh push path (this tool never ships — it only scans).
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
-
-fn bin(name: &'static str) -> (&'static str, String) {
-    (name, name.to_string())
-}
 
 #[tokio::main]
 async fn main() {
@@ -24,32 +19,7 @@ async fn main() {
     let mut args = std::env::args().skip(1);
     let source = args.next().expect("usage: phase4-scan <root> [posture-ruleset] [spectral-ruleset]");
     let ignite_root = args.next().map(PathBuf::from);
-    let posture_ruleset = ignite_root.as_ref().map(|r| r.join("ignite-posture-rules.yaml").to_string_lossy().into_owned()).unwrap_or_default();
-    let spectral_ruleset = ignite_root.as_ref().map(|r| r.join("spectral-default-ruleset.yaml").to_string_lossy().into_owned()).unwrap_or_default();
-
-    let binaries: HashMap<&'static str, String> = [
-        bin("trivy"),
-        bin("checkov"),
-        bin("hadolint"),
-        bin("syft"),
-        bin("cosign"),
-        bin("semgrep"),
-        bin("bearer"),
-        bin("jscpd"),
-        bin("gocloc"),
-        bin("spectral"),
-        bin("guarddog"),
-        bin("codeql"),
-        bin("picklescan"),
-        bin("oasdiff"),
-        bin("gitleaks"),
-        bin("zizmor"),
-        bin("licensee"),
-        bin("rm"),
-    ]
-    .into_iter()
-    .collect();
-    let runner = ignite_tool_runner::ToolRunner::new(binaries);
+    let runner = ignite_phase4_orchestrator::standalone::standalone_runner(true);
 
     let db_dir = tempfile::tempdir().unwrap();
     let store = ignite_db_store::DbStore::open(&db_dir.path().join("scan.db")).unwrap();
@@ -80,44 +50,7 @@ async fn main() {
     let deps_dev_client = ignite_deps_dev_client::DepsDevClient::new();
     let npm_http = reqwest::Client::new();
 
-    let config = ignite_phase4_orchestrator::Phase4Config {
-        ignore_rules: Vec::new(),
-        fast: false,
-        org: "bench-org".to_string(),
-        repo: "bench-repo".to_string(),
-        project_id: None,
-        keep_codeql_db_dir: None,
-        secrets: ignite_secrets::SecretsConfig::default(),
-        secret_verification: ignite_secret_verifier::SecretVerifierConfig::default(),
-        llm: None,
-        iac: ignite_iac_security::IacSecurityConfig::default(),
-        gha_security: ignite_gha_security::GhaSecurityConfig::default(),
-        container_image_vulnerabilities: ignite_container_image_vulnerabilities::ContainerImageVulnerabilitiesConfig::default(),
-        sbom_enabled: true,
-        image_provenance: ignite_image_provenance::ImageProvenanceConfig::default(),
-        semantic_sast: ignite_semantic_sast::SemanticSastConfig::default(),
-        pii_data_flow: ignite_pii_dataflow::PiiDataFlowConfig::default(),
-        code_duplication: ignite_code_duplication::CodeDuplicationConfig::default(),
-        file_encapsulation: ignite_file_encapsulation::FileEncapsulationConfig { enabled: true, max_lines: 1000 },
-        loc_metrics_enabled: true,
-        api_schema: ignite_api_schema::ApiSchemaConfig { enabled: true, ruleset: spectral_ruleset },
-        api_schema_drift: ignite_api_schema_drift::ApiSchemaDriftConfig::default(),
-        malicious_dependencies: ignite_malicious_dependencies::MaliciousDependenciesConfig::default(),
-        model_artifact_security: ignite_model_artifact_security::ModelArtifactSecurityConfig::default(),
-        package_hallucination_enabled: true,
-        feature_posture: ignite_feature_posture::FeaturePostureConfig { enabled: true, ruleset: posture_ruleset, max_scan_file_bytes: 1_000_000 },
-        eu_ai_act_documents_enabled: true,
-        eu_ai_act_report_as_findings: false,
-        dead_code: ignite_dead_code::DeadCodeConfig { enabled: true },
-        complexity_health: ignite_complexity_health::ComplexityHealthConfig::default(),
-        css_dead_code: ignite_css_dead_code::CssDeadCodeConfig { enabled: true },
-        boundaries: ignite_boundaries::BoundariesConfig { enabled: false, preset: None, zones: vec![] },
-        env_var_drift: ignite_env_var_drift::EnvVarDriftConfig::default(),
-        igniteignore_enabled: true,
-        igniteignore_git_check_root: Some(PathBuf::from(&source)),
-        codeql: ignite_codeql_cross_file::CodeqlConfig::default(),
-        codeql_query_suite_review_overdue: false,
-    };
+    let config = ignite_phase4_orchestrator::standalone::standalone_config("bench-org", "bench-repo", ignite_root.as_deref(), Some(PathBuf::from(&source)));
 
     let hallucination_checker = ignite_package_hallucination::PackageHallucinationChecker::new(ignite_package_hallucination::HttpRegistryChecker::default());
     let (license_issues, vuln_issues, phase4_output) = tokio::join!(

@@ -387,7 +387,11 @@ async fn codeql_run(State(state): State<Arc<AppState>>, Path(job_id): Path<Strin
             }
         };
 
-        if codeql_result.engine != "codeql" {
+        if codeql_result.engine == "failed" {
+            log(&format!("✗ CodeQL could not analyze any language ({}).", codeql_result.failed_languages.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", ")));
+        } else if codeql_result.engine == "unconfigured" {
+            log("⚠ CodeQL skipped — no query suite configured for this project's languages (security.codeql.querySuites).");
+        } else if codeql_result.engine != "codeql" {
             log("✓ CodeQL skipped — disabled or not installed (security.codeql.enabled).");
         } else if codeql_result.findings.is_empty() {
             log(&format!("✓ No CodeQL findings across {} language(s) scanned.", codeql_result.languages.len()));

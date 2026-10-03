@@ -14,6 +14,8 @@ use ignite_tool_runner::ToolRunner;
 use std::collections::HashMap;
 use std::path::Path;
 
+pub mod standalone;
+
 fn snippet_json<T: serde::Serialize>(snippet: &Option<T>) -> Option<serde_json::Value> {
     snippet.as_ref().and_then(|s| serde_json::to_value(s).ok())
 }
