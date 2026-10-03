@@ -1121,7 +1121,7 @@
         <button id="studioDepsBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.dependenciesTitle" data-i18n="studio.dependencies">Dependencies</button>
         <button id="studioSbomBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.sbomTitle" data-i18n="studio.sbom">SBOM</button>
         <button id="studioLocBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.locTitle" data-i18n="studio.loc">LOC Metrics</button>
-        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.postureTitle" data-i18n="studio.posture">Posture</button>
+        <button id="studioPostureBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.postureTitle" data-i18n="studio.posture">Maturity Level</button>
         <button id="studioCallGraphBtn" type="button" class="text-xs font-semibold px-2.5 py-1.5 text-slate-500 hover:text-brand-600 border-b-2 border-transparent hover:border-brand-200 -mb-px transition-colors" data-i18n-title="studio.callGraphTitle" data-i18n="studio.callGraph">Call Graph</button>
         <span class="flex-1"></span>
         <div class="flex items-center gap-1.5">
@@ -4833,9 +4833,31 @@
       'ai-act-ai-logging': 'EU AI Act (Art. 12) decision logging — tracks AI model inputs, outputs, and decision traces for auditability and explainability.',
     };
 
+    // Maturity scoring: each area earns 100% when DETECTED, 50% when
+    // PARTIAL (only an import/dependency reference), 0% when MISSING.
+    // Inverted areas (Art. 5 prohibited practice) score the other way —
+    // MISSING is the clean state. Overall score = mean of area scores,
+    // bucketed into a 5-level maturity scale.
+    const STUDIO_MATURITY_LEVELS = [
+      { min: 80, level: 5, name: 'Optimized',  chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', bar: 'bg-emerald-500' },
+      { min: 60, level: 4, name: 'Managed',    chip: 'bg-teal-50 text-teal-700 border-teal-200',          bar: 'bg-teal-500' },
+      { min: 40, level: 3, name: 'Defined',    chip: 'bg-sky-50 text-sky-700 border-sky-200',             bar: 'bg-sky-500' },
+      { min: 20, level: 2, name: 'Developing', chip: 'bg-amber-50 text-amber-700 border-amber-200',       bar: 'bg-amber-500' },
+      { min: 0,  level: 1, name: 'Initial',    chip: 'bg-rose-50 text-rose-700 border-rose-200',          bar: 'bg-rose-500' },
+    ];
+    function studioMaturityAreaScore(category, status) {
+      const s = STUDIO_POSTURE_INVERTED.has(category)
+        ? ({ MISSING: 'DETECTED', PARTIAL: 'PARTIAL', DETECTED: 'MISSING' }[status] || 'MISSING')
+        : status;
+      return s === 'DETECTED' ? 100 : s === 'PARTIAL' ? 50 : 0;
+    }
+    function studioMaturityLevel(score) {
+      return STUDIO_MATURITY_LEVELS.find((l) => score >= l.min) || STUDIO_MATURITY_LEVELS[STUDIO_MATURITY_LEVELS.length - 1];
+    }
+
     function renderStudioPosture(data) {
       const posture = data.posture || {};
-      const badge = studioEngineBadge(data.engine, 'Semgrep CLI (Posture)');
+      const badge = studioEngineBadge(data.engine, 'Semgrep CLI (Maturity Level)');
       const cardsHtml = Object.entries(posture).map(([category, { status, matches }]) => {
         const inverted = STUDIO_POSTURE_INVERTED.has(category);
         // For an inverted category DETECTED/PARTIAL is the risk state and
@@ -4854,21 +4876,45 @@
         const goalKey = `studio.postureGoal.${category}`;
         const translatedGoal = t(goalKey);
         const goalText = (translatedGoal && translatedGoal !== goalKey) ? translatedGoal : (STUDIO_POSTURE_GOALS[category] || hint || '');
+        const areaScore = studioMaturityAreaScore(category, status);
         return `<div class="rounded-lg border ${meta.chip} p-3">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-1.5 min-w-0">
               <span class="text-xs font-semibold text-slate-700">${escapeHtml(STUDIO_POSTURE_LABELS[category] || category)}</span>
               ${authTooltip(goalText)}
             </div>
-            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip} shrink-0 ml-2">${meta.icon} ${escapeHtml(status)}</span>
+            <div class="flex items-center gap-1.5 shrink-0 ml-2">
+              <span class="text-[10px] font-semibold text-slate-500" title="Area score">${areaScore}/100</span>
+              <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.chip}">${meta.icon} ${escapeHtml(status)}</span>
+            </div>
           </div>
           ${matches.length > 0 ? `<div class="mt-2">${matchesHtml}</div>` : ''}
           ${showHint ? `<p class="mt-2 text-[11px] text-slate-500 leading-snug">${escapeHtml(hint)}</p>` : ''}
         </div>`;
       }).join('');
+      const areas = Object.entries(posture);
+      const overall = areas.length
+        ? Math.round(areas.reduce((sum, [category, { status }]) => sum + studioMaturityAreaScore(category, status), 0) / areas.length)
+        : 0;
+      const lvl = studioMaturityLevel(overall);
+      const counted = (pred) => areas.filter(([c, { status }]) => pred(studioMaturityAreaScore(c, status))).length;
+      const scoreHtml = `<div class="mt-3 rounded-lg border ${lvl.chip} p-3">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Maturity level</div>
+            <div class="text-lg font-bold">Level ${lvl.level} · ${escapeHtml(lvl.name)}</div>
+          </div>
+          <div class="text-right">
+            <div class="text-2xl font-bold">${overall}<span class="text-sm font-semibold text-slate-500">/100</span></div>
+            <div class="text-[10px] text-slate-500">${counted((x) => x === 100)} met · ${counted((x) => x === 50)} partial · ${counted((x) => x === 0)} missing of ${areas.length} areas</div>
+          </div>
+        </div>
+        <div class="mt-2 h-1.5 rounded bg-slate-200 overflow-hidden"><div class="h-full ${lvl.bar}" style="width:${overall}%"></div></div>
+      </div>`;
       $('studioCodeWrap').innerHTML = `<div class="p-4">
         ${badge}
-        <p class="mt-2 text-[11px] text-slate-500">Detects the <em>presence</em> of security/compliance features — not vulnerabilities. DETECTED = confirmed usage found; PARTIAL = only an import/dependency reference found; MISSING = neither.</p>
+        ${scoreHtml}
+        <p class="mt-2 text-[11px] text-slate-500">Scores the <em>presence</em> of security/compliance features — not vulnerabilities. Each area: DETECTED (confirmed usage) = 100, PARTIAL (only an import/dependency reference) = 50, MISSING = 0; for the EU AI Act Art. 5 area the scoring is reversed (MISSING is clean). Overall = average of areas → Level 1 Initial (&lt;20), 2 Developing, 3 Defined, 4 Managed, 5 Optimized (≥80).</p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">${cardsHtml}</div>
       </div>`;
       $('studioCodeWrap').querySelectorAll('.studio-posture-match').forEach((btn) => {
@@ -4880,13 +4926,13 @@
       if (studioState.historical) {
         // posture-report.json is already stored as { engine, posture } —
         // the exact shape renderStudioPosture expects, no reshaping needed.
-        return openStudioReportFromDoc('Compliance & Feature Posture', renderStudioPosture, {
+        return openStudioReportFromDoc('Compliance & Security Maturity Level', renderStudioPosture, {
           doc: studioState.historicalDocs.posture,
           reshape: (raw) => raw,
         });
       }
       return openStudioReport(
-        'posture', 'Compliance & Feature Posture', 'Scanning for SSO/RBAC/audit-logging/TLS/backups/encryption/rate-limiting posture (Semgrep if installed, else a built-in scanner)…', renderStudioPosture
+        'posture', 'Compliance & Security Maturity Level', 'Scoring maturity across SSO/RBAC/audit-logging/TLS/backups/encryption/rate-limiting (Semgrep if installed, else a built-in scanner)…', renderStudioPosture
       );
     });
 
