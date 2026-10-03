@@ -438,10 +438,10 @@ Keep external `jobId` and legacy `projectId` resolvable through a compatibility 
 
 **Acceptance criteria**
 
-- [ ] A project with no tests shows unit tests as `not_applicable`, not `completed`.
-- [ ] Accepted non-blocking test failures are visible in coverage, not only in a warning string.
-- [ ] Under strict policy, a required Phase 3 check that didn't run yields `incomplete`.
-- [ ] Legacy policy decisions are unchanged for existing installations.
+- [x] A project with no tests shows unit tests as `not_applicable`, not `completed`.
+- [x] Accepted non-blocking test failures are visible in coverage, not only in a warning string.
+- [x] Under strict policy, a required Phase 3 check that didn't run yields `incomplete` (`strict-publication-v2` requires `license-compliance`, `env-files`, `unit-tests`).
+- [x] Legacy policy decisions are unchanged for existing installations.
 
 **Verification:** Policy table tests for the new check ids; route tests for a no-tests project and a failing-tests project.
 

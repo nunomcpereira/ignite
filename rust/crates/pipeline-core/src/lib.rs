@@ -11,6 +11,7 @@ use ignite_auth::is_valid_email;
 use ignite_db_store::DbStore;
 use ignite_fs_utils::{is_env_template_file, is_gitignored, load_gitignore_patterns, walk_files};
 use ignite_override_engine::Issue;
+use ignite_policy::CheckCoverage;
 use ignite_tool_runner::ToolRunner;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -289,13 +290,53 @@ pub async fn run_license_and_dependency_scan(
     db: &DbStore,
     project_id: Option<i64>,
     mut log: impl FnMut(&str),
-) -> Vec<Issue> {
+) -> (Vec<Issue>, Vec<CheckCoverage>) {
     let (mut issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(root, runner, client, npm_http, &mut log).await;
     if let (Some(pid), Some(scan_json)) = (project_id, &dep_scan_json) {
         db.save_dependency_scan_cache(pid, scan_json);
     }
     issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(root, client, &mut log).await);
-    issues
+    (issues, vec![license_scan_coverage(dep_scan_json.as_ref()), CheckCoverage::completed("dependency-vulnerability", "deps.dev", false)])
+}
+
+/// US-15: the license scan logs its own failure and carries on with no
+/// findings (non-blocking), which used to be indistinguishable from a clean
+/// scan. No scan result means it didn't complete.
+pub fn license_scan_coverage(scan_json: Option<&serde_json::Value>) -> CheckCoverage {
+    match scan_json {
+        Some(scan) => {
+            let engine = scan.get("engine").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("built-in");
+            let manifests = scan.get("manifests").and_then(|m| m.as_array()).map(Vec::len).unwrap_or(0);
+            CheckCoverage::completed("license-compliance", engine, false).with_scope(format!("{manifests} manifest(s)"))
+        }
+        None => CheckCoverage::failed("license-compliance", "license scan failed (see the Phase 3 log); no license findings were produced"),
+    }
+}
+
+/// US-15: unit-test coverage. No recognized test project is `not_applicable`
+/// (satisfies a strict requirement); failures stay `failed` even when the
+/// caller accepted them as non-blocking, so they're visible in coverage and
+/// not only in a warning string.
+pub fn unit_test_coverage(result: &Result<ignite_unit_test_runner::UnitTestResult, ignite_unit_test_runner::UnitTestError>, failures_accepted: bool) -> CheckCoverage {
+    use ignite_unit_test_runner::UnitTestError;
+    match result {
+        Ok(r) if !r.ran => CheckCoverage::not_applicable("unit-tests", "no recognized test project"),
+        Ok(r) => CheckCoverage::completed("unit-tests", "docker", false).with_scope(r.languages.join(", ")),
+        Err(UnitTestError::DockerUnavailable) => CheckCoverage::unavailable("unit-tests", "Docker daemon is not running"),
+        Err(e) if failures_accepted => CheckCoverage::failed("unit-tests", format!("{e} (accepted as non-blocking for this scan)")),
+        Err(e) => CheckCoverage::failed("unit-tests", e.to_string()),
+    }
+}
+
+/// US-15: Phase 2 (GxP document links) coverage.
+pub fn gxp_documents_coverage(phase_enabled: bool, is_gxp: bool, link_count: usize) -> CheckCoverage {
+    if !phase_enabled {
+        CheckCoverage::disabled("gxp-documents")
+    } else if !is_gxp {
+        CheckCoverage::not_applicable("gxp-documents", "project not declared GxP-regulated")
+    } else {
+        CheckCoverage::completed("gxp-documents", "built-in", false).with_scope(format!("{link_count} document link(s)"))
+    }
 }
 
 /// Phase 3's raw-.env-file guard (blocking) followed by the advisory
@@ -305,7 +346,8 @@ pub async fn run_license_and_dependency_scan(
 /// `pipeline_interactive/run.rs`. Returns `Err` (the caller's phase-3
 /// failure message) when a blocking `.env*` file is present; the
 /// CODEOWNERS check never blocks.
-pub fn run_env_and_codeowners_checks(root: &Path, blocking_error_suffix: &str, mut log: impl FnMut(&str)) -> std::io::Result<()> {
+/// On success, returns the `env-files` and `codeowners` coverage (US-15).
+pub fn run_env_and_codeowners_checks(root: &Path, blocking_error_suffix: &str, mut log: impl FnMut(&str)) -> std::io::Result<Vec<CheckCoverage>> {
     log("Check 1 — scanning for raw environment files (.env*)...");
     let env_check = check_env_files(root)?;
     if !env_check.ignored.is_empty() {
@@ -321,12 +363,16 @@ pub fn run_env_and_codeowners_checks(root: &Path, blocking_error_suffix: &str, m
     log("✓ Check 1 passed — no raw environment files present.");
     log("Check 2 — checking for a CODEOWNERS file...");
     let codeowners = check_codeowners(root);
+    let codeowners_scope = if codeowners.found { "CODEOWNERS present" } else { "no CODEOWNERS file (advisory)" };
     if codeowners.found {
         log(&format!("✓ CODEOWNERS found at {} ({} contact email(s)).", codeowners.path.unwrap_or(""), codeowners.emails.len()));
     } else {
         log("ℹ No CODEOWNERS file found (advisory — checked root, .github/, docs/).");
     }
-    Ok(())
+    Ok(vec![
+        CheckCoverage::completed("env-files", "built-in", false).with_scope(format!("{} gitignored .env file(s) skipped", env_check.ignored.len())),
+        CheckCoverage::completed("codeowners", "built-in", false).with_scope(codeowners_scope),
+    ])
 }
 
 /// Outcome of `run_governance_ci_phase`: either the org governance
@@ -559,5 +605,60 @@ mod tests {
         let result = check_codeowners(dir.path());
         assert!(!result.found);
         assert!(result.emails.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use ignite_policy::CheckOutcome;
+    use ignite_unit_test_runner::{UnitTestError, UnitTestResult};
+
+    #[test]
+    fn unit_test_coverage_distinguishes_no_tests_passed_unavailable_and_failed() {
+        assert_eq!(unit_test_coverage(&Ok(UnitTestResult { ran: false, languages: vec![] }), false).outcome, CheckOutcome::NotApplicable);
+        let passed = unit_test_coverage(&Ok(UnitTestResult { ran: true, languages: vec!["Node.js", "Go"] }), false);
+        assert_eq!(passed.outcome, CheckOutcome::Completed);
+        assert_eq!(passed.scope.as_deref(), Some("Node.js, Go"));
+        assert_eq!(unit_test_coverage(&Err(UnitTestError::DockerUnavailable), true).outcome, CheckOutcome::Unavailable);
+        let failed = unit_test_coverage(&Err(UnitTestError::TestsFailed("Node.js", "1 failing".into())), false);
+        assert_eq!(failed.outcome, CheckOutcome::Failed);
+        assert!(!failed.reason.unwrap().contains("accepted"));
+    }
+
+    #[test]
+    fn accepted_test_failures_stay_failed_and_say_so() {
+        let c = unit_test_coverage(&Err(UnitTestError::TestsFailed("Node.js", "1 failing".into())), true);
+        assert_eq!(c.outcome, CheckOutcome::Failed);
+        assert!(c.reason.unwrap().contains("accepted as non-blocking"));
+    }
+
+    #[test]
+    fn a_license_scan_that_produced_no_result_is_failed_not_completed() {
+        assert_eq!(license_scan_coverage(None).outcome, CheckOutcome::Failed);
+        let scan = serde_json::json!({ "engine": "ort", "manifests": [{}, {}] });
+        let c = license_scan_coverage(Some(&scan));
+        assert_eq!(c.outcome, CheckOutcome::Completed);
+        assert_eq!(c.engine.as_deref(), Some("ort"));
+        assert_eq!(c.scope.as_deref(), Some("2 manifest(s)"));
+    }
+
+    #[test]
+    fn gxp_coverage_follows_phase_and_declaration() {
+        assert_eq!(gxp_documents_coverage(false, false, 0).outcome, CheckOutcome::Disabled);
+        assert_eq!(gxp_documents_coverage(true, false, 0).outcome, CheckOutcome::NotApplicable);
+        assert_eq!(gxp_documents_coverage(true, true, 3).outcome, CheckOutcome::Completed);
+    }
+
+    #[test]
+    fn env_and_codeowners_report_coverage_and_still_block_raw_env_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.js"), "1").unwrap();
+        let cov = run_env_and_codeowners_checks(dir.path(), "x", |_| {}).unwrap();
+        let ids: Vec<&str> = cov.iter().map(|c| c.check_id.as_str()).collect();
+        assert_eq!(ids, vec!["env-files", "codeowners"]);
+        std::fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
+        ignite_fs_utils::invalidate_walk_cache(dir.path());
+        assert!(run_env_and_codeowners_checks(dir.path(), "x", |_| {}).is_err());
     }
 }

@@ -168,8 +168,13 @@ impl PolicyVersion {
     /// unavailable was never a reason to block a publication.
     pub fn strict_publication() -> Self {
         PolicyVersion {
-            id: "strict-publication-v1".to_string(),
-            required_checks: vec!["secrets".to_string(), "dependency-vulnerability".to_string(), "semanticSast".to_string(), "governance-ci".to_string()],
+            // v2 (US-15) adds the Phase 3 checks: a run whose license scan,
+            // `.env` guard or test suite never ran (or whose test failures
+            // were only accepted as non-blocking) can't publish under strict
+            // policy. A project with no test suite reports `unit-tests` as
+            // not applicable, which satisfies the requirement.
+            id: "strict-publication-v2".to_string(),
+            required_checks: ["secrets", "dependency-vulnerability", "semanticSast", "governance-ci", "license-compliance", "env-files", "unit-tests"].into_iter().map(String::from).collect(),
             allow_fallback_for: vec!["secrets".to_string()],
         }
     }
@@ -261,6 +266,11 @@ pub fn evaluate_policy(coverage: &[CheckCoverage], has_blocking_findings: bool, 
 mod tests {
     use super::*;
 
+    /// The Phase 3 checks strict v2 requires, all completed.
+    fn phase3_completed() -> Vec<CheckCoverage> {
+        vec![CheckCoverage::completed("license-compliance", "built-in", false), CheckCoverage::completed("env-files", "built-in", false), CheckCoverage::completed("unit-tests", "docker", false)]
+    }
+
     #[test]
     fn missing_disabled_unavailable_failed_timed_out_cancelled_are_all_distinct() {
         let outcomes = [
@@ -300,7 +310,10 @@ mod tests {
             CheckCoverage::completed("secrets", "gitleaks", false),
             CheckCoverage::completed("dependency-vulnerability", "osv", false),
             CheckCoverage::completed("governance-ci", "act", false),
-        ];
+        ]
+        .into_iter()
+        .chain(phase3_completed())
+        .collect::<Vec<_>>();
         let decision = evaluate_policy(&coverage, false, false, &policy);
         assert_eq!(decision.decision, PolicyDecisionKind::Incomplete);
         assert_eq!(decision.missing_required_coverage, vec!["semanticSast".to_string()]);
@@ -333,7 +346,10 @@ mod tests {
             CheckCoverage::completed("dependency-vulnerability", "osv", false),
             CheckCoverage::completed("semanticSast", "semgrep", false),
             CheckCoverage::completed("governance-ci", "act", false),
-        ];
+        ]
+        .into_iter()
+        .chain(phase3_completed())
+        .collect::<Vec<_>>();
         let decision = evaluate_policy(&coverage, false, false, &policy);
         assert_eq!(decision.decision, PolicyDecisionKind::Pass);
     }
@@ -346,7 +362,10 @@ mod tests {
             CheckCoverage::completed("dependency-vulnerability", "built-in-fallback", true), // fallback NOT in allow_fallback_for
             CheckCoverage::completed("semanticSast", "semgrep", false),
             CheckCoverage::completed("governance-ci", "act", false),
-        ];
+        ]
+        .into_iter()
+        .chain(phase3_completed())
+        .collect::<Vec<_>>();
         let decision = evaluate_policy(&coverage, false, false, &policy);
         assert_eq!(decision.decision, PolicyDecisionKind::Incomplete);
         assert_eq!(decision.missing_required_coverage, vec!["dependency-vulnerability".to_string()]);
@@ -391,12 +410,40 @@ mod tests {
             CheckCoverage::completed("dependency-vulnerability", "osv", false),
             CheckCoverage::completed("semanticSast", "semgrep", false),
             CheckCoverage::completed("governance-ci", "act", false),
-        ];
+        ]
+        .into_iter()
+        .chain(phase3_completed())
+        .collect::<Vec<_>>();
         let first = evaluate_policy(&coverage, false, false, &pinned);
         let _changed_but_unused = PolicyVersion::legacy_compatible();
         let second = evaluate_policy(&coverage, false, false, &pinned);
         assert_eq!(first.decision, second.decision);
-        assert_eq!(first.policy_version, "strict-publication-v1");
+        assert_eq!(first.policy_version, "strict-publication-v2");
+    }
+
+    #[test]
+    fn strict_requires_phase3_checks_and_rejects_accepted_test_failures() {
+        let policy = PolicyVersion::strict_publication();
+        let base = vec![
+            CheckCoverage::completed("secrets", "gitleaks", false),
+            CheckCoverage::completed("dependency-vulnerability", "osv", false),
+            CheckCoverage::completed("semanticSast", "semgrep", false),
+            CheckCoverage::completed("governance-ci", "act", false),
+            CheckCoverage::completed("license-compliance", "built-in", false),
+            CheckCoverage::completed("env-files", "built-in", false),
+        ];
+        // No test suite at all: not applicable satisfies the requirement.
+        let mut no_tests = base.clone();
+        no_tests.push(CheckCoverage::not_applicable("unit-tests", "no recognized test project"));
+        assert_eq!(evaluate_policy(&no_tests, false, false, &policy).decision, PolicyDecisionKind::Pass);
+        // Failures accepted as non-blocking still count as a failed check.
+        let mut accepted = base.clone();
+        accepted.push(CheckCoverage::failed("unit-tests", "node unit tests failed (accepted as non-blocking)"));
+        let d = evaluate_policy(&accepted, false, false, &policy);
+        assert_eq!(d.decision, PolicyDecisionKind::Incomplete);
+        assert_eq!(d.missing_required_coverage, vec!["unit-tests".to_string()]);
+        // Legacy policy is unaffected.
+        assert_eq!(evaluate_policy(&accepted, false, false, &PolicyVersion::legacy_compatible()).decision, PolicyDecisionKind::Pass);
     }
 
     #[test]

@@ -326,6 +326,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         if !is_gxp {
             logger.log(2, "Process declared non-GxP — no validation documents required.");
             logger.status(2, "skipped", None);
+            coverage.push(ignite_pipeline_core::gxp_documents_coverage(phase_enabled(&phase_meta, 2), false, 0));
         } else {
             logger.status(2, "running", None);
             let mut valid_links = Vec::new();
@@ -347,6 +348,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             }
             logger.log(2, &format!("Received {} GxP document link(s) for validation context.", valid_links.len()));
             logger.status(2, "success", None);
+            coverage.push(ignite_pipeline_core::gxp_documents_coverage(true, true, valid_links.len()));
         }
 
         logger.status(3, "running", None);
@@ -360,22 +362,24 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
         let client = ignite_deps_dev_client::DepsDevClient::new();
         let npm_http = reqwest::Client::new();
         let l3a = logger.clone();
-        let license_issues = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await;
+        let (license_issues, license_coverage) = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await;
+        coverage.extend(license_coverage);
 
         {
             let l3b = logger.clone();
-            ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them before onboarding.", move |m| l3b.log(3, m)).map_err(|e| PipelineError::new(3, e.to_string()))?;
+            coverage.extend(ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them before onboarding.", move |m| l3b.log(3, m)).map_err(|e| PipelineError::new(3, e.to_string()))?);
         }
         {
             let l3c = logger.clone();
-            ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| l3c.log(3, m)).await.map_err(|e| PipelineError::new(3, e.to_string()))?;
+            let unit_tests = ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| l3c.log(3, m)).await;
+            coverage.push(ignite_pipeline_core::unit_test_coverage(&unit_tests, false));
+            unit_tests.map_err(|e| PipelineError::new(3, e.to_string()))?;
         }
         logger.status(3, "success", None);
 
         logger.status(4, "running", None);
         let mut issues: Vec<Issue> = license_issues.clone();
         let mut rule_acknowledgments: Vec<(String, String)> = Vec::new();
-        coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
         if !phase_enabled(&phase_meta, 4) {
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             coverage.push(ignite_policy::CheckCoverage::disabled("phase4"));

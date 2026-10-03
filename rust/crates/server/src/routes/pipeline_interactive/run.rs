@@ -134,6 +134,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
         } else if !is_gxp {
             log.log(2, "Process declared non-GxP — no validation documents required.");
             log.status(2, "skipped", None);
+            coverage.push(ignite_pipeline_core::gxp_documents_coverage(super::super::phase_meta::phase_enabled(&log.meta, 2), false, 0));
         } else {
             log.status(2, "running", None);
             match (|| -> Result<Vec<(String, String)>, String> {
@@ -177,10 +178,12 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                             }
                             log.log(2, &format!("✓ {} GxP validation document(s) saved to the database.", upload.gxp_doc_files.len() + valid_links.len()));
                             log.status(2, "success", None);
+                            coverage.push(ignite_pipeline_core::gxp_documents_coverage(true, true, upload.gxp_doc_files.len() + valid_links.len()));
                         }
                     }
                 }
                 Err(msg) => {
+                    coverage.push(ignite_policy::CheckCoverage::failed("gxp-documents", msg.clone()));
                     log.log(2, &format!("✗ {msg}"));
                     log.status(2, "failed", Some(json!({ "error": msg })));
                     all_issues.push(new_issue("phase2::gxp-documents".to_string(), 2, "gxp-documents", Severity::Error, msg, None, None));
@@ -243,8 +246,8 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             let client = ignite_deps_dev_client::DepsDevClient::new();
             let npm_http = reqwest::Client::new();
             let log_a = log.clone();
-            let license_issues = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, project_id, move |m| log_a.log(3, m)).await;
-            coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
+            let (license_issues, license_coverage) = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, project_id, move |m| log_a.log(3, m)).await;
+            coverage.extend(license_coverage);
             if !license_issues.is_empty() {
                 all_issues.extend(license_issues);
                 persist!();
@@ -252,10 +255,12 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
 
             {
                 let log_b = log.clone();
-                ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them and re-upload.", move |m| log_b.log(3, m)).map_err(|e| e.to_string())?;
+                coverage.extend(ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them and re-upload.", move |m| log_b.log(3, m)).map_err(|e| e.to_string())?);
             }
             let log_c = log.clone();
-            ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| log_c.log(3, m)).await.map_err(|e| e.to_string())?;
+            let unit_tests = ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| log_c.log(3, m)).await;
+            coverage.push(ignite_pipeline_core::unit_test_coverage(&unit_tests, false));
+            unit_tests.map_err(|e| e.to_string())?;
             Ok(())
         }
         .await;

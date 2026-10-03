@@ -173,6 +173,7 @@ mod tests {
 
     mod pipeline_sequence;
     mod run_finalization;
+    mod phase3_coverage;
 
     async fn spawn_test_server() -> String {
         spawn_test_server_with_llm_config(state::default_llm_config()).await.0

@@ -351,6 +351,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         if !is_gxp {
             logger.log(2, "Process declared non-GxP — no validation documents required.");
             logger.status(2, "skipped", None);
+            phase4_coverage.push(ignite_pipeline_core::gxp_documents_coverage(phase_enabled(&phase_meta, 2), false, 0));
         } else {
             logger.status(2, "running", None);
             let mut valid_links = 0;
@@ -368,6 +369,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             }
             logger.log(2, &format!("Received {valid_links} GxP document link(s) for validation context."));
             logger.status(2, "success", None);
+            phase4_coverage.push(ignite_pipeline_core::gxp_documents_coverage(true, true, valid_links));
         }
 
         // Phase 3
@@ -388,11 +390,14 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 
         {
             let l3 = logger.clone();
-            time_stage(&timings, "envAndCodeownersChecks", async { ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them before validation.", move |m| l3.log(3, m)) }).await.map_err(|e| PipelineError::new(3, e.to_string()))?;
+            let env_coverage = time_stage(&timings, "envAndCodeownersChecks", async { ignite_pipeline_core::run_env_and_codeowners_checks(&root, "Remove them before validation.", move |m| l3.log(3, m)) }).await.map_err(|e| PipelineError::new(3, e.to_string()))?;
+            phase4_coverage.extend(env_coverage);
         }
         {
             let l3 = logger.clone();
-            match time_stage(&timings, "runProjectUnitTests", async { ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| l3.log(3, m)).await }).await {
+            let unit_tests = time_stage(&timings, "runProjectUnitTests", async { ignite_unit_test_runner::run_project_unit_tests(&root, &state.runner, move |m| l3.log(3, m)).await }).await;
+            phase4_coverage.push(ignite_pipeline_core::unit_test_coverage(&unit_tests, unit_test_failures_non_blocking));
+            match unit_tests {
                 Ok(_) => {}
                 Err(e) if unit_test_failures_non_blocking => {
                     let msg = e.to_string();
@@ -412,8 +417,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
-            issues.extend(ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await);
-            phase4_coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
+            let (license_issues, license_coverage) = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await;
+            issues.extend(license_issues);
+            phase4_coverage.extend(license_coverage);
         } else {
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
@@ -436,8 +442,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 }
                 Err(e) => return Err(PipelineError::new(4, e.to_string())),
             }
-            issues.extend(license_result);
-            phase4_coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
+            let (license_issues, license_coverage) = license_result;
+            issues.extend(license_issues);
+            phase4_coverage.extend(license_coverage);
         }
 
         // Line-level author of every finding (who last changed that line,
