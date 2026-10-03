@@ -181,6 +181,15 @@ pub struct IssueInput {
     pub author: Option<serde_json::Value>,
 }
 
+impl IssueRow {
+    /// US-16: the finding's line-drift-tolerant identity — recomputed from
+    /// the row's own fields (the same inputs `issues.fingerprint` is stored
+    /// from), so a legacy row written before that column existed has one too.
+    pub fn fingerprint(&self) -> String {
+        ignite_override_engine::fingerprint_for_issue_parts(&self.id, &self.category, self.file.as_deref(), self.snippet.as_ref(), self.line)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueRow {
@@ -555,6 +564,21 @@ pub struct PublicationAttemptRow {
 
 /// US-07: one row per distinct finding *identity* (fingerprint), tracked
 /// across every scan of a repository — not the per-run raw issue list.
+/// US-16: one scan's observation of a finding (`finding_observations`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingObservationRow {
+    pub run_id: Option<i64>,
+    /// The scan's external job id, for linking to it.
+    pub job_id: Option<String>,
+    /// `new`, `existing`, `reopened` or `resolved`.
+    pub classification: String,
+    pub file: Option<String>,
+    pub line: Option<i64>,
+    pub severity: Option<String>,
+    pub observed_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindingRow {

@@ -462,12 +462,12 @@ Keep external `jobId` and legacy `projectId` resolvable through a compatibility 
 
 **Acceptance criteria**
 
-- [ ] Inserting blank lines above a baselined finding keeps it baselined.
-- [ ] The findings API returns status and observations across at least three scans of one repository.
-- [ ] SARIF output carries both keys; existing `igniteIssueId` values are unchanged.
-- [ ] Legacy rows without a fingerprint still work for baselines and SARIF.
+- [x] Inserting blank lines above a baselined finding keeps it baselined.
+- [x] The findings API returns status and observations across at least three scans of one repository.
+- [x] SARIF output carries both keys; existing `igniteIssueId` values are unchanged.
+- [x] Legacy rows without a fingerprint still work for baselines and SARIF.
 
-**Verification:** db-store tests for migration and baseline matching; route tests for the two endpoints; a SARIF snapshot test; one manual upload to a sandbox GitHub repository to observe alert behavior, with the result recorded in the docs.
+**Verification:** db-store tests for migration and baseline matching; route tests for the two endpoints; a SARIF snapshot test; one manual upload to a sandbox GitHub repository to observe alert behavior, with the result recorded in the docs. *(Still open: the sandbox upload needs a real GitHub repository and wasn't run automatically.)*
 
 **Starting points:** `rust/crates/db-store/src/{findings.rs,baseline.rs,issues.rs,schema.rs}`, `rust/crates/baseline-filter`, `rust/crates/sarif`, `rust/crates/server/src/routes/{history.rs,baseline.rs,github_pr_status.rs}`.
 

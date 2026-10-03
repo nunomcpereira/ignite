@@ -59,6 +59,7 @@ pub use org_report_runs::OrgReportRun;
 pub use api_keys::{parse_api_key_scopes, API_KEY_SCOPES};
 pub use async_jobs::AsyncJobRow;
 pub use store::DbStore;
+pub use baseline::Baseline;
 pub use types::*;
 
 #[cfg(test)]
@@ -441,6 +442,32 @@ mod tests {
         // which a row written even a moment ago can't satisfy.
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(store.get_cosign_verify_cache("nginx:latest", ".*", ".*", 0).is_none());
+    }
+
+    #[test]
+    fn baseline_matches_by_id_or_fingerprint_and_keeps_legacy_entries() {
+        let (_dir, store) = open_test_db();
+        store.save_baseline_entries("acme", "widgets", &[("secret::a.js::3".into(), Some("fp-a".into())), ("legacy::b.js::1".into(), None)]).unwrap();
+        let b = store.get_baseline("acme", "widgets").unwrap();
+        assert!(b.contains("secret::a.js::9", "fp-a"), "a moved finding still matches by fingerprint");
+        assert!(b.contains("legacy::b.js::1", "other"), "a legacy id-only entry still matches by id");
+        assert!(!b.contains("secret::a.js::9", "fp-z"));
+        assert_eq!(b.len(), 2);
+        assert_eq!(store.get_baseline_issue_ids("acme", "widgets").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn stored_issue_fingerprint_matches_the_row_and_survives_a_line_shift() {
+        let (_dir, store) = open_test_db();
+        let pid = store.create_project("job-fp", "acme", "widgets", false, "ui", None).unwrap();
+        let snippet = serde_json::json!({ "lines": [{ "line": 3, "text": "  secret = 'x'  " }] });
+        let mk = |id: &str, line: i64| IssueInput { id: id.into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "s".into(), file: Some("a.js".into()), line: Some(line), snippet: Some(snippet.clone()), cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None };
+        store.replace_project_issues(pid, &[mk("secret::a.js::3", 3)], &HashSet::new());
+        let row = store.get_project_issues(pid).remove(0);
+        let stored: String = store.conn.lock().query_row("SELECT fingerprint FROM issues WHERE project_id = ?", [pid], |r| r.get(0)).unwrap();
+        assert_eq!(stored, row.fingerprint());
+        store.replace_project_issues(pid, &[mk("secret::a.js::9", 9)], &HashSet::new());
+        assert_eq!(store.get_project_issues(pid)[0].fingerprint(), stored);
     }
 
     #[test]

@@ -54,6 +54,12 @@ struct Message {
 struct PartialFingerprints {
     #[serde(rename = "igniteIssueId")]
     ignite_issue_id: String,
+    /// US-16: line-drift-tolerant identity (snippet-based), so GitHub keeps
+    /// matching an alert when code moves above it. Adding this key may make
+    /// GitHub close and reopen existing alerts once, on the first upload
+    /// that carries it.
+    #[serde(rename = "igniteFingerprint/v1")]
+    ignite_fingerprint_v1: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,7 +134,7 @@ fn to_sarif_result(issue: &IssueRow) -> SarifResult {
         rule_id: rule_id_for(issue),
         level: sarif_level(issue).to_string(),
         message: Message { text: if issue.summary.is_empty() { "(no summary)".to_string() } else { issue.summary.clone() } },
-        partial_fingerprints: PartialFingerprints { ignite_issue_id: issue.id.clone() },
+        partial_fingerprints: PartialFingerprints { ignite_issue_id: issue.id.clone(), ignite_fingerprint_v1: issue.fingerprint() },
         properties,
         locations,
     }
@@ -274,6 +280,20 @@ mod tests {
         assert_eq!(result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "src/app.js");
         assert_eq!(result["locations"][0]["physicalLocation"]["region"]["startLine"], 12);
         assert_eq!(result["partialFingerprints"]["igniteIssueId"], "secret::src/app.js::12");
+    }
+
+    #[test]
+    fn result_carries_both_fingerprint_keys_and_the_new_one_ignores_line_shifts() {
+        let mut moved = make_issue("open", "error");
+        moved.snippet = Some(serde_json::json!({ "lines": [{ "line": 12, "text": "const k = 'AKIA...';" }] }));
+        let mut original = moved.clone();
+        original.line = Some(3);
+        original.id = "secret::src/app.js::3".to_string();
+        let v = serde_json::to_value(build_sarif(&[original, moved])).unwrap();
+        let fps = &v["runs"][0]["results"];
+        assert_ne!(fps[0]["partialFingerprints"]["igniteIssueId"], fps[1]["partialFingerprints"]["igniteIssueId"]);
+        assert!(fps[0]["partialFingerprints"]["igniteFingerprint/v1"].as_str().is_some_and(|s| s.len() == 64));
+        assert_eq!(fps[0]["partialFingerprints"]["igniteFingerprint/v1"], fps[1]["partialFingerprints"]["igniteFingerprint/v1"]);
     }
 
     #[test]

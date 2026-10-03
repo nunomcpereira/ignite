@@ -45,6 +45,14 @@ pub fn build_issue_id(args: BuildIssueIdArgs) -> String {
 /// `BuildIssueIdArgs`) can still compute a same-identity
 /// [`stable_fingerprint`] for it. `None` for the overwhelming common case
 /// (no collision, so `build_issue_id` never appended anything).
+/// [`stable_fingerprint`] for a finding known only by its stored fields —
+/// the one function every writer and reader of a finding's fingerprint
+/// (scan sync, `issues.fingerprint`, baselines, SARIF) goes through, so
+/// they can never disagree.
+pub fn fingerprint_for_issue_parts(id: &str, category: &str, file: Option<&str>, snippet: Option<&serde_json::Value>, line: Option<i64>) -> String {
+    stable_fingerprint(category, file, snippet, line, discriminator_from_issue_id(id).as_deref())
+}
+
 pub fn discriminator_from_issue_id(id: &str) -> Option<String> {
     let mut parts = id.splitn(4, "::");
     parts.next(); // category

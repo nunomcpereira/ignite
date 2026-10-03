@@ -659,4 +659,6 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // GraphQL blame is rate-limited). `last_used_at` lets old blobs age out.
     (38, "ALTER TABLE issues ADD COLUMN author_json TEXT; CREATE TABLE IF NOT EXISTS blame_cache (org TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL, blob_sha TEXT NOT NULL, ranges_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_used_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (org, repo, path, blob_sha));"),
     (39, "CREATE TABLE IF NOT EXISTS org_report_runs (org TEXT PRIMARY KEY, last_run_at TEXT NOT NULL, last_recipients TEXT, last_recipient_source TEXT, last_error TEXT);"),
+    // US-16: line-drift-tolerant identity on issue rows and baselines.
+    (40, "ALTER TABLE issues ADD COLUMN fingerprint TEXT; ALTER TABLE issue_baselines ADD COLUMN fingerprint TEXT; CREATE INDEX IF NOT EXISTS idx_issues_fingerprint ON issues(project_id, fingerprint); CREATE INDEX IF NOT EXISTS idx_findings_repo_status ON findings(repository_id, status);"),
 ];

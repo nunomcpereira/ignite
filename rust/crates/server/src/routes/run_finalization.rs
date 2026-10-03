@@ -91,6 +91,5 @@ pub async fn record_scan_evidence(state: &AppState, input: ScanEvidence<'_>) {
 
 /// The line-drift-tolerant identity of `issue` (US-07).
 pub fn fingerprint_for(issue: &Issue) -> String {
-    let discriminator = ignite_override_engine::discriminator_from_issue_id(&issue.id);
-    ignite_override_engine::stable_fingerprint(&issue.category, issue.file.as_deref(), issue.snippet.as_ref(), issue.line, discriminator.as_deref())
+    ignite_override_engine::fingerprint_for_issue_parts(&issue.id, &issue.category, issue.file.as_deref(), issue.snippet.as_ref(), issue.line)
 }

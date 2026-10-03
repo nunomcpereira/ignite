@@ -58,13 +58,16 @@ impl DbStore {
             let duplicate_ref_json = issue.duplicate_ref.as_ref().map(|d| serde_json::to_string(d).unwrap());
             let author_json = issue.author.as_ref().map(|a| serde_json::to_string(a).unwrap());
             let status = if overridden_ids.contains(&issue.id) { "overridden" } else { "open" };
+            // US-16: same identity `findings` uses, so a row can be joined to
+            // its cross-scan history and matched against a baseline.
+            let fingerprint = ignite_override_engine::fingerprint_for_issue_parts(&issue.id, &issue.category, issue.file.as_deref(), issue.snippet.as_ref(), issue.line);
             tx.execute(
-                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status, author_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status, author_json, fingerprint)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     project_id, issue.id, issue.phase, issue.category, issue.severity, issue.score,
                     issue.summary, issue.file, issue.line, snippet_json, issue.cross_file as i64, chain_json,
-                    issue.cwe, issue.owasp, issue.tool, references_json, duplicate_ref_json, status, author_json,
+                    issue.cwe, issue.owasp, issue.tool, references_json, duplicate_ref_json, status, author_json, fingerprint,
                 ],
             )
             .unwrap();

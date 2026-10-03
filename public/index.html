@@ -6168,6 +6168,46 @@
       else if (e.key === 'p') { e.preventDefault(); studioNavigateBackInHistory(); }
     });
 
+    // US-16: how this finding (by its line-drift-tolerant fingerprint) was
+    // classified in every scan of the repository — new, still present,
+    // resolved, reopened. Fetched lazily per selected issue; silently
+    // absent when the scan predates finding history or the run is live.
+    const STUDIO_HISTORY_CLASS = {
+      new: 'bg-sky-50 text-sky-700 border-sky-200',
+      existing: 'bg-slate-100 text-slate-600 border-slate-200',
+      reopened: 'bg-amber-50 text-amber-700 border-amber-200',
+      resolved: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    };
+    async function loadStudioFindingHistory(issue) {
+      const box = $('studio-issue-history');
+      if (!box || !studioState.jobId || !issue?.id) return;
+      try {
+        const res = await fetch(`/api/pipeline/${encodeURIComponent(studioState.jobId)}/issues/${encodeURIComponent(issue.id)}/history`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (studioState.selectedIssue?.id !== issue.id || !$('studio-issue-history')) return;
+        const obs = data.observations || [];
+        if (obs.length === 0) return;
+        const rows = obs.slice().reverse().map((o) => {
+          const cls = STUDIO_HISTORY_CLASS[o.classification] || STUDIO_HISTORY_CLASS.existing;
+          const label = t(`studio.history.${o.classification}`);
+          const when = (o.observedAt || '').replace('T', ' ').slice(0, 16);
+          const isThisRun = o.jobId && o.jobId === studioState.jobId;
+          return `<li class="flex items-center gap-2 py-0.5">
+            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${cls}">${escapeHtml(label === `studio.history.${o.classification}` ? o.classification : label)}</span>
+            <span class="text-[10px] font-mono text-slate-500">${escapeHtml(when)}</span>
+            ${o.file ? `<span class="text-[10px] font-mono text-slate-400 truncate">${escapeHtml(o.file)}${o.line ? ':' + o.line : ''}</span>` : ''}
+            ${isThisRun ? `<span class="text-[10px] text-brand-600 font-semibold">${escapeHtml(t('studio.history.thisScan'))}</span>` : ''}
+          </li>`;
+        }).join('');
+        $('studio-issue-history').innerHTML = `<details class="border border-slate-200 rounded-lg p-2.5" ${obs.length > 1 ? 'open' : ''}>
+          <summary class="text-[10px] font-bold text-slate-400 uppercase tracking-wide cursor-pointer">${escapeHtml(t('studio.history.title'))} · ${escapeHtml(t(`studio.history.status.${data.finding?.status}`) || data.finding?.status || '')}</summary>
+          <ul class="mt-1.5">${rows}</ul>
+          <p class="text-[10px] text-slate-400 mt-1">${escapeHtml(t('studio.history.hint'))}</p>
+        </details>`;
+      } catch { /* history is best-effort */ }
+    }
+
     async function selectStudioIssue(issue) {
       const isNewIssue = studioState.selectedIssue?.id !== issue.id;
       studioState.selectedIssue = issue;
@@ -6272,6 +6312,7 @@
           ${issueAuthorLabel(issue.author) ? `<p class="text-[10px] text-slate-400 mt-1" title="${escapeHtml(issue.author.commit || '')}">${t('studio.lastChangedBy')} <span class="font-semibold text-slate-600">${escapeHtml(issueAuthorLabel(issue.author))}</span></p>` : ''}
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
+        <div id="studio-issue-history" class="mb-3"></div>
         ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
         <div class="border border-amber-200 bg-amber-50 rounded-lg p-2 mb-3">
           <p class="text-[10px] font-bold text-amber-700 uppercase mb-0.5">Cross-file call chain</p>
@@ -6321,6 +6362,8 @@
       if (Array.isArray(issue.chain) && issue.chain.length > 1) {
         studioWireChainControls(issue);
       }
+
+      loadStudioFindingHistory(issue);
 
       $('studio-issue-prev').addEventListener('click', () => studioNavigateIssue(-1));
       $('studio-issue-next').addEventListener('click', () => studioNavigateIssue(1));

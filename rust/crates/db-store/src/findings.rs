@@ -13,7 +13,7 @@
 //! compatibility, but never used as this table's own identity.
 
 use crate::store::DbStore;
-use crate::types::{FindingObservationInput, FindingRow, FindingSyncSummary};
+use crate::types::{FindingObservationInput, FindingObservationRow, FindingRow, FindingSyncSummary};
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
@@ -146,6 +146,42 @@ impl DbStore {
         stmt.query_map(params![repository_id], finding_row_from).map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default()
     }
 
+    /// US-16: one page of a repository's findings, newest activity first,
+    /// optionally filtered by status (`open`/`resolved`/`reopened`), plus
+    /// the total matching count for paging.
+    pub fn list_findings_page(&self, repository_id: i64, status: Option<&str>, limit: i64, offset: i64) -> (Vec<FindingRow>, i64) {
+        let conn = self.conn.lock();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM findings WHERE repository_id = ?1 AND (?2 IS NULL OR status = ?2)", params![repository_id, status], |r| r.get(0)).unwrap_or(0);
+        let Ok(mut stmt) = conn.prepare(&format!("SELECT {FINDING_COLUMNS} FROM findings WHERE repository_id = ?1 AND (?2 IS NULL OR status = ?2) ORDER BY last_seen_at DESC, id DESC LIMIT ?3 OFFSET ?4")) else { return (vec![], total) };
+        let rows = stmt.query_map(params![repository_id, status, limit, offset], finding_row_from).map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default();
+        (rows, total)
+    }
+
+    pub fn get_finding_by_fingerprint(&self, repository_id: i64, fingerprint: &str) -> Option<FindingRow> {
+        let conn = self.conn.lock();
+        conn.query_row(&format!("SELECT {FINDING_COLUMNS} FROM findings WHERE repository_id = ? AND fingerprint = ?"), params![repository_id, fingerprint], finding_row_from).optional().unwrap_or(None)
+    }
+
+    /// US-16: every scan's observation of one finding, oldest first, with
+    /// the run's legacy job id so a client can link to that scan.
+    pub fn list_finding_observations(&self, finding_id: i64) -> Vec<FindingObservationRow> {
+        let conn = self.conn.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT o.run_id, p.job_id, o.classification, o.file, o.line, o.severity, o.created_at
+             FROM finding_observations o
+             LEFT JOIN scan_runs r ON r.id = o.run_id
+             LEFT JOIN projects p ON p.id = r.legacy_project_id
+             WHERE o.finding_id = ? ORDER BY o.id",
+        ) else {
+            return vec![];
+        };
+        stmt.query_map(params![finding_id], |row| {
+            Ok(FindingObservationRow { run_id: row.get(0)?, job_id: row.get(1)?, classification: row.get(2)?, file: row.get(3)?, line: row.get(4)?, severity: row.get(5)?, observed_at: row.get(6)? })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     /// Every category currently completed for findings not yet resolved,
     /// primarily a test/debugging aid — real callers use
     /// [`Self::list_findings_for_repository`] plus their own status filter.
@@ -269,5 +305,32 @@ mod tests {
         let summary = db.record_finding_observations(repository_id, run_id_3, &completed, &[input("secret::app.js::1", "secret", "fp-1", "gitleaks")]);
         assert_eq!(summary.reopened_count, 1);
         assert_eq!(db.list_findings_for_repository(repository_id)[0].status, "reopened");
+    }
+
+    #[test]
+    fn findings_page_and_observations_cover_three_scans() {
+        let (db, _dir) = open_test_db();
+        let repository_id = db.resolve_repository("acme", "widgets", None);
+        let mut runs = vec![];
+        let tools: HashSet<String> = ["gitleaks".to_string()].into_iter().collect();
+        for (n, present) in [true, false, true].into_iter().enumerate() {
+            let pid = db.create_project(&format!("job-{n}"), "acme", "widgets", false, "ui", None).unwrap();
+            let run = db.get_scan_run_for_legacy_project(pid).unwrap().id;
+            runs.push(run);
+            let findings = if present { vec![input("secret::a.js::1", "secret", "fp-1", "gitleaks")] } else { vec![] };
+            db.record_finding_observations(repository_id, run, &tools, &findings);
+        }
+        let (page, total) = db.list_findings_page(repository_id, None, 10, 0);
+        assert_eq!(total, 1);
+        assert_eq!(page[0].status, "reopened");
+        assert_eq!(db.list_findings_page(repository_id, Some("open"), 10, 0).1, 0);
+        assert_eq!(db.list_findings_page(repository_id, Some("reopened"), 10, 0).1, 1);
+
+        let finding = db.get_finding_by_fingerprint(repository_id, "fp-1").unwrap();
+        let obs = db.list_finding_observations(finding.id);
+        let classes: Vec<&str> = obs.iter().map(|o| o.classification.as_str()).collect();
+        assert_eq!(classes, vec!["new", "resolved", "reopened"]);
+        assert_eq!(obs[0].job_id.as_deref(), Some("job-0"));
+        assert!(db.get_finding_by_fingerprint(repository_id, "nope").is_none());
     }
 }

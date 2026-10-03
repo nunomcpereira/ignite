@@ -217,7 +217,13 @@ these APIs require:
   server already serves at `GET /api/pipeline/:jobId/sarif`, get pushed to
   `POST repos/{owner}/{repo}/code-scanning/sarifs` so they show up under
   the repo's **Security → Code scanning** tab natively, not only in
-  Ignite's own UI.
+  Ignite's own UI. Each result carries two `partialFingerprints`:
+  `igniteIssueId` (`category::file::line`) and `igniteFingerprint/v1`, a
+  hash of the flagged code itself, so GitHub keeps tracking an alert when
+  code is inserted above it. The first upload that carries the new key may
+  make GitHub close and reopen existing alerts once; overrides recorded in
+  Ignite are re-dismissed by the dismissal sync below, but a dismissal made
+  only in GitHub's UI is not carried over.
 - **Dependency graph submission** — the manifests/dependencies already
   resolved during the scan (the same cached result the Studio Dependencies
   tab reads back) get pushed to `PUT

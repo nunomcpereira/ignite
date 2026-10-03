@@ -72,6 +72,60 @@ async fn repository_history(State(state): State<Arc<AppState>>, crate::auth::Req
     Json(json!({ "ok": true, "repository": repository, "scanRuns": scan_runs })).into_response()
 }
 
+const FINDING_STATUSES: &[&str] = &["open", "resolved", "reopened"];
+
+/// GET /api/repositories/:org/:repo/findings?status=&page=&pageSize= —
+/// US-16: the repository's fingerprint-tracked findings (one row per
+/// distinct finding across every scan), paged server-side.
+async fn repository_findings(
+    State(state): State<Arc<AppState>>,
+    crate::auth::RequireAuth(_user): crate::auth::RequireAuth,
+    Path((org, repo)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(repository) = state.db.get_repository_by_org_repo(&org, &repo) else {
+        return err(StatusCode::NOT_FOUND, "Repository not found.");
+    };
+    let status = q.get("status").map(String::as_str).filter(|s| !s.is_empty());
+    if let Some(s) = status {
+        if !FINDING_STATUSES.contains(&s) {
+            return err(StatusCode::BAD_REQUEST, "status must be one of open, resolved, reopened.");
+        }
+    }
+    let page_size = q.get("pageSize").and_then(|v| v.parse::<i64>().ok()).unwrap_or(50).clamp(1, 500);
+    let page = q.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let (findings, total) = state.db.list_findings_page(repository.id, status, page_size, (page - 1) * page_size);
+    Json(json!({ "ok": true, "repositoryId": repository.id, "findings": findings, "total": total, "page": page, "pageSize": page_size })).into_response()
+}
+
+/// GET /api/repositories/:org/:repo/findings/:fingerprint/observations —
+/// US-16: one finding and every scan's observation of it.
+async fn finding_observations(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo, fingerprint)): Path<(String, String, String)>) -> Response {
+    let Some(repository) = state.db.get_repository_by_org_repo(&org, &repo) else {
+        return err(StatusCode::NOT_FOUND, "Repository not found.");
+    };
+    let Some(finding) = state.db.get_finding_by_fingerprint(repository.id, &fingerprint) else {
+        return err(StatusCode::NOT_FOUND, "Finding not found.");
+    };
+    let observations = state.db.list_finding_observations(finding.id);
+    Json(json!({ "ok": true, "finding": finding, "observations": observations })).into_response()
+}
+
+/// GET /api/pipeline/:job_id/issues/:issue_id/history — US-16's Studio
+/// convenience: resolves the issue's repository and fingerprint from the
+/// scan it was found in, so the client only needs what it already shows.
+async fn issue_history(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, Path((job_id, issue_id)): Path<(String, String)>) -> Response {
+    let Some(project_id) = state.db.get_project_id_by_job_id(job_id.trim()) else { return err(StatusCode::NOT_FOUND, "Unknown job id.") };
+    let Some(project) = state.db.get_project(project_id) else { return err(StatusCode::NOT_FOUND, "Unknown job id.") };
+    let Some(issue) = state.db.get_project_issues(project_id).into_iter().find(|i| i.id == issue_id) else {
+        return err(StatusCode::NOT_FOUND, "Issue not found in this scan.");
+    };
+    let fingerprint = issue.fingerprint();
+    let finding = state.db.get_repository_by_org_repo(&project.org, &project.repo).and_then(|r| state.db.get_finding_by_fingerprint(r.id, &fingerprint));
+    let observations = finding.as_ref().map(|f| state.db.list_finding_observations(f.id)).unwrap_or_default();
+    Json(json!({ "ok": true, "fingerprint": fingerprint, "finding": finding, "observations": observations })).into_response()
+}
+
 async fn job_issues_handler(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
     // live-run branch also needs a projectId alongside the issues, which
@@ -230,6 +284,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/projects/:id/issues", get(project_issues))
         .route("/api/projects/:id/schedule", post(set_schedule))
         .route("/api/repositories/:org/:repo", get(repository_history))
+        .route("/api/repositories/:org/:repo/findings", get(repository_findings))
+        .route("/api/repositories/:org/:repo/findings/:fingerprint/observations", get(finding_observations))
+        .route("/api/pipeline/:job_id/issues/:issue_id/history", get(issue_history))
         .route("/api/pipeline/:job_id/issues", get(job_issues_handler))
         .route("/api/pipeline/:job_id/status", get(job_status))
         .route("/api/pipeline/:job_id/evidence", get(job_evidence))

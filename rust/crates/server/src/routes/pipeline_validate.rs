@@ -237,7 +237,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         .unwrap_or_default();
     let changed_files: Option<std::collections::HashSet<String>> = body.get("changedFiles").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect());
     let baseline_mode = body.get("baselineMode").and_then(|v| v.as_str()).filter(|m| *m == "gate" || *m == "save").map(str::to_string);
-    let baseline_issue_ids = if baseline_mode.as_deref() == Some("gate") { Some(state.db.get_baseline_issue_ids(&org, &repo).unwrap_or_default()) } else { None };
+    // US-16: matches by issue id or fingerprint, so a finding whose line
+    // shifted (new id, same code) stays baselined.
+    let baseline_issue_ids = if baseline_mode.as_deref() == Some("gate") { Some(state.db.get_baseline(&org, &repo).unwrap_or_default()) } else { None };
 
     let project_path = match ignite_tool_runner::sanitize_absolute_project_path(&raw_project_path) {
         Ok(p) => p,
@@ -497,8 +499,8 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 
         let gated_issues: Vec<&Issue> = match baseline_mode.as_deref() {
             Some("gate") => {
-                let ids = baseline_issue_ids.as_ref().unwrap();
-                issues.iter().filter(|i| !ids.contains(&i.id) && !overridden_ids.contains(&i.id)).collect()
+                let baseline = baseline_issue_ids.as_ref().unwrap();
+                issues.iter().filter(|i| !baseline.contains(&i.id, &super::run_finalization::fingerprint_for(i)) && !overridden_ids.contains(&i.id)).collect()
             }
             _ => issues.iter().filter(|i| !overridden_ids.contains(&i.id)).collect(),
         };
@@ -732,6 +734,17 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let mut stage_timings: Vec<Value> = timings.into_inner().unwrap().into_iter().map(|t| json!({ "name": t.name, "ms": t.ms })).collect();
     stage_timings.extend(phase4_task_timings.into_iter().map(|(name, ms)| json!({ "name": format!("phase4:{name}"), "ms": ms })));
 
+    // Baseline adoption ("freeze what's there now") saves the full issue
+    // list whether or not this run passed — a repo with existing blocking
+    // findings is exactly the one that needs a baseline. US-16: each entry
+    // carries its fingerprint.
+    if baseline_mode.as_deref() == Some("save") && phase4_done {
+        let entries: Vec<(String, Option<String>)> = issues.iter().map(|i| (i.id.clone(), Some(super::run_finalization::fingerprint_for(i)))).collect();
+        if let Err(e) = state.db.save_baseline_entries(&org, &repo, &entries) {
+            tracing::error!("save_baseline failed for {org}/{repo}: {e}");
+        }
+    }
+
     // US-14: evidence manifest + finding history for every run whose
     // Phase 4 finished — blocked runs included — while the scanned tree
     // still exists (removed just below).
@@ -769,7 +782,7 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                     let mut v = serde_json::to_value(i).unwrap();
                     if overridden_ids.contains(&i.id) {
                         v["status"] = json!("overridden");
-                    } else if baseline_issue_ids.as_ref().map(|ids| ids.contains(&i.id)).unwrap_or(false) {
+                    } else if baseline_issue_ids.as_ref().map(|b| b.contains(&i.id, &super::run_finalization::fingerprint_for(i))).unwrap_or(false) {
                         v["status"] = json!("baselined");
                     }
                     v
@@ -790,12 +803,6 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
             let blocking_unresolved = issues.iter().any(|i| i.severity == ignite_override_engine::Severity::Error && !overridden_ids.contains(&i.id));
             let policy_decision = crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &phase4_coverage, blocking_unresolved, false);
 
-            if baseline_mode.as_deref() == Some("save") {
-                let ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
-                if let Err(e) = state.db.save_baseline(&org, &repo, &ids) {
-                    tracing::error!("save_baseline failed for {org}/{repo}: {e}");
-                }
-            }
 
             let mut response = json!({
                 "ok": true,
@@ -909,6 +916,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 "policyDecision": policy_decision,
             });
             let obj = response.as_object_mut().unwrap();
+            if baseline_mode.as_deref() == Some("save") && phase4_done {
+                obj.insert("baselineSaved".to_string(), json!(issues.len()));
+            }
             if let Some(fi) = &failure_issues {
                 let total = fi.len();
                 let filtered = filter_tagged_by_changed_files(fi, changed_files.as_ref());
