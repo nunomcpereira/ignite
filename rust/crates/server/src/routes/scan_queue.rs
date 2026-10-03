@@ -28,9 +28,16 @@
 //!   "removed from the scan queue" error.
 //! - `DELETE /api/scan-queue`: drop every waiting entry.
 //!
-//! In-memory and process-local: a restart empties the queue (the hourly
-//! sweep re-queues whatever is still stale; a waiting HTTP caller's
-//! connection drops with the process anyway).
+//! US-18: every entry is mirrored into `scan_jobs` (ignite-db-store) with a
+//! lease and a fencing attempt counter, so the queue survives a restart. On
+//! startup ([`recover_after_restart`]) whatever was waiting or running in
+//! the previous process is re-queued in its old lane and order and restarts
+//! from the beginning — when it can run without its original client: org
+//! scans, and `validate-all`/dry-run `onboard` requests without overrides
+//! (an async caller still gets the result on its original job id). Anything
+//! else (interactive uploads, real onboards, runs carrying overrides) is
+//! closed as failed with the reason. A heartbeat keeps this process's leases
+//! fresh; a reaper re-queues jobs whose lease expired.
 use crate::auth::RequireAuth;
 use crate::state::AppState;
 use axum::extract::{Path, State};
@@ -76,9 +83,34 @@ pub(crate) struct ScanInfo {
     pub actor: Option<String>,
 }
 
+/// What a re-queued request needs to run again without its client.
+#[derive(Debug, Clone)]
+pub(crate) enum Resume {
+    ValidateAll(serde_json::Value),
+    Onboard(serde_json::Value),
+}
+
+impl Resume {
+    fn kind(&self) -> &'static str {
+        match self {
+            Resume::ValidateAll(_) => "validate_all",
+            Resume::Onboard(_) => "onboard",
+        }
+    }
+
+    fn body(&self) -> &serde_json::Value {
+        match self {
+            Resume::ValidateAll(b) | Resume::Onboard(b) => b,
+        }
+    }
+}
+
 enum Starter {
     /// An HTTP request is awaiting its slot.
     Waiter(tokio::sync::oneshot::Sender<ScanLease>),
+    /// A request whose client was lost to a restart, run by the queue itself
+    /// (US-18).
+    Resume(Resume),
     /// An org-repo scan the queue runs itself once it gets a slot.
     /// `app_token`: `token` is a GitHub App installation token, which
     /// expires after ~1h, so a fresh one is minted when the scan starts.
@@ -87,6 +119,8 @@ enum Starter {
 
 struct Entry {
     id: u64,
+    /// The `scan_jobs` row mirroring this entry.
+    job_id: String,
     info: ScanInfo,
     enqueued_at: DateTime<Utc>,
     starter: Starter,
@@ -124,6 +158,11 @@ impl Scheduler {
 }
 
 static SCHED: Lazy<Mutex<Scheduler>> = Lazy::new(|| Mutex::new(Scheduler { capacity: 1, ..Default::default() }));
+/// This server process, as the owner of the scan-job leases it holds.
+static INSTANCE_ID: Lazy<String> = Lazy::new(|| uuid::Uuid::new_v4().to_string());
+/// A lease lasts this long without a heartbeat.
+const LEASE_TTL_SECS: i64 = 120;
+const HEARTBEAT_SECS: u64 = 30;
 static STATE: OnceCell<Arc<AppState>> = OnceCell::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -158,6 +197,8 @@ fn init(state: &Arc<AppState>) {
 /// A held slot. Dropping it frees the slot and starts the next entry.
 pub(crate) struct ScanLease {
     id: String,
+    /// The `scan_jobs` row and the attempt this lease claimed (fencing).
+    job: Option<(String, i64)>,
 }
 
 impl ScanLease {
@@ -168,6 +209,9 @@ impl ScanLease {
 
 impl Drop for ScanLease {
     fn drop(&mut self) {
+        if let (Some((job, attempt)), Some(state)) = (&self.job, STATE.get()) {
+            state.db.finish_scan_job(job, *attempt, "done", None);
+        }
         SCHED.lock().running.remove(&self.id);
         LEASE_GITHUB_TOKENS.lock().remove(&self.id);
         dispatch();
@@ -207,11 +251,18 @@ fn dispatch() {
             let Some(entry) = s.lane(lane).pop_front() else { break };
             let lease = uuid::Uuid::new_v4().to_string();
             s.running.insert(lease.clone(), Running { priority: lane, info: entry.info.clone(), started_at: Utc::now() });
-            started.push((entry, ScanLease { id: lease }));
+            started.push((entry, ScanLease { id: lease, job: None }));
         }
     }
-    for (entry, lease) in started {
+    for (entry, mut lease) in started {
+        if let Some(state) = STATE.get() {
+            lease.job = state.db.claim_scan_job(&entry.job_id, &INSTANCE_ID, LEASE_TTL_SECS).map(|attempt| (entry.job_id.clone(), attempt));
+        }
         match entry.starter {
+            Starter::Resume(resume) => {
+                let Some(state) = STATE.get().cloned() else { continue };
+                tokio::spawn(run_resumed(state, resume, lease));
+            }
             // The receiver is gone when the waiting request was cancelled;
             // the returned lease is dropped here, freeing the slot again.
             Starter::Waiter(tx) => drop(tx.send(lease)),
@@ -237,10 +288,53 @@ fn dispatch() {
 struct WaitGuard(u64);
 impl Drop for WaitGuard {
     fn drop(&mut self) {
-        let mut s = SCHED.lock();
-        if let Some((lane, i)) = s.find(self.0) {
-            s.lane(lane).remove(i);
+        let removed = {
+            let mut s = SCHED.lock();
+            match s.find(self.0) {
+                Some((lane, i)) => s.lane(lane).remove(i),
+                None => None,
+            }
+        };
+        if let Some(e) = removed {
+            close_job(&e.job_id, "removed", Some("the waiting request was cancelled"));
         }
+    }
+}
+
+fn close_job(job_id: &str, state_name: &str, error: Option<&str>) {
+    if let Some(state) = STATE.get() {
+        state.db.close_waiting_scan_job(job_id, state_name, error);
+    }
+}
+
+fn lane_name(p: Priority) -> &'static str {
+    p.as_str()
+}
+
+/// Mirrors a new entry into `scan_jobs`. `seq` keeps it after everything
+/// already queued.
+fn persist_entry(job_id: &str, kind: &str, priority: Priority, info: &ScanInfo, payload: Option<&serde_json::Value>, seq: u64) {
+    let Some(state) = STATE.get() else { return };
+    let payload = payload.and_then(|p| serde_json::to_string(p).ok());
+    state.db.insert_scan_job(&ignite_db_store::NewScanJob { id: job_id, kind, lane: lane_name(priority), org: Some(&info.org), repo: Some(&info.repo), source: info.source, actor: info.actor.as_deref(), payload_json: payload.as_deref(), seq: seq as i64 });
+}
+
+/// Rewrites the persisted order of a lane after a move.
+fn persist_lane_order(entries: &[(String, i64)]) {
+    if let Some(state) = STATE.get() {
+        for (job, seq) in entries {
+            state.db.set_scan_job_seq(job, *seq);
+        }
+    }
+}
+
+/// The kind recorded for a waiter's `scan_jobs` row.
+fn waiter_kind(source: &str) -> &'static str {
+    match source {
+        "validate-all" => "validate_all",
+        "onboard" => "onboard",
+        "upload" => "upload",
+        _ => "request",
     }
 }
 
@@ -250,11 +344,20 @@ pub(crate) type PositionFn = Box<dyn Fn(usize) + Send>;
 /// Waits for a slot. `Err` means the entry was removed from the queue
 /// (by someone in the queue panel) before it started.
 pub(crate) async fn acquire(state: &Arc<AppState>, priority: Priority, info: ScanInfo, on_queued: Option<PositionFn>) -> Result<ScanLease, String> {
+    acquire_resumable(state, priority, info, on_queued, None).await
+}
+
+/// [`acquire`], persisting what's needed to re-run the request after a
+/// restart (`resume`, `None` when it can't run without its client).
+pub(crate) async fn acquire_resumable(state: &Arc<AppState>, priority: Priority, info: ScanInfo, on_queued: Option<PositionFn>, resume: Option<Resume>) -> Result<ScanLease, String> {
     init(state);
     let (tx, rx) = tokio::sync::oneshot::channel();
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let label = format!("{}/{}", info.org, info.repo);
-    SCHED.lock().lane(priority).push_back(Entry { id, info, enqueued_at: Utc::now(), starter: Starter::Waiter(tx) });
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let kind = resume.as_ref().map(Resume::kind).unwrap_or_else(|| waiter_kind(info.source));
+    persist_entry(&job_id, kind, priority, &info, resume.as_ref().map(|r| serde_json::json!({ "body": r.body() })).as_ref(), id);
+    SCHED.lock().lane(priority).push_back(Entry { id, job_id, info, enqueued_at: Utc::now(), starter: Starter::Waiter(tx) });
     dispatch();
     let guard = WaitGuard(id);
     if let Some(report) = on_queued {
@@ -283,13 +386,13 @@ pub(crate) fn lease_is_active(lease: &str) -> bool {
 
 /// Resolves the slot for an incoming pipeline request: `Ok(None)` when it
 /// already holds one (an org scan's `X-Ignite-Scan-Lease`), otherwise waits.
-pub(crate) async fn acquire_for_request(state: &Arc<AppState>, headers: &axum::http::HeaderMap, priority: Priority, info: ScanInfo) -> Result<Option<ScanLease>, String> {
+pub(crate) async fn acquire_for_request(state: &Arc<AppState>, headers: &axum::http::HeaderMap, priority: Priority, info: ScanInfo, resume: Option<Resume>) -> Result<Option<ScanLease>, String> {
     if let Some(lease) = headers.get(LEASE_HEADER).and_then(|v| v.to_str().ok()) {
         if lease_is_active(lease) {
             return Ok(None);
         }
     }
-    acquire(state, priority, info, None).await.map(Some)
+    acquire_resumable(state, priority, info, None, resume).await.map(Some)
 }
 
 /// Server-set body field carrying the caller's email into the queue panel.
@@ -357,7 +460,11 @@ pub(super) fn enqueue_org_scans(state: &Arc<AppState>, token: &str, app_token: b
             continue;
         }
         let info = ScanInfo { org: target.org.clone(), repo: target.repo.clone(), source, actor: None };
-        let entry = Entry { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), info, enqueued_at: Utc::now(), starter: Starter::Org { target, token: token.to_string(), app_token, sweep, background: priority == Priority::Background } };
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let job_id = uuid::Uuid::new_v4().to_string();
+        // Never the token: a re-queued scan resolves a fresh one.
+        persist_entry(&job_id, "org_scan", priority, &info, Some(&serde_json::json!({ "sweep": sweep, "background": priority == Priority::Background })), id);
+        let entry = Entry { id, job_id, info, enqueued_at: Utc::now(), starter: Starter::Org { target, token: token.to_string(), app_token, sweep, background: priority == Priority::Background } };
         SCHED.lock().lane(priority).push_back(entry);
         added += 1;
     }
@@ -419,6 +526,9 @@ async fn clear_queue(State(state): State<Arc<AppState>>, RequireAuth(user): Requ
         all
     };
     tracing::info!("scan queue: {} cleared {} waiting scan(s)", user.email, removed.len());
+    for e in &removed {
+        close_job(&e.job_id, "removed", Some("cleared from the scan queue"));
+    }
     let count = removed.len();
     drop(removed);
     let mut body = queue_json();
@@ -440,6 +550,7 @@ async fn remove_entry(State(state): State<Arc<AppState>>, RequireAuth(user): Req
     match removed {
         Some(e) => {
             tracing::info!("scan queue: {} removed {}/{} ({})", user.email, e.info.org, e.info.repo, e.info.source);
+            close_job(&e.job_id, "removed", Some("removed from the scan queue"));
             drop(e);
             Json(queue_json()).into_response()
         }
@@ -479,8 +590,132 @@ async fn move_entry(State(state): State<Arc<AppState>>, RequireAuth(_user): Requ
         if let Some(entry) = q.remove(from) {
             q.insert(to, entry);
         }
+        let order: Vec<(String, i64)> = q.iter().enumerate().map(|(i, e)| (e.job_id.clone(), i as i64)).collect();
+        drop(s);
+        persist_lane_order(&order);
     }
     Json(queue_json()).into_response()
+}
+
+/// Runs a request re-queued after a restart, holding `lease` (so its own
+/// pipeline call doesn't queue again). The pipeline gets a fresh job id —
+/// the first attempt may already own the old one — and an async caller's
+/// original job id receives the result.
+async fn run_resumed(state: Arc<AppState>, resume: Resume, lease: ScanLease) {
+    let mut headers = axum::http::HeaderMap::new();
+    if let Ok(v) = axum::http::HeaderValue::from_str(lease.id()) {
+        headers.insert(LEASE_HEADER, v);
+    }
+    let mut body = resume.body().clone();
+    let async_job = super::async_jobs::injected_job_id(&body);
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(super::async_jobs::ASYNC_JOB_ID_KEY.to_string(), serde_json::json!(uuid::Uuid::new_v4().to_string()));
+    }
+    let (status, value) = match resume {
+        Resume::ValidateAll(_) => match super::pipeline_validate::run_validate_all(state.clone(), headers, body).await {
+            Ok(v) => (200u16, v),
+            Err((v, _)) => (super::pipeline_validate::error_status(&v).as_u16(), v),
+        },
+        Resume::Onboard(_) => match super::pipeline_onboard::run_onboard(state.clone(), headers, body).await {
+            Ok(v) => (200u16, v),
+            Err((s, v)) => (s.as_u16(), v),
+        },
+    };
+    if let Some(job) = async_job {
+        state.db.finish_async_job(&job, status, &serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string()));
+    }
+    drop(lease);
+}
+
+/// The token a re-queued org scan runs with: the org's GitHub App
+/// installation token, else the server's `GH_TOKEN`/`GITHUB_TOKEN`.
+fn fallback_server_token() -> String {
+    std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).unwrap_or_default()
+}
+
+/// US-18, called once at startup: re-queues what the previous process left
+/// waiting or running, in lane and queue order, and starts the lease
+/// heartbeat/reaper. Returns the async job ids whose result will still be
+/// delivered (so the caller doesn't fail them as lost).
+pub fn recover_after_restart(state: &Arc<AppState>) -> Vec<String> {
+    init(state);
+    let requeued: std::collections::HashSet<String> = state.db.requeue_orphaned_scan_jobs(&INSTANCE_ID, true).into_iter().collect();
+    let resumed_async = requeue_waiting_jobs(state, &requeued);
+    state.db.prune_scan_jobs(7);
+    dispatch();
+    let st = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_SECS));
+        loop {
+            tick.tick().await;
+            st.db.heartbeat_scan_jobs(&INSTANCE_ID, LEASE_TTL_SECS);
+            let orphaned: std::collections::HashSet<String> = st.db.requeue_orphaned_scan_jobs(&INSTANCE_ID, false).into_iter().collect();
+            if !orphaned.is_empty() {
+                requeue_waiting_jobs(&st, &orphaned);
+                dispatch();
+            }
+        }
+    });
+    resumed_async
+}
+
+/// Turns persisted waiting jobs that aren't in memory yet into queue
+/// entries; closes the ones that can't run without their client.
+fn requeue_waiting_jobs(state: &Arc<AppState>, restarted: &std::collections::HashSet<String>) -> Vec<String> {
+    let known: std::collections::HashSet<String> = {
+        let s = SCHED.lock();
+        s.user.iter().chain(s.background.iter()).map(|e| e.job_id.clone()).collect()
+    };
+    let mut resumed_async = Vec::new();
+    for job in state.db.list_waiting_scan_jobs() {
+        if known.contains(&job.id) {
+            continue;
+        }
+        let priority = if job.lane == "background" { Priority::Background } else { Priority::User };
+        let payload: Option<serde_json::Value> = job.payload_json.as_deref().and_then(|p| serde_json::from_str(p).ok());
+        let source: &'static str = match job.source.as_str() {
+            "validate-all" => "validate-all",
+            "onboard" => "onboard",
+            "auto-rescan" => "auto-rescan",
+            "scan-all" => "scan-all",
+            "manual" => "manual",
+            "webhook" => "webhook",
+            _ => "requeued",
+        };
+        let info = ScanInfo { org: job.org.clone().unwrap_or_default(), repo: job.repo.clone().unwrap_or_default(), source, actor: job.actor.clone() };
+        let starter = match (job.kind.as_str(), payload) {
+            ("org_scan", Some(p)) => Some(Starter::Org {
+                target: RescanTarget { org: info.org.clone(), repo: info.repo.clone() },
+                token: fallback_server_token(),
+                app_token: true,
+                sweep: p.get("sweep").and_then(|v| v.as_bool()).unwrap_or(false),
+                background: p.get("background").and_then(|v| v.as_bool()).unwrap_or(true),
+            }),
+            ("validate_all", Some(p)) => p.get("body").cloned().map(|b| Starter::Resume(Resume::ValidateAll(b))),
+            ("onboard", Some(p)) => p.get("body").cloned().map(|b| Starter::Resume(Resume::Onboard(b))),
+            _ => None,
+        };
+        let Some(starter) = starter else {
+            close_job(&job.id, "failed", Some("The server restarted and this run can't continue without its original client (an upload, a real onboard, or a run with overrides). Start it again."));
+            continue;
+        };
+        if let Starter::Resume(r) = &starter {
+            if let Some(a) = super::async_jobs::injected_job_id(r.body()) {
+                resumed_async.push(a);
+            }
+        }
+        if restarted.contains(&job.id) || job.restarts > 0 {
+            tracing::info!("scan queue: re-queued {}/{} ({}) after a restart (restart #{})", info.org, info.repo, job.kind, job.restarts);
+            state.emit_audit_event(
+                ignite_audit_log::AuditEvent::new("scan.requeued_after_restart", "info", format!("{} scan of {}/{} re-queued after a server restart", job.kind, info.org, info.repo))
+                    .repo(&info.org, &info.repo)
+                    .metadata(serde_json::json!({ "scanJobId": job.id, "kind": job.kind, "restarts": job.restarts })),
+            );
+        }
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        SCHED.lock().lane(priority).push_back(Entry { id, job_id: job.id.clone(), info, enqueued_at: Utc::now(), starter });
+    }
+    resumed_async
 }
 
 pub fn router() -> Router<Arc<AppState>> {

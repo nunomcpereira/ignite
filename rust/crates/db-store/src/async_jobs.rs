@@ -57,13 +57,21 @@ impl DbStore {
     /// explicit result instead of leaving a poller waiting forever, and drops
     /// finished jobs older than `keep_days`. Returns how many were failed.
     pub fn fail_unfinished_async_jobs(&self, keep_days: i64) -> usize {
+        self.fail_unfinished_async_jobs_except(keep_days, &[])
+    }
+
+    /// [`Self::fail_unfinished_async_jobs`], leaving the jobs in `still_running`
+    /// alone — US-18: runs the scan queue re-queued after the restart, which
+    /// will still deliver their result.
+    pub fn fail_unfinished_async_jobs_except(&self, keep_days: i64, still_running: &[String]) -> usize {
         let conn = self.conn.lock();
+        let keep = serde_json::to_string(still_running).unwrap_or_else(|_| "[]".to_string());
         let failed = conn
             .execute(
                 "UPDATE async_jobs SET state = 'failed', http_status = 500, finished_at = datetime('now'),
                         result_json = '{\"ok\":false,\"error\":\"The Ignite server restarted while this run was in progress, so it was lost. Re-run it (with the same idempotencyKey, the earlier run is reported instead of a duplicate being started).\",\"code\":\"server_restarted\"}'
-                 WHERE state = 'running'",
-                [],
+                 WHERE state = 'running' AND job_id NOT IN (SELECT value FROM json_each(?))",
+                params![keep],
             )
             .unwrap_or(0);
         if let Err(e) = conn.execute("DELETE FROM async_jobs WHERE state != 'running' AND created_at < datetime('now', ?)", params![format!("-{keep_days} days")]) {

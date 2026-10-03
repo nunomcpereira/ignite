@@ -179,7 +179,7 @@ fn onboard_scopes(body: &Value, dry_run: bool) -> Vec<crate::auth::Scope> {
     needed
 }
 
-async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (StatusCode, Value)> {
+pub(crate) async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (StatusCode, Value)> {
     let org = body.get("org").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let phase_meta = resolve_phase_meta(&state.config);
@@ -269,7 +269,10 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
 
     // Server-wide scan slot (see `scan_queue.rs`); held until this run returns.
     let queue_info = super::scan_queue::ScanInfo { org: org.clone(), repo: repo.clone(), source: "onboard", actor: body.get(super::scan_queue::ACTOR_FIELD).and_then(|v| v.as_str()).map(str::to_string) };
-    let _scan_slot = match super::scan_queue::acquire_for_request(&state, &headers, super::scan_queue::priority_from_body(&body), queue_info).await {
+    // US-18: only a dry run without overrides is re-run after a restart — a
+    // real onboard publishes, and overrides need their submitter.
+    let resume = (dry_run && !crate::auth::body_submits_overrides(&body)).then(|| super::scan_queue::Resume::Onboard(body.clone()));
+    let _scan_slot = match super::scan_queue::acquire_for_request(&state, &headers, super::scan_queue::priority_from_body(&body), queue_info, resume).await {
         Ok(lease) => lease,
         Err(e) => return Err((StatusCode::CONFLICT, json!({ "ok": false, "error": e, "removedFromQueue": true }))),
     };

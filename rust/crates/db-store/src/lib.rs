@@ -42,6 +42,7 @@ mod repositories;
 mod retained_sources;
 mod runtime_coverage;
 mod schema;
+mod scan_jobs;
 mod scheduled;
 mod sla;
 mod store;
@@ -60,6 +61,7 @@ pub use api_keys::{parse_api_key_scopes, API_KEY_SCOPES};
 pub use async_jobs::AsyncJobRow;
 pub use store::DbStore;
 pub use baseline::Baseline;
+pub use scan_jobs::{NewScanJob, ScanJobRow};
 pub use types::*;
 
 #[cfg(test)]

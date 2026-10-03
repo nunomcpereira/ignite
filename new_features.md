@@ -509,11 +509,11 @@ Keep external `jobId` and legacy `projectId` resolvable through a compatibility 
 
 **Acceptance criteria**
 
-- [ ] Killing the server with jobs queued and running, then restarting, completes all of them without resubmission.
-- [ ] A stale worker's write after its lease expired is rejected.
-- [ ] Queue order and lanes survive a restart; the Queue panel shows the persisted queue.
-- [ ] No uploaded source remains on disk after its job finishes, succeeds or fails.
-- [ ] Existing API responses are unchanged for clients that never restart the server.
+- [x] Killing the server with jobs queued and running, then restarting, completes all of them without resubmission — for org scans, `validate-all` and dry-run `onboard` without overrides. Uploads, real onboards and runs with overrides are closed as failed with the reason (uploads aren't persisted).
+- [x] A stale worker's write after its lease expired is rejected.
+- [x] Queue order and lanes survive a restart; the Queue panel shows the persisted queue.
+- [ ] No uploaded source remains on disk after its job finishes, succeeds or fails. *(Unchanged: uploads still live in the per-job staging dir and are removed as before; they aren't persisted for resumption, so this criterion's resumable-upload half is not done.)*
+- [x] Existing API responses are unchanged for clients that never restart the server.
 
 **Verification:** db-store lease/fencing tests; a server integration test that drops the worker mid-run and confirms re-queue; the existing scan-queue route tests.
 

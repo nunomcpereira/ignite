@@ -209,7 +209,7 @@ fn target_org_repo(body: &Value) -> (String, String) {
     (field("org", "local-validation"), field("repo", "local-project"))
 }
 
-async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (Value, Value)> {
+pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (Value, Value)> {
     let (org, repo) = target_org_repo(&body);
     // How this caller authenticated, recorded on every override it submits.
     let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
@@ -286,7 +286,10 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
 
     // Server-wide scan slot (see `scan_queue.rs`); held until this run returns.
     let queue_info = super::scan_queue::ScanInfo { org: org.clone(), repo: repo.clone(), source: "validate-all", actor: body.get(super::scan_queue::ACTOR_FIELD).and_then(|v| v.as_str()).map(str::to_string) };
-    let _scan_slot = match super::scan_queue::acquire_for_request(&state, &headers, super::scan_queue::priority_from_body(&body), queue_info).await {
+    // US-18: without overrides, a run lost to a restart can be re-run with no
+    // client attached (overrides need their submitter's attribution).
+    let resume = (!crate::auth::body_submits_overrides(&body)).then(|| super::scan_queue::Resume::ValidateAll(body.clone()));
+    let _scan_slot = match super::scan_queue::acquire_for_request(&state, &headers, super::scan_queue::priority_from_body(&body), queue_info, resume).await {
         Ok(lease) => lease,
         Err(e) => return Err((json!({ "ok": false, "error": e, "removedFromQueue": true }), json!({}))),
     };
@@ -1043,7 +1046,7 @@ async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalU
 /// `run_validate_all`'s error type carries only a body, so every failure used
 /// to be a 400. An idempotency-key conflict (`conflict: true`) is a 409, as it
 /// is on `onboard`; every other failure stays 400.
-fn error_status(body: &Value) -> StatusCode {
+pub(crate) fn error_status(body: &Value) -> StatusCode {
     if body.get("conflict").and_then(|v| v.as_bool()).unwrap_or(false) {
         StatusCode::CONFLICT
     } else {

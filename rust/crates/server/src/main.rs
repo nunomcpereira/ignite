@@ -128,7 +128,10 @@ async fn main() {
     state.db.abort_stale_running_projects();
     // An async run still marked running belongs to the previous process and
     // can never finish; fail it explicitly so its poller isn't left waiting.
-    let lost_async_jobs = state.db.fail_unfinished_async_jobs(routes::async_jobs::KEEP_FINISHED_JOBS_DAYS);
+    // US-18: re-queue what the previous process left in the scan queue first,
+    // so async runs it will still finish aren't reported lost below.
+    let resumed_async_jobs = routes::scan_queue::recover_after_restart(&state);
+    let lost_async_jobs = state.db.fail_unfinished_async_jobs_except(routes::async_jobs::KEEP_FINISHED_JOBS_DAYS, &resumed_async_jobs);
     if lost_async_jobs > 0 {
         tracing::warn!("{lost_async_jobs} async run(s) were still in progress at the last shutdown and were marked failed");
     }
@@ -178,6 +181,7 @@ mod tests {
     mod phase3_coverage;
     mod finding_history;
     mod grants;
+    mod scan_recovery;
 
     async fn spawn_test_server() -> String {
         spawn_test_server_with_llm_config(state::default_llm_config()).await.0

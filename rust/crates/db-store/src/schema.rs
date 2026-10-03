@@ -661,4 +661,6 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     (39, "CREATE TABLE IF NOT EXISTS org_report_runs (org TEXT PRIMARY KEY, last_run_at TEXT NOT NULL, last_recipients TEXT, last_recipient_source TEXT, last_error TEXT);"),
     // US-16: line-drift-tolerant identity on issue rows and baselines.
     (40, "ALTER TABLE issues ADD COLUMN fingerprint TEXT; ALTER TABLE issue_baselines ADD COLUMN fingerprint TEXT; CREATE INDEX IF NOT EXISTS idx_issues_fingerprint ON issues(project_id, fingerprint); CREATE INDEX IF NOT EXISTS idx_findings_repo_status ON findings(repository_id, status);"),
+    // US-18: the durable scan queue (see `scan_jobs.rs`).
+    (41, "CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, lane TEXT NOT NULL, org TEXT, repo TEXT, source TEXT NOT NULL, actor TEXT, payload_json TEXT, state TEXT NOT NULL DEFAULT 'waiting', seq INTEGER NOT NULL DEFAULT 0, attempt INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, restarts INTEGER NOT NULL DEFAULT 0, last_error TEXT, enqueued_at TEXT NOT NULL DEFAULT (datetime('now')), started_at TEXT, finished_at TEXT); CREATE INDEX IF NOT EXISTS idx_scan_jobs_state ON scan_jobs(state, lane, seq);"),
 ];
