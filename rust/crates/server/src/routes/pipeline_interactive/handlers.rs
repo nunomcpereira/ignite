@@ -38,6 +38,12 @@ async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(
     if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
         return (status, axum::Json(denied)).into_response();
     }
+    let grants: &[&str] = if upload.dry_run { &["scan"] } else { &["scan", "publish"] };
+    for permission in grants {
+        if let Err((status, denied)) = crate::auth::require_grant(&state, &headers, permission, upload.org.trim(), upload.repo.trim()) {
+            return (status, axum::Json(denied)).into_response();
+        }
+    }
 
     let session_gh_token = crate::auth::resolve_effective_github_token(&headers, &state.db);
     let job_id = uuid::Uuid::new_v4().to_string();

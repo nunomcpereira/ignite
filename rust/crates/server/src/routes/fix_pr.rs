@@ -249,6 +249,9 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
     let Some((project_id, org, repo)) = resolve_org_repo(&state, job_id) else {
         return err(StatusCode::NOT_FOUND, "This job has no associated GitHub repository yet — it must have already shipped before a fix PR can be opened against it.");
     };
+    if let Err((status, denied)) = crate::auth::require_grant(&state, &headers, "publish", &org, &repo) {
+        return (status, Json(denied)).into_response();
+    }
 
     // Opt-in: also record this job's already-justified overrides in the
     // repo's `.ignite/acknowledgments.md` within the same PR, so an

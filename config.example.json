@@ -142,6 +142,8 @@
     },
     "allowUnauthenticatedValidateAll": false,
     "allowUnauthenticatedInteractiveDryRun": false,
+    "policyAdmins": [],
+    "enforceGrants": false,
     "codeql": {
       "enabled": true,
       "binary": "codeql",

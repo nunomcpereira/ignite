@@ -203,11 +203,14 @@ mod panic_message_tests {
 }
 
 #[allow(clippy::result_large_err)]
+/// The `(org, repo)` a validate-all body targets, with its defaults.
+fn target_org_repo(body: &Value) -> (String, String) {
+    let field = |k: &str, default: &str| body.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).unwrap_or(default).to_string();
+    (field("org", "local-validation"), field("repo", "local-project"))
+}
+
 async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, body: Value) -> Result<Value, (Value, Value)> {
-    let org = body.get("org").and_then(|v| v.as_str()).unwrap_or("local-validation").trim().to_string();
-    let org = if org.is_empty() { "local-validation".to_string() } else { org };
-    let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("local-project").trim().to_string();
-    let repo = if repo.is_empty() { "local-project".to_string() } else { repo };
+    let (org, repo) = target_org_repo(&body);
     // How this caller authenticated, recorded on every override it submits.
     let origin = crate::auth::resolve_auth_method(&headers, &state.db).origin();
     let phase_meta = resolve_phase_meta(&state.config);
@@ -1017,6 +1020,10 @@ async fn validate_all(State(state): State<Arc<AppState>>, crate::auth::OptionalU
         needed.push(crate::auth::Scope::Override);
     }
     if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &needed) {
+        return (status, Json(denied)).into_response();
+    }
+    let (org, repo) = target_org_repo(&body);
+    if let Err((status, denied)) = crate::auth::require_grant(&state, &headers, "scan", &org, &repo) {
         return (status, Json(denied)).into_response();
     }
     if super::async_jobs::wants_async(&body) {

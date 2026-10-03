@@ -159,6 +159,13 @@ pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
 // in `pipeline_interactive/run.rs`, which used to import this wrapper —
 // pass `false` explicitly.
 
+/// US-17: the permission grants an onboard request needs (checked only when
+/// `security.enforceGrants` is on): always `scan`, plus `publish` for a
+/// real (non-dry) run.
+fn onboard_grants(dry_run: bool) -> &'static [&'static str] {
+    if dry_run { &["scan"] } else { &["scan", "publish"] }
+}
+
 /// The API-key scopes an onboard request needs: it always scans, overrides
 /// need `override`, and a real (non-dry) run publishes.
 fn onboard_scopes(body: &Value, dry_run: bool) -> Vec<crate::auth::Scope> {
@@ -195,6 +202,9 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
 
     // An API key limited to fewer scopes can't run, override or publish beyond them.
     crate::auth::require_scopes(&headers, &state.db, &onboard_scopes(&body, dry_run))?;
+    for permission in onboard_grants(dry_run) {
+        crate::auth::require_grant(&state, &headers, permission, &org, &repo)?;
+    }
 
     // Provisioning (Phase 6) must run as the actual caller's own GitHub
     // account — fail fast rather than burning phases 1-5 first.
@@ -783,6 +793,12 @@ async fn onboard(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(u
         let dry_run = body.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
         if let Err((status, denied)) = crate::auth::require_scopes(&headers, &state.db, &onboard_scopes(&body, dry_run)) {
             return (status, Json(denied)).into_response();
+        }
+        let field = |k: &str| body.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        for permission in onboard_grants(dry_run) {
+            if let Err((status, denied)) = crate::auth::require_grant(&state, &headers, permission, &field("org"), &field("repo")) {
+                return (status, Json(denied)).into_response();
+            }
         }
         return super::async_jobs::start(state, "onboard", user.map(|u| u.id), headers, body, |state, headers, body| async move {
             match run_onboard(state, headers, body).await {

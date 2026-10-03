@@ -1144,6 +1144,19 @@ pub struct SecurityConfig {
     /// deployment should leave this off so LLM spend stays attributable.
     #[serde(default)]
     pub allow_unauthenticated_ai_assist: bool,
+
+    /// US-17: emails mirrored into global `policy_admin` permission grants
+    /// at every server startup (additive only — removing an email here never
+    /// revokes an existing grant). A policy admin manages grants through
+    /// `/api/policy/grants`; this list is how the first one gets created.
+    #[serde(default)]
+    pub policy_admins: Vec<String>,
+
+    /// US-17: when `true`, `scan`/`publish`/`view` permission grants gate
+    /// the pipeline, publication and read routes. Default `false`: behavior
+    /// is unchanged and only `review` grants (override approval) apply.
+    #[serde(default)]
+    pub enforce_grants: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1551,6 +1564,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_VALIDATE_ALL") { merged.security.allow_unauthenticated_validate_all = v; }
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN") { merged.security.allow_unauthenticated_interactive_dry_run = v; }
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_AI_ASSIST") { merged.security.allow_unauthenticated_ai_assist = v; }
+    if let Some(v) = env_csv("POLICY_ADMINS") { merged.security.policy_admins = v; }
+    if let Some(v) = env_bool("ENFORCE_GRANTS") { merged.security.enforce_grants = v; }
     if let Some(v) = env_csv("OVERRIDE_APPROVAL_APPROVER_EMAILS") { merged.security.override_approval.approver_emails = v; }
     if let Some(v) = env_bool("POLICY_STRICT") { merged.policy.strict = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
@@ -1984,6 +1999,9 @@ mod tests {
         assert!(!load_with_env("ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN", "false").security.allow_unauthenticated_interactive_dry_run, "ALLOW_UNAUTHENTICATED_INTERACTIVE_DRY_RUN=false");
         assert!(load_with_env("ALLOW_UNAUTHENTICATED_AI_ASSIST", "true").security.allow_unauthenticated_ai_assist, "ALLOW_UNAUTHENTICATED_AI_ASSIST=true");
         assert!(!load_with_env("ALLOW_UNAUTHENTICATED_AI_ASSIST", "false").security.allow_unauthenticated_ai_assist, "ALLOW_UNAUTHENTICATED_AI_ASSIST=false");
+        assert!(load_with_env("ENFORCE_GRANTS", "true").security.enforce_grants, "ENFORCE_GRANTS=true");
+        assert!(!Config::default().security.enforce_grants, "grant enforcement is off by default");
+        assert_eq!(load_with_env("POLICY_ADMINS", "a@x.io, b@x.io").security.policy_admins, vec!["a@x.io", "b@x.io"], "POLICY_ADMINS: comma list");
         assert!(load_with_env("POLICY_STRICT", "true").policy.strict, "POLICY_STRICT=true");
         assert!(!load_with_env("POLICY_STRICT", "false").policy.strict, "POLICY_STRICT=false");
         assert!(load_with_env("SLA_ENABLED", "true").sla.enabled, "SLA_ENABLED=true");
@@ -2109,7 +2127,7 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 139, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 141, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
     }
 
     #[test]

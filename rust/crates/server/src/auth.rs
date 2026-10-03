@@ -170,6 +170,45 @@ pub fn require_scopes(headers: &HeaderMap, db: &ignite_db_store::DbStore, scopes
     scopes.iter().try_for_each(|s| require_scope(headers, db, *s))
 }
 
+/// True when the request is authenticated by an API key limited to specific
+/// scopes. Such a key can scan/override/publish as allowed, but never
+/// administer permission grants.
+pub fn api_key_is_scope_restricted(headers: &HeaderMap, db: &ignite_db_store::DbStore) -> bool {
+    resolve_auth_method(headers, db) == AuthMethod::ApiKey && bearer_api_key(headers).is_some_and(|t| matches!(db.get_active_api_key_scopes(&ignite_auth::hash_api_key(t)), Some(Some(_))))
+}
+
+/// The permissions a grant can carry (`permission_grants.permission`).
+pub const GRANT_PERMISSIONS: &[&str] = &["view", "scan", "review", "publish", "policy_admin"];
+
+/// US-17: when `security.enforceGrants` is on, 403s unless the caller holds
+/// `permission` for `org/repo` (a global, org-wide or exact-repo grant). Off
+/// (the default), this never restricts anything. A server-initiated scan
+/// authenticated by a live scan-queue lease (org scans, auto-rescan) passes:
+/// it has no user, and whoever enrolled the org already decided it runs. An
+/// API key resolves to its owner, so a key never exceeds its owner's grants;
+/// key scopes (`require_scope`) still apply on top.
+pub fn require_grant(state: &crate::state::AppState, headers: &HeaderMap, permission: &str, org: &str, repo: &str) -> Result<(), (StatusCode, Value)> {
+    if !state.config.security.enforce_grants {
+        return Ok(());
+    }
+    if headers.get(crate::routes::scan_queue::LEASE_HEADER).and_then(|v| v.to_str().ok()).is_some_and(crate::routes::scan_queue::lease_is_active) {
+        return Ok(());
+    }
+    let Some(user) = resolve_user(headers, &state.db) else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            json!({ "ok": false, "error": format!("Permission grants are enforced: sign in with an account holding the \"{permission}\" permission for {org}/{repo}."), "code": "grant_required", "requiredPermission": permission, "org": org, "repo": repo }),
+        ));
+    };
+    if state.db.has_permission(&user.email, permission, org, repo) {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        json!({ "ok": false, "error": format!("{} does not hold the \"{permission}\" permission for {org}/{repo}.", user.email), "code": "permission_denied", "requiredPermission": permission, "org": org, "repo": repo }),
+    ))
+}
+
 /// True when a request body submits at least one override.
 pub fn body_submits_overrides(body: &Value) -> bool {
     body.get("overrides").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty())

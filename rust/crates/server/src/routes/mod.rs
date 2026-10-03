@@ -17,6 +17,7 @@ pub mod code_scanning_webhook;
 pub mod secret_scanning_webhook;
 pub mod repository_events_webhook;
 pub mod override_approval;
+pub mod policy_grants;
 pub mod config;
 pub mod dependencies;
 pub mod effectivate;

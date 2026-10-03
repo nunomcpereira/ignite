@@ -934,7 +934,28 @@
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
       </div>
-      <div class="p-5 space-y-4 overflow-y-auto">
+      <div class="flex gap-1 px-5 pt-2 border-b border-slate-100" role="tablist">
+        <button id="adminTabReport" type="button" role="tab" data-admin-tab="report" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-brand-600 text-brand-700" data-i18n="admin.tabReport">Report delivery</button>
+        <button id="adminTabGrants" type="button" role="tab" data-admin-tab="grants" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600" data-i18n="admin.tabGrants">Permission grants</button>
+      </div>
+      <div id="adminGrantsPanel" class="hidden p-5 space-y-3 overflow-y-auto">
+        <p id="adminGrantsEnforced" class="text-xs"></p>
+        <div id="adminGrantsList" class="text-xs"></div>
+        <div class="border border-slate-200 rounded-lg p-3 space-y-2">
+          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide" data-i18n="admin.grantAddTitle">Add a grant</p>
+          <input id="adminGrantEmail" type="email" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantEmail" placeholder="person@example.com" aria-label="Email">
+          <div class="grid grid-cols-3 gap-2">
+            <select id="adminGrantPermission" class="text-sm border border-slate-200 rounded-lg px-2 py-1.5 text-slate-700" aria-label="Permission">
+              <option value="view">view</option><option value="scan">scan</option><option value="review">review</option><option value="publish">publish</option><option value="policy_admin">policy_admin</option>
+            </select>
+            <input id="adminGrantOrg" type="text" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantOrg" placeholder="org (blank = all)" aria-label="Org">
+            <input id="adminGrantRepo" type="text" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantRepo" placeholder="repo (blank = all)" aria-label="Repository">
+          </div>
+          <button id="adminGrantAddBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700" data-i18n="admin.grantAdd">Add grant</button>
+        </div>
+        <p id="adminGrantsStatus" class="hidden text-xs break-words" role="status"></p>
+      </div>
+      <div id="adminReportPanel" class="p-5 space-y-4 overflow-y-auto">
         <p class="text-xs text-slate-500" data-i18n="admin.subtitle">Daily security report delivery. Saved to the database and applied immediately; a blank value falls back to config.json.</p>
         <label class="flex items-center gap-2 text-sm font-semibold text-slate-700">
           <input id="adminEnabledInput" type="checkbox" class="rounded border-slate-300">
@@ -974,7 +995,7 @@
         <p id="adminNotes" class="hidden text-xs text-amber-600"></p>
         <p id="adminSettingsStatus" class="hidden text-xs break-words"></p>
       </div>
-      <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-100">
+      <div id="adminReportFooter" class="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-100">
         <button id="adminSettingsCancelBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-50" data-i18n="common.cancel">Cancel</button>
         <button id="adminSettingsSaveBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="admin.save">Save to DB</button>
       </div>
@@ -8612,6 +8633,7 @@
       adminShowLine('adminTestWebhookResult', '', true);
       adminShowLine('adminTestAzureResult', '', true);
       $('adminSettingsModal').classList.remove('hidden');
+      switchAdminTab('report');
       try {
         const res = await fetch('/api/admin/settings/daily-report');
         const data = await res.json().catch(() => ({}));
@@ -8622,6 +8644,75 @@
       }
     }
     function closeAdminSettings() { $('adminSettingsModal').classList.add('hidden'); }
+
+    // ---- Admin / Integrations: permission grants (US-17) ----
+    // GET/POST/DELETE /api/policy/grants. Only a policy admin sees anything;
+    // revoking takes two clicks instead of a browser confirm() dialog.
+    function switchAdminTab(tab) {
+      document.querySelectorAll('.admin-tab').forEach((b) => {
+        const on = b.dataset.adminTab === tab;
+        b.classList.toggle('border-brand-600', on);
+        b.classList.toggle('text-brand-700', on);
+        b.classList.toggle('border-transparent', !on);
+        b.classList.toggle('text-slate-500', !on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      $('adminReportPanel').classList.toggle('hidden', tab !== 'report');
+      $('adminReportFooter').classList.toggle('hidden', tab !== 'report');
+      $('adminGrantsPanel').classList.toggle('hidden', tab !== 'grants');
+      if (tab === 'grants') loadAdminGrants();
+    }
+    function adminGrantScope(g) {
+      return g.org ? (g.repo ? `${g.org}/${g.repo}` : `${g.org}/*`) : t('admin.grantAllRepos');
+    }
+    async function loadAdminGrants() {
+      adminShowLine('adminGrantsStatus', '', true);
+      $('adminGrantsList').innerHTML = `<p class="text-slate-400">${escapeHtml(t('common.loading'))}</p>`;
+      try {
+        const res = await fetch('/api/policy/grants');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        $('adminGrantsEnforced').textContent = data.enforced ? t('admin.grantsEnforced') : t('admin.grantsNotEnforced');
+        $('adminGrantsEnforced').className = `text-xs ${data.enforced ? 'text-emerald-700' : 'text-amber-600'}`;
+        const grants = data.grants || [];
+        $('adminGrantsList').innerHTML = grants.length === 0 ? `<p class="text-slate-400">${escapeHtml(t('admin.grantsEmpty'))}</p>` : `<table class="w-full text-left">
+          <thead><tr class="text-[10px] uppercase tracking-wide text-slate-400"><th class="py-1">${escapeHtml(t('admin.grantEmail'))}</th><th>${escapeHtml(t('admin.grantPermission'))}</th><th>${escapeHtml(t('admin.grantScope'))}</th><th></th></tr></thead>
+          <tbody>${grants.map((g) => `<tr class="border-t border-slate-100">
+            <td class="py-1 pr-2 break-all">${escapeHtml(g.subjectEmail)}</td>
+            <td class="pr-2 font-mono">${escapeHtml(g.permission)}</td>
+            <td class="pr-2 font-mono">${escapeHtml(adminGrantScope(g))}</td>
+            <td class="text-right"><button type="button" class="admin-grant-revoke text-[11px] font-semibold text-rose-600 hover:underline" data-id="${g.id}">${escapeHtml(t('admin.grantRevoke'))}</button></td>
+          </tr>`).join('')}</tbody></table>`;
+        $('adminGrantsList').querySelectorAll('.admin-grant-revoke').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            if (btn.dataset.armed !== '1') {
+              btn.dataset.armed = '1';
+              btn.textContent = t('admin.grantRevokeConfirm');
+              return;
+            }
+            const r = await fetch(`/api/policy/grants/${btn.dataset.id}`, { method: 'DELETE' });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) { adminShowLine('adminGrantsStatus', d.error || `HTTP ${r.status}`, false); return; }
+            await loadAdminGrants();
+            adminShowLine('adminGrantsStatus', t('admin.grantRevoked'), true);
+          });
+        });
+      } catch (e) {
+        $('adminGrantsList').innerHTML = '';
+        adminShowLine('adminGrantsStatus', e.message, false);
+      }
+    }
+    async function addAdminGrant() {
+      const body = { subjectEmail: $('adminGrantEmail').value.trim(), permission: $('adminGrantPermission').value, org: $('adminGrantOrg').value.trim() || undefined, repo: $('adminGrantRepo').value.trim() || undefined };
+      const res = await fetch('/api/policy/grants', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { adminShowLine('adminGrantsStatus', data.error || `HTTP ${res.status}`, false); return; }
+      $('adminGrantEmail').value = '';
+      await loadAdminGrants();
+      adminShowLine('adminGrantsStatus', t('admin.grantAdded'), true);
+    }
+    document.querySelectorAll('.admin-tab').forEach((b) => b.addEventListener('click', () => switchAdminTab(b.dataset.adminTab)));
+    $('adminGrantAddBtn').addEventListener('click', addAdminGrant);
     async function adminTest(target, resultId, btnId) {
       const btn = $(btnId);
       const body = { target };

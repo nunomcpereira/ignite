@@ -3,7 +3,7 @@
 use crate::routes::job_issues::lookup_job_issues;
 use crate::state::AppState;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -25,8 +25,38 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn list_projects(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation) -> Response {
-    Json(state.db.list_projects()).into_response()
+/// US-17: the `view` grant check for `org/repo` — `None` (allowed) unless
+/// `security.enforceGrants` is on and the caller lacks the grant.
+fn view_denied(state: &AppState, headers: &HeaderMap, org: &str, repo: &str) -> Option<Response> {
+    crate::auth::require_grant(state, headers, "view", org, repo).err().map(|(status, body)| (status, Json(body)).into_response())
+}
+
+fn view_denied_for_project(state: &AppState, headers: &HeaderMap, project_id: i64) -> Option<Response> {
+    if !state.config.security.enforce_grants {
+        return None;
+    }
+    let project = state.db.get_project(project_id)?;
+    view_denied(state, headers, &project.org, &project.repo)
+}
+
+fn view_denied_for_job(state: &AppState, headers: &HeaderMap, job_id: &str) -> Option<Response> {
+    if !state.config.security.enforce_grants {
+        return None;
+    }
+    let live = state.running_runs.lock().get(job_id).map(|r| (r.org.clone(), r.repo.clone()));
+    if let Some((org, repo)) = live {
+        return view_denied(state, headers, &org, &repo);
+    }
+    view_denied_for_project(state, headers, state.db.get_project_id_by_job_id(job_id)?)
+}
+
+async fn list_projects(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, headers: HeaderMap) -> Response {
+    let mut projects = state.db.list_projects();
+    // US-17: with grants enforced, only the repositories the caller can view.
+    if state.config.security.enforce_grants {
+        projects.retain(|p| view_denied(&state, &headers, &p.org, &p.repo).is_none());
+    }
+    Json(projects).into_response()
 }
 
 // Registered before /api/projects/:id — Express-era bug fixed in the JS
@@ -43,16 +73,22 @@ fn parse_id(raw: &str) -> Option<i64> {
     raw.parse::<i64>().ok()
 }
 
-async fn project_details(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, Path(id_raw): Path<String>) -> Response {
+async fn project_details(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, headers: HeaderMap, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
+    if let Some(denied) = view_denied_for_project(&state, &headers, id) {
+        return denied;
+    }
     match state.db.get_project_details(id) {
         Some(project) => Json(project).into_response(),
         None => err(StatusCode::NOT_FOUND, "Project not found."),
     }
 }
 
-async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, Path(id_raw): Path<String>) -> Response {
+async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, headers: HeaderMap, Path(id_raw): Path<String>) -> Response {
     let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
+    if let Some(denied) = view_denied_for_project(&state, &headers, id) {
+        return denied;
+    }
     if !state.db.project_exists(id) {
         return err(StatusCode::NOT_FOUND, "Project not found.");
     }
@@ -64,7 +100,10 @@ async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::AuthOrU
 /// against it (including enrollment-only rows, each labeled), independent
 /// of which `projects.id`/`job_id` any one of those runs happens to carry.
 /// Existing `/api/projects*` endpoints are untouched by this story.
-async fn repository_history(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo)): Path<(String, String)>) -> Response {
+async fn repository_history(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, headers: HeaderMap, Path((org, repo)): Path<(String, String)>) -> Response {
+    if let Some(denied) = view_denied(&state, &headers, &org, &repo) {
+        return denied;
+    }
     let Some(repository) = state.db.get_repository_by_org_repo(&org, &repo) else {
         return err(StatusCode::NOT_FOUND, "Repository not found.");
     };
@@ -80,9 +119,13 @@ const FINDING_STATUSES: &[&str] = &["open", "resolved", "reopened"];
 async fn repository_findings(
     State(state): State<Arc<AppState>>,
     crate::auth::RequireAuth(_user): crate::auth::RequireAuth,
+    headers: HeaderMap,
     Path((org, repo)): Path<(String, String)>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    if let Some(denied) = view_denied(&state, &headers, &org, &repo) {
+        return denied;
+    }
     let Some(repository) = state.db.get_repository_by_org_repo(&org, &repo) else {
         return err(StatusCode::NOT_FOUND, "Repository not found.");
     };
@@ -100,7 +143,10 @@ async fn repository_findings(
 
 /// GET /api/repositories/:org/:repo/findings/:fingerprint/observations —
 /// US-16: one finding and every scan's observation of it.
-async fn finding_observations(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path((org, repo, fingerprint)): Path<(String, String, String)>) -> Response {
+async fn finding_observations(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, headers: HeaderMap, Path((org, repo, fingerprint)): Path<(String, String, String)>) -> Response {
+    if let Some(denied) = view_denied(&state, &headers, &org, &repo) {
+        return denied;
+    }
     let Some(repository) = state.db.get_repository_by_org_repo(&org, &repo) else {
         return err(StatusCode::NOT_FOUND, "Repository not found.");
     };
@@ -114,7 +160,10 @@ async fn finding_observations(State(state): State<Arc<AppState>>, crate::auth::R
 /// GET /api/pipeline/:job_id/issues/:issue_id/history — US-16's Studio
 /// convenience: resolves the issue's repository and fingerprint from the
 /// scan it was found in, so the client only needs what it already shows.
-async fn issue_history(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, Path((job_id, issue_id)): Path<(String, String)>) -> Response {
+async fn issue_history(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, headers: HeaderMap, Path((job_id, issue_id)): Path<(String, String)>) -> Response {
+    if let Some(denied) = view_denied_for_job(&state, &headers, job_id.trim()) {
+        return denied;
+    }
     let Some(project_id) = state.db.get_project_id_by_job_id(job_id.trim()) else { return err(StatusCode::NOT_FOUND, "Unknown job id.") };
     let Some(project) = state.db.get_project(project_id) else { return err(StatusCode::NOT_FOUND, "Unknown job id.") };
     let Some(issue) = state.db.get_project_issues(project_id).into_iter().find(|i| i.id == issue_id) else {
@@ -126,8 +175,11 @@ async fn issue_history(State(state): State<Arc<AppState>>, crate::auth::AuthOrUn
     Json(json!({ "ok": true, "fingerprint": fingerprint, "finding": finding, "observations": observations })).into_response()
 }
 
-async fn job_issues_handler(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+async fn job_issues_handler(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
+    if let Some(denied) = view_denied_for_job(&state, &headers, job_id) {
+        return denied;
+    }
     // live-run branch also needs a projectId alongside the issues, which
     // the shared job_issues helper doesn't carry — mirrored inline here
     // rather than widening that helper's return shape for one caller.
@@ -151,8 +203,11 @@ async fn job_issues_handler(State(state): State<Arc<AppState>>, Path(job_id): Pa
 /// every log/status change there as the job runs, so a client can rebuild
 /// its whole phase timeline from it regardless of whether the job is
 /// still running or already finished.
-async fn job_status(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) -> Response {
+async fn job_status(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(job_id): Path<String>) -> Response {
     let job_id = job_id.trim();
+    if let Some(denied) = view_denied_for_job(&state, &headers, job_id) {
+        return denied;
+    }
     let (live_project_id, review_active) = {
         let running = state.running_runs.lock();
         match running.get(job_id) {
@@ -300,10 +355,13 @@ pub fn router() -> Router<Arc<AppState>> {
 /// `ignite_policy::CheckCoverage` entries only, never a raw file path or a
 /// config secret — so this handler returns it as-is rather than filtering
 /// it a second time.
-async fn job_evidence(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Path(job_id): Path<String>) -> Response {
+async fn job_evidence(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, headers: HeaderMap, Path(job_id): Path<String>) -> Response {
     let Some(project_id) = state.db.get_project_id_by_job_id(job_id.trim()) else {
         return err(StatusCode::NOT_FOUND, "Unknown job id.");
     };
+    if let Some(denied) = view_denied_for_project(&state, &headers, project_id) {
+        return denied;
+    }
     let Some(run) = state.db.get_scan_run_for_legacy_project(project_id) else {
         return err(StatusCode::NOT_FOUND, "No scan run recorded for this job id.");
     };

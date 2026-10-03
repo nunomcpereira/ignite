@@ -29,6 +29,39 @@ and can propose fixes for eligible findings; the unattended flow only updates
 dependency vulnerabilities with a safe, non-major version bump discovered
 during a scheduled rescan.
 
+## Decide who can scan, review, publish and view
+
+Permission grants give a person a right on every repository, on one
+organization, or on one repository: `view`, `scan`, `review`, `publish` or
+`policy_admin`. Manage them in **Admin / Integrations → Permission grants**
+or through `GET`/`POST /api/policy/grants` and `DELETE /api/policy/grants/:id`.
+
+- A policy admin manages grants at the scope their own `policy_admin` grant
+  covers: a global admin manages everything, an organization admin manages
+  that organization's grants, a repository admin only that repository's.
+- The first admin comes from `config.json`: every email in
+  `security.policyAdmins` (`POLICY_ADMINS`) gets a global `policy_admin`
+  grant at startup. Removing an email from that list never revokes a grant.
+- Every grant and revocation is written to the audit log
+  (`policy.grant_created`, `policy.grant_revoked`).
+- An API key acts as its owner and can never exceed the owner's grants. A
+  key limited to specific scopes can't manage grants at all.
+
+`review` grants always apply (they decide who may approve a critical
+override). `scan`, `publish` and `view` only apply once
+`security.enforceGrants` (`ENFORCE_GRANTS`) is `true`; it's off by default
+so an existing installation behaves exactly as before. With enforcement on:
+
+| Permission | Required for |
+|---|---|
+| `scan` | `validate-all`, onboard, interactive upload |
+| `publish` | real (non-dry-run) onboard and upload, effectivate, applying a fix PR |
+| `view` | project and job details, findings, history, evidence; the project list shows only repositories you can view |
+
+A refusal is a `403` with `code: "permission_denied"` (or `grant_required`
+when nobody is signed in) and the missing `requiredPermission`. Scans the
+server starts itself (organization scans, auto-rescan) aren't affected.
+
 ## Acknowledge known false positives by policy
 
 Some findings are benign across a whole organization — for example SAP CPI

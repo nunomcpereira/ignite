@@ -60,6 +60,63 @@ impl DbStore {
         .unwrap_or(false)
     }
 
+    /// US-17: `true` when `subject_email` holds `permission` at a scope that
+    /// covers the whole of `(org, repo)` — the check for *administering*
+    /// grants at that scope. `(None, _)` needs a global grant; `(Some(org),
+    /// None)` a global or org-wide grant; `(Some(org), Some(repo))` is
+    /// [`Self::has_permission`].
+    pub fn has_permission_at_scope(&self, subject_email: &str, permission: &str, org: Option<&str>, repo: Option<&str>) -> bool {
+        match (org, repo) {
+            (Some(o), Some(r)) => self.has_permission(subject_email, permission, o, r),
+            (Some(o), None) => {
+                let conn = self.conn.lock();
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM permission_grants WHERE subject_email = ? AND permission = ? AND repo IS NULL AND (org IS NULL OR org = ?))",
+                    params![subject_email.to_ascii_lowercase(), permission, o],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false)
+            }
+            (None, _) => {
+                let conn = self.conn.lock();
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM permission_grants WHERE subject_email = ? AND permission = ? AND org IS NULL AND repo IS NULL)",
+                    params![subject_email.to_ascii_lowercase(), permission],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false)
+            }
+        }
+    }
+
+    /// US-17: every grant, oldest first (the admin listing).
+    pub fn list_permission_grants(&self) -> Vec<PermissionGrantRow> {
+        let conn = self.conn.lock();
+        let Ok(mut stmt) = conn.prepare(&format!("SELECT {COLUMNS} FROM permission_grants ORDER BY id")) else { return vec![] };
+        stmt.query_map([], row_from).map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default()
+    }
+
+    /// US-17: the id of the `(subject, permission, org, repo)` grant, if any.
+    pub fn find_permission_grant(&self, subject_email: &str, permission: &str, org: Option<&str>, repo: Option<&str>) -> Option<i64> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT id FROM permission_grants WHERE subject_email = ? AND permission = ? AND org IS ? AND repo IS ?",
+            params![subject_email.to_ascii_lowercase(), permission, org, repo],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap_or(None)
+    }
+
+    /// US-17: mirrors `security.policyAdmins` into global `policy_admin`
+    /// grants at startup — additive only, like
+    /// [`Self::sync_configured_approvers_into_grants`].
+    pub fn sync_configured_policy_admins_into_grants(&self, admin_emails: &[String]) {
+        for email in admin_emails {
+            self.grant_permission(email, "policy_admin", None, None, Some("config:security.policyAdmins"));
+        }
+    }
+
     pub fn list_permission_grants_for_subject(&self, subject_email: &str) -> Vec<PermissionGrantRow> {
         let conn = self.conn.lock();
         let Ok(mut stmt) = conn.prepare(&format!("SELECT {COLUMNS} FROM permission_grants WHERE subject_email = ? ORDER BY id")) else { return vec![] };
@@ -153,5 +210,24 @@ mod tests {
         let (db, _dir) = open_test_db();
         db.sync_configured_approvers_into_grants(&["Approver@Acme.example".to_string()]);
         assert!(db.has_permission("approver@acme.example", "review", "any-org", "any-repo"), "email matching must be case-insensitive, same as the config allowlist it replaces");
+    }
+
+    #[test]
+    fn scope_checks_for_administering_grants() {
+        let (db, _dir) = open_test_db();
+        db.grant_permission("org-admin@x.io", "policy_admin", Some("acme"), None, None);
+        db.grant_permission("repo-admin@x.io", "policy_admin", Some("acme"), Some("widgets"), None);
+        db.sync_configured_policy_admins_into_grants(&["root@x.io".to_string()]);
+        assert!(db.has_permission_at_scope("root@x.io", "policy_admin", None, None));
+        assert!(db.has_permission_at_scope("root@x.io", "policy_admin", Some("acme"), None));
+        assert!(!db.has_permission_at_scope("org-admin@x.io", "policy_admin", None, None));
+        assert!(db.has_permission_at_scope("org-admin@x.io", "policy_admin", Some("acme"), None));
+        assert!(db.has_permission_at_scope("org-admin@x.io", "policy_admin", Some("acme"), Some("any")));
+        assert!(!db.has_permission_at_scope("org-admin@x.io", "policy_admin", Some("other"), None));
+        assert!(!db.has_permission_at_scope("repo-admin@x.io", "policy_admin", Some("acme"), None));
+        assert!(db.has_permission_at_scope("repo-admin@x.io", "policy_admin", Some("acme"), Some("widgets")));
+        assert_eq!(db.list_permission_grants().len(), 3);
+        assert!(db.find_permission_grant("Org-Admin@x.io", "policy_admin", Some("acme"), None).is_some());
+        assert!(db.find_permission_grant("org-admin@x.io", "policy_admin", Some("acme"), Some("widgets")).is_none());
     }
 }

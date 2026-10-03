@@ -119,6 +119,9 @@ async fn effectivate(Path(project_id): Path<i64>, State(state): State<Arc<AppSta
     let Some((org, repo, source_backup_dir)) = pending else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "No simulation output available to effectivate for this project (missing, expired, or already effectivated).", "code": "no_pending_simulation", "nextAction": "rerun_dry_run" }))).into_response();
     };
+    if let Err((status, denied)) = crate::auth::require_grant(&state, &headers, "publish", &org, &repo) {
+        return (status, Json(denied)).into_response();
+    }
 
     // The recorded snapshot dir lives under the OS temp dir, which can be
     // cleaned between a dry run and its effectivation. When it's gone, fall

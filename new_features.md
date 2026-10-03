@@ -485,10 +485,10 @@ Keep external `jobId` and legacy `projectId` resolvable through a compatibility 
 
 **Acceptance criteria**
 
-- [ ] With enforcement off, no existing route changes behavior.
-- [ ] With enforcement on, a user without a `scan` grant for `org/repo` gets 403 with a machine-readable code, and one with an org-level grant succeeds.
-- [ ] Only a `policy_admin` can change grants; grant changes appear in the audit log.
-- [ ] Removing an email from `security.policyAdmins` never silently revokes an existing grant.
+- [x] With enforcement off, no existing route changes behavior.
+- [x] With enforcement on, a user without a `scan` grant for `org/repo` gets 403 with a machine-readable code, and one with an org-level grant succeeds.
+- [x] Only a `policy_admin` can change grants; grant changes appear in the audit log.
+- [x] Removing an email from `security.policyAdmins` never silently revokes an existing grant.
 
 **Verification:** db-store and route tests for each permission at global/org/repo scope with enforcement on and off.
 
