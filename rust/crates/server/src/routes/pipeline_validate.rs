@@ -304,6 +304,9 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut project_id: i64 = 0;
     let mut run_id: Option<i64> = None;
+    // Set once Phase 4 has produced the final issue list; gates US-14's
+    // end-of-scan evidence/finding record below, for pass and block alike.
+    let mut phase4_done = false;
 
     // The staging directory / walk-cache cleanup below (`invalidate_walk_cache`
     // + `remove_dir_all`) previously ran as plain code after this block's
@@ -472,6 +475,8 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
                 logger.log(4, &msg);
             }
         }
+
+        phase4_done = true;
 
         // Findings matched by config.json `ignoreRules`: still reported,
         // but acknowledged with the rule's reason so they never block.
@@ -682,83 +687,6 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
         logger.log(6, "Shipping phase skipped in validate-all mode.");
         logger.status(6, "skipped", None);
 
-        // US-05: the versioned evidence manifest — computed once the
-        // source is fully staged and Phase 4 has finished (so
-        // `phase4_coverage` reflects what actually ran this scan), while
-        // the staging directory this run scanned still exists on disk
-        // (cleanup, below, removes it once this closure returns).
-        // `finalize_scan_run_snapshot` re-points this run's
-        // `source_snapshots` row at the *real* content-addressed digest,
-        // replacing the synthetic `unknown:project:<id>` placeholder
-        // `create_project` had to use at Phase 1 (nothing was staged yet)
-        // — two scans of byte-and-mode-identical source now share one
-        // snapshot row, same as US-01 always intended.
-        if let Some(rid) = run_id {
-            match ignite_provenance::digest_project_tree(&root) {
-                Ok(tree) => {
-                    let repository_id = state.db.resolve_repository(&org, &repo, None);
-                    let commit_sha = state
-                        .runner
-                        .run_tool("git", &["rev-parse".to_string(), "HEAD".to_string()], &root.to_string_lossy(), ignite_tool_runner::RunToolOptions::default())
-                        .await
-                        .ok()
-                        .map(|o| o.stdout.trim().to_string())
-                        .filter(|s| !s.is_empty());
-                    let source_digest = format!("sha256:{}", tree.sha256);
-                    state.db.finalize_scan_run_snapshot(rid, repository_id, &source_digest, commit_sha.as_deref());
-
-                    let policy_version = if state.config.policy.strict { ignite_policy::PolicyVersion::strict_publication() } else { ignite_policy::PolicyVersion::legacy_compatible() };
-                    let manifest = ignite_evidence::build_evidence_manifest(
-                        source_digest,
-                        tree.file_count,
-                        commit_sha,
-                        policy_version.id.clone(),
-                        ignite_evidence::config_digest(&state.config),
-                        phase4_coverage.clone(),
-                        vec![],
-                        ignite_evidence::now_iso8601(),
-                    );
-                    if let Ok(manifest_json) = serde_json::to_string(&manifest) {
-                        state.db.save_evidence_manifest(rid, &manifest_json);
-                    }
-                }
-                Err(e) => tracing::warn!("evidence: failed to compute snapshot digest for run {rid}: {e}"),
-            }
-        }
-
-        // US-07: sync this run's issues against the repository's tracked
-        // findings — fingerprint-keyed (line-drift-tolerant), not the raw
-        // `category::file::line` id. Only a check whose coverage this run
-        // says `Completed` gets to prove a prior finding for its tool is
-        // gone; everything else (failed/disabled/unavailable/not-run) never
-        // resolves a finding by omission. Wired into this one entry point
-        // first, matching this backlog's established per-story precedent
-        // (see CLAUDE.md's US-07 note).
-        if let Some(rid) = run_id {
-            let repository_id = state.db.resolve_repository(&org, &repo, None);
-            let completed_tools: std::collections::HashSet<String> = phase4_coverage.iter().filter(|c| c.outcome == ignite_policy::CheckOutcome::Completed).filter_map(|c| c.engine.as_deref()).map(|e| e.to_ascii_lowercase()).collect();
-            let observations: Vec<ignite_db_store::FindingObservationInput> = issues
-                .iter()
-                .map(|issue| {
-                    let discriminator = ignite_override_engine::discriminator_from_issue_id(&issue.id);
-                    let fingerprint = ignite_override_engine::stable_fingerprint(&issue.category, issue.file.as_deref(), issue.snippet.as_ref(), issue.line, discriminator.as_deref());
-                    ignite_db_store::FindingObservationInput {
-                        legacy_issue_id: issue.id.clone(),
-                        category: issue.category.clone(),
-                        fingerprint,
-                        file: issue.file.clone(),
-                        line: issue.line,
-                        severity: match issue.severity {
-                            Severity::Error => "error".to_string(),
-                            Severity::Warning => "warning".to_string(),
-                        },
-                        tool: issue.tool.clone(),
-                    }
-                })
-                .collect();
-            state.db.record_finding_observations(repository_id, rid, &completed_tools, &observations);
-        }
-
         // Set *before* `finish_project` — its own internal lifecycle sync
         // is a naive `"success" -> "published"` fallback that doesn't
         // know validate-all never publishes anything; a precise state set
@@ -796,6 +724,13 @@ async fn run_validate_all(state: Arc<AppState>, headers: axum::http::HeaderMap, 
     let events = logger.events();
     let mut stage_timings: Vec<Value> = timings.into_inner().unwrap().into_iter().map(|t| json!({ "name": t.name, "ms": t.ms })).collect();
     stage_timings.extend(phase4_task_timings.into_iter().map(|(name, ms)| json!({ "name": format!("phase4:{name}"), "ms": ms })));
+
+    // US-14: evidence manifest + finding history for every run whose
+    // Phase 4 finished — blocked runs included — while the scanned tree
+    // still exists (removed just below).
+    if let (Some(rid), Some(root), true) = (run_id, &project_root, phase4_done) {
+        super::run_finalization::record_scan_evidence(&state, super::run_finalization::ScanEvidence { run_id: rid, org: &org, repo: &repo, root, coverage: &phase4_coverage, issues: &issues }).await;
+    }
 
     ignite_fs_utils::invalidate_walk_cache(&staging_dir);
     if let Some(root) = &project_root {

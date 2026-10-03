@@ -33,6 +33,11 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
     let mut shipped_for_real = false;
     let mut keep_source_backup_dir = false;
     let mut gh_token = String::new();
+    // US-14: what actually ran (same envelope as validate-all/onboard) and
+    // the review-gate signals the final policy decision needs.
+    let mut coverage: Vec<ignite_policy::CheckCoverage> = Vec::new();
+    let mut blocking_unresolved: bool;
+    let mut needs_review = false;
 
     state.running_runs.lock().insert(
         job_id.clone(),
@@ -239,6 +244,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             let npm_http = reqwest::Client::new();
             let log_a = log.clone();
             let license_issues = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, project_id, move |m| log_a.log(3, m)).await;
+            coverage.push(ignite_policy::CheckCoverage::completed("dependency-vulnerability", "deps.dev", false));
             if !license_issues.is_empty() {
                 all_issues.extend(license_issues);
                 persist!();
@@ -271,6 +277,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
         } else if !super::super::phase_meta::phase_enabled(&log.meta, 4) {
             log.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             log.status(4, "skipped", None);
+            coverage.push(ignite_policy::CheckCoverage::disabled("phase4"));
         } else {
             log.status(4, "running", None);
             let root = project_root.clone().unwrap();
@@ -282,6 +289,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             let config = crate::phase4_config::from_config(&state.config, &org, &repo, project_id, false, None);
             match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| log.log(4, m)).await {
                 Ok(output) => {
+                    coverage.extend(output.coverage.iter().cloned());
                     let issue_count = output.issues.len();
                     let blocking_count = output.issues.iter().filter(|i| i.severity == Severity::Error).count();
                     all_issues.extend(output.issues);
@@ -304,6 +312,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 }
                 Err(e) => {
                     let msg = e.to_string();
+                    coverage.push(ignite_policy::CheckCoverage::failed("phase4", msg.clone()));
                     log.log(4, &format!("✗ {msg}"));
                     log.status(4, "failed", Some(json!({ "error": msg })));
                     all_issues.push(new_issue("phase4::security-scan".to_string(), 4, "security-scan", Severity::Error, msg, None, None));
@@ -320,6 +329,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             log.log(5, "Skipped — disabled by config (phases: [{ id: 5, enabled: false }]).");
             log.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
             log.status(5, "skipped", None);
+            coverage.push(ignite_policy::CheckCoverage::disabled("governance-ci"));
         } else {
             log.status(5, "running", None);
             let root = project_root.clone().unwrap();
@@ -330,18 +340,28 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     log.log(5, &format!("⚠ Local CI skipped: {reason}"));
                     log.log(5, "⚠ The org governance workflows will still gate the repo on GitHub after push.");
                     log.status(5, "success", None);
+                    coverage.push(ignite_policy::CheckCoverage::unavailable("governance-ci", reason));
                 }
                 Ok(ignite_pipeline_core::GovernanceCiOutcome::Passed) => {
                     log.log(5, "✓ All org governance jobs passed locally.");
                     log.status(5, "success", None);
+                    coverage.push(ignite_policy::CheckCoverage::completed("governance-ci", "act", false));
                 }
                 Err(msg) => {
+                    coverage.push(ignite_policy::CheckCoverage::failed("governance-ci", msg.clone()));
                     log.log(5, &format!("✗ {msg}"));
                     log.status(5, "failed", Some(json!({ "error": msg })));
                     all_issues.push(new_issue("phase5::governance-ci".to_string(), 5, "governance-ci", Severity::Error, msg, None, None));
                     persist!();
                 }
             }
+        }
+
+        // US-14: evidence manifest + finding history, recorded as soon as
+        // the scan itself is done — before the review gate, which can wait
+        // on a human for hours.
+        if let (Some(rid), Some(root), true) = (run_id, &project_root, project_root_ready) {
+            super::super::run_finalization::record_scan_evidence(&state, super::super::run_finalization::ScanEvidence { run_id: rid, org: &org, repo: &repo, root, coverage: &coverage, issues: &all_issues }).await;
         }
 
         // ---------------- Final review gate ----------------
@@ -456,6 +476,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             }
         }
 
+        blocking_unresolved = all_issues.iter().any(|i| i.severity == Severity::Error && !pre_ids.contains(&i.id));
         if !all_issues.is_empty() {
             let error_count = all_issues.iter().filter(|i| i.severity == Severity::Error).count();
             log.log(6, &format!("⚠ {} issue(s) accumulated across the run ({error_count} blocking) — waiting for final review before provisioning/push.", all_issues.len()));
@@ -527,6 +548,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             let result = validate_overrides(&all_issues, &merged_overrides);
             let applied_ids: std::collections::HashSet<String> = result.applied.iter().map(|(i, _)| i.id.clone()).collect();
             let ok = result.ok;
+            blocking_unresolved = !ok;
             let unresolved_count = result.unresolved_errors.len();
             let unresolved_lines: Vec<String> = result
                 .unresolved_errors
@@ -563,6 +585,7 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                 (human_applied, Vec::new())
             };
             let applied_count = auto_applied.len();
+            needs_review = !needs_approval.is_empty();
 
             if applied_count > 0 {
                 log.log(6, &format!("⚠ {applied_count} flagged issue(s) overridden by {}:", decision.actor.email));
@@ -686,7 +709,8 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             if let Some(pid) = project_id {
                 state.db.finish_project("success", None, None, None, pid);
             }
-            log.send(json!({ "type": "done", "ok": true, "dryRun": dry_run, "repoUrl": Value::Null, "prUrl": Value::Null, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id }));
+            let policy_decision = crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &coverage, false, false);
+            log.send(json!({ "type": "done", "ok": true, "dryRun": dry_run, "repoUrl": Value::Null, "prUrl": Value::Null, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id, "coverage": coverage, "policyDecision": policy_decision }));
             break 'run Ok(());
         }
 
@@ -747,7 +771,8 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                         state.db.set_project_commit_shas(pid, None, Some(&sha));
                     }
                 }
-                log.send(json!({ "type": "done", "ok": true, "dryRun": dry_run, "repoUrl": ship_result.repo_url, "prUrl": ship_result.pr_url, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id }));
+                let policy_decision = crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &coverage, false, false);
+                log.send(json!({ "type": "done", "ok": true, "dryRun": dry_run, "repoUrl": ship_result.repo_url, "prUrl": ship_result.pr_url, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id, "coverage": coverage, "policyDecision": policy_decision }));
                 Ok(())
             }
             Err(e) => {
@@ -787,7 +812,11 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
         };
         let _ = ignite_notifications::send_failure_notification(&state.config.notifications, &titles, &details).await;
 
-        log.send(json!({ "type": "done", "ok": false, "error": message, "phase": phase, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id }));
+        // Only a run that got as far as the review gate was assessed; an
+        // earlier failure (bad input, a crash) gets no decision at all
+        // rather than one computed from an empty coverage list.
+        let policy_decision = (phase == 6 && project_root_ready).then(|| crate::routes::policy_finalization::finalize(state.as_ref(), run_id, &coverage, blocking_unresolved, needs_review));
+        log.send(json!({ "type": "done", "ok": false, "error": message, "phase": phase, "effectivatable": snapshot_ready && !shipped_for_real, "projectId": project_id, "coverage": coverage, "policyDecision": policy_decision }));
     }
 
     // ---------------- Cleanup (always runs, success or failure) ----------------

@@ -33,6 +33,7 @@ mod phase_meta;
 pub mod pipeline_interactive;
 pub mod pipeline_onboard;
 pub mod policy_finalization;
+pub mod run_finalization;
 pub mod pipeline_validate;
 pub mod project_overrides;
 pub mod reports;

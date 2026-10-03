@@ -281,6 +281,9 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
     // the coverage it collected and the policy decision it reached.
     let mut coverage: Vec<ignite_policy::CheckCoverage> = Vec::new();
     let mut policy_out: Option<ignite_policy::PolicyDecision> = None;
+    // The full issue list once Phase 4 has finished (US-14), for the
+    // end-of-scan evidence/finding record — blocked runs included.
+    let mut scanned_issues: Option<Vec<Issue>> = None;
     // Set on a dry run whose validated snapshot is now registered for
     // `POST /api/projects/:id/effectivate`.
     let mut effectivatable = false;
@@ -386,6 +389,7 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
             issues = output.issues;
             issues.extend(license_issues);
         }
+        scanned_issues = Some(issues.clone());
         let issue_inputs: Vec<ignite_db_store::IssueInput> = issues.iter().map(issue_to_input).collect();
         // Findings matched by config.json `ignoreRules`: still reported,
         // but acknowledged with the rule's reason so they never block.
@@ -642,6 +646,18 @@ async fn run_onboard(state: Arc<AppState>, headers: axum::http::HeaderMap, body:
 
     let phases = logger.phase_summary();
     let events = logger.events();
+
+    // US-14: same end-of-scan record as validate-all, while the scanned tree
+    // still exists (removed just below).
+    if let (Some(rid), Some(root), Some(issues)) = (run_id, &project_root, &scanned_issues) {
+        super::run_finalization::record_scan_evidence(&state, super::run_finalization::ScanEvidence { run_id: rid, org: &org, repo: &repo, root, coverage: &coverage, issues }).await;
+    }
+    // A run blocked on findings before Phase 5's policy step still gets a
+    // persisted (blocked) decision. A crash or bad input gets none — it was
+    // never assessed, and an empty coverage list must not read as a pass.
+    if policy_out.is_none() && run_id.is_some() && result.as_ref().err().is_some_and(|e| e.issues.is_some()) {
+        policy_out = Some(super::policy_finalization::finalize(state.as_ref(), run_id, &coverage, true, false));
+    }
 
     ignite_fs_utils::invalidate_walk_cache(&staging_dir);
     if let Some(root) = &project_root {

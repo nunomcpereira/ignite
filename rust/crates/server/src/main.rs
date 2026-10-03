@@ -172,6 +172,7 @@ mod tests {
     use serde_json::Value;
 
     mod pipeline_sequence;
+    mod run_finalization;
 
     async fn spawn_test_server() -> String {
         spawn_test_server_with_llm_config(state::default_llm_config()).await.0

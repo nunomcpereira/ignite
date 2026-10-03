@@ -34,8 +34,16 @@ This document translates the architecture review into implementable user stories
 | 10 | US-10 Isolated workers and resource scheduling | US-04, US-06 |
 | 11 | US-11 Typed frontend and structured progress | US-03, US-04, US-08 |
 | 12 | US-12 Task-oriented navigation and accessible themes | US-07, US-08, US-11 |
+| 13 | US-13 Measured detection quality (OWASP Benchmark) | None |
+| 14 | US-14 One run-finalization path for every entry point | US-02, US-05, US-07 |
+| 15 | US-15 Coverage for Phases 1–3 and Phase 5 everywhere | US-14 |
+| 16 | US-16 Findings history API and fingerprint adoption | US-07, US-14 |
+| 17 | US-17 Grant management and opt-in grant enforcement | US-08 |
+| 18 | US-18 Durable scan queue, leased workers, restart re-queue | US-04, US-14 |
 
 US-07 may be implemented immediately after US-02. The listed order is a safe default for completing the whole backlog sequentially.
+
+US-13–US-18 close the SAST-maturity gaps found after US-01–US-08 shipped partially (see `CLAUDE.md`'s per-story "Not yet done" lists). US-13 is independent and goes first, so later stories can be measured against a baseline. Decisions already taken for this group: add the new SARIF fingerprint key now (US-16); grant enforcement is off by default (US-17); restart recovery re-queues and restarts the whole run, no per-phase checkpoints (US-18); OWASP Benchmark is the only labelled test set (US-13).
 
 ## Shared contracts
 
@@ -370,6 +378,146 @@ Keep external `jobId` and legacy `projectId` resolvable through a compatibility 
 **Verification:** Playwright navigation/filter/deep-link tests; keyboard/focus checks; light/dark screenshots for main views, dialogs, Studio, and errors; representative large-list fixtures.
 
 **Starting points:** New frontend from US-11, history/issues/review/config API routes, `public/branding.config.js`, `e2e/`.
+
+## US-13 — Measure detection quality against the OWASP Benchmark
+
+**User story:** As a security lead, I want measured precision and recall for Ignite's checks, with and without the external tools installed, so that "Ignite replaces GHAS" is backed by numbers instead of a feature list.
+
+**Implementation scope**
+
+- New binary crate `rust/crates/sast-bench` (bin `sast-bench`). It fetches the OWASP Benchmark for Java at a pinned commit into a cache directory outside the repo (the Benchmark is GPL-2.0: never vendor it into this tree), runs `phase4-scan-cli` against it, and scores the results against the Benchmark's own `expectedresults-*.csv`.
+- Map Ignite findings to Benchmark test cases by file plus CWE, using the CWE mapping `override-engine` already assigns per category. A finding with no CWE, or one outside the Benchmark's CWE set, is reported as "unmapped", never counted as a true positive.
+- Run two modes per invocation: `full` (external tools as installed — Semgrep, CodeQL, Bearer, etc.) and `fallback` (every external tool forced off, built-ins only). Record which engines actually ran, from Phase 4 coverage, alongside the scores.
+- Per CWE category and overall: TP, FP, FN, TN, precision, recall, and the Benchmark's own score (true-positive rate minus false-positive rate).
+- Output `sast-bench-results.json` plus a markdown scorecard. Publish the scorecard to `docs-site/docs/detection-quality.md`, stating date, Benchmark commit, Ignite commit and tool versions.
+- Add a scheduled/manual CI workflow that runs it; it is not part of `cargo nextest run`.
+
+**Acceptance criteria**
+
+- [ ] `sast-bench --mode full|fallback|both` produces JSON and markdown with per-CWE and overall scores.
+- [ ] Re-running against the same Benchmark commit, Ignite commit and tool versions gives identical numbers.
+- [ ] Scores state which engines actually ran; a missing tool shows as such, not as a silent drop in recall.
+- [ ] Unmapped findings are listed separately and excluded from TP/FP.
+- [ ] The Benchmark source is never committed to this repository.
+
+**Verification:** Unit tests for the CSV parser, the finding-to-test-case matcher and score arithmetic against a small hand-written fixture of expected results. One real run in each mode recorded in the docs page.
+
+**Starting points:** `rust/crates/phase4-scan-cli`, `rust/crates/bench-all`, `rust/crates/override-engine` (CWE mapping), `rust/crates/policy` (coverage).
+
+## US-14 — Finalize every run through one path
+
+**User story:** As a reviewer, I want onboard and interactive uploads to produce the same evidence, coverage and finding history as `validate-all`, so that the entry point used doesn't decide how much I can trust a result.
+
+**Implementation scope**
+
+- Extract `pipeline_validate.rs`'s post-Phase-4 block (snapshot digest finalization, evidence manifest, finding fingerprints/observations) together with `policy_finalization::finalize` into one shared `finalize_run(...)` function.
+- Call it from `validate-all`, `onboard` and the interactive pipeline (`pipeline_interactive/run.rs`). The interactive path must start collecting `Phase4Output.coverage`, which it currently drops.
+- Interactive and onboard uploads have no commit SHA; record it as absent rather than inventing one.
+- Return `coverage`/`policyDecision` from the interactive path's final `done` event, as `validate-all` and `onboard` already do.
+
+**Acceptance criteria**
+
+- [x] A run through each of the three entry points persists an evidence manifest, check executions, a policy decision and finding observations.
+- [x] `GET /api/pipeline/:jobId/evidence` works for onboard and interactive runs.
+- [x] Two uploads of byte-identical source dedupe onto one snapshot, whichever entry point was used.
+- [x] `validate-all` responses and persisted rows are unchanged by the refactor (blocked runs now *additionally* record evidence and finding history).
+
+**Verification:** One route test per entry point asserting the four persisted records; the existing `validate-all` tests pass unchanged.
+
+**Starting points:** `rust/crates/server/src/routes/{pipeline_validate.rs,pipeline_onboard.rs,pipeline_interactive/run.rs,policy_finalization.rs}`, `rust/crates/evidence`, `rust/crates/db-store/src/{findings.rs,evidence.rs,check_executions.rs}`.
+
+## US-15 — Report coverage for Phases 1–3, and Phase 5 on every path
+
+**User story:** As a reviewer, I want to see whether unit tests, license checks and governance documents actually ran, so that a skipped test suite is never mistaken for a passing one.
+
+**Implementation scope**
+
+- Emit `CheckCoverage` for: unit tests (`completed`, `failed`, `not_applicable` when no test suite is found, plus a flag when failures were accepted via `unitTestFailuresNonBlocking`), the license scan, the GxP/compliance document check, and the `.env`/CODEOWNERS checks.
+- Make onboard and interactive report Phase 5 (governance CI) coverage the way `validate-all` already does.
+- Decide per check whether it joins `PolicyVersion::strict_publication()`'s required list, and document the choice. `legacy_compatible()` stays unchanged.
+
+**Acceptance criteria**
+
+- [ ] A project with no tests shows unit tests as `not_applicable`, not `completed`.
+- [ ] Accepted non-blocking test failures are visible in coverage, not only in a warning string.
+- [ ] Under strict policy, a required Phase 3 check that didn't run yields `incomplete`.
+- [ ] Legacy policy decisions are unchanged for existing installations.
+
+**Verification:** Policy table tests for the new check ids; route tests for a no-tests project and a failing-tests project.
+
+**Starting points:** `rust/crates/pipeline-core/src/lib.rs`, `rust/crates/unit-test-runner`, `rust/crates/compliance-documents`, `rust/crates/policy`.
+
+## US-16 — Expose finding history and use fingerprints in baselines and SARIF
+
+**User story:** As a developer, I want a finding to keep its identity, baseline status and GitHub alert when code above it moves, and to see its history across scans.
+
+**Implementation scope**
+
+- Add a nullable `fingerprint` column to `issues` (additive migration), filled by `finalize_run`.
+- `GET /api/repositories/:org/:repo/findings` (status filter, server-side paging) and `GET /api/repositories/:org/:repo/findings/:fingerprint/observations`.
+- Baselines store the fingerprint next to the issue id and match on either, so a baseline survives a line shift.
+- SARIF: add `partialFingerprints.igniteFingerprint/v1` next to the existing `igniteIssueId`. Decision taken: add it now. Document that GitHub may close and reopen existing alerts once on the first upload carrying the new key; Ignite-recorded overrides are re-dismissed by the existing outbound sync, while dismissals made only in GitHub's UI are not carried over.
+- Studio: a finding-history panel (new / existing / reopened / resolved per run).
+- Override carry-forward stays keyed on issue id plus the existing fuzzy match; it does not switch to fingerprints in this story.
+
+**Acceptance criteria**
+
+- [ ] Inserting blank lines above a baselined finding keeps it baselined.
+- [ ] The findings API returns status and observations across at least three scans of one repository.
+- [ ] SARIF output carries both keys; existing `igniteIssueId` values are unchanged.
+- [ ] Legacy rows without a fingerprint still work for baselines and SARIF.
+
+**Verification:** db-store tests for migration and baseline matching; route tests for the two endpoints; a SARIF snapshot test; one manual upload to a sandbox GitHub repository to observe alert behavior, with the result recorded in the docs.
+
+**Starting points:** `rust/crates/db-store/src/{findings.rs,baseline.rs,issues.rs,schema.rs}`, `rust/crates/baseline-filter`, `rust/crates/sarif`, `rust/crates/server/src/routes/{history.rs,baseline.rs,github_pr_status.rs}`.
+
+## US-17 — Manage permission grants and optionally enforce them
+
+**User story:** As a policy admin, I want to grant and revoke scan, review, publish and view rights per org or repository through the app, and optionally have every entry point enforce them.
+
+**Implementation scope**
+
+- `GET`/`POST`/`DELETE /api/policy/grants`, gated by a `policy_admin` grant; every change emits an audit event.
+- Bootstrap: `security.policyAdmins` in `config.json` (env override), mirrored into global `policy_admin` grants at startup, additive only — same posture as `sync_configured_approvers_into_grants`.
+- `security.enforceGrants` (env `ENFORCE_GRANTS`), **default `false`**. When on: `scan` gates validate-all/onboard/interactive; `publish` gates real onboard, effectivate and fix-PR apply; `view` gates project/history/findings reads. When off, behavior is exactly today's.
+- API-key scopes still apply on top; a key never exceeds its owner's grants.
+- UI: a Grants tab in the Admin / Integrations modal (list, add, revoke), in all four locales.
+
+**Acceptance criteria**
+
+- [ ] With enforcement off, no existing route changes behavior.
+- [ ] With enforcement on, a user without a `scan` grant for `org/repo` gets 403 with a machine-readable code, and one with an org-level grant succeeds.
+- [ ] Only a `policy_admin` can change grants; grant changes appear in the audit log.
+- [ ] Removing an email from `security.policyAdmins` never silently revokes an existing grant.
+
+**Verification:** db-store and route tests for each permission at global/org/repo scope with enforcement on and off.
+
+**Starting points:** `rust/crates/db-store/src/permissions.rs`, `rust/crates/server/src/{auth.rs,routes/override_approval.rs,routes/settings.rs}`, `public/index.html`, `public/i18n.js`.
+
+## US-18 — Persist the scan queue and re-queue interrupted runs after restart
+
+**User story:** As an operator, I want queued and running scans to survive a server restart, so that a deploy or crash doesn't silently drop work.
+
+**Implementation scope**
+
+- Move the in-memory scan queue (`routes/scan_queue.rs`) into a DB table, keeping its two lanes, ordering, and the reorder/remove/clear API.
+- An in-process worker pool claims jobs from that table with a lease: expiry, heartbeat, and a fencing token checked on every lifecycle write, so a stale worker can't overwrite a newer attempt.
+- Synchronous routes enqueue and wait for completion, so request and response shapes don't change.
+- Uploaded sources for queued and running jobs live under `IGNITE_DATA_DIR/jobs/<id>` (not the OS temp dir) until the job finishes, then are removed under the existing cleanup guarantees.
+- On startup, jobs with an expired lease are re-queued and **restart from the beginning**. Per-phase checkpoints are deliberately out of scope. Idempotency keys keep a re-queued run from duplicating side effects; publication is still guarded by US-06's `publication_attempts`.
+- A run re-queued after restart records the restart in its lifecycle history.
+
+**Acceptance criteria**
+
+- [ ] Killing the server with jobs queued and running, then restarting, completes all of them without resubmission.
+- [ ] A stale worker's write after its lease expired is rejected.
+- [ ] Queue order and lanes survive a restart; the Queue panel shows the persisted queue.
+- [ ] No uploaded source remains on disk after its job finishes, succeeds or fails.
+- [ ] Existing API responses are unchanged for clients that never restart the server.
+
+**Verification:** db-store lease/fencing tests; a server integration test that drops the worker mid-run and confirms re-queue; the existing scan-queue route tests.
+
+**Starting points:** `rust/crates/server/src/routes/scan_queue.rs`, `rust/crates/db-store/src/{lifecycle.rs,async_jobs.rs}`, `rust/crates/run-lifecycle`, `rust/crates/staging`.
 
 ## Cross-story completion requirements
 
