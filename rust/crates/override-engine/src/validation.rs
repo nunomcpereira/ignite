@@ -116,6 +116,7 @@ mod tests {
             tool: None,
             references: IssueReferences::default(),
             author: None,
+            rule: None,
         }
     }
 

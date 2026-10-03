@@ -146,7 +146,7 @@ impl PipelineError {
 use ignite_pipeline_core::panic_message;
 
 pub(crate) fn issue_to_input(i: &Issue) -> ignite_db_store::IssueInput {
-    ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone(), owasp: i.owasp.clone(), tool: i.tool.clone(), references: if i.references.is_empty() { None } else { Some(serde_json::to_value(&i.references).unwrap()) }, duplicate_ref: i.duplicate_ref.clone(), author: i.author.as_ref().and_then(|a| serde_json::to_value(a).ok()) }
+    ignite_db_store::IssueInput { id: i.id.clone(), phase: Some(4), category: i.category.clone(), severity: format!("{:?}", i.severity).to_lowercase(), score: Some(i.score as i64), summary: i.summary.clone(), file: i.file.clone(), line: i.line, snippet: i.snippet.clone(), cross_file: i.cross_file, chain: i.chain.clone(), cwe: i.cwe.clone(), owasp: i.owasp.clone(), tool: i.tool.clone(), references: if i.references.is_empty() { None } else { Some(serde_json::to_value(&i.references).unwrap()) }, duplicate_ref: i.duplicate_ref.clone(), author: i.author.as_ref().and_then(|a| serde_json::to_value(a).ok()), rule: i.rule.clone() }
 }
 
 // `default_phase4_config` (this file used to define its own thin wrapper,

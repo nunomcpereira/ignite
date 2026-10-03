@@ -1157,6 +1157,51 @@ pub struct SecurityConfig {
     /// is unchanged and only `review` grants (override approval) apply.
     #[serde(default)]
     pub enforce_grants: bool,
+
+    /// Engine consensus for code-analysis findings (see
+    /// `ignite_override_engine::consensus`).
+    #[serde(default)]
+    pub sast_consensus: SastConsensusConfig,
+
+    /// Rule-level false-positive learning: when `enabled`, a finding whose
+    /// engine rule has at least `minVerdicts` false-positive verdicts and no
+    /// real-issue verdict in the same org stops blocking (it's still
+    /// reported, as a warning with a note).
+    #[serde(default)]
+    pub fp_learning: FpLearningConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FpLearningConfig {
+    pub enabled: bool,
+    pub min_verdicts: i64,
+}
+
+impl Default for FpLearningConfig {
+    fn default() -> Self {
+        FpLearningConfig { enabled: false, min_verdicts: 3 }
+    }
+}
+
+/// When `enabled`, a blocking code-analysis finding (CodeQL, Semgrep,
+/// Bearer) keeps blocking only if it came from one of `trusted_engines` or
+/// at least `min_engines` distinct engines reported the same weakness (same
+/// file, same CWE family, within `line_window` lines; 0 = anywhere in the
+/// file). Others become warnings with a note — never dropped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SastConsensusConfig {
+    pub enabled: bool,
+    pub trusted_engines: Vec<String>,
+    pub min_engines: u32,
+    pub line_window: i64,
+}
+
+impl Default for SastConsensusConfig {
+    fn default() -> Self {
+        SastConsensusConfig { enabled: false, trusted_engines: vec!["codeql".to_string()], min_engines: 2, line_window: 10 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1566,6 +1611,8 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("ALLOW_UNAUTHENTICATED_AI_ASSIST") { merged.security.allow_unauthenticated_ai_assist = v; }
     if let Some(v) = env_csv("POLICY_ADMINS") { merged.security.policy_admins = v; }
     if let Some(v) = env_bool("ENFORCE_GRANTS") { merged.security.enforce_grants = v; }
+    if let Some(v) = env_bool("SAST_CONSENSUS_ENABLED") { merged.security.sast_consensus.enabled = v; }
+    if let Some(v) = env_bool("FP_LEARNING_ENABLED") { merged.security.fp_learning.enabled = v; }
     if let Some(v) = env_csv("OVERRIDE_APPROVAL_APPROVER_EMAILS") { merged.security.override_approval.approver_emails = v; }
     if let Some(v) = env_bool("POLICY_STRICT") { merged.policy.strict = v; }
     if let Some(v) = env_bool("SLA_ENABLED") { merged.sla.enabled = v; }
@@ -2000,6 +2047,8 @@ mod tests {
         assert!(load_with_env("ALLOW_UNAUTHENTICATED_AI_ASSIST", "true").security.allow_unauthenticated_ai_assist, "ALLOW_UNAUTHENTICATED_AI_ASSIST=true");
         assert!(!load_with_env("ALLOW_UNAUTHENTICATED_AI_ASSIST", "false").security.allow_unauthenticated_ai_assist, "ALLOW_UNAUTHENTICATED_AI_ASSIST=false");
         assert!(load_with_env("ENFORCE_GRANTS", "true").security.enforce_grants, "ENFORCE_GRANTS=true");
+        assert!(load_with_env("SAST_CONSENSUS_ENABLED", "true").security.sast_consensus.enabled, "SAST_CONSENSUS_ENABLED=true");
+        assert!(load_with_env("FP_LEARNING_ENABLED", "true").security.fp_learning.enabled, "FP_LEARNING_ENABLED=true");
         assert!(!Config::default().security.enforce_grants, "grant enforcement is off by default");
         assert_eq!(load_with_env("POLICY_ADMINS", "a@x.io, b@x.io").security.policy_admins, vec!["a@x.io", "b@x.io"], "POLICY_ADMINS: comma list");
         assert!(load_with_env("POLICY_STRICT", "true").policy.strict, "POLICY_STRICT=true");
@@ -2127,7 +2176,7 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 141, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 143, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
     }
 
     #[test]

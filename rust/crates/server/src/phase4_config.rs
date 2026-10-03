@@ -125,6 +125,13 @@ pub fn from_config(cfg: &ignite_config::Config, org: &str, repo: &str, project_i
             ram_mb: sec.codeql.ram_mb,
             timeout_ms: sec.codeql.timeout_ms,
         },
+        sast_consensus: sec.sast_consensus.enabled.then(|| ignite_override_engine::ConsensusPolicy {
+            trusted_engines: sec.sast_consensus.trusted_engines.iter().map(|e| e.to_ascii_lowercase()).collect(),
+            min_engines: sec.sast_consensus.min_engines.max(1) as usize,
+            line_window: (sec.sast_consensus.line_window > 0).then_some(sec.sast_consensus.line_window),
+            trusted_covers: vec![],
+        }),
+        fp_learning_min_verdicts: sec.fp_learning.enabled.then_some(sec.fp_learning.min_verdicts.max(1)),
         codeql_query_suite_review_overdue: ignite_config::is_codeql_review_overdue(
             sec.codeql.last_reviewed_at.as_deref(),
             sec.codeql.review_cadence_days,
@@ -191,6 +198,17 @@ mod tests {
         assert!(!phase4.malicious_dependencies.enabled);
         // Untouched fields still reflect the (enabled-by-default) config.
         assert!(phase4.iac.trivy_enabled);
+    }
+
+    #[test]
+    fn sast_consensus_is_off_by_default_and_maps_when_enabled() {
+        let mut cfg = ignite_config::Config::default();
+        assert!(from_config(&cfg, "o", "r", None, false, None).sast_consensus.is_none());
+        cfg.security.sast_consensus.enabled = true;
+        cfg.security.sast_consensus.line_window = 0;
+        let p = from_config(&cfg, "o", "r", None, false, None).sast_consensus.unwrap();
+        assert_eq!(p.trusted_engines, vec!["codeql".to_string()]);
+        assert_eq!((p.min_engines, p.line_window), (2, None));
     }
 
     #[test]

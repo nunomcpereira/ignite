@@ -2,7 +2,7 @@
 //! Java (US-13). See the library's doc comment for the scoring rules.
 //!
 //! ```text
-//! sast-bench [--mode full|fallback|both] [--benchmark-dir <dir>]
+//! sast-bench [--mode full|fallback|both|consensus] [--benchmark-dir <dir>]
 //!            [--cache-dir <dir>] [--out-dir <dir>] [--ignite-root <dir>]
 //! ```
 //!
@@ -13,7 +13,7 @@
 //! `sast-bench-scorecard.md` to `--out-dir` (default: current directory).
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use ignite_sast_bench::{engine_runs, parse_expected_results, render_markdown, score, score_by_tool, BenchReport, ModeResult, BENCHMARK_COMMIT, BENCHMARK_REPO, EXPECTED_RESULTS_FILE};
+use ignite_sast_bench::{engine_runs, parse_expected_results, render_markdown, blocking_score, score, score_by_tool, score_policies, BenchReport, ModeResult, BENCHMARK_COMMIT, BENCHMARK_REPO, EXPECTED_RESULTS_FILE};
 use ignite_tool_runner::{RunToolOptions, ToolRunner};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -27,7 +27,7 @@ struct Args {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: sast-bench [--mode full|fallback|both] [--benchmark-dir <dir>] [--cache-dir <dir>] [--out-dir <dir>] [--ignite-root <dir>]");
+    eprintln!("usage: sast-bench [--mode full|fallback|both|consensus] [--benchmark-dir <dir>] [--cache-dir <dir>] [--out-dir <dir>] [--ignite-root <dir>]");
     std::process::exit(2);
 }
 
@@ -45,6 +45,9 @@ fn parse_args() -> Args {
                     "full" => vec!["full"],
                     "fallback" => vec!["fallback"],
                     "both" => vec!["full", "fallback"],
+                    // Before/after for engine consensus: the same full scan
+                    // with consensus off, then on, through the real pipeline.
+                    "consensus" => vec!["full", "full-consensus"],
                     _ => usage(),
                 }
             }
@@ -87,8 +90,11 @@ async fn ensure_benchmark(runner: &ToolRunner, dir: &Path) -> Result<(), String>
 }
 
 async fn run_mode(mode: &'static str, benchmark_dir: &Path, ignite_root: Option<&Path>, cases: &[ignite_sast_bench::TestCase]) -> Result<ModeResult, String> {
-    let runner = ignite_phase4_orchestrator::standalone::standalone_runner(mode == "full");
-    let config = ignite_phase4_orchestrator::standalone::standalone_config("sast-bench", "benchmark-java", ignite_root, Some(benchmark_dir.to_path_buf()));
+    let runner = ignite_phase4_orchestrator::standalone::standalone_runner(mode != "fallback");
+    let mut config = ignite_phase4_orchestrator::standalone::standalone_config("sast-bench", "benchmark-java", ignite_root, Some(benchmark_dir.to_path_buf()));
+    if mode == "full-consensus" {
+        config.sast_consensus = Some(ignite_override_engine::ConsensusPolicy::default());
+    }
     let db_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let store = ignite_db_store::DbStore::open(&db_dir.path().join("bench.db")).map_err(|e| e.to_string())?;
     let staging_parent = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -101,7 +107,7 @@ async fn run_mode(mode: &'static str, benchmark_dir: &Path, ignite_root: Option<
     let t0 = Instant::now();
     let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &runner, &store, &config, &checker, &|l: &str| eprintln!("[{mode}] {l}")).await.map_err(|e| e.to_string())?;
     let duration_secs = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
-    Ok(ModeResult { mode: mode.to_string(), duration_secs, engines: engine_runs(&output.coverage), scorecard: score(cases, &output.issues), by_tool: score_by_tool(cases, &output.issues) })
+    Ok(ModeResult { mode: mode.to_string(), duration_secs, engines: engine_runs(&output.coverage), scorecard: score(cases, &output.issues), by_tool: score_by_tool(cases, &output.issues), policies: score_policies(cases, &output.issues), blocking: blocking_score(cases, &output.issues) })
 }
 
 #[tokio::main]
@@ -172,7 +178,10 @@ async fn main() {
         }
     };
     write(&json_path, serde_json::to_string_pretty(&report).unwrap_or_default());
-    let md = render_markdown(&report);
+    let mut md = render_markdown(&report);
+    if let (Some(before), Some(after)) = (report.modes.iter().find(|m| m.mode == "full"), report.modes.iter().find(|m| m.mode == "full-consensus")) {
+        md.push_str(&ignite_sast_bench::render_comparison(before, after));
+    }
     write(&md_path, md.clone());
     println!("{md}");
     eprintln!("Wrote {} and {}", json_path.display(), md_path.display());

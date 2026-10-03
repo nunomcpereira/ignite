@@ -59,6 +59,7 @@ fn build_router(state: Arc<AppState>, public_dir: &Path) -> axum::Router {
         .merge(routes::repository_events_webhook::router())
         .merge(routes::override_approval::router())
         .merge(routes::policy_grants::router())
+        .merge(routes::rule_tuning::router())
         .merge(routes::issues::router())
         .merge(routes::history::router())
         .merge(routes::onboarded_repos::router())
@@ -182,6 +183,7 @@ mod tests {
     mod finding_history;
     mod grants;
     mod scan_recovery;
+    mod rule_tuning;
 
     async fn spawn_test_server() -> String {
         spawn_test_server_with_llm_config(state::default_llm_config()).await.0

@@ -140,6 +140,12 @@ pub struct Phase4Config {
     /// `security.codeql.{reviewCadenceDays,lastReviewedAt}` — see
     /// `override_engine::CodeqlResult::query_suite_review_overdue`.
     pub codeql_query_suite_review_overdue: bool,
+    /// Engine consensus for code-analysis findings; `None` = off.
+    pub sast_consensus: Option<ignite_override_engine::ConsensusPolicy>,
+    /// `security.fpLearning`: a rule with at least this many false-positive
+    /// verdicts (and none saying it's real) in the org stops blocking;
+    /// `None` = off.
+    pub fp_learning_min_verdicts: Option<i64>,
     /// When set, the CodeQL database(s) built for this run's compliance
     /// scan are persisted here instead of discarded — the same directory
     /// Studio's `/studio/codeql/query` and `/studio/callgraph` routes read
@@ -487,7 +493,7 @@ pub async fn run_phase4_checks(
             ignite_ignore: None,
             env_var_drift: None,
         };
-        let (issues, rule_acknowledgments) = apply_org_ignore_rules(ignite_override_engine::collect_phase4_issues(&inputs), root, config, log);
+        let (issues, rule_acknowledgments) = apply_org_ignore_rules(apply_learned_false_positives(apply_sast_consensus(ignite_override_engine::collect_phase4_issues(&inputs), config, &[], log), store, config, log), root, store, config, log);
         task_timings.push(("phase4Total", __t0.elapsed().as_millis() as u64));
         coverage.push(coverage_for_engine("semanticSast", semantic_sast_result.engine, semantic_sast_result.findings.len()));
         coverage.push(coverage_for_engine("fileEncapsulation", file_encapsulation_result.engine, file_encapsulation_result.findings.len()));
@@ -1059,7 +1065,8 @@ pub async fn run_phase4_checks(
         ignite_ignore: igniteignore_check,
         env_var_drift: env_var_drift_check,
     };
-    let (issues, rule_acknowledgments) = apply_org_ignore_rules(ignite_override_engine::collect_phase4_issues(&inputs), root, config, log);
+    let codeql_covered: Vec<String> = codeql_result.languages.iter().filter(|l| !codeql_result.failed_languages.iter().any(|(f, _)| f == *l)).cloned().collect();
+    let (issues, rule_acknowledgments) = apply_org_ignore_rules(apply_learned_false_positives(apply_sast_consensus(ignite_override_engine::collect_phase4_issues(&inputs), config, &codeql_covered, log), store, config, log), root, store, config, log);
     let _ = http_client;
     let total_ms = __t0.elapsed().as_millis() as u64;
     task_timings.push(("phase4Total", total_ms));
@@ -1079,12 +1086,53 @@ pub async fn run_phase4_checks(
 /// their ids come back with the rule's reason so the caller can record it
 /// as an automatic acknowledgment. Logs the count and any rule that failed
 /// to compile.
-fn apply_org_ignore_rules(issues: Vec<Issue>, root: &Path, config: &Phase4Config, log: &(dyn Fn(&str) + Sync)) -> (Vec<Issue>, Vec<(String, String)>) {
-    if config.ignore_rules.is_empty() {
+/// Downgrades uncorroborated code-analysis findings when consensus is on.
+/// `codeql_languages`: languages CodeQL analyzed successfully this run —
+/// in those files only CodeQL findings block (when CodeQL is trusted).
+fn apply_sast_consensus(mut issues: Vec<Issue>, config: &Phase4Config, codeql_languages: &[String], log: &(dyn Fn(&str) + Sync)) -> Vec<Issue> {
+    if let Some(policy) = &config.sast_consensus {
+        let mut policy = policy.clone();
+        if policy.trusted_engines.iter().any(|e| e == "codeql") {
+            policy.trusted_covers = ignite_override_engine::extensions_for_languages(codeql_languages);
+        }
+        let n = ignite_override_engine::apply_engine_consensus(&mut issues, &policy);
+        if n > 0 {
+            log(&format!("Engine consensus: {n} code-analysis finding(s) from untrusted engines downgraded to warnings."));
+        }
+    }
+    issues
+}
+
+fn apply_learned_false_positives(mut issues: Vec<Issue>, store: &DbStore, config: &Phase4Config, log: &(dyn Fn(&str) + Sync)) -> Vec<Issue> {
+    let Some(min) = config.fp_learning_min_verdicts else { return issues };
+    let rules: std::collections::HashSet<(String, String)> = store.list_false_positive_rules(&config.org, min).into_iter().map(|(t, r)| (t.to_ascii_lowercase(), r.to_ascii_lowercase())).collect();
+    if rules.is_empty() {
+        return issues;
+    }
+    let n = ignite_override_engine::downgrade_rules(&mut issues, &rules, &format!("this rule was marked a false positive at least {min} times in {} and never confirmed; it no longer blocks", config.org));
+    if n > 0 {
+        log(&format!("False-positive learning: {n} finding(s) from rules reviewers marked as false positives downgraded to warnings."));
+    }
+    issues
+}
+
+fn apply_org_ignore_rules(issues: Vec<Issue>, root: &Path, store: &DbStore, config: &Phase4Config, log: &(dyn Fn(&str) + Sync)) -> (Vec<Issue>, Vec<(String, String)>) {
+    // Accepted AI-proposed rules (Admin / Integrations → Rule tuning) apply
+    // next to config.json's own.
+    let mut rules = config.ignore_rules.clone();
+    for p in store.list_accepted_rule_proposals_for(&config.org, &config.repo) {
+        rules.push(ignite_issue_filter::IgnoreRule {
+            file_patterns: p.file_patterns,
+            line_patterns: p.line_patterns,
+            categories: p.categories,
+            reason: format!("{} (AI-proposed rule #{} accepted by {})", p.reason, p.id, p.decided_by.unwrap_or_else(|| "an admin".to_string())),
+        });
+    }
+    if rules.is_empty() {
         return (issues, Vec::new());
     }
     let order: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
-    let out = ignite_issue_filter::apply_ignore_rules(issues, root, &config.ignore_rules);
+    let out = ignite_issue_filter::apply_ignore_rules(issues, root, &rules);
     for e in &out.errors {
         log(&format!("⚠ ignoreRules for org {}: {e}", config.org));
     }
@@ -1202,6 +1250,8 @@ mod tests {
             igniteignore_git_check_root: None,
             codeql: ignite_codeql_cross_file::CodeqlConfig { enabled: false, ..Default::default() },
             codeql_query_suite_review_overdue: false,
+            sast_consensus: None,
+            fp_learning_min_verdicts: None,
             keep_codeql_db_dir: None,
         }
     }

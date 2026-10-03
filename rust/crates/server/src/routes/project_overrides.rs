@@ -45,6 +45,7 @@ fn issue_row_to_issue(r: &IssueRow) -> Issue {
         tool: r.tool.clone(),
         references: r.references.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         author: r.author.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok()),
+        rule: r.rule.clone(),
     }
 }
 
@@ -204,7 +205,7 @@ mod characterization {
     }
 
     fn issue(id: &str, category: &str, severity: &str, score: i64) -> IssueInput {
-        IssueInput { id: id.into(), phase: Some(4), category: category.into(), severity: severity.into(), score: Some(score), summary: format!("summary of {id}"), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None, author: None }
+        IssueInput { id: id.into(), phase: Some(4), category: category.into(), severity: severity.into(), score: Some(score), summary: format!("summary of {id}"), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None, author: None, rule: None }
     }
 
     async fn fixture(dual_custody: bool) -> Fixture {

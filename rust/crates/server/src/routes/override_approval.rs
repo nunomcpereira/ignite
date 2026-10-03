@@ -201,7 +201,7 @@ mod tests {
         let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             project_id,
-            &[ignite_db_store::IssueInput { id: "secret::a.js::1".into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(10), summary: "hardcoded key".into(), file: Some("a.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
+            &[ignite_db_store::IssueInput { id: "secret::a.js::1".into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(10), summary: "hardcoded key".into(), file: Some("a.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None }],
             &std::collections::HashSet::new(),
         );
         let override_id = state.db.add_pending_override(ignite_db_store::AddOverrideArgs { project_id, job_id: "job-1", phase: 4, issue_id: "secret::a.js::1", category: "secret", severity: "error", summary: "hardcoded key", file: Some("a.js"), line: Some(1), justification: "under review", actor_email: "submitter@acme.example", actor_name: None, email_sent: false });

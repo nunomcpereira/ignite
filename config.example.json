@@ -144,6 +144,16 @@
     "allowUnauthenticatedInteractiveDryRun": false,
     "policyAdmins": [],
     "enforceGrants": false,
+    "sastConsensus": {
+      "enabled": false,
+      "trustedEngines": ["codeql"],
+      "minEngines": 2,
+      "lineWindow": 10
+    },
+    "fpLearning": {
+      "enabled": false,
+      "minVerdicts": 3
+    },
     "codeql": {
       "enabled": true,
       "binary": "codeql",

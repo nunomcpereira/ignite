@@ -172,7 +172,8 @@ async fn issue_history(State(state): State<Arc<AppState>>, crate::auth::AuthOrUn
     let fingerprint = issue.fingerprint();
     let finding = state.db.get_repository_by_org_repo(&project.org, &project.repo).and_then(|r| state.db.get_finding_by_fingerprint(r.id, &fingerprint));
     let observations = finding.as_ref().map(|f| state.db.list_finding_observations(f.id)).unwrap_or_default();
-    Json(json!({ "ok": true, "fingerprint": fingerprint, "finding": finding, "observations": observations })).into_response()
+    let verdict = state.db.get_finding_verdict(&project.org, &project.repo, &fingerprint);
+    Json(json!({ "ok": true, "fingerprint": fingerprint, "finding": finding, "observations": observations, "verdict": verdict, "rule": issue.rule })).into_response()
 }
 
 async fn job_issues_handler(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(job_id): Path<String>) -> Response {

@@ -59,6 +59,7 @@ pub fn collect_codeql_issues(codeql: &CodeqlResult) -> Vec<Issue> {
             owasp: None,
             tool: Some("codeql".to_string()),
             author: None,
+            rule: None,
         }
     });
     let stale_pin = codeql.query_suite_review_overdue.then(|| {
@@ -80,6 +81,7 @@ pub fn collect_codeql_issues(codeql: &CodeqlResult) -> Vec<Issue> {
             owasp: None,
             tool: Some("codeql".to_string()),
             author: None,
+            rule: None,
         }
     });
     codeql
@@ -129,6 +131,7 @@ pub fn collect_codeql_issues(codeql: &CodeqlResult) -> Vec<Issue> {
                 owasp,
                 tool: Some("codeql".to_string()),
                 author: None,
+                rule: f.kind.clone(),
             }
         })
         .chain(failed)
@@ -179,6 +182,9 @@ fn push_simple(
         owasp: f.owasp.clone(),
         tool: f.tool.clone(),
         author: None,
+        // `kind` is the engine's rule/check id for every scanner-backed
+        // category (Semgrep check_id, Bearer rule, gitleaks rule, ...).
+        rule: f.kind.clone(),
     });
 }
 
@@ -392,6 +398,7 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                     owasp: None,
                     tool: Some("llm-deep-scan".to_string()),
                     author: None,
+                    rule: None,
                 });
             }
         }
@@ -434,6 +441,7 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                 tool: f.tool.clone(),
                 references: IssueReferences::default(),
                 author: None,
+                rule: None,
             });
         }
     }
@@ -461,6 +469,7 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
                 tool: f.tool.clone(),
                 references: IssueReferences::default(),
                 author: None,
+                rule: None,
             });
         }
     }
@@ -524,6 +533,7 @@ pub fn collect_license_issues(manifests: &[LicenseManifest], license_files: &[Li
                 tool: None,
                 references: IssueReferences::default(),
                 author: None,
+                rule: None,
             });
         }
     }
@@ -547,6 +557,7 @@ pub fn collect_license_issues(manifests: &[LicenseManifest], license_files: &[Li
             tool: None,
             references: IssueReferences::default(),
             author: None,
+            rule: None,
         });
     }
 
@@ -601,6 +612,7 @@ pub fn collect_dependency_vulnerability_issues(manifests: &[VulnManifest]) -> Ve
                     owasp: resolved.owasp,
                     tool: Some("deps.dev".to_string()),
                     author: None,
+                    rule: None,
                 });
             }
         }

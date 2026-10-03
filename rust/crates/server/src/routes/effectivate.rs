@@ -38,7 +38,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 fn issue_row_to_input(r: &IssueRow) -> IssueInput {
-    IssueInput { id: r.id.clone(), phase: r.phase, category: r.category.clone(), severity: r.severity.clone(), score: r.score, summary: r.summary.clone(), file: r.file.clone(), line: r.line, snippet: r.snippet.clone(), cross_file: r.cross_file, chain: r.chain.clone(), cwe: r.cwe.clone(), owasp: r.owasp.clone(), tool: r.tool.clone(), references: r.references.clone(), duplicate_ref: r.duplicate_ref.clone(), author: r.author.clone() }
+    IssueInput { id: r.id.clone(), phase: r.phase, category: r.category.clone(), severity: r.severity.clone(), score: r.score, summary: r.summary.clone(), file: r.file.clone(), line: r.line, snippet: r.snippet.clone(), cross_file: r.cross_file, chain: r.chain.clone(), cwe: r.cwe.clone(), owasp: r.owasp.clone(), tool: r.tool.clone(), references: r.references.clone(), duplicate_ref: r.duplicate_ref.clone(), author: r.author.clone(), rule: r.rule.clone() }
 }
 
 fn issue_row_to_issue(r: &IssueRow) -> Issue {
@@ -62,6 +62,7 @@ fn issue_row_to_issue(r: &IssueRow) -> Issue {
         tool: r.tool.clone(),
         references: r.references.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         author: r.author.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok()),
+        rule: r.rule.clone(),
     }
 }
 
@@ -616,7 +617,7 @@ mod tests {
         let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             project_id,
-            &[IssueInput { id: "secrets::app.js::1".into(), phase: Some(4), category: "secrets".into(), severity: "error".into(), score: Some(9), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None, author: None }],
+            &[IssueInput { id: "secrets::app.js::1".into(), phase: Some(4), category: "secrets".into(), severity: "error".into(), score: Some(9), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None, author: None, rule: None }],
             &HashSet::new(),
         );
         let backup_dir = tempfile::tempdir().unwrap();
@@ -644,7 +645,7 @@ mod tests {
         let project_id = state.db.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         state.db.replace_project_issues(
             project_id,
-            &[IssueInput { id: "secret::app.js::1".into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(10), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None, author: None }],
+            &[IssueInput { id: "secret::app.js::1".into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(10), summary: "Hardcoded AWS key".into(), file: Some("app.js".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".into()), references: None, duplicate_ref: None, author: None, rule: None }],
             &HashSet::new(),
         );
         let backup_dir = tempfile::tempdir().unwrap();

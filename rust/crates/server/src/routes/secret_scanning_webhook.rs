@@ -227,7 +227,7 @@ mod tests {
     use super::*;
 
     fn issue(category: &str, file: &str, line: i64) -> IssueRow {
-        IssueRow { id: format!("{category}::{file}::{line}"), phase: Some(4), category: category.to_string(), severity: "error".to_string(), score: Some(8), summary: "test finding".to_string(), file: Some(file.to_string()), line: Some(line), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, status: "open".to_string(), created_at: String::new(), justification: None, actor_email: None, actor_name: None, author: None }
+        IssueRow { id: format!("{category}::{file}::{line}"), phase: Some(4), category: category.to_string(), severity: "error".to_string(), score: Some(8), summary: "test finding".to_string(), file: Some(file.to_string()), line: Some(line), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, status: "open".to_string(), created_at: String::new(), justification: None, actor_email: None, actor_name: None, author: None, rule: None }
     }
 
     #[test]

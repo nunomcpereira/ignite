@@ -72,6 +72,8 @@ pub fn standalone_config(org: &str, repo: &str, ruleset_dir: Option<&Path>, git_
         // crate's own default has none, which would skip every language.
         codeql: ignite_codeql_cross_file::CodeqlConfig { query_suites: ignite_config::CodeqlConfig::default().query_suites.into_iter().collect(), ..Default::default() },
         codeql_query_suite_review_overdue: false,
+        sast_consensus: None,
+        fp_learning_min_verdicts: None,
     }
 }
 

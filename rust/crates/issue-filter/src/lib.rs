@@ -158,6 +158,7 @@ mod tests {
             tool: None,
             references: Default::default(),
             author: None,
+            rule: None,
         }
     }
 

@@ -937,6 +937,26 @@
       <div class="flex gap-1 px-5 pt-2 border-b border-slate-100" role="tablist">
         <button id="adminTabReport" type="button" role="tab" data-admin-tab="report" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-brand-600 text-brand-700" data-i18n="admin.tabReport">Report delivery</button>
         <button id="adminTabGrants" type="button" role="tab" data-admin-tab="grants" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600" data-i18n="admin.tabGrants">Permission grants</button>
+        <button id="adminTabTuning" type="button" role="tab" data-admin-tab="tuning" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600" data-i18n="admin.tabTuning">Rule tuning</button>
+      </div>
+      <div id="adminTuningPanel" class="hidden p-5 space-y-4 overflow-y-auto">
+        <div>
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide" data-i18n="admin.tuningProposalsTitle">AI rule proposals</p>
+            <div class="flex items-center gap-1.5">
+              <input id="adminTuningOrg" type="text" class="w-28 text-xs border border-slate-200 rounded-lg px-2 py-1 text-slate-700" data-i18n-placeholder="admin.tuningOrg" placeholder="org (blank = all)" aria-label="Org">
+              <button id="adminTuningGenerateBtn" type="button" class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="admin.tuningGenerate">Ask AI for proposals</button>
+            </div>
+          </div>
+          <p class="text-[11px] text-slate-500 mb-2" data-i18n="admin.tuningProposalsHint">The AI reads the free-text justifications people wrote when overriding findings and proposes ignore rules where many say the same thing. Nothing applies until you accept it; accepted rules work like config.json ignoreRules (findings stay visible, acknowledged).</p>
+          <p id="adminTuningGeneration" class="hidden text-xs mb-2" role="status"></p>
+          <div id="adminTuningProposals" class="space-y-2 text-xs"></div>
+        </div>
+        <div>
+          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="admin.tuningNoiseTitle">Noisiest rules</p>
+          <div id="adminTuningNoise" class="text-xs"></div>
+        </div>
+        <p id="adminTuningStatus" class="hidden text-xs break-words" role="status"></p>
       </div>
       <div id="adminGrantsPanel" class="hidden p-5 space-y-3 overflow-y-auto">
         <p id="adminGrantsEnforced" class="text-xs"></p>
@@ -6199,6 +6219,27 @@
       reopened: 'bg-amber-50 text-amber-700 border-amber-200',
       resolved: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     };
+    // Triage verdict: teaches Ignite which engine rules are noisy (Admin /
+    // Integrations → Rule tuning). Only for a finished scan with a job id.
+    function renderStudioVerdict(issue, current) {
+      const box = $('studio-issue-verdict');
+      if (!box) return;
+      const btn = (value, label, on) => `<button type="button" class="studio-verdict-btn text-[11px] font-semibold px-2.5 py-1 rounded-lg border ${on ? (value === 'false_positive' ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-rose-50 border-rose-300 text-rose-700') : 'border-slate-200 text-slate-600 hover:bg-slate-50'}" data-verdict="${value}" aria-pressed="${on ? 'true' : 'false'}">${escapeHtml(label)}</button>`;
+      const v = current?.verdict;
+      box.innerHTML = `<div class="flex items-center gap-1.5 flex-wrap">
+          <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide mr-1">${escapeHtml(t('studio.verdict.title'))}</span>
+          ${btn('false_positive', t('studio.verdict.falsePositive'), v === 'false_positive')}
+          ${btn('true_positive', t('studio.verdict.truePositive'), v === 'true_positive')}
+        </div>
+        ${current ? `<p class="text-[10px] text-slate-400 mt-1">${escapeHtml(t('studio.verdict.by', { email: current.actorEmail }))}</p>` : ''}`;
+      box.querySelectorAll('.studio-verdict-btn').forEach((b) => b.addEventListener('click', async () => {
+        const res = await fetch(`/api/pipeline/${encodeURIComponent(studioState.jobId)}/issues/${encodeURIComponent(issue.id)}/verdict`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verdict: b.dataset.verdict }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { studioShowError(data.error || `HTTP ${res.status}`); return; }
+        if (studioState.selectedIssue?.id === issue.id) renderStudioVerdict(issue, data.verdict);
+      }));
+    }
+
     async function loadStudioFindingHistory(issue) {
       const box = $('studio-issue-history');
       if (!box || !studioState.jobId || !issue?.id) return;
@@ -6207,6 +6248,7 @@
         if (!res.ok) return;
         const data = await res.json();
         if (studioState.selectedIssue?.id !== issue.id || !$('studio-issue-history')) return;
+        renderStudioVerdict(issue, data.verdict);
         const obs = data.observations || [];
         if (obs.length === 0) return;
         const rows = obs.slice().reverse().map((o) => {
@@ -6333,6 +6375,7 @@
           ${issueAuthorLabel(issue.author) ? `<p class="text-[10px] text-slate-400 mt-1" title="${escapeHtml(issue.author.commit || '')}">${t('studio.lastChangedBy')} <span class="font-semibold text-slate-600">${escapeHtml(issueAuthorLabel(issue.author))}</span></p>` : ''}
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
+        <div id="studio-issue-verdict" class="mb-3"></div>
         <div id="studio-issue-history" class="mb-3"></div>
         ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
         <div class="border border-amber-200 bg-amber-50 rounded-lg p-2 mb-3">
@@ -8660,7 +8703,9 @@
       $('adminReportPanel').classList.toggle('hidden', tab !== 'report');
       $('adminReportFooter').classList.toggle('hidden', tab !== 'report');
       $('adminGrantsPanel').classList.toggle('hidden', tab !== 'grants');
+      $('adminTuningPanel').classList.toggle('hidden', tab !== 'tuning');
       if (tab === 'grants') loadAdminGrants();
+      if (tab === 'tuning') loadAdminTuning();
     }
     function adminGrantScope(g) {
       return g.org ? (g.repo ? `${g.org}/${g.repo}` : `${g.org}/*`) : t('admin.grantAllRepos');
@@ -8711,6 +8756,83 @@
       await loadAdminGrants();
       adminShowLine('adminGrantsStatus', t('admin.grantAdded'), true);
     }
+    // ---- Admin / Integrations: rule tuning (AI-proposed ignore rules) ----
+    let adminTuningPoll = null;
+    function adminTuningRule(p) {
+      const parts = [];
+      if (p.categories.length) parts.push(`${t('admin.tuningCategories')}: ${p.categories.join(', ')}`);
+      if (p.filePatterns.length) parts.push(`${t('admin.tuningFiles')}: ${p.filePatterns.join('  |  ')}`);
+      if (p.linePatterns.length) parts.push(`${t('admin.tuningLines')}: ${p.linePatterns.join('  |  ')}`);
+      return parts;
+    }
+    function renderAdminProposal(p) {
+      const scope = `${p.org}/${p.repo}`;
+      const statusCls = { proposed: 'bg-sky-50 text-sky-700 border-sky-200', accepted: 'bg-emerald-50 text-emerald-700 border-emerald-200', dismissed: 'bg-slate-100 text-slate-500 border-slate-200', disabled: 'bg-slate-100 text-slate-500 border-slate-200' }[p.status] || '';
+      const actions = p.status === 'proposed'
+        ? `<button type="button" class="admin-proposal-act text-[11px] font-semibold px-2 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" data-id="${p.id}" data-act="accept">${escapeHtml(t('admin.tuningAccept'))}</button>
+           <button type="button" class="admin-proposal-act text-[11px] font-semibold px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-id="${p.id}" data-act="dismiss">${escapeHtml(t('admin.tuningDismiss'))}</button>`
+        : p.status === 'accepted'
+          ? `<button type="button" class="admin-proposal-act text-[11px] font-semibold px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-id="${p.id}" data-act="disable">${escapeHtml(t('admin.tuningDisable'))}</button>`
+          : `<button type="button" class="admin-proposal-act text-[11px] font-semibold px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-id="${p.id}" data-act="accept">${escapeHtml(t('admin.tuningAccept'))}</button>`;
+      const evidence = (p.evidence || []).map((e) => `<li class="text-[11px] text-slate-600">“${escapeHtml(e.justification)}” <span class="text-slate-400 font-mono">${escapeHtml(`${e.org}/${e.repo}${e.file ? ' · ' + e.file : ''}`)}</span></li>`).join('');
+      return `<div class="border border-slate-200 rounded-lg p-2.5">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <p class="font-semibold text-slate-800">${escapeHtml(p.reason)}</p>
+            <p class="text-[10px] font-mono text-slate-500 break-all mt-0.5">${escapeHtml(scope)} · ${adminTuningRule(p).map(escapeHtml).join('<br>')}</p>
+          </div>
+          <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${statusCls}">${escapeHtml(t(`admin.tuningStatus.${p.status}`))}</span>
+        </div>
+        ${p.rationale ? `<p class="text-[11px] text-slate-600 mt-1">${escapeHtml(p.rationale)}</p>` : ''}
+        <p class="text-[10px] text-slate-400 mt-1">${escapeHtml(t('admin.tuningEvidence', { count: p.evidenceOverrideIds.length, matches: p.matchCount }))}</p>
+        ${evidence ? `<details class="mt-1"><summary class="text-[11px] text-brand-700 cursor-pointer">${escapeHtml(t('admin.tuningShowEvidence'))}</summary><ul class="mt-1 space-y-0.5 list-disc pl-4">${evidence}</ul></details>` : ''}
+        <div class="flex gap-1.5 mt-2">${actions}</div>
+      </div>`;
+    }
+    async function loadAdminTuning() {
+      adminShowLine('adminTuningStatus', '', true);
+      try {
+        const [pr, nr] = await Promise.all([fetch('/api/policy/rule-proposals'), fetch('/api/policy/rule-noise')]);
+        const pd = await pr.json().catch(() => ({}));
+        const nd = await nr.json().catch(() => ({}));
+        if (!pr.ok) throw new Error(pd.error || `HTTP ${pr.status}`);
+        const proposals = pd.proposals || [];
+        $('adminTuningProposals').innerHTML = proposals.length ? proposals.map(renderAdminProposal).join('') : `<p class="text-slate-400">${escapeHtml(t('admin.tuningNoProposals'))}</p>`;
+        $('adminTuningProposals').querySelectorAll('.admin-proposal-act').forEach((b) => b.addEventListener('click', async () => {
+          const r = await fetch(`/api/policy/rule-proposals/${b.dataset.id}/${b.dataset.act}`, { method: 'POST' });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { adminShowLine('adminTuningStatus', d.error || `HTTP ${r.status}`, false); return; }
+          await loadAdminTuning();
+        }));
+        const g = pd.generation;
+        const gEl = $('adminTuningGeneration');
+        if (g) {
+          gEl.textContent = g.running ? t('admin.tuningRunning') : g.error ? g.error : t('admin.tuningDone', { count: g.added });
+          gEl.className = `text-xs mb-2 ${g.error ? 'text-rose-500' : 'text-slate-500'}`;
+          $('adminTuningGenerateBtn').disabled = !!g.running;
+          clearTimeout(adminTuningPoll);
+          if (g.running && !$('adminTuningPanel').classList.contains('hidden')) adminTuningPoll = setTimeout(loadAdminTuning, 3000);
+        } else {
+          gEl.classList.add('hidden');
+          $('adminTuningGenerateBtn').disabled = false;
+        }
+        const rules = (nd.rules || []).filter((r) => r.falsePositives + r.overrides > 0);
+        $('adminTuningNoise').innerHTML = rules.length ? `<table class="w-full text-left">
+          <thead><tr class="text-[10px] uppercase tracking-wide text-slate-400"><th class="py-1">${escapeHtml(t('admin.tuningRule'))}</th><th>${escapeHtml(t('admin.tuningFp'))}</th><th>${escapeHtml(t('admin.tuningTp'))}</th><th>${escapeHtml(t('admin.tuningOverrides'))}</th><th>${escapeHtml(t('admin.tuningRepos'))}</th></tr></thead>
+          <tbody>${rules.map((r) => `<tr class="border-t border-slate-100"><td class="py-1 pr-2 font-mono break-all">${escapeHtml(`${r.tool || '?'} · ${r.rule || r.category}`)}</td><td>${r.falsePositives}</td><td>${r.truePositives}</td><td>${r.overrides}</td><td>${r.repos}</td></tr>`).join('')}</tbody></table>`
+          : `<p class="text-slate-400">${escapeHtml(t('admin.tuningNoNoise'))}</p>`;
+      } catch (e) {
+        adminShowLine('adminTuningStatus', e.message, false);
+      }
+    }
+    $('adminTuningGenerateBtn').addEventListener('click', async () => {
+      const org = $('adminTuningOrg').value.trim();
+      const r = await fetch('/api/policy/rule-proposals/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(org ? { org } : {}) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { adminShowLine('adminTuningStatus', d.error || `HTTP ${r.status}`, false); return; }
+      loadAdminTuning();
+    });
+
     document.querySelectorAll('.admin-tab').forEach((b) => b.addEventListener('click', () => switchAdminTab(b.dataset.adminTab)));
     $('adminGrantAddBtn').addEventListener('click', addAdminGrant);
     async function adminTest(target, resultId, btnId) {

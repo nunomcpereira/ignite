@@ -222,6 +222,11 @@ pub struct Issue {
     /// source has no git history or the line couldn't be attributed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<IssueAuthor>,
+    /// The engine's own rule/query id (e.g. a Semgrep `check_id`, a CodeQL
+    /// query id like `java/sql-injection`), when the engine reports one —
+    /// the key engine consensus and false-positive learning aggregate on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
 }
 
 /// Line-level authorship of a finding (see `Issue::author`).

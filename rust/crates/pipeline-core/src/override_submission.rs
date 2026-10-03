@@ -182,7 +182,7 @@ mod tests {
     use ignite_override_engine::Severity;
 
     fn issue(id: &str, category: &str, severity: Severity, score: i32) -> Issue {
-        Issue { id: id.to_string(), category: category.to_string(), severity, score, summary: format!("summary of {id}"), file: Some("app.js".to_string()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".to_string()), references: Default::default(), duplicate_ref: None, author: None }
+        Issue { id: id.to_string(), category: category.to_string(), severity, score, summary: format!("summary of {id}"), file: Some("app.js".to_string()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: Some("built-in".to_string()), references: Default::default(), duplicate_ref: None, author: None, rule: None }
     }
 
     fn submitted(id: &str) -> SubmittedOverride {
@@ -203,7 +203,7 @@ mod tests {
     fn seed_issue(db: &DbStore, project_id: i64, issue: &Issue) {
         db.replace_project_issues(
             project_id,
-            &[ignite_db_store::IssueInput { id: issue.id.clone(), phase: Some(4), category: issue.category.clone(), severity: severity_str(issue).to_string(), score: Some(issue.score as i64), summary: issue.summary.clone(), file: issue.file.clone(), line: issue.line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
+            &[ignite_db_store::IssueInput { id: issue.id.clone(), phase: Some(4), category: issue.category.clone(), severity: severity_str(issue).to_string(), score: Some(issue.score as i64), summary: issue.summary.clone(), file: issue.file.clone(), line: issue.line, snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None }],
             &HashSet::new(),
         );
     }

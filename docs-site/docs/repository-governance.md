@@ -62,6 +62,34 @@ A refusal is a `403` with `code: "permission_denied"` (or `grant_required`
 when nobody is signed in) and the missing `requiredPermission`. Scans the
 server starts itself (organization scans, auto-rescan) aren't affected.
 
+## Teach Ignite which findings are noise
+
+Every finding in Studio has **False positive** / **Real issue** buttons. A
+verdict is recorded against the finding's engine and rule
+(`POST /api/pipeline/:jobId/issues/:issueId/verdict`) and feeds two things in
+**Admin / Integrations → Rule tuning**:
+
+- **Noisiest rules** — per engine rule: false-positive and real-issue
+  verdicts, how many findings people overrode, and how many repositories it
+  hits (`GET /api/policy/rule-noise`).
+- **AI rule proposals** — **Ask AI for proposals** sends the free-text
+  justifications people wrote when overriding findings, grouped by rule, to
+  the configured LLM (`llm.provider`), which proposes ignore rules where many
+  justifications say the same thing (test fixtures, generated or vendored
+  code, a known-safe wrapper). Ignite keeps a proposal only if its regexes
+  compile, it isn't a catch-all, and it cites at least two real overrides.
+  Each shows its reason, the AI's rationale, the justifications it is based
+  on, and how many open findings it matches today. Nothing applies until a
+  policy admin accepts it; an accepted proposal works like a `config.json`
+  `ignoreRules` entry (matched findings stay visible, acknowledged with the
+  rule's reason) and can be disabled again. Accepting, dismissing and
+  disabling are audit-logged.
+
+Optionally, `security.fpLearning.enabled` (`FP_LEARNING_ENABLED`, off by
+default) stops a rule from blocking in an organization once it has
+`minVerdicts` (default 3) false-positive verdicts there and no real-issue
+verdict; its findings are still reported, as warnings with a note.
+
 ## Acknowledge known false positives by policy
 
 Some findings are benign across a whole organization — for example SAP CPI

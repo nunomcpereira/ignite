@@ -308,6 +308,48 @@ pub fn score_by_tool(cases: &[TestCase], issues: &[Issue]) -> Vec<ToolScore> {
         .collect()
 }
 
+/// One way of deciding which findings block, scored on blocking findings.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyScore {
+    pub name: String,
+    pub totals: Confusion,
+    pub total_rates: Rates,
+    pub average_category_score: f64,
+}
+
+fn policy_score(name: &str, cases: &[TestCase], issues: &[Issue]) -> PolicyScore {
+    let s = score(cases, issues);
+    PolicyScore { name: name.to_string(), totals: s.totals, total_rates: s.total_rates, average_category_score: s.average_category_score }
+}
+
+fn blocking(issues: &[Issue]) -> Vec<Issue> {
+    issues.iter().filter(|i| i.severity == ignite_override_engine::Severity::Error).cloned().collect()
+}
+
+/// Scores several ways of combining engines on the same scan, counting only
+/// findings that would block (US: engine consensus). Each consensus policy
+/// is [`ignite_override_engine::apply_engine_consensus`] exactly as the
+/// pipeline would run it.
+pub fn score_policies(cases: &[TestCase], issues: &[Issue]) -> Vec<PolicyScore> {
+    use ignite_override_engine::{apply_engine_consensus, ConsensusPolicy};
+    let with_policy = |p: ConsensusPolicy| {
+        let mut v = issues.to_vec();
+        apply_engine_consensus(&mut v, &p);
+        blocking(&v)
+    };
+    let codeql_only: Vec<Issue> = blocking(issues).into_iter().filter(|i| i.tool.as_deref() == Some("codeql")).collect();
+    vec![
+        policy_score("every finding, blocking or not (headline above)", cases, issues),
+        policy_score("blocking: all engines (consensus off — current default)", cases, &blocking(issues)),
+        policy_score("blocking: CodeQL only", cases, &codeql_only),
+        policy_score("blocking: CodeQL trusted, others need 2 engines within ±10 lines", cases, &with_policy(ConsensusPolicy::default())),
+        policy_score("blocking: CodeQL trusted, others need 2 engines in the same file", cases, &with_policy(ConsensusPolicy { line_window: None, ..Default::default() })),
+        policy_score("blocking: every finding needs 2 engines within ±10 lines", cases, &with_policy(ConsensusPolicy { trusted_engines: vec![], ..Default::default() })),
+        policy_score("blocking: CodeQL trusted; where CodeQL analyzed the file only its findings block, elsewhere 2 engines (Ignite's consensus mode)", cases, &with_policy(ConsensusPolicy { trusted_covers: ignite_override_engine::extensions_for_languages(&["java".to_string()]), ..Default::default() })),
+    ]
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModeResult {
@@ -317,6 +359,41 @@ pub struct ModeResult {
     pub engines: Vec<EngineRun>,
     pub scorecard: Scorecard,
     pub by_tool: Vec<ToolScore>,
+    pub policies: Vec<PolicyScore>,
+    /// The scorecard counting only findings this run would block on.
+    pub blocking: Scorecard,
+}
+
+/// Scorecard counting only blocking (error) findings.
+pub fn blocking_score(cases: &[TestCase], issues: &[Issue]) -> Scorecard {
+    score(cases, &blocking(issues))
+}
+
+fn delta(before: f64, after: f64) -> String {
+    let d = (after - before) * 100.0;
+    format!("{}{d:.1} pts", if d >= 0.0 { "+" } else { "" })
+}
+
+/// Before/after table for two runs of the same benchmark commit, counting
+/// only what each run would block on.
+pub fn render_comparison(before: &ModeResult, after: &ModeResult) -> String {
+    let (b, a) = (&before.blocking, &after.blocking);
+    let row = |name: &str, x: f64, y: f64| format!("| {name} | {} | {} | {} |\n", pct(x), pct(y), delta(x, y));
+    let mut md = format!("## Before / after: `{}` → `{}` (blocking findings only)\n\n| Metric | Before | After | Change |\n|---|---|---|---|\n", before.mode, after.mode);
+    md.push_str(&row("Average category score", b.average_category_score, a.average_category_score));
+    md.push_str(&row("Recall (real vulnerabilities blocked)", b.total_rates.recall, a.total_rates.recall));
+    md.push_str(&row("False-positive rate (safe cases blocked)", b.total_rates.false_positive_rate, a.total_rates.false_positive_rate));
+    md.push_str(&row("Precision", b.total_rates.precision.unwrap_or(0.0), a.total_rates.precision.unwrap_or(0.0)));
+    md.push_str(&format!("| True positives | {} | {} | {:+} |\n", b.totals.tp, a.totals.tp, a.totals.tp as i64 - b.totals.tp as i64));
+    md.push_str(&format!("| False positives | {} | {} | {:+} |\n\n", b.totals.fp, a.totals.fp, a.totals.fp as i64 - b.totals.fp as i64));
+    md.push_str("Per category (Benchmark score):\n\n| Category | Before | After | Change | FP before → after |\n|---|---|---|---|---|\n");
+    for cb in &b.categories {
+        if let Some(ca) = a.categories.iter().find(|c| c.category == cb.category) {
+            md.push_str(&format!("| {} | {} | {} | {} | {} → {} |\n", cb.category, pct(cb.rates.benchmark_score), pct(ca.rates.benchmark_score), delta(cb.rates.benchmark_score, ca.rates.benchmark_score), cb.confusion.fp, ca.confusion.fp));
+        }
+    }
+    md.push('\n');
+    md
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,6 +483,22 @@ pub fn render_markdown(report: &BenchReport) -> String {
             }
             md.push('\n');
         }
+        if m.policies.iter().any(|p| p.totals.tp + p.totals.fp > 0) {
+            md.push_str("Combination policies (which findings would block):\n\n| Policy | TP | FP | Recall | FPR | Precision | Average category score |\n|---|---|---|---|---|---|---|\n");
+            for p in &m.policies {
+                md.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {} |\n",
+                    p.name,
+                    p.totals.tp,
+                    p.totals.fp,
+                    pct(p.total_rates.recall),
+                    pct(p.total_rates.false_positive_rate),
+                    p.total_rates.precision.map(pct).unwrap_or_else(|| "n/a".into()),
+                    pct(p.average_category_score)
+                ));
+            }
+            md.push('\n');
+        }
         let sast: Vec<&EngineRun> = m.engines.iter().filter(|e| CODE_ANALYSIS_CHECKS.contains(&e.check_id.as_str())).collect();
         if !sast.is_empty() {
             md.push_str("Code-analysis engines this run:\n\n");
@@ -448,6 +541,7 @@ mod tests {
             tool: Some(tool.into()),
             references: IssueReferences::default(),
             author: None,
+            rule: None,
         }
     }
 
@@ -537,6 +631,19 @@ BenchmarkTest00006,hash,false,328
     }
 
     #[test]
+    fn consensus_policies_change_only_what_blocks() {
+        let cases = parse_expected_results(CSV).unwrap();
+        let issues = vec![
+            issue(&format!("{DIR}BenchmarkTest00001.java"), Some("CWE-89"), "codeql"),
+            issue(&format!("{DIR}BenchmarkTest00002.java"), Some("CWE-89"), "semgrep"), // lone FP
+        ];
+        let p = score_policies(&cases, &issues);
+        let by_name = |n: &str| p.iter().find(|x| x.name.starts_with(n)).unwrap().clone();
+        assert_eq!(by_name("blocking: all engines").totals.fp, 1);
+        assert_eq!(by_name("blocking: CodeQL trusted, others need 2 engines within").totals, Confusion { tp: 1, fp: 0, fn_: 2, tn: 3 });
+    }
+
+    #[test]
     fn no_findings_scores_zero_with_no_precision() {
         let cases = parse_expected_results(CSV).unwrap();
         let s = score(&cases, &[]);
@@ -561,7 +668,7 @@ BenchmarkTest00006,hash,false,328
             test_cases: cases.len() as u32,
             ignite_commit: Some("abc123".into()),
             generated_at: "2026-10-03T00:00:00Z".into(),
-            modes: vec![ModeResult { mode: "fallback".into(), duration_secs: 1.0, engines: vec![], scorecard: score(&cases, &[]), by_tool: vec![] }],
+            modes: vec![ModeResult { mode: "fallback".into(), duration_secs: 1.0, engines: vec![], scorecard: score(&cases, &[]), by_tool: vec![], policies: vec![], blocking: blocking_score(&cases, &[]) }],
         };
         let md = render_markdown(&report);
         assert!(md.contains("## Mode: `fallback`"));

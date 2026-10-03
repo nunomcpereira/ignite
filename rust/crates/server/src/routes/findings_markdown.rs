@@ -195,6 +195,7 @@ mod tests {
             actor_email: None,
             actor_name: None,
             author: None,
+            rule: None,
         }
     }
 

@@ -62,12 +62,12 @@ impl DbStore {
             // its cross-scan history and matched against a baseline.
             let fingerprint = ignite_override_engine::fingerprint_for_issue_parts(&issue.id, &issue.category, issue.file.as_deref(), issue.snippet.as_ref(), issue.line);
             tx.execute(
-                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status, author_json, fingerprint)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO issues (project_id, issue_id, phase, category, severity, score, summary, file, line, snippet_json, cross_file, chain_json, cwe, owasp, tool, references_json, duplicate_ref_json, status, author_json, fingerprint, rule)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     project_id, issue.id, issue.phase, issue.category, issue.severity, issue.score,
                     issue.summary, issue.file, issue.line, snippet_json, issue.cross_file as i64, chain_json,
-                    issue.cwe, issue.owasp, issue.tool, references_json, duplicate_ref_json, status, author_json, fingerprint,
+                    issue.cwe, issue.owasp, issue.tool, references_json, duplicate_ref_json, status, author_json, fingerprint, issue.rule,
                 ],
             )
             .unwrap();
@@ -83,7 +83,7 @@ impl DbStore {
                         (SELECT o.justification FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
                         (SELECT o.actor_email FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
                         (SELECT o.actor_name FROM overrides o WHERE o.project_id = i.project_id AND o.issue_id = i.issue_id ORDER BY o.created_at DESC, o.id DESC LIMIT 1),
-                        i.author_json
+                        i.author_json, i.rule
                  FROM issues i WHERE i.project_id = ? ORDER BY i.id",
             )
             .unwrap();
@@ -133,6 +133,7 @@ impl DbStore {
                     actor_name: row.get(20)?,
                     author: parse_or_log("author", &id, author_json),
                     id,
+                    rule: row.get(22)?,
                 })
             })
             .and_then(|mapped| mapped.collect());

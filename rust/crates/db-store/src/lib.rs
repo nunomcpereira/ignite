@@ -42,6 +42,7 @@ mod repositories;
 mod retained_sources;
 mod runtime_coverage;
 mod schema;
+mod rule_tuning;
 mod scan_jobs;
 mod scheduled;
 mod sla;
@@ -62,6 +63,7 @@ pub use async_jobs::AsyncJobRow;
 pub use store::DbStore;
 pub use baseline::Baseline;
 pub use scan_jobs::{NewScanJob, ScanJobRow};
+pub use rule_tuning::{JustificationRow, NewRuleProposal, NewVerdict, RuleNoiseRow, RuleProposalRow, VerdictRow};
 pub use types::*;
 
 #[cfg(test)]
@@ -183,8 +185,8 @@ mod tests {
         store.replace_project_issues(
             new_id,
             &[
-                IssueInput { id: "secret::app.py::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("app.py".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None },
-                IssueInput { id: "license-compliance::pom.xml::1".into(), phase: Some(3), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "commercial dependency".into(), file: Some("pom.xml".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None },
+                IssueInput { id: "secret::app.py::1".into(), phase: Some(2), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "hardcoded key".into(), file: Some("app.py".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None },
+                IssueInput { id: "license-compliance::pom.xml::1".into(), phase: Some(3), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "commercial dependency".into(), file: Some("pom.xml".into()), line: Some(1), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None },
             ],
             &HashSet::new(),
         );
@@ -329,6 +331,7 @@ mod tests {
                 references: Some(serde_json::json!({"cwe": ["CWE-798"]})),
                 duplicate_ref: None,
                 author: None,
+                rule: None,
             },
             IssueInput {
                 id: "codeql-sast::b.js::10".into(),
@@ -348,6 +351,7 @@ mod tests {
                 references: None,
                 duplicate_ref: Some(serde_json::json!({"file": "c.js", "line": 21, "endLine": 29})),
                 author: None,
+                rule: None,
             },
         ];
         let mut overridden = HashSet::new();
@@ -389,7 +393,7 @@ mod tests {
         let id = store.create_project("job-8", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(
             id,
-            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
+            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None }],
             &HashSet::new(),
         );
         // Not yet overridden — no justification/actor to show.
@@ -417,7 +421,7 @@ mod tests {
         overridden.insert("license-compliance::requirements.txt::0::PyMuPDF".to_string());
         store.replace_project_issues(
             id,
-            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
+            &[IssueInput { id: "license-compliance::requirements.txt::0::PyMuPDF".into(), phase: Some(4), category: "license-compliance".into(), severity: "error".into(), score: Some(6), summary: "Unrecognized license".into(), file: Some("requirements.txt".into()), line: Some(9), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None }],
             &overridden,
         );
 
@@ -463,7 +467,7 @@ mod tests {
         let (_dir, store) = open_test_db();
         let pid = store.create_project("job-fp", "acme", "widgets", false, "ui", None).unwrap();
         let snippet = serde_json::json!({ "lines": [{ "line": 3, "text": "  secret = 'x'  " }] });
-        let mk = |id: &str, line: i64| IssueInput { id: id.into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "s".into(), file: Some("a.js".into()), line: Some(line), snippet: Some(snippet.clone()), cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None };
+        let mk = |id: &str, line: i64| IssueInput { id: id.into(), phase: Some(4), category: "secret".into(), severity: "error".into(), score: Some(9), summary: "s".into(), file: Some("a.js".into()), line: Some(line), snippet: Some(snippet.clone()), cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None };
         store.replace_project_issues(pid, &[mk("secret::a.js::3", 3)], &HashSet::new());
         let row = store.get_project_issues(pid).remove(0);
         let stored: String = store.conn.lock().query_row("SELECT fingerprint FROM issues WHERE project_id = ?", [pid], |r| r.get(0)).unwrap();
@@ -626,7 +630,7 @@ mod tests {
         let project_id = store.create_project("job-1", "acme", "widgets", false, "ui", None).unwrap();
         store.replace_project_issues(
             project_id,
-            &[IssueInput { id: "secret::app.js::5".to_string(), phase: Some(4), category: "secret".to_string(), severity: "error".to_string(), score: Some(9), summary: "hardcoded key".to_string(), file: Some("app.js".to_string()), line: Some(5), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None }],
+            &[IssueInput { id: "secret::app.js::5".to_string(), phase: Some(4), category: "secret".to_string(), severity: "error".to_string(), score: Some(9), summary: "hardcoded key".to_string(), file: Some("app.js".to_string()), line: Some(5), snippet: None, cross_file: false, chain: None, cwe: None, owasp: None, tool: None, references: None, duplicate_ref: None, author: None, rule: None }],
             &HashSet::new(),
         );
         assert_eq!(store.get_project_issues(project_id)[0].status, "open");

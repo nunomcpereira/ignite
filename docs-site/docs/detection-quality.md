@@ -42,6 +42,8 @@ cd rust
 cargo build --release -p ignite-sast-bench
 cd ..
 ./rust/target/release/sast-bench --mode both --ignite-root . --out-dir bench-out
+# before/after for engine consensus:
+./rust/target/release/sast-bench --mode consensus --ignite-root . --out-dir bench-out
 ```
 
 Outputs `bench-out/sast-bench-results.json` and
@@ -49,6 +51,63 @@ Outputs `bench-out/sast-bench-results.json` and
 (`.github/workflows/sast-bench.yml`) runs fallback mode weekly and on demand;
 full-mode numbers need the external tools installed and are produced locally
 with the same binary.
+
+## Engine consensus: fewer false positives without losing recall
+
+Reporting every engine's findings as blocking adds up every engine's false
+positives. With `security.sastConsensus.enabled` (`SAST_CONSENSUS_ENABLED`),
+a blocking code-analysis finding keeps blocking only if:
+
+- it came from a trusted engine (`trustedEngines`, default `["codeql"]`), or
+- the file's language wasn't analyzed by a trusted engine this run, and at
+  least `minEngines` (default 2) engines reported the same weakness: same
+  file, same CWE family, within `lineWindow` lines (default 10; 0 = anywhere
+  in the file).
+
+In a file CodeQL analyzed, Semgrep and Bearer findings become warnings:
+still reported and visible, with a note saying why, but no longer blocking.
+Findings without a CWE can't be matched across engines and are left alone.
+It's off by default so an existing installation's gate doesn't change
+silently.
+
+Measured with `sast-bench --mode consensus`, which scans the Benchmark twice
+through the real pipeline, consensus off then on, and compares what each
+run would block on:
+
+### Before / after: `full` → `full-consensus` (blocking findings only)
+
+| Metric | Before | After | Change |
+|---|---|---|---|
+| Average category score | 51.8% | 62.0% | +10.2 pts |
+| Recall (real vulnerabilities blocked) | 100.0% | 100.0% | +0.0 pts |
+| False-positive rate (safe cases blocked) | 52.9% | 40.1% | -12.8 pts |
+| Precision | 66.9% | 72.7% | +5.8 pts |
+| True positives | 1415 | 1415 | +0 |
+| False positives | 701 | 531 | -170 |
+
+Per category (Benchmark score):
+
+| Category | Before | After | Change | FP before → after |
+|---|---|---|---|---|
+| cmdi | 8.8% | 48.8% | +40.0 pts | 114 → 64 |
+| crypto | 76.7% | 76.7% | +0.0 pts | 27 → 27 |
+| hash | 69.2% | 69.2% | +0.0 pts | 33 → 33 |
+| ldapi | 59.4% | 59.4% | +0.0 pts | 13 → 13 |
+| pathtraver | 7.4% | 51.1% | +43.7 pts | 125 → 66 |
+| securecookie | 100.0% | 100.0% | +0.0 pts | 0 → 0 |
+| sqli | 3.5% | 10.8% | +7.3 pts | 224 → 207 |
+| trustbound | 44.2% | 44.2% | +0.0 pts | 24 → 24 |
+| weakrand | 100.0% | 100.0% | +0.0 pts | 0 → 0 |
+| xpathi | 65.0% | 65.0% | +0.0 pts | 7 → 7 |
+| xss | 35.9% | 56.9% | +21.1 pts | 134 → 90 |
+
+
+Why not "two engines must agree" everywhere? On this benchmark, CodeQL
+already catches every real case. Requiring two engines drops recall to 74%,
+and keeping Semgrep+Bearer agreements on top of CodeQL adds 95 false
+positives and no true positives. Hence: trust CodeQL where it ran; use agreement
+only where it didn't. That conclusion is from Java; re-check with other
+languages before relying on it there.
 
 ## Latest results
 

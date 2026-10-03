@@ -179,6 +179,8 @@ pub struct IssueInput {
     pub duplicate_ref: Option<serde_json::Value>,
     /// Serialized `ignite_override_engine::IssueAuthor` (line-level git blame).
     pub author: Option<serde_json::Value>,
+    /// The engine's rule id (`Issue::rule`).
+    pub rule: Option<String>,
 }
 
 impl IssueRow {
@@ -225,6 +227,8 @@ pub struct IssueRow {
     /// Line-level git author of the finding (`IssueInput::author`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

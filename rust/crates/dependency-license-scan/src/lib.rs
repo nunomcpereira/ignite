@@ -1002,6 +1002,7 @@ pub fn collect_license_issues(root: &Path, manifests: &[LicenseScanManifest], li
                 owasp: None,
                 tool: Some(manifest.source.to_string()),
                 author: None,
+                rule: None,
             });
         }
     }
@@ -1028,6 +1029,7 @@ pub fn collect_license_issues(root: &Path, manifests: &[LicenseScanManifest], li
             // manifest lookup, so neither ORT nor deps.dev produced this one.
             tool: Some("built-in".to_string()),
             author: None,
+            rule: None,
         });
     }
 
@@ -1177,6 +1179,7 @@ pub fn collect_dependency_vulnerability_issues(root: &Path, manifests: &[VulnSca
                     owasp: hint.owasp,
                     tool: Some("deps.dev".to_string()),
                     author: None,
+                    rule: None,
                 });
             }
         }

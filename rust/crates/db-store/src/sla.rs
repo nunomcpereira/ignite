@@ -125,6 +125,7 @@ mod tests {
             references: None,
             duplicate_ref: None,
             author: None,
+            rule: None,
         }
     }
 
