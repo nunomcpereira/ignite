@@ -425,7 +425,7 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
             logger.log(4, "Skipped — disabled by config (phases: [{ id: 4, enabled: false }]).");
             logger.log(3, "Check 3 — dependency & license compliance scan (manifests + LICENSE files)...");
             let l3a = logger.clone();
-            let (license_issues, license_coverage) = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await;
+            let (license_issues, license_coverage) = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), state.config.security.dependency_vulnerability_error_threshold(), move |m| l3a.log(3, m)).await;
             issues.extend(license_issues);
             phase4_coverage.extend(license_coverage);
         } else {
@@ -438,7 +438,7 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
             let state_b = state.clone();
             let config = crate::phase4_config::from_config(&state.config, &org, &repo, Some(project_id), fast, Some(project_path.clone()));
             let (license_result, phase4_result) = tokio::join!(
-                time_stage(&timings, "licenseAndDependencyScan", async move { ignite_pipeline_core::run_license_and_dependency_scan(&root_a, &state_a.runner, &client, &npm_http, &state_a.db, Some(project_id), move |m| l3a.log(3, m)).await }),
+                time_stage(&timings, "licenseAndDependencyScan", async move { ignite_pipeline_core::run_license_and_dependency_scan(&root_a, &state_a.runner, &client, &npm_http, &state_a.db, Some(project_id), state_a.config.security.dependency_vulnerability_error_threshold(), move |m| l3a.log(3, m)).await }),
                 time_stage(&timings, "phase4Total", async move { ignite_phase4_orchestrator::run_phase4_checks(&root_b, &state_b.runner, &state_b.db, &config, &state_b.package_hallucination_checker, &|m: &str| l4.log(4, m)).await })
             );
             match phase4_result {

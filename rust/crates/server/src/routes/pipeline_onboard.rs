@@ -375,7 +375,7 @@ pub(crate) async fn run_onboard(state: Arc<AppState>, headers: axum::http::Heade
         let client = ignite_deps_dev_client::DepsDevClient::new();
         let npm_http = reqwest::Client::new();
         let l3a = logger.clone();
-        let (license_issues, license_coverage) = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), move |m| l3a.log(3, m)).await;
+        let (license_issues, license_coverage) = ignite_pipeline_core::run_license_and_dependency_scan(&root, &state.runner, &client, &npm_http, &state.db, Some(project_id), state.config.security.dependency_vulnerability_error_threshold(), move |m| l3a.log(3, m)).await;
         coverage.extend(license_coverage);
 
         {

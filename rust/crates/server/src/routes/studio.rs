@@ -335,7 +335,7 @@ async fn rescan(State(state): State<Arc<AppState>>, Path(job_id): Path<String>) 
         state.db.save_dependency_scan_cache(project_id, scan_json);
     }
     fresh_issues.extend(license_issues);
-    fresh_issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(&ctx.root, &client, |_| {}).await);
+    fresh_issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check_with_threshold(&ctx.root, &client, state.config.security.dependency_vulnerability_error_threshold(), |_| {}).await);
 
     let (resolved_ids, new_ids) = replace_issue_batch(&state, &job_id, &ctx, fresh_issues, RESCAN_PURGE_CATEGORIES);
     let issues = get_issues(&state, &job_id, &ctx);

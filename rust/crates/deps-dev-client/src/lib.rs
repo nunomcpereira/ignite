@@ -427,8 +427,13 @@ pub fn satisfies_version_range(version: &str, raw_range: &str) -> bool {
 /// pipeline. Below that (medium/low) is advisory-only. An advisory with no
 /// CVSS score at all is treated as medium rather than assumed harmless.
 pub fn classify_vulnerability_severity(cvss3_score: Option<f64>) -> &'static str {
+    classify_vulnerability_severity_at(cvss3_score, 7.0)
+}
+
+/// Classify an advisory using a caller-selected blocking threshold.
+pub fn classify_vulnerability_severity_at(cvss3_score: Option<f64>, error_threshold: f64) -> &'static str {
     if let Some(score) = cvss3_score {
-        if score >= 7.0 {
+        if score >= error_threshold {
             return "error";
         }
     }

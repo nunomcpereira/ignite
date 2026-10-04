@@ -92,13 +92,13 @@ fn err_json(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-async fn check_vulnerabilities(State(_state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
+async fn check_vulnerabilities(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_user): crate::auth::RequireAuth, Json(body): Json<Value>) -> Response {
     let project_path = match sanitize_project_path(&body) {
         Ok(p) => p,
         Err(r) => return r,
     };
     let client = ignite_deps_dev_client::DepsDevClient::new();
-    match ignite_dependency_license_scan::scan_dependency_vulnerabilities(&project_path, &client).await {
+    match ignite_dependency_license_scan::scan_dependency_vulnerabilities_with_threshold(&project_path, &client, state.config.security.dependency_vulnerability_error_threshold()).await {
         Ok(manifests) => {
             let mut critical = 0u32;
             let mut advisory = 0u32;

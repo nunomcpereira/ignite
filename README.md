@@ -516,6 +516,7 @@ All settings live in `config.json` at the repo root, read by `ignite-server` via
     }
   },
   "security": {
+    "dependencyVulnerabilityErrorThreshold": 7.0,
     "gitleaks": {                // optional supplemental secret scan
       "enabled": false,
       "binary": "gitleaks",
@@ -551,6 +552,8 @@ All settings live in `config.json` at the repo root, read by `ignite-server` via
   }
 }
 ```
+
+Dependency vulnerability findings become blocking errors at CVSS v3 **7.0** by default. Set `security.dependencyVulnerabilityErrorThreshold` to a value from `0.0` to `10.0`, or use `DEPENDENCY_VULNERABILITY_ERROR_THRESHOLD`, to change the cutoff. Both settings are optional; an omitted or invalid value keeps the `7.0` default.
 
 ### Failure emails
 

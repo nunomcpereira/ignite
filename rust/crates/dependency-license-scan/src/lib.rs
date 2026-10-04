@@ -22,7 +22,7 @@ pub use python_imports::{collect_python_imported_modules, expected_python_import
 mod cargo_imports;
 pub use cargo_imports::{collect_used_rust_crates, expected_rust_module_name};
 
-use ignite_deps_dev_client::{classify_vulnerability_severity, fetch_npm_registry_license, find_manifest_dep_line, resolve_best_published_version, resolve_see_license_in_file, DepsDevClient};
+use ignite_deps_dev_client::{classify_vulnerability_severity_at, fetch_npm_registry_license, find_manifest_dep_line, resolve_best_published_version, resolve_see_license_in_file, DepsDevClient};
 use ignite_fs_utils::{build_snippet, walk_files, SnippetOptions};
 use ignite_license_classification::{classify_license_tier, is_internal_dependency_ref, best_effort_version, LicenseTier};
 use ignite_override_engine::{build_issue_id, derive_cwe_owasp, score_for_issue, BuildIssueIdArgs, CweOwaspHint, Issue, Severity};
@@ -326,6 +326,10 @@ pub struct VulnScanManifest {
 /// unclassified license does (that's inherently a risk; no known CVEs
 /// isn't).
 pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient) -> std::io::Result<Vec<VulnScanManifest>> {
+    scan_dependency_vulnerabilities_with_threshold(root, client, 7.0).await
+}
+
+pub async fn scan_dependency_vulnerabilities_with_threshold(root: &Path, client: &DepsDevClient, error_threshold: f64) -> std::io::Result<Vec<VulnScanManifest>> {
     let mut manifests = Vec::new();
     for file in walk_files(root)? {
         let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -422,7 +426,7 @@ pub async fn scan_dependency_vulnerabilities(root: &Path, client: &DepsDevClient
                     title: a.get("title").and_then(|v| v.as_str()).map(String::from),
                     aliases: a.get("aliases").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
                     cvss3_score,
-                    severity: classify_vulnerability_severity(cvss3_score),
+                    severity: classify_vulnerability_severity_at(cvss3_score, error_threshold),
                     url: a.get("url").and_then(|v| v.as_str()).map(String::from),
                     affected_go_imports,
                 });
@@ -928,9 +932,13 @@ pub fn build_dependency_graph_snapshot(scan_json: &serde_json::Value, sha: &str,
 
 /// Faithful port of `runDependencyVulnerabilityCheck` — Phase 3's
 /// dependency-vulnerability gate. Never fails the phase on a scan error.
-pub async fn run_dependency_vulnerability_check(root: &Path, client: &DepsDevClient, mut log: impl FnMut(&str)) -> Vec<Issue> {
+pub async fn run_dependency_vulnerability_check(root: &Path, client: &DepsDevClient, log: impl FnMut(&str)) -> Vec<Issue> {
+    run_dependency_vulnerability_check_with_threshold(root, client, 7.0, log).await
+}
+
+pub async fn run_dependency_vulnerability_check_with_threshold(root: &Path, client: &DepsDevClient, error_threshold: f64, mut log: impl FnMut(&str)) -> Vec<Issue> {
     log("Check 6 — dependency vulnerability scan (known CVE/GHSA advisories via deps.dev)...");
-    let manifests = match scan_dependency_vulnerabilities(root, client).await {
+    let manifests = match scan_dependency_vulnerabilities_with_threshold(root, client, error_threshold).await {
         Ok(m) => m,
         Err(e) => {
             log(&format!("⚠ Dependency vulnerability scan failed (non-blocking): {e}"));
@@ -940,7 +948,7 @@ pub async fn run_dependency_vulnerability_check(root: &Path, client: &DepsDevCli
     let issues = collect_dependency_vulnerability_issues(root, &manifests);
     if !issues.is_empty() {
         let blocking = issues.iter().filter(|i| i.severity == Severity::Error).count();
-        log(&format!("⚠ {} dependency vulnerability finding(s) ({blocking} critical/high — CVSS ≥7):", issues.len()));
+        log(&format!("⚠ {} dependency vulnerability finding(s) ({blocking} blocking — CVSS threshold {error_threshold}):", issues.len()));
         for vi in &issues {
             let marker = if vi.severity == Severity::Error { "✗" } else { "⚠" };
             let loc = vi.line.map(|l| format!(":{l}")).unwrap_or_default();

@@ -55,6 +55,7 @@
     }
   },
   "security": {
+    "dependencyVulnerabilityErrorThreshold": 7.0,
     "gitleaks": {
       "enabled": false,
       "binary": "gitleaks",

@@ -289,13 +289,14 @@ pub async fn run_license_and_dependency_scan(
     npm_http: &reqwest::Client,
     db: &DbStore,
     project_id: Option<i64>,
+    dependency_vulnerability_error_threshold: f64,
     mut log: impl FnMut(&str),
 ) -> (Vec<Issue>, Vec<CheckCoverage>) {
     let (mut issues, dep_scan_json) = ignite_dependency_license_scan::run_license_compliance_check_with_scan(root, runner, client, npm_http, &mut log).await;
     if let (Some(pid), Some(scan_json)) = (project_id, &dep_scan_json) {
         db.save_dependency_scan_cache(pid, scan_json);
     }
-    issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check(root, client, &mut log).await);
+    issues.extend(ignite_dependency_license_scan::run_dependency_vulnerability_check_with_threshold(root, client, dependency_vulnerability_error_threshold, &mut log).await);
     (issues, vec![license_scan_coverage(dep_scan_json.as_ref()), CheckCoverage::completed("dependency-vulnerability", "deps.dev", false)])
 }
 

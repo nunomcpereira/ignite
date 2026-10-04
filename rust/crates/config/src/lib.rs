@@ -1090,6 +1090,10 @@ pub struct SecurityConfig {
     pub dependency_graph: DependencyGraphConfig,
     pub code_scanning: CodeScanningConfig,
     pub dependency_review: DependencyReviewConfig,
+    /// CVSS v3 score at which a dependency advisory becomes blocking.
+    /// Defaults to 7.0; lower scores remain advisory warnings.
+    #[serde(default)]
+    pub dependency_vulnerability_error_threshold: Option<f64>,
     pub pr_suggestions: PrSuggestionsConfig,
     pub secret_verification: SecretVerificationConfig,
     pub push_protection: PushProtectionConfig,
@@ -1169,6 +1173,15 @@ pub struct SecurityConfig {
     /// reported, as a warning with a note).
     #[serde(default)]
     pub fp_learning: FpLearningConfig,
+}
+
+impl SecurityConfig {
+    /// CVSS v3 blocking cutoff, defaulting to the historical 7.0 policy.
+    pub fn dependency_vulnerability_error_threshold(&self) -> f64 {
+        self.dependency_vulnerability_error_threshold
+            .filter(|v| v.is_finite() && (0.0..=10.0).contains(v))
+            .unwrap_or(7.0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1667,6 +1680,9 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_bool("IGNOREFILE_ENABLED") { merged.ignore_file.enabled = v; }
     if let Some(v) = env_bool("TRIVY_IMAGE_ENABLED") { merged.security.trivy_image.enabled = v; }
     if let Some(v) = env_str("TRIVY_IMAGE_SEVERITY") { merged.security.trivy_image.severity_threshold = v; }
+    if let Some(v) = env_num::<f64>("DEPENDENCY_VULNERABILITY_ERROR_THRESHOLD").filter(|v| v.is_finite() && (0.0..=10.0).contains(v)) {
+        merged.security.dependency_vulnerability_error_threshold = Some(v);
+    }
     if let Some(v) = env_num::<u64>("TRIVY_IMAGE_BUILD_TIMEOUT_MS") { merged.security.trivy_image.build_timeout_ms = v; }
     if let Some(v) = env_bool("AI_AUTO_JUSTIFY_ENABLED") { merged.ai_auto_justify.enabled = v; }
     if let Some(v) = env_csv("AI_AUTO_JUSTIFY_CATEGORIES") { merged.ai_auto_justify.categories = v; }
