@@ -33,7 +33,7 @@ during a scheduled rescan.
 
 Permission grants give a person a right on every repository, on one
 organization, or on one repository: `view`, `scan`, `review`, `publish` or
-`policy_admin`. Manage them in **Admin / Integrations → Permission grants**
+`policy_admin`. Manage them in **Settings (gear icon) → Permission grants**
 or through `GET`/`POST /api/policy/grants` and `DELETE /api/policy/grants/:id`.
 
 - A policy admin manages grants at the scope their own `policy_admin` grant
@@ -67,7 +67,7 @@ server starts itself (organization scans, auto-rescan) aren't affected.
 Every finding in Studio has **False positive** / **Real issue** buttons. A
 verdict is recorded against the finding's engine and rule
 (`POST /api/pipeline/:jobId/issues/:issueId/verdict`) and feeds two things in
-**Admin / Integrations → Rule tuning**:
+**Settings (gear icon) → Rule tuning**:
 
 - **Noisiest rules** — per engine rule: false-positive and real-issue
   verdicts, how many findings people overrode, and how many repositories it

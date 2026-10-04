@@ -169,11 +169,15 @@ Ignite integrates with seventeen optional external tools (plus an eighteenth com
 curl -fsSL https://raw.githubusercontent.com/nunomcpereira/ignite/main/scripts/install-tools.sh | bash
 ```
 
-Idempotent (safe to re-run - only installs what's still missing), macOS
-(Homebrew) is the primary target since that's what every command above
-uses, and any individual tool can be skipped with `INSTALL_<TOOL>=false`
-(e.g. `INSTALL_GUARDDOG=false`). Docker itself isn't installed for you - it
-needs its GUI installer - the script just flags it if missing.
+Safe to re-run: missing tools are installed at their latest release, and
+already-installed ones are upgraded to latest through the package manager
+that owns them (brew/pipx/npm/gem; CodeQL and ORT are re-downloaded from
+their GitHub releases). `UPGRADE=false` only installs what's missing; a tool
+installed some other way is left alone. macOS (Homebrew) is the primary
+target since that's what every command above uses, and any individual tool
+can be skipped with `INSTALL_<TOOL>=false` (e.g. `INSTALL_GUARDDOG=false`).
+Docker itself isn't installed for you - it needs its GUI installer - the
+script just flags it if missing.
 
 ### Checking and updating tools
 
@@ -205,10 +209,13 @@ that covers every outdated tool, for example:
 docker compose build --pull --no-cache --build-arg TRIVY_VERSION=v0.75.0 && docker compose up -d
 ```
 
-Tools pinned by a Dockerfile `ARG` (trivy, gitleaks, hadolint, syft, cosign,
-oasdiff, codeql, gocloc, ORT) get a `--build-arg`; bump the same `ARG` in the
-Dockerfile to keep the new version on later rebuilds. Unpinned tools
-(pipx/npm/gem/install-script) pick up their latest release from `--no-cache`.
+Every tool is pinned by a Dockerfile `ARG` (`TRIVY_VERSION`,
+`SEMGREP_VERSION`, `JSCPD_VERSION`, ...), so each gets a `--build-arg`; bump
+the same `ARG` in the Dockerfile to keep the new version on later rebuilds.
+`scripts/update-tool-versions.sh` bumps every pin to the latest upstream
+release in one go (`--check` only reports, exiting 1 when something is
+outdated); rebuild with `--no-cache` and re-run a full self-scan before
+committing the Dockerfile.
 Set `IGNITE_IN_CONTAINER=0` to force in-place updates anyway.
 
 ### Installing ORT
@@ -217,9 +224,10 @@ ORT isn't on Homebrew. Download a release archive and symlink the binary onto `P
 
 ```bash
 mkdir -p ~/tools && cd ~/tools
-gh release download 91.1.0 -R oss-review-toolkit/ort -p 'ort-91.1.0.tgz'
-tar xzf ort-91.1.0.tgz
-ln -sf ~/tools/ort-91.1.0/bin/ort /opt/homebrew/bin/ort   # or anywhere else on PATH
+ORT_VERSION="$(gh api repos/oss-review-toolkit/ort/releases/latest --jq .tag_name)"
+gh release download "$ORT_VERSION" -R oss-review-toolkit/ort -p "ort-$ORT_VERSION.tgz"
+tar xzf "ort-$ORT_VERSION.tgz"
+ln -sf ~/tools/ort-$ORT_VERSION/bin/ort /opt/homebrew/bin/ort   # or anywhere else on PATH
 ort --version   # sanity check
 ```
 

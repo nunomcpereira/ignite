@@ -20,8 +20,9 @@ struct Tool {
     package: &'static str,
     version_arg: &'static str,
     /// Dockerfile `ARG` pinning this tool's release in the published image.
-    /// `None` = unpinned there (pipx/npm/gem/install-script): a `--no-cache`
-    /// rebuild picks up the latest release.
+    /// `None` = unpinned there: a `--no-cache` rebuild picks up the latest
+    /// release. Every current tool is pinned (`scripts/update-tool-versions.sh`
+    /// bumps them all).
     docker_arg: Option<&'static str>,
 }
 const TOOLS: &[Tool] = &[
@@ -37,7 +38,7 @@ const TOOLS: &[Tool] = &[
         source: "gem",
         package: "licensee",
         version_arg: "version",
-        docker_arg: None,
+        docker_arg: Some("LICENSEE_VERSION"),
     },
     Tool {
         key: "gitleaks",
@@ -58,7 +59,7 @@ const TOOLS: &[Tool] = &[
         source: "pypi",
         package: "checkov",
         version_arg: "--version",
-        docker_arg: None,
+        docker_arg: Some("CHECKOV_VERSION"),
     },
     Tool {
         key: "hadolint",
@@ -86,21 +87,21 @@ const TOOLS: &[Tool] = &[
         source: "pypi",
         package: "semgrep",
         version_arg: "--version",
-        docker_arg: None,
+        docker_arg: Some("SEMGREP_VERSION"),
     },
     Tool {
         key: "bearer",
         source: "github",
         package: "Bearer/bearer",
         version_arg: "version",
-        docker_arg: None,
+        docker_arg: Some("BEARER_VERSION"),
     },
     Tool {
         key: "jscpd",
         source: "npm",
         package: "jscpd",
         version_arg: "--version",
-        docker_arg: None,
+        docker_arg: Some("JSCPD_VERSION"),
     },
     Tool {
         key: "gocloc",
@@ -114,14 +115,14 @@ const TOOLS: &[Tool] = &[
         source: "npm",
         package: "@stoplight/spectral-cli",
         version_arg: "--version",
-        docker_arg: None,
+        docker_arg: Some("SPECTRAL_VERSION"),
     },
     Tool {
         key: "guarddog",
         source: "pypi",
         package: "guarddog",
         version_arg: "--version",
-        docker_arg: None,
+        docker_arg: Some("GUARDDOG_VERSION"),
     },
     Tool {
         key: "codeql",
@@ -135,7 +136,7 @@ const TOOLS: &[Tool] = &[
         source: "pypi",
         package: "picklescan",
         version_arg: "--version",
-        docker_arg: None,
+        docker_arg: Some("PICKLESCAN_VERSION"),
     },
     Tool {
         key: "oasdiff",
@@ -149,7 +150,7 @@ const TOOLS: &[Tool] = &[
         source: "pypi",
         package: "zizmor",
         version_arg: "--version",
-        docker_arg: None,
+        docker_arg: Some("ZIZMOR_VERSION"),
     },
 ];
 static SNAPSHOT: Lazy<Mutex<Value>> = Lazy::new(|| Mutex::new(json!({"checking": false, "checkedAt": null, "tools": {}})));
@@ -500,7 +501,9 @@ mod tests {
         assert_eq!(hint["buildArg"], "TRIVY_VERSION=v0.75.0");
         assert_eq!(hint["command"], "docker compose build --pull --build-arg TRIVY_VERSION=v0.75.0 && docker compose up -d");
         let semgrep = TOOLS.iter().find(|t| t.key == "semgrep").unwrap();
-        let hint = rebuild_hint(semgrep, "1.100.0");
+        assert_eq!(rebuild_hint(semgrep, "1.180.0")["buildArg"], "SEMGREP_VERSION=1.180.0");
+        let unpinned = Tool { key: "x", source: "pypi", package: "x", version_arg: "--version", docker_arg: None };
+        let hint = rebuild_hint(&unpinned, "1.100.0");
         assert!(hint["buildArg"].is_null());
         assert_eq!(hint["command"], "docker compose build --pull --no-cache && docker compose up -d");
     }

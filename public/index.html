@@ -36,7 +36,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20260929b"></script>
+  <script src="i18n.js?v=20261004"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -82,14 +82,14 @@
        as padding. content-box keeps that padding *outside* the max width,
        so opening the left rail or pinning the right drawer only shifts the
        content instead of squeezing it into a narrow column. */
-    :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #apiKeysView) { box-sizing: content-box; }
+    :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #settingsView) { box-sizing: content-box; }
     body.history-pinned #historyDrawer { top: 3.5rem; z-index: 30; max-width: 24rem; box-shadow: none; }
     body.history-pinned #historyDrawerCloseBtn,
     body.history-pinned #historyDrawerBtn { display: none; }
-    body.history-pinned :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #apiKeysView) { padding-right: calc(24rem + 1.5rem); }
+    body.history-pinned :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #settingsView) { padding-right: calc(24rem + 1.5rem); }
     #historyDrawerPinBtn[aria-pressed="true"] { color: var(--tw-brand-600, #2563eb); background: #eff6ff; }
     @media (min-width: 640px) {
-      body.nav-expanded :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #apiKeysView) { padding-left: calc(14rem + 1.5rem); }
+      body.nav-expanded :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #settingsView) { padding-left: calc(14rem + 1.5rem); }
     }
 
     /* Dark mode: the app's entire palette is hardcoded Tailwind utility
@@ -925,103 +925,6 @@
     </div>
   </div>
 
-  <!-- Admin / Integrations modal: daily report delivery settings (saved to ignite.db app_settings) -->
-  <div id="adminSettingsModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" role="dialog" aria-modal="true">
-      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-        <h3 class="text-sm font-bold text-slate-900" data-i18n="admin.title">Admin / Integrations</h3>
-        <button id="adminSettingsCloseBtn" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100" data-i18n-title="common.close">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
-      </div>
-      <div class="flex gap-1 px-5 pt-2 border-b border-slate-100" role="tablist">
-        <button id="adminTabReport" type="button" role="tab" data-admin-tab="report" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-brand-600 text-brand-700" data-i18n="admin.tabReport">Report delivery</button>
-        <button id="adminTabGrants" type="button" role="tab" data-admin-tab="grants" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600" data-i18n="admin.tabGrants">Permission grants</button>
-        <button id="adminTabTuning" type="button" role="tab" data-admin-tab="tuning" class="admin-tab text-xs font-semibold px-2.5 py-1.5 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600" data-i18n="admin.tabTuning">Rule tuning</button>
-      </div>
-      <div id="adminTuningPanel" class="hidden p-5 space-y-4 overflow-y-auto">
-        <div>
-          <div class="flex items-center justify-between gap-2 mb-1">
-            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide" data-i18n="admin.tuningProposalsTitle">AI rule proposals</p>
-            <div class="flex items-center gap-1.5">
-              <input id="adminTuningOrg" type="text" class="w-28 text-xs border border-slate-200 rounded-lg px-2 py-1 text-slate-700" data-i18n-placeholder="admin.tuningOrg" placeholder="org (blank = all)" aria-label="Org">
-              <button id="adminTuningGenerateBtn" type="button" class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="admin.tuningGenerate">Ask AI for proposals</button>
-            </div>
-          </div>
-          <p class="text-[11px] text-slate-500 mb-2" data-i18n="admin.tuningProposalsHint">The AI reads the free-text justifications people wrote when overriding findings and proposes ignore rules where many say the same thing. Nothing applies until you accept it; accepted rules work like config.json ignoreRules (findings stay visible, acknowledged).</p>
-          <p id="adminTuningGeneration" class="hidden text-xs mb-2" role="status"></p>
-          <div id="adminTuningProposals" class="space-y-2 text-xs"></div>
-        </div>
-        <div>
-          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="admin.tuningNoiseTitle">Noisiest rules</p>
-          <div id="adminTuningNoise" class="text-xs"></div>
-        </div>
-        <p id="adminTuningStatus" class="hidden text-xs break-words" role="status"></p>
-      </div>
-      <div id="adminGrantsPanel" class="hidden p-5 space-y-3 overflow-y-auto">
-        <p id="adminGrantsEnforced" class="text-xs"></p>
-        <div id="adminGrantsList" class="text-xs"></div>
-        <div class="border border-slate-200 rounded-lg p-3 space-y-2">
-          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide" data-i18n="admin.grantAddTitle">Add a grant</p>
-          <input id="adminGrantEmail" type="email" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantEmail" placeholder="person@example.com" aria-label="Email">
-          <div class="grid grid-cols-3 gap-2">
-            <select id="adminGrantPermission" class="text-sm border border-slate-200 rounded-lg px-2 py-1.5 text-slate-700" aria-label="Permission">
-              <option value="view">view</option><option value="scan">scan</option><option value="review">review</option><option value="publish">publish</option><option value="policy_admin">policy_admin</option>
-            </select>
-            <input id="adminGrantOrg" type="text" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantOrg" placeholder="org (blank = all)" aria-label="Org">
-            <input id="adminGrantRepo" type="text" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantRepo" placeholder="repo (blank = all)" aria-label="Repository">
-          </div>
-          <button id="adminGrantAddBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700" data-i18n="admin.grantAdd">Add grant</button>
-        </div>
-        <p id="adminGrantsStatus" class="hidden text-xs break-words" role="status"></p>
-      </div>
-      <div id="adminReportPanel" class="p-5 space-y-4 overflow-y-auto">
-        <p class="text-xs text-slate-500" data-i18n="admin.subtitle">Daily security report delivery. Saved to the database and applied immediately; a blank value falls back to config.json.</p>
-        <label class="flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <input id="adminEnabledInput" type="checkbox" class="rounded border-slate-300">
-          <span data-i18n="admin.enabled">Daily report enabled</span>
-          <span id="adminEnabledSource" class="text-[10px] font-medium text-slate-400"></span>
-        </label>
-        <div class="flex gap-3">
-          <div class="w-32">
-            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="admin.time">Schedule time</label>
-            <input id="adminTimeInput" type="time" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
-          </div>
-          <div class="flex-1">
-            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.to">Default email recipient(s)</span> <span id="adminToSource" class="normal-case font-medium text-slate-400"></span></label>
-            <input id="adminToInput" type="text" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.toPlaceholder" placeholder="security@example.com, appsec@example.com">
-          </div>
-        </div>
-        <div>
-          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.webhookUrl">Microsoft Sentinel / Webhook URL</span> <span id="adminWebhookSource" class="normal-case font-medium text-slate-400"></span></label>
-          <input id="adminWebhookUrlInput" type="url" autocomplete="off" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" placeholder="https://prod-00.westeurope.logic.azure.com/…">
-          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 mb-1"><span data-i18n="admin.webhookToken">Webhook auth token (optional)</span> <span id="adminWebhookTokenSource" class="normal-case font-medium text-slate-400"></span></label>
-          <input id="adminWebhookTokenInput" type="password" autocomplete="new-password" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
-          <div class="mt-2 flex items-center gap-2">
-            <button id="adminTestWebhookBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="admin.test">Test connection</button>
-            <button id="adminClearWebhookBtn" type="button" class="hidden text-xs font-semibold px-2 py-1.5 rounded-lg text-slate-400 hover:text-rose-500" data-i18n="admin.clearSaved">Clear saved value</button>
-          </div>
-          <p id="adminTestWebhookResult" class="hidden mt-1.5 text-xs break-words"></p>
-        </div>
-        <div>
-          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.azureUrl">Azure Blob Storage container SAS URL</span> <span id="adminAzureSource" class="normal-case font-medium text-slate-400"></span></label>
-          <input id="adminAzureUrlInput" type="password" autocomplete="new-password" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" placeholder="https://account.blob.core.windows.net/container?sv=…">
-          <div class="mt-2 flex items-center gap-2">
-            <button id="adminTestAzureBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="admin.test">Test connection</button>
-            <button id="adminClearAzureBtn" type="button" class="hidden text-xs font-semibold px-2 py-1.5 rounded-lg text-slate-400 hover:text-rose-500" data-i18n="admin.clearSaved">Clear saved value</button>
-          </div>
-          <p id="adminTestAzureResult" class="hidden mt-1.5 text-xs break-words"></p>
-        </div>
-        <p id="adminNotes" class="hidden text-xs text-amber-600"></p>
-        <p id="adminSettingsStatus" class="hidden text-xs break-words"></p>
-      </div>
-      <div id="adminReportFooter" class="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-100">
-        <button id="adminSettingsCancelBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-50" data-i18n="common.cancel">Cancel</button>
-        <button id="adminSettingsSaveBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="admin.save">Save to DB</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Review / override modal -->
   <div id="reviewModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
@@ -1085,12 +988,106 @@
   <!-- Ignite Studio: full-screen file tree + editor + AI-fix panel, only
        reachable while a run is paused at the review gate (staging dir still
        on disk). Not a real route — a full-viewport overlay over the app. -->
-  <!-- API keys view: short-lived self-service keys (GET/POST /api/auth/api-keys, DELETE /api/auth/api-keys/:id — session-only) -->
-  <div id="apiKeysView" class="hidden max-w-6xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
-    <div class="flex items-center justify-between mb-8 gap-4 flex-wrap">
+  <!-- Settings view (gear button / profile menu): API keys, daily report delivery,
+       permission grants and rule tuning, one tab each. API keys are
+       session-only self-service keys (GET/POST /api/auth/api-keys, DELETE /api/auth/api-keys/:id). -->
+  <div id="settingsView" class="hidden max-w-6xl mx-auto px-6 py-12 sm:pl-[calc(3.5rem+1.5rem)]">
+    <div class="mb-6">
+      <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="settings.title">Settings</h2>
+      <p class="text-base text-slate-500 mt-1 max-w-2xl" data-i18n="settings.subtitle">Your API keys and this Ignite server's integrations, permissions and rule tuning.</p>
+    </div>
+    <div class="flex gap-1 border-b border-slate-200 mb-6 overflow-x-auto" role="tablist">
+      <button id="adminTabApiKeys" type="button" role="tab" data-admin-tab="apiKeys" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="apiKeys.title">API keys</button>
+      <button id="adminTabReport" type="button" role="tab" data-admin-tab="report" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="admin.tabReport">Report delivery</button>
+      <button id="adminTabGrants" type="button" role="tab" data-admin-tab="grants" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="admin.tabGrants">Permission grants</button>
+      <button id="adminTabTuning" type="button" role="tab" data-admin-tab="tuning" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="admin.tabTuning">Rule tuning</button>
+    </div>
+    <div id="adminSettingsCard" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm">
+      <div id="adminReportPanel" class="hidden p-6 space-y-4 max-w-3xl">
+        <p class="text-xs text-slate-500" data-i18n="admin.subtitle">Daily security report delivery. Saved to the database and applied immediately; a blank value falls back to config.json.</p>
+        <label class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <input id="adminEnabledInput" type="checkbox" class="rounded border-slate-300">
+          <span data-i18n="admin.enabled">Daily report enabled</span>
+          <span id="adminEnabledSource" class="text-[10px] font-medium text-slate-400"></span>
+        </label>
+        <div class="flex gap-3">
+          <div class="w-32">
+            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="admin.time">Schedule time</label>
+            <input id="adminTimeInput" type="time" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+          </div>
+          <div class="flex-1">
+            <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.to">Default email recipient(s)</span> <span id="adminToSource" class="normal-case font-medium text-slate-400"></span></label>
+            <input id="adminToInput" type="text" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.toPlaceholder" placeholder="security@example.com, appsec@example.com">
+          </div>
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.webhookUrl">Microsoft Sentinel / Webhook URL</span> <span id="adminWebhookSource" class="normal-case font-medium text-slate-400"></span></label>
+          <input id="adminWebhookUrlInput" type="url" autocomplete="off" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" placeholder="https://prod-00.westeurope.logic.azure.com/…">
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 mb-1"><span data-i18n="admin.webhookToken">Webhook auth token (optional)</span> <span id="adminWebhookTokenSource" class="normal-case font-medium text-slate-400"></span></label>
+          <input id="adminWebhookTokenInput" type="password" autocomplete="new-password" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700">
+          <div class="mt-2 flex items-center gap-2">
+            <button id="adminTestWebhookBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="admin.test">Test connection</button>
+            <button id="adminClearWebhookBtn" type="button" class="hidden text-xs font-semibold px-2 py-1.5 rounded-lg text-slate-400 hover:text-rose-500" data-i18n="admin.clearSaved">Clear saved value</button>
+          </div>
+          <p id="adminTestWebhookResult" class="hidden mt-1.5 text-xs break-words"></p>
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1"><span data-i18n="admin.azureUrl">Azure Blob Storage container SAS URL</span> <span id="adminAzureSource" class="normal-case font-medium text-slate-400"></span></label>
+          <input id="adminAzureUrlInput" type="password" autocomplete="new-password" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" placeholder="https://account.blob.core.windows.net/container?sv=…">
+          <div class="mt-2 flex items-center gap-2">
+            <button id="adminTestAzureBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" data-i18n="admin.test">Test connection</button>
+            <button id="adminClearAzureBtn" type="button" class="hidden text-xs font-semibold px-2 py-1.5 rounded-lg text-slate-400 hover:text-rose-500" data-i18n="admin.clearSaved">Clear saved value</button>
+          </div>
+          <p id="adminTestAzureResult" class="hidden mt-1.5 text-xs break-words"></p>
+        </div>
+        <p id="adminNotes" class="hidden text-xs text-amber-600"></p>
+        <p id="adminSettingsStatus" class="hidden text-xs break-words"></p>
+      </div>
+      <div id="adminReportFooter" class="hidden flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-100">
+        <button id="adminSettingsCancelBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-50" data-i18n="admin.discard">Discard changes</button>
+        <button id="adminSettingsSaveBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="admin.save">Save to DB</button>
+      </div>
+      <div id="adminGrantsPanel" class="hidden p-6 space-y-4">
+        <p id="adminGrantsEnforced" class="text-xs"></p>
+        <div id="adminGrantsList" class="text-xs"></div>
+        <div class="border border-slate-200 rounded-lg p-3 space-y-2">
+          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide" data-i18n="admin.grantAddTitle">Add a grant</p>
+          <input id="adminGrantEmail" type="email" class="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantEmail" placeholder="person@example.com" aria-label="Email">
+          <div class="grid grid-cols-3 gap-2">
+            <select id="adminGrantPermission" class="text-sm border border-slate-200 rounded-lg px-2 py-1.5 text-slate-700" aria-label="Permission">
+              <option value="view">view</option><option value="scan">scan</option><option value="review">review</option><option value="publish">publish</option><option value="policy_admin">policy_admin</option>
+            </select>
+            <input id="adminGrantOrg" type="text" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantOrg" placeholder="org (blank = all)" aria-label="Org">
+            <input id="adminGrantRepo" type="text" class="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700" data-i18n-placeholder="admin.grantRepo" placeholder="repo (blank = all)" aria-label="Repository">
+          </div>
+          <button id="adminGrantAddBtn" type="button" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700" data-i18n="admin.grantAdd">Add grant</button>
+        </div>
+        <p id="adminGrantsStatus" class="hidden text-xs break-words" role="status"></p>
+      </div>
+      <div id="adminTuningPanel" class="hidden p-6 space-y-5">
+        <div>
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide" data-i18n="admin.tuningProposalsTitle">AI rule proposals</p>
+            <div class="flex items-center gap-1.5">
+              <input id="adminTuningOrg" type="text" class="w-28 text-xs border border-slate-200 rounded-lg px-2 py-1 text-slate-700" data-i18n-placeholder="admin.tuningOrg" placeholder="org (blank = all)" aria-label="Org">
+              <button id="adminTuningGenerateBtn" type="button" class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" data-i18n="admin.tuningGenerate">Ask AI for proposals</button>
+            </div>
+          </div>
+          <p class="text-[11px] text-slate-500 mb-2" data-i18n="admin.tuningProposalsHint">The AI reads the free-text justifications people wrote when overriding findings and proposes ignore rules where many say the same thing. Nothing applies until you accept it; accepted rules work like config.json ignoreRules (findings stay visible, acknowledged).</p>
+          <p id="adminTuningGeneration" class="hidden text-xs mb-2" role="status"></p>
+          <div id="adminTuningProposals" class="space-y-2 text-xs"></div>
+        </div>
+        <div>
+          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1" data-i18n="admin.tuningNoiseTitle">Noisiest rules</p>
+          <div id="adminTuningNoise" class="text-xs"></div>
+        </div>
+        <p id="adminTuningStatus" class="hidden text-xs break-words" role="status"></p>
+      </div>
+    </div>
+    <div id="adminApiKeysPanel" class="hidden">
+    <div class="flex items-center justify-between mb-6 gap-4 flex-wrap">
       <div>
-        <h2 class="text-2xl font-bold tracking-tight text-slate-900" data-i18n="apiKeys.title">API keys</h2>
-        <p class="text-base text-slate-500 mt-1 max-w-2xl" data-i18n="apiKeys.subtitle">Short-lived keys for the VS Code extension, the CLI or CI. They act as you until they expire or you revoke them.</p>
+        <p class="text-base text-slate-500 max-w-2xl" data-i18n="apiKeys.subtitle">Short-lived keys for the VS Code extension, the CLI or CI. They act as you until they expire or you revoke them.</p>
       </div>
       <button id="apiKeysRefreshBtn" type="button" data-i18n-title="apiKeys.refresh" title="Refresh" class="text-slate-400 hover:text-brand-600 transition-colors shrink-0">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
@@ -1146,6 +1143,7 @@
           </table>
         </div>
       </div>
+    </div>
     </div>
   </div>
 
@@ -1730,7 +1728,8 @@
         }
       }
       renderAuthBar();
-      if (location.hash === '#api-keys') openApiKeys();
+      const initialSettingsTab = settingsTabFromHash();
+      if (initialSettingsTab) openSettings(initialSettingsTab);
     }
 
     // Provisioning (Phase 6) runs as the actual signed-in user's own GitHub
@@ -1825,7 +1824,7 @@
       const bar = $('authBar');
       $('apiKeysMenuLink').classList.toggle('hidden', !authState.user);
       apiKeysLoaded = false;
-      if (!$('apiKeysView').classList.contains('hidden')) renderApiKeysView();
+      if (!$('settingsView').classList.contains('hidden') && settingsTab === 'apiKeys') renderApiKeysView();
       if (authState.user) {
         bar.innerHTML = `
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 border-b border-slate-100">
@@ -8572,8 +8571,9 @@
       if (signedIn && !apiKeysLoaded) loadApiKeys();
     }
     function openApiKeys() {
-      $('accountMenu').classList.add('hidden');
-      showView('apiKeysView', null);
+      openSettings('apiKeys');
+    }
+    function showApiKeysTab() {
       $('apiKeysNewKey').classList.add('hidden');
       $('apiKeysNewKeyValue').textContent = '';
       apiKeysStatus('');
@@ -8627,7 +8627,7 @@
         apiKeysStatus(t('apiKeys.copyFailed'), false);
       }
     });
-    window.addEventListener('hashchange', () => { if (location.hash === '#api-keys') openApiKeys(); });
+    window.addEventListener('hashchange', () => { const tab = settingsTabFromHash(); if (tab) openSettings(tab); });
 
     // ---- Admin / Integrations: daily report delivery settings ----
     // GET/POST /api/admin/settings/daily-report. Secrets (webhook URL/token,
@@ -8671,12 +8671,26 @@
       $('adminNotes').classList.toggle('hidden', notes.length === 0);
       Object.keys(adminClear).forEach((k) => { adminClear[k] = false; });
     }
-    async function openAdminSettings() {
+    // ---- Settings view: API keys, report delivery, grants, rule tuning ----
+    // Deep links: #settings/<tab> (apiKeys|report|grants|tuning); the older
+    // #api-keys link still opens the API keys tab.
+    const SETTINGS_TABS = ['apiKeys', 'report', 'grants', 'tuning'];
+    let settingsTab = 'apiKeys';
+    function settingsTabFromHash() {
+      if (location.hash === '#api-keys') return 'apiKeys';
+      const m = location.hash.match(/^#settings(?:\/([A-Za-z]+))?$/);
+      if (!m) return null;
+      return SETTINGS_TABS.includes(m[1]) ? m[1] : (authState.user ? 'apiKeys' : 'report');
+    }
+    function openSettings(tab) {
+      $('accountMenu').classList.add('hidden');
+      showView('settingsView', null);
+      switchAdminTab(SETTINGS_TABS.includes(tab) ? tab : 'apiKeys');
+    }
+    async function loadAdminReportSettings() {
       adminShowLine('adminSettingsStatus', '', true);
       adminShowLine('adminTestWebhookResult', '', true);
       adminShowLine('adminTestAzureResult', '', true);
-      $('adminSettingsModal').classList.remove('hidden');
-      switchAdminTab('report');
       try {
         const res = await fetch('/api/admin/settings/daily-report');
         const data = await res.json().catch(() => ({}));
@@ -8686,7 +8700,6 @@
         adminShowLine('adminSettingsStatus', t('admin.loadFailed', { error: e.message }), false);
       }
     }
-    function closeAdminSettings() { $('adminSettingsModal').classList.add('hidden'); }
 
     // ---- Admin / Integrations: permission grants (US-17) ----
     // GET/POST/DELETE /api/policy/grants. Only a policy admin sees anything;
@@ -8700,10 +8713,17 @@
         b.classList.toggle('text-slate-500', !on);
         b.setAttribute('aria-selected', on ? 'true' : 'false');
       });
+      settingsTab = tab;
+      $('adminApiKeysPanel').classList.toggle('hidden', tab !== 'apiKeys');
+      $('adminSettingsCard').classList.toggle('hidden', tab === 'apiKeys');
       $('adminReportPanel').classList.toggle('hidden', tab !== 'report');
       $('adminReportFooter').classList.toggle('hidden', tab !== 'report');
       $('adminGrantsPanel').classList.toggle('hidden', tab !== 'grants');
       $('adminTuningPanel').classList.toggle('hidden', tab !== 'tuning');
+      const hash = tab === 'apiKeys' && location.hash === '#api-keys' ? '#api-keys' : `#settings/${tab}`;
+      if (location.hash !== hash) history.replaceState(null, '', hash);
+      if (tab === 'apiKeys') showApiKeysTab();
+      if (tab === 'report') loadAdminReportSettings();
       if (tab === 'grants') loadAdminGrants();
       if (tab === 'tuning') loadAdminTuning();
     }
@@ -8886,11 +8906,9 @@
         btn.textContent = t('admin.save');
       }
     }
-    $('adminSettingsBtn').addEventListener('click', openAdminSettings);
-    $('adminSettingsCloseBtn').addEventListener('click', closeAdminSettings);
-    $('adminSettingsCancelBtn').addEventListener('click', closeAdminSettings);
-    $('adminSettingsModal').addEventListener('click', (e) => { if (e.target === $('adminSettingsModal')) closeAdminSettings(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('adminSettingsModal').classList.contains('hidden')) closeAdminSettings(); });
+    $('adminSettingsBtn').addEventListener('click', () => openSettings(settingsTab === 'apiKeys' && !authState.user ? 'report' : settingsTab));
+    // Discard unsaved edits by reloading what's saved.
+    $('adminSettingsCancelBtn').addEventListener('click', loadAdminReportSettings);
     $('adminSettingsSaveBtn').addEventListener('click', saveAdminSettings);
     $('adminTestWebhookBtn').addEventListener('click', () => adminTest('webhook', 'adminTestWebhookResult', 'adminTestWebhookBtn'));
     $('adminTestAzureBtn').addEventListener('click', () => adminTest('azure_blob', 'adminTestAzureResult', 'adminTestAzureBtn'));
@@ -9759,7 +9777,7 @@
     // showing.
     const NAV_ACTIVE = ['bg-brand-50', 'text-brand-600'];
     const NAV_INACTIVE = ['text-slate-400', 'hover:text-brand-600', 'hover:bg-slate-100'];
-    const NAV_VIEWS = ['dashboardView', 'onboardedReposView', 'governanceView', 'orgReposView', 'apiKeysView'];
+    const NAV_VIEWS = ['dashboardView', 'onboardedReposView', 'governanceView', 'orgReposView', 'settingsView'];
     const NAV_BTNS = ['dashboardNavBtn', 'onboardedReposNavBtn', 'governanceNavBtn', 'orgReposNavBtn'];
     function setActiveNavBtn(activeBtn, ...inactiveBtns) {
       inactiveBtns.forEach((btn) => {
@@ -9771,8 +9789,11 @@
     }
     function showView(viewId, navBtnId) {
       NAV_VIEWS.forEach((id) => $(id).classList.toggle('hidden', id !== viewId));
+      if (viewId !== 'settingsView' && (location.hash === '#api-keys' || location.hash.startsWith('#settings'))) {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
       if (!navBtnId) {
-        // A view reached from the profile menu (API keys) has no rail button — clear the highlight.
+        // The settings view (gear button / profile menu) has no rail button — clear the highlight.
         NAV_BTNS.forEach((id) => { $(id).classList.remove(...NAV_ACTIVE); $(id).classList.add(...NAV_INACTIVE); });
         return;
       }

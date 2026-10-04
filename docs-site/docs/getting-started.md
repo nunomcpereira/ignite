@@ -41,14 +41,17 @@ one check is skipped with a warning rather than failing the run.
 One script installs all eighteen optional tools (ORT, licensee, gitleaks,
 Trivy, Checkov, hadolint, Syft, cosign, Semgrep, Bearer, GuardDog,
 picklescan, oasdiff, zizmor, jscpd, gocloc, Spectral, CodeQL) plus `act`,
+`gh` and WeasyPrint,
 instead of copy-pasting `brew`/`npm`/`pip`/`gem` commands one at a time:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nunomcpereira/ignite/main/scripts/install-tools.sh | bash
 ```
 
-Idempotent — safe to re-run any time, it only installs what's still
-missing. macOS (Homebrew) is the primary target, matching every install
+Safe to re-run any time: missing tools are installed at their latest
+release and already-installed ones are upgraded to latest (`UPGRADE=false`
+to only install what's missing). The Docker image pins exact versions
+instead; `scripts/update-tool-versions.sh` bumps them all. macOS (Homebrew) is the primary target, matching every install
 command in the README exactly; skip an individual tool with
 `INSTALL_<TOOL>=false` (e.g. `INSTALL_GUARDDOG=false`). Docker itself isn't
 installed for you (it needs its GUI installer) — the script just flags it

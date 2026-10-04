@@ -33,11 +33,20 @@ use std::sync::Arc;
 
 const MAX_JUSTIFICATIONS: i64 = 400;
 const MAX_DIGEST_CHARS: usize = 40_000;
+/// A local model reads far slower: give it less to read.
+const LOCAL_MAX_DIGEST_CHARS: usize = 15_000;
+/// Distinct-justification lines shown per rule group.
+const MAX_LINES_PER_GROUP: usize = 25;
+/// Override ids listed on one line (the rest are counted).
+const MAX_IDS_PER_LINE: usize = 15;
 const MAX_JUSTIFICATION_CHARS: usize = 220;
 const MAX_PROPOSALS: usize = 15;
 /// A proposal must cite at least this many distinct overrides.
 const MIN_EVIDENCE: usize = 2;
 const LLM_TIMEOUT_MS: u64 = 600_000;
+/// A local model (llama.cpp etc.) can take well over 10 minutes on a long
+/// prompt; it only costs local compute, so wait up to an hour.
+const LOCAL_LLM_TIMEOUT_MS: u64 = 3_600_000;
 
 const SYSTEM_PROMPT: &str = "You are an application-security lead reviewing how a team justifies (overrides) security findings. \
 You get findings grouped by engine rule, each with the free-text justification a person wrote when they accepted it. \
@@ -137,24 +146,55 @@ pub(crate) struct Candidate {
     pub evidence: Vec<i64>,
 }
 
-/// The digest the model reads: justifications grouped by engine rule.
-pub(crate) fn build_digest(rows: &[ignite_db_store::JustificationRow]) -> String {
-    let mut groups: BTreeMap<(String, String, String), Vec<&ignite_db_store::JustificationRow>> = BTreeMap::new();
+/// The digest the model reads: justifications grouped by engine rule, and
+/// within a rule identical justifications (case/whitespace-insensitive)
+/// collapsed into one line listing their override ids and files — people
+/// reuse the same text a lot (499 overrides, 75 distinct texts, on one real
+/// install), and the model only needs each reason once with its weight.
+pub(crate) fn build_digest(rows: &[ignite_db_store::JustificationRow], budget: usize) -> String {
+    type Line<'a> = (String, Vec<i64>, std::collections::BTreeSet<String>, std::collections::BTreeSet<String>);
+    let mut groups: BTreeMap<(String, String, String), Vec<Line<'_>>> = BTreeMap::new();
     for r in rows {
-        groups.entry((r.category.clone(), r.tool.clone().unwrap_or_else(|| "-".into()), r.rule.clone().unwrap_or_else(|| "-".into()))).or_default().push(r);
+        let key = (r.category.clone(), r.tool.clone().unwrap_or_else(|| "-".into()), r.rule.clone().unwrap_or_else(|| "-".into()));
+        let text = one_line(&r.justification, MAX_JUSTIFICATION_CHARS);
+        let norm = text.to_lowercase();
+        let lines = groups.entry(key).or_default();
+        let line = match lines.iter_mut().position(|l| l.0.to_lowercase() == norm) {
+            Some(i) => &mut lines[i],
+            None => {
+                lines.push((text, Vec::new(), Default::default(), Default::default()));
+                lines.last_mut().expect("just pushed")
+            }
+        };
+        line.1.push(r.override_id);
+        line.2.insert(format!("{}/{}", r.org, r.repo));
+        if let Some(f) = &r.file {
+            line.3.insert(f.clone());
+        }
     }
     let mut ordered: Vec<_> = groups.into_iter().collect();
-    ordered.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    ordered.sort_by_key(|(_, lines)| std::cmp::Reverse(lines.iter().map(|l| l.1.len()).sum::<usize>()));
     let mut out = String::new();
-    for ((category, tool, rule), items) in ordered {
-        let header = format!("\n## category={category} engine={tool} rule={rule} ({} override(s))\n", items.len());
-        if out.len() + header.len() > MAX_DIGEST_CHARS {
+    for ((category, tool, rule), mut lines) in ordered {
+        let total: usize = lines.iter().map(|l| l.1.len()).sum();
+        let header = format!("\n## category={category} engine={tool} rule={rule} ({total} override(s), {} distinct justification(s))\n", lines.len());
+        if out.len() + header.len() > budget {
             break;
         }
         out.push_str(&header);
-        for r in items {
-            let line = format!("- id={} {}/{} file={} :: \"{}\"\n", r.override_id, r.org, r.repo, r.file.as_deref().unwrap_or("-"), one_line(&r.justification, MAX_JUSTIFICATION_CHARS));
-            if out.len() + line.len() > MAX_DIGEST_CHARS {
+        lines.sort_by_key(|l| std::cmp::Reverse(l.1.len()));
+        for (text, ids, repos, files) in lines.iter().take(MAX_LINES_PER_GROUP) {
+            let shown: Vec<String> = ids.iter().take(MAX_IDS_PER_LINE).map(i64::to_string).collect();
+            let more = if ids.len() > MAX_IDS_PER_LINE { format!(" +{} more", ids.len() - MAX_IDS_PER_LINE) } else { String::new() };
+            let files: Vec<&str> = files.iter().take(4).map(String::as_str).collect();
+            let line = format!(
+                "- {}x ids={}{more} repos={} files={} :: \"{text}\"\n",
+                ids.len(),
+                shown.join(","),
+                repos.iter().take(3).cloned().collect::<Vec<_>>().join(","),
+                if files.is_empty() { "-".to_string() } else { files.join(",") }
+            );
+            if out.len() + line.len() > budget {
                 break;
             }
             out.push_str(&line);
@@ -251,9 +291,10 @@ async fn generate(state: Arc<AppState>, org: Option<String>) -> Result<usize, St
     if !ignite_llm_client::llm_available(&http, &state.llm_config).await {
         return Err(format!("No AI provider is available ({}): configure llm.provider in config.json.", ignite_llm_client::provider_label(&state.llm_config.provider)));
     }
-    let user_content = format!("BEGIN OVERRIDES\n{}\nEND OVERRIDES\n", build_digest(&rows));
+    let local = matches!(state.llm_config.provider, ignite_llm_client::Provider::Local);
+    let user_content = format!("BEGIN OVERRIDES\n{}\nEND OVERRIDES\n", build_digest(&rows, if local { LOCAL_MAX_DIGEST_CHARS } else { MAX_DIGEST_CHARS }));
     let text = ignite_llm_client::llm_complete(
-        &ignite_llm_client::LlmCompleteRequest { client: &http, config: &state.llm_config, system_prompt: SYSTEM_PROMPT, user_content: &user_content, temperature: 0.1, timeout_ms: LLM_TIMEOUT_MS, label: "rule-proposals" },
+        &ignite_llm_client::LlmCompleteRequest { client: &http, config: &state.llm_config, system_prompt: SYSTEM_PROMPT, user_content: &user_content, temperature: 0.1, timeout_ms: if local { LOCAL_LLM_TIMEOUT_MS } else { LLM_TIMEOUT_MS }, label: "rule-proposals" },
         |_| {},
     )
     .await
@@ -396,12 +437,13 @@ mod tests {
     }
 
     #[test]
-    fn digest_groups_by_rule_biggest_first() {
-        let d = build_digest(&[row(1, "a", "x", "one"), row(2, "b", "y", "two"), row(3, "b", "z", "three")]);
-        let b = d.find("rule=b (2 override(s))").unwrap();
-        let a = d.find("rule=a (1 override(s))").unwrap();
+    fn digest_groups_by_rule_biggest_first_and_collapses_repeated_justifications() {
+        let d = build_digest(&[row(1, "a", "x", "one"), row(2, "b", "y", "Test fixture"), row(3, "b", "z", "test   FIXTURE"), row(4, "b", "y", "other")], 10_000);
+        let b = d.find("rule=b (3 override(s), 2 distinct justification(s))").unwrap();
+        let a = d.find("rule=a (1 override(s), 1 distinct justification(s))").unwrap();
         assert!(b < a);
-        assert!(d.contains("id=3 acme/w file=z :: \"three\""));
+        assert!(d.contains("- 2x ids=2,3 repos=acme/w files=y,z :: \"Test fixture\""), "{d}");
+        assert!(build_digest(&[row(1, "a", "x", "one")], 10).is_empty(), "nothing over budget");
     }
 
     #[test]

@@ -1038,6 +1038,12 @@ ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1327
 # Code: fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
 Acknowledge: Same fake GitHub PAT fixture as the entry above, used in secret_verification_when_enabled_never_flags_a_fake_token_as_verified_live to confirm a live GitHub API 401 for this token is correctly reported as not-live - not a real credential.
 
+ID: secret::rust/crates/phase4-orchestrator/src/lib.rs::1446
+# [ERROR] secret - Hardcoded github-pat
+#   rust/crates/phase4-orchestrator/src/lib.rs:1446
+# Code: fs::write(root.join("config.js"), "headers.set(\"Authorization\", \"Bearer ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\");\n").unwrap();
+Acknowledge: Same fake GitHub PAT fixture as the entries above (test moved to this line), used in secret_verification_when_enabled_never_flags_a_fake_token_as_verified_live to confirm a live GitHub API 401 for this token is correctly reported as not-live - not a real credential.
+
 ID: secret::rust/crates/pii-dataflow/src/lib.rs::444
 # [ERROR] secret - Hardcoded apikey
 #   rust/crates/pii-dataflow/src/lib.rs:444

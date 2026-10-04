@@ -40,16 +40,29 @@ ARG INSTALL_TRIVY=true
 # ever fully catch up with. Bump these ARGs deliberately (and re-run a
 # --no-cache build + full self-scan) when picking up a real upstream fix,
 # not implicitly on every image rebuild.
-ARG TRIVY_VERSION=v0.74.0
+ARG TRIVY_VERSION=v0.75.0
 ARG HADOLINT_VERSION=v2.15.1
 ARG GITLEAKS_VERSION=v8.30.1
-ARG SYFT_VERSION=v1.51.1
+ARG SYFT_VERSION=v1.54.0
 ARG COSIGN_VERSION=v3.1.3
-ARG OASDIFF_VERSION=v1.30.0
-ARG CODEQL_VERSION=v2.26.4
+ARG OASDIFF_VERSION=v1.33.0
+ARG CODEQL_VERSION=v2.27.1
 ARG GOCLOC_VERSION=v0.7.0
 ARG ACT_VERSION=v0.2.89
-ARG GH_VERSION=v2.100.0
+ARG GH_VERSION=v2.102.0
+ARG BEARER_VERSION=v2.1.1
+# pipx/npm/gem tools are pinned too, for the same reproducibility reason.
+# `scripts/update-tool-versions.sh` bumps every *_VERSION ARG in this file
+# to the latest upstream release in one go.
+ARG CHECKOV_VERSION=3.3.22
+ARG SEMGREP_VERSION=1.179.0
+ARG GUARDDOG_VERSION=3.2.0
+ARG PICKLESCAN_VERSION=1.0.5
+ARG ZIZMOR_VERSION=1.30.1
+ARG JSCPD_VERSION=5.4.0
+ARG SPECTRAL_VERSION=6.17.0
+ARG LICENSEE_VERSION=10.1.0
+ARG COCOAPODS_VERSION=1.17.0
 ARG INSTALL_CHECKOV=true
 ARG INSTALL_HADOLINT=true
 ARG INSTALL_GITLEAKS=true
@@ -80,7 +93,7 @@ ARG INSTALL_WEASYPRINT=true
 # docker-compose.yml's `group_add` does this for you already. Docker
 # Desktop (macOS/Windows) sockets are typically reachable regardless.
 ARG DOCKER_GID=999
-ARG ORT_VERSION=92.6.0
+ARG ORT_VERSION=95.0.0
 
 # pipx defaults to installing under $HOME (/root at this point in the build,
 # readable only by root) - point it at a shared, world-readable location up
@@ -158,8 +171,8 @@ RUN npm install -g npm@latest
 
 # JRE 25 for ORT (see note above) - Adoptium's versioned release URL, not
 # their apt repo (which targets Ubuntu, not this Debian bookworm base).
-ARG ADOPTIUM_JRE_VERSION=25.0.4_7
-ARG ADOPTIUM_JRE_TAG=jdk-25.0.4%2B7
+ARG ADOPTIUM_JRE_VERSION=25.0.4.1_1
+ARG ADOPTIUM_JRE_TAG=jdk-25.0.4.1%2B1
 RUN if [ "$INSTALL_ORT" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x64)"; \
       curl -fsSL "https://github.com/adoptium/temurin25-binaries/releases/download/${ADOPTIUM_JRE_TAG}/OpenJDK25U-jre_${arch}_linux_hotspot_${ADOPTIUM_JRE_VERSION}.tar.gz" \
@@ -173,7 +186,7 @@ RUN if [ "$INSTALL_TRIVY" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
         | sh -s -- -b /usr/local/bin "$TRIVY_VERSION"; \
     fi
-RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install checkov --pip-args="--no-compile" && pipx ensurepath; fi
+RUN if [ "$INSTALL_CHECKOV" = "true" ]; then pipx install "checkov==${CHECKOV_VERSION}" --pip-args="--no-compile" && pipx ensurepath; fi
 RUN if [ "$INSTALL_HADOLINT" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
       curl -fsSL -o /usr/local/bin/hadolint \
@@ -198,10 +211,11 @@ RUN if [ "$INSTALL_COSIGN" = "true" ]; then \
         "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${arch}" \
       && chmod +x /usr/local/bin/cosign; \
     fi
-RUN if [ "$INSTALL_SEMGREP" = "true" ]; then pipx install semgrep --pip-args="--no-compile" && pipx ensurepath; fi
+RUN if [ "$INSTALL_SEMGREP" = "true" ]; then pipx install "semgrep==${SEMGREP_VERSION}" --pip-args="--no-compile" && pipx ensurepath; fi
 RUN if [ "$INSTALL_BEARER" = "true" ]; then \
-      curl -fsSL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
-        | sh -s -- -b /usr/local/bin; \
+      arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64)"; \
+      curl -fsSL "https://github.com/Bearer/bearer/releases/download/${BEARER_VERSION}/bearer_${BEARER_VERSION#v}_linux_${arch}.tar.gz" \
+        | tar xz -C /usr/local/bin bearer; \
     fi
 # guarddog (pygit2 native ext) and licensee/cocoapods (Ruby native ext,
 # see the two RUNs below this one) are the only tools in this whole file
@@ -228,16 +242,16 @@ RUN if [ "$INSTALL_GUARDDOG" = "true" ] || [ "$INSTALL_LICENSEE" = "true" ] || [
         build-essential cmake libicu-dev zlib1g-dev libgit2-dev pkg-config; \
     fi \
     && if [ "$INSTALL_GUARDDOG" = "true" ]; then \
-         pipx install guarddog --pip-args="--no-compile" && pipx ensurepath \
+         pipx install "guarddog==${GUARDDOG_VERSION}" --pip-args="--no-compile" && pipx ensurepath \
          && chmod -R o+rwX "${PIPX_HOME}/venvs/guarddog"; \
        fi \
-    && if [ "$INSTALL_LICENSEE" = "true" ]; then gem install licensee; fi \
-    && if [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then gem install cocoapods; fi \
+    && if [ "$INSTALL_LICENSEE" = "true" ]; then gem install licensee -v "${LICENSEE_VERSION}"; fi \
+    && if [ "$INSTALL_COCOAPODS" = "true" ] || [ "$INSTALL_ORT" = "true" ]; then gem install cocoapods -v "${COCOAPODS_VERSION}"; fi \
     && apt-get purge -y build-essential cmake libgit2-dev pkg-config libicu-dev zlib1g-dev \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
-RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install picklescan --pip-args="--no-compile" && pipx ensurepath; fi
-RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install zizmor --pip-args="--no-compile" && pipx ensurepath; fi
+RUN if [ "$INSTALL_PICKLESCAN" = "true" ]; then pipx install "picklescan==${PICKLESCAN_VERSION}" --pip-args="--no-compile" && pipx ensurepath; fi
+RUN if [ "$INSTALL_ZIZMOR" = "true" ]; then pipx install "zizmor==${ZIZMOR_VERSION}" --pip-args="--no-compile" && pipx ensurepath; fi
 RUN if [ "$INSTALL_OASDIFF" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64)"; \
       ver="$(echo "$OASDIFF_VERSION" | tr -d v)"; \
@@ -277,8 +291,8 @@ RUN if [ "$INSTALL_WEASYPRINT" = "true" ]; then \
     fi
 
 # --- Code metrics / API schema (npm-based) --------------------------------
-RUN if [ "$INSTALL_JSCPD" = "true" ]; then npm install -g jscpd; fi
-RUN if [ "$INSTALL_SPECTRAL" = "true" ]; then npm install -g @stoplight/spectral-cli; fi
+RUN if [ "$INSTALL_JSCPD" = "true" ]; then npm install -g "jscpd@${JSCPD_VERSION}"; fi
+RUN if [ "$INSTALL_SPECTRAL" = "true" ]; then npm install -g "@stoplight/spectral-cli@${SPECTRAL_VERSION}"; fi
 RUN if [ "$INSTALL_GOCLOC" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x86_64)"; \
       curl -fsSL -o /tmp/gocloc.tar.gz \
@@ -303,16 +317,16 @@ RUN if [ "$INSTALL_ACT" = "true" ]; then \
       curl -fsSL https://raw.githubusercontent.com/nektos/act/master/install.sh \
         | sh -s -- -b /usr/local/bin "$ACT_VERSION"; \
     fi
-# 29.7.2, not 27.3.1: the CLI dropped its vendored github.com/moby/go-archive
+# 29.x, not 27.3.1: the CLI dropped its vendored github.com/moby/go-archive
 # dependency somewhere after 27.x (confirmed via `go version -m` against a
-# real 29.7.2 build - zero "archive"-named modules linked in, vs. 27.x's
+# real 29.x build - zero "archive"-named modules linked in, vs. 27.x's
 # github.com/moby/go-archive@v0.1.0), which carries a crafted-tar-archive
 # path-traversal bug (CVE-2026-17106, fixed upstream in go-archive 0.3.0).
-# `act` (installed above, always latest) still vendors the same vulnerable
+# `act` (installed above) still vendors the same vulnerable
 # go-archive@v0.1.0 as of its current release and even its unreleased
 # master branch - no upstream fix exists there yet, so this bump only
 # closes the Docker-CLI-side instance, not act's.
-ARG DOCKER_CLI_VERSION=29.7.2
+ARG DOCKER_CLI_VERSION=29.8.2
 RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then \
       arch="$([ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64)"; \
       curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
