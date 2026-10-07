@@ -226,6 +226,13 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
     // hook/CLI/interactive paths keep it a hard Phase 3 failure.
     let unit_test_failures_non_blocking = body.get("unitTestFailuresNonBlocking").and_then(|v| v.as_bool()).unwrap_or(false);
     let warning_decision = body.get("warningDecision").and_then(|v| v.as_str()).unwrap_or("continue").to_lowercase();
+    // Org scans (`ignite_scheduled_rescan::rescan_one`) ask to keep the
+    // scanned tree as the repo's latest source for Studio. Honoured only for
+    // an authenticated caller or a server-started scan holding a live queue
+    // lease, since it copies a server-local path into the data dir.
+    let retain_source = body.get("retainSource").and_then(|v| v.as_bool()).unwrap_or(false)
+        && (crate::auth::resolve_user(&headers, &state.db).is_some()
+            || headers.get(super::scan_queue::LEASE_HEADER).and_then(|v| v.to_str().ok()).is_some_and(super::scan_queue::lease_is_active));
     let raw_project_path = body.get("projectPath").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let raw_project_path = if raw_project_path.is_empty() { std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned() } else { raw_project_path };
     let gxp_links = body.get("gxpLinks").and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -309,6 +316,7 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
     let mut phase4_task_timings: Vec<(&'static str, u64)> = vec![];
     let mut phase4_coverage: Vec<ignite_policy::CheckCoverage> = vec![];
     let mut rule_acknowledgments: Vec<(String, String)> = vec![];
+    let mut phase4_documents: Option<ignite_phase4_orchestrator::Phase4Documents> = None;
     let mut overridden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut project_id: i64 = 0;
     let mut run_id: Option<i64> = None;
@@ -447,6 +455,7 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
                     phase4_task_timings.extend(output.task_timings);
                     phase4_coverage.extend(output.coverage);
                     rule_acknowledgments = output.rule_acknowledgments;
+                    phase4_documents = Some(output.documents);
                 }
                 Err(e) => return Err(PipelineError::new(4, e.to_string())),
             }
@@ -756,6 +765,14 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
     // still exists (removed just below).
     if let (Some(rid), Some(root), true) = (run_id, &project_root, phase4_done) {
         super::run_finalization::record_scan_evidence(&state, super::run_finalization::ScanEvidence { run_id: rid, org: &org, repo: &repo, root, coverage: &phase4_coverage, issues: &issues }).await;
+    }
+    if let (Some(root), true) = (&project_root, phase4_done) {
+        if let Some(documents) = &phase4_documents {
+            super::run_finalization::persist_scan_reports(&state, project_id, &org, &repo, documents);
+        }
+        if retain_source {
+            super::run_finalization::retain_latest_repo_source(&state, project_id, &org, &repo, root);
+        }
     }
 
     ignite_fs_utils::invalidate_walk_cache(&staging_dir);

@@ -225,6 +225,22 @@ impl DbStore {
         .unwrap();
     }
 
+    /// Removes the generated scan reports (SBOM, LOC metrics, posture,
+    /// provenance, EU AI Act documents) from every *other* scan of
+    /// `org/repo`, so only the latest scan of a repo keeps them. Uploaded
+    /// GxP documents and archived push payloads are untouched.
+    pub fn delete_older_scan_reports(&self, org: &str, repo: &str, keep_project_id: i64) {
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute(
+            "DELETE FROM documents WHERE project_id != ?1
+               AND project_id IN (SELECT id FROM projects WHERE lower(org) = lower(?2) AND lower(repo) = lower(?3))
+               AND (name LIKE 'sbom.%' OR name IN ('loc-metrics.json', 'posture-report.json', 'provenance.json', 'ai-act-documents.json'))",
+            params![keep_project_id, org, repo],
+        ) {
+            tracing::error!("delete_older_scan_reports failed for {org}/{repo}: {e}");
+        }
+    }
+
     pub fn add_link_document(&self, project_id: i64, name: &str, url: &str) {
         let conn = self.conn.lock();
         conn.execute(

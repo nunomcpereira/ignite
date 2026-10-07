@@ -61,6 +61,7 @@ pub use org_report_runs::OrgReportRun;
 pub use api_keys::{parse_api_key_scopes, API_KEY_SCOPES};
 pub use async_jobs::AsyncJobRow;
 pub use store::DbStore;
+pub use retained_sources::REPO_LATEST_TIER;
 pub use baseline::Baseline;
 pub use scan_jobs::{NewScanJob, ScanJobRow};
 pub use rule_tuning::{JustificationRow, NewRuleProposal, NewVerdict, RuleNoiseRow, RuleProposalRow, VerdictRow};

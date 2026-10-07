@@ -7,6 +7,10 @@ use crate::store::DbStore;
 use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 
+/// Tier of the source kept for a repo's latest org scan (one per repo,
+/// replaced by the next scan), outside the upload pool's 5 full + 5 pruned.
+pub const REPO_LATEST_TIER: &str = "repo-latest";
+
 impl DbStore {
     // ---------------- retained sources ----------------
 
@@ -49,9 +53,27 @@ impl DbStore {
 
     /// Rows beyond the `keep` most recently retained — the caller fs::remove's
     /// each dir_path, then calls delete_retained_source for each project_id.
+    /// Only the upload pool's rows (`full`/`pruned`): a repo's latest org
+    /// scan (`REPO_LATEST_TIER`) has its own one-per-repo budget.
     pub fn list_evictable_retained_sources(&self, keep: i64) -> Vec<RetainedSourceRow> {
         let conn = self.conn.lock();
-        Self::list_retained_sources_by_query(&conn, "SELECT project_id, dir_path, tier FROM retained_sources ORDER BY retained_at DESC LIMIT -1 OFFSET ?", params![keep])
+        Self::list_retained_sources_by_query(
+            &conn,
+            "SELECT project_id, dir_path, tier FROM retained_sources WHERE tier != ? ORDER BY retained_at DESC LIMIT -1 OFFSET ?",
+            params![REPO_LATEST_TIER, keep],
+        )
+    }
+
+    /// Every `REPO_LATEST_TIER` source kept for `org/repo` (case-insensitive).
+    /// Normally at most one; the caller replaces them with the newest scan's.
+    pub fn list_repo_latest_retained_sources(&self, org: &str, repo: &str) -> Vec<RetainedSourceRow> {
+        let conn = self.conn.lock();
+        Self::list_retained_sources_by_query(
+            &conn,
+            "SELECT r.project_id, r.dir_path, r.tier FROM retained_sources r JOIN projects p ON p.id = r.project_id
+             WHERE r.tier = ? AND lower(p.org) = lower(?) AND lower(p.repo) = lower(?)",
+            params![REPO_LATEST_TIER, org, repo],
+        )
     }
 
     pub fn delete_retained_source(&self, project_id: i64) {

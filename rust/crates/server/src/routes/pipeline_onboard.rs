@@ -401,6 +401,7 @@ pub(crate) async fn run_onboard(state: Arc<AppState>, headers: axum::http::Heade
             let output = ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| logger.log(4, m))
                 .await
                 .map_err(|e| PipelineError::new(4, e.to_string()))?;
+            super::run_finalization::persist_scan_reports(&state, project_id, &org, &repo, &output.documents);
             coverage.extend(output.coverage);
             rule_acknowledgments = output.rule_acknowledgments;
             issues = output.issues;

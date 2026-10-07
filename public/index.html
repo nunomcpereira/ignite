@@ -4208,7 +4208,9 @@
       try {
         projects = await (await fetch('/api/projects')).json();
       } catch { select.innerHTML = ''; select.classList.add('hidden'); return; }
-      const recent = projects.filter((p) => p.retained_tier && p.job_id);
+      // Org scans keep each repo's latest source ('repo-latest'); an org sweep
+      // would flood the switcher, so only the one being viewed is listed.
+      const recent = projects.filter((p) => p.retained_tier && p.job_id && (p.retained_tier !== 'repo-latest' || p.job_id === activeJobId));
       const activeIsRetained = !!activeJobId && recent.some((p) => p.job_id === activeJobId);
       // A historical (non-retained) run — `openHistoricalStudio` always
       // calls this with `activeJobId: null` — never appears in `recent`

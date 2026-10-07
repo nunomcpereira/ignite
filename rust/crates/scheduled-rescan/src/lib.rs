@@ -215,7 +215,9 @@ pub async fn rescan_one_with(runner: &ToolRunner, http: &reqwest::Client, server
     if let Some(lease) = &opts.lease {
         request = request.header("X-Ignite-Scan-Lease", lease);
     }
-    let mut payload = json!({ "org": target.org, "repo": target.repo, "projectPath": dest.to_string_lossy(), "runLocalCi": false, "unitTestFailuresNonBlocking": true });
+    // `retainSource`: the server keeps this scan's tree as the repo's latest
+    // source (replacing the previous one) so Studio can open it fully.
+    let mut payload = json!({ "org": target.org, "repo": target.repo, "projectPath": dest.to_string_lossy(), "runLocalCi": false, "unitTestFailuresNonBlocking": true, "retainSource": true });
     if opts.background {
         payload["priority"] = json!("background");
     }

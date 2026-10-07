@@ -294,6 +294,9 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
             let config = crate::phase4_config::from_config(&state.config, &org, &repo, project_id, false, None);
             match ignite_phase4_orchestrator::run_phase4_checks(&root, &state.runner, &state.db, &config, &state.package_hallucination_checker, &|m: &str| log.log(4, m)).await {
                 Ok(output) => {
+                    if let Some(pid) = project_id {
+                        super::super::run_finalization::persist_scan_reports(&state, pid, &org, &repo, &output.documents);
+                    }
                     coverage.extend(output.coverage.iter().cloned());
                     let issue_count = output.issues.len();
                     let blocking_count = output.issues.iter().filter(|i| i.severity == Severity::Error).count();
@@ -867,7 +870,8 @@ pub(super) async fn run_interactive_pipeline(state: Arc<AppState>, upload: Parse
                     // findings (still on disk and Studio-browsable, just
                     // not the whole tree) rather than evicted outright -
                     // full eviction is reserved for rank 11+.
-                    let ranked = state.db.list_retained_sources();
+                    // Org scans' per-repo latest copies have their own budget.
+                    let ranked: Vec<_> = state.db.list_retained_sources().into_iter().filter(|r| r.tier != ignite_db_store::REPO_LATEST_TIER).collect();
                     for (rank, row) in ranked.iter().enumerate() {
                         let rank = rank as i64 + 1;
                         if row.tier == "full" && rank > RETAINED_FULL_KEEP && rank <= RETAINED_TOTAL_KEEP {

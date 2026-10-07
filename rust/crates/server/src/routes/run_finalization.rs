@@ -93,3 +93,59 @@ pub async fn record_scan_evidence(state: &AppState, input: ScanEvidence<'_>) {
 pub fn fingerprint_for(issue: &Issue) -> String {
     ignite_override_engine::fingerprint_for_issue_parts(&issue.id, &issue.category, issue.file.as_deref(), issue.snippet.as_ref(), issue.line)
 }
+
+/// Saves the reports Phase 4 generated (SBOM, LOC metrics, posture,
+/// provenance, EU AI Act documents) as the project's documents, which
+/// historical Studio shows when the source itself is gone, then drops the
+/// same reports from the repo's older scans: only a repo's latest scan
+/// keeps them. A fast run generates none and changes nothing.
+pub fn persist_scan_reports(state: &AppState, project_id: i64, org: &str, repo: &str, documents: &ignite_phase4_orchestrator::Phase4Documents) {
+    let mut named: Vec<(&str, &[u8])> = Vec::new();
+    if let Some((name, data)) = &documents.sbom {
+        named.push((name.as_str(), data));
+    }
+    for (name, data) in [
+        ("loc-metrics.json", &documents.loc_metrics),
+        ("posture-report.json", &documents.posture_report),
+        ("provenance.json", &documents.provenance),
+        ("ai-act-documents.json", &documents.ai_act_documents_report),
+    ] {
+        if let Some(data) = data {
+            named.push((name, data));
+        }
+    }
+    if named.is_empty() {
+        return;
+    }
+    for (name, data) in named {
+        state.db.add_upload_document(project_id, name, Some("application/json"), data.len() as i64, data);
+    }
+    state.db.delete_older_scan_reports(org, repo, project_id);
+}
+
+/// Keeps a copy of the scanned tree as `org/repo`'s latest scan source, so
+/// Studio opens that scan fully (code, dependencies, SBOM, LOC, posture,
+/// rescan) like a dashboard upload. One per repo: the previous scan's copy
+/// is deleted once the new one is in place. Separate from the upload pool's
+/// 5 full + 5 pruned sources, so an org sweep never evicts those.
+pub fn retain_latest_repo_source(state: &AppState, project_id: i64, org: &str, repo: &str, root: &Path) {
+    let retained_root = super::pipeline_interactive::ignite_data_dir().join("retained-projects");
+    let dest = retained_root.join(project_id.to_string());
+    if let Err(e) = std::fs::create_dir_all(&retained_root) {
+        tracing::warn!("cannot keep the scanned source of {org}/{repo}: {e}");
+        return;
+    }
+    let _ = std::fs::remove_dir_all(&dest);
+    if let Err(e) = ignite_staging::clone_directory_without_symlinks(root, &dest) {
+        tracing::warn!("cannot keep the scanned source of {org}/{repo}: {e}");
+        let _ = std::fs::remove_dir_all(&dest);
+        return;
+    }
+    let previous = state.db.list_repo_latest_retained_sources(org, repo);
+    state.db.retain_project_source(project_id, &dest.to_string_lossy(), ignite_db_store::REPO_LATEST_TIER);
+    for old in previous.into_iter().filter(|r| r.project_id != project_id) {
+        let _ = std::fs::remove_dir_all(&old.dir_path);
+        ignite_fs_utils::invalidate_walk_cache(Path::new(&old.dir_path));
+        state.db.delete_retained_source(old.project_id);
+    }
+}
