@@ -243,7 +243,13 @@ licensee_install() {
     done
     command -v licensee >/dev/null 2>&1
   elif $HAS_GEM; then
-    gem install licensee
+    # licensee 9.19.0+ needs Ruby >= 3.2; older Rubies (Debian bookworm's
+    # 3.1) get 9.18.0, the last release that supports them.
+    if ruby -e 'exit(Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.2") ? 0 : 1)' 2>/dev/null; then
+      gem install licensee
+    else
+      gem install licensee -v 9.18.0
+    fi
   else
     return 1
   fi
