@@ -270,10 +270,15 @@ async fn apply(State(state): State<Arc<AppState>>, crate::auth::RequireAuth(_use
         return err(StatusCode::BAD_REQUEST, msg);
     }
 
-    let token = crate::auth::resolve_effective_github_token(&headers, &state.db);
-    if token.is_empty() {
-        return err(StatusCode::UNAUTHORIZED, "No GitHub token available — connect a GitHub account or configure a server token.");
-    }
+    // Same order as every other org-bound call (org scans, github-check):
+    // API-key-bound token -> GitHub App installation token -> the caller's
+    // own GitHub connection -> server GH_TOKEN. The App token isn't subject
+    // to a user's SAML SSO session, which is what made fix PRs on SSO orgs
+    // fail with "Resource protected by organization SAML enforcement".
+    let Some((token, source)) = crate::auth::resolve_github_token_for_owner(&state, &headers, &org).await else {
+        return err(StatusCode::UNAUTHORIZED, "No GitHub token available — install the Ignite GitHub App on this org, connect a GitHub account, or configure a server token.");
+    };
+    tracing::info!("fix PR for {org}/{repo}: GitHub token from {source:?}");
 
     let full_name = format!("{org}/{repo}");
     let github_api = ignite_github_api::GithubApi::new(&state.runner);
