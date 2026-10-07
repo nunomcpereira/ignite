@@ -106,34 +106,34 @@ pub struct AppState {
 /// Builds the GitHub App client from config, logging (never failing
 /// startup) when it's configured but unusable.
 pub fn github_app_from_config(config: &ignite_config::Config) -> Option<Arc<ignite_github_api::GithubAppAuth>> {
-    let app = &config.github.app;
-    if app.app_id.trim().is_empty() {
-        return None;
-    }
-    let pem = if !app.private_key.trim().is_empty() {
-        app.private_key.replace("\\n", "\n").into_bytes()
-    } else if !app.private_key_path.trim().is_empty() {
-        match std::fs::read(&app.private_key_path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::error!("GitHub App disabled: cannot read github.app.privateKeyPath {}: {e}", app.private_key_path);
-                return None;
-            }
-        }
-    } else {
-        tracing::error!("GitHub App disabled: github.app.appId is set but neither privateKey nor privateKeyPath is");
-        return None;
-    };
-    match ignite_github_api::GithubAppAuth::new(&app.app_id, &pem) {
-        Ok(auth) => {
-            tracing::info!("GitHub App {} configured: org scans, gate statuses and webhooks use its installation tokens where installed", app.app_id);
+    match build_github_app(config) {
+        Ok(Some(auth)) => {
+            tracing::info!("GitHub App {} configured: org scans, gate statuses and webhooks use its installation tokens where installed", auth.app_id());
             Some(Arc::new(auth))
         }
+        Ok(None) => None,
         Err(e) => {
             tracing::error!("GitHub App disabled: {e}");
             None
         }
     }
+}
+
+/// `Ok(None)` when no App ID is configured, `Err` (never containing key
+/// material) when one is but the key can't be read or parsed.
+pub fn build_github_app(config: &ignite_config::Config) -> Result<Option<ignite_github_api::GithubAppAuth>, String> {
+    let app = &config.github.app;
+    if app.app_id.trim().is_empty() {
+        return Ok(None);
+    }
+    let pem = if !app.private_key.trim().is_empty() {
+        app.private_key.replace("\\n", "\n").into_bytes()
+    } else if !app.private_key_path.trim().is_empty() {
+        std::fs::read(&app.private_key_path).map_err(|e| format!("cannot read github.app.privateKeyPath {}: {e}", app.private_key_path))?
+    } else {
+        return Err("github.app.appId is set but neither privateKey nor privateKeyPath is".to_string());
+    };
+    ignite_github_api::GithubAppAuth::new(&app.app_id, &pem).map(Some)
 }
 
 impl AppState {

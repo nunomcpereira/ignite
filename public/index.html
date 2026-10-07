@@ -36,7 +36,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20261004"></script>
+  <script src="i18n.js?v=20261007"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -1001,6 +1001,7 @@
       <button id="adminTabReport" type="button" role="tab" data-admin-tab="report" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="admin.tabReport">Report delivery</button>
       <button id="adminTabGrants" type="button" role="tab" data-admin-tab="grants" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="admin.tabGrants">Permission grants</button>
       <button id="adminTabTuning" type="button" role="tab" data-admin-tab="tuning" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="admin.tabTuning">Rule tuning</button>
+      <button id="adminTabGithubAuth" type="button" role="tab" data-admin-tab="githubAuth" class="admin-tab text-sm font-semibold px-3 py-2 border-b-2 -mb-px border-transparent text-slate-500 hover:text-brand-600 whitespace-nowrap" data-i18n="admin.tabGithubAuth">GitHub auth</button>
     </div>
     <div id="adminSettingsCard" class="hidden bg-white border border-slate-200 rounded-2xl shadow-sm">
       <div id="adminReportPanel" class="hidden p-6 space-y-4 max-w-3xl">
@@ -1082,6 +1083,16 @@
           <div id="adminTuningNoise" class="text-xs"></div>
         </div>
         <p id="adminTuningStatus" class="hidden text-xs break-words" role="status"></p>
+      </div>
+      <!-- GitHub auth diagnostics (GET /api/admin/settings/github-auth): which
+           credential org-bound work uses and why. Never shows a token or key. -->
+      <div id="adminGithubAuthPanel" class="hidden p-6 space-y-5">
+        <div class="flex items-start justify-between gap-3">
+          <p class="text-xs text-slate-500 max-w-2xl" data-i18n="admin.ghAuthHint">Which GitHub credential Ignite uses for org discovery, scans and gate statuses, and where each setting was found. Hover a badge for the reasoning. Tokens and the private key are never shown.</p>
+          <button id="adminGithubAuthRecheckBtn" type="button" class="text-xs font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:text-brand-600 shrink-0" data-i18n="admin.ghAuthRecheck" data-i18n-title="admin.ghAuthRecheckTitle" title="Forget cached App installation lookups and check again">Recheck</button>
+        </div>
+        <div id="adminGithubAuthBody" class="space-y-5 text-xs"></div>
+        <p id="adminGithubAuthStatus" class="hidden text-xs break-words" role="status"></p>
       </div>
     </div>
     <div id="adminApiKeysPanel" class="hidden">
@@ -8672,9 +8683,9 @@
       Object.keys(adminClear).forEach((k) => { adminClear[k] = false; });
     }
     // ---- Settings view: API keys, report delivery, grants, rule tuning ----
-    // Deep links: #settings/<tab> (apiKeys|report|grants|tuning); the older
+    // Deep links: #settings/<tab> (apiKeys|report|grants|tuning|githubAuth); the older
     // #api-keys link still opens the API keys tab.
-    const SETTINGS_TABS = ['apiKeys', 'report', 'grants', 'tuning'];
+    const SETTINGS_TABS = ['apiKeys', 'report', 'grants', 'tuning', 'githubAuth'];
     let settingsTab = 'apiKeys';
     function settingsTabFromHash() {
       if (location.hash === '#api-keys') return 'apiKeys';
@@ -8720,12 +8731,87 @@
       $('adminReportFooter').classList.toggle('hidden', tab !== 'report');
       $('adminGrantsPanel').classList.toggle('hidden', tab !== 'grants');
       $('adminTuningPanel').classList.toggle('hidden', tab !== 'tuning');
+      $('adminGithubAuthPanel').classList.toggle('hidden', tab !== 'githubAuth');
       const hash = tab === 'apiKeys' && location.hash === '#api-keys' ? '#api-keys' : `#settings/${tab}`;
       if (location.hash !== hash) history.replaceState(null, '', hash);
       if (tab === 'apiKeys') showApiKeysTab();
       if (tab === 'report') loadAdminReportSettings();
       if (tab === 'grants') loadAdminGrants();
       if (tab === 'tuning') loadAdminTuning();
+      if (tab === 'githubAuth') loadAdminGithubAuth(false);
+    }
+    // ---- Settings: GitHub auth diagnostics ----
+    // Badges carry the server's reasoning in their title (hover). Server text
+    // (sources, paths, reasons) is shown as sent, untranslated.
+    // github_app -> admin.ghSrcGithubApp, user_connection -> admin.ghSrcUserConnection, ...
+    const ghSourceKey = (code) => 'admin.ghSrc' + String(code).split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+    function ghBadge(text, tone, title) {
+      const tones = { ok: 'bg-emerald-50 text-emerald-700 border-emerald-200', warn: 'bg-amber-50 text-amber-700 border-amber-200', bad: 'bg-rose-50 text-rose-700 border-rose-200', off: 'bg-slate-50 text-slate-500 border-slate-200' };
+      return `<span class="inline-block px-2 py-0.5 rounded-full border font-semibold cursor-help ${tones[tone] || tones.off}" title="${escapeHtml(title || '')}">${escapeHtml(text)}</span>`;
+    }
+    function ghRow(label, value, title) {
+      return `<div class="flex gap-3 py-1 border-t border-slate-100"><dt class="w-40 shrink-0 text-slate-500">${escapeHtml(label)}</dt><dd class="min-w-0 break-words text-slate-700"${title ? ` title="${escapeHtml(title)}"` : ''}>${value}</dd></div>`;
+    }
+    async function loadAdminGithubAuth(recheck) {
+      adminShowLine('adminGithubAuthStatus', '', true);
+      const body = $('adminGithubAuthBody');
+      body.innerHTML = `<p class="text-slate-400">${escapeHtml(t('common.loading'))}</p>`;
+      try {
+        const res = await fetch(`/api/admin/settings/github-auth${recheck ? '?recheck=1' : ''}`);
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+        const app = d.app || {};
+        const appWhy = (app.reasons || []).join('\n');
+        let appBadge;
+        if (app.loaded && app.github && app.github.ok) appBadge = ghBadge(t('admin.ghAppActive'), 'ok', appWhy);
+        else if (app.loaded) appBadge = ghBadge(t('admin.ghAppRejected'), 'bad', `${appWhy}\n${(app.github && app.github.error) || ''}`);
+        else if (app.restartNeeded) appBadge = ghBadge(t('admin.ghAppRestart'), 'warn', appWhy);
+        else if (app.configured) appBadge = ghBadge(t('admin.ghAppBroken'), 'bad', appWhy);
+        else appBadge = ghBadge(t('admin.ghAppNone'), 'off', appWhy);
+        const gh = app.github || null;
+        const keyFile = app.keyFile ? ` <span class="font-mono">${escapeHtml(app.keyFile.path)}</span> ${app.keyFile.readable ? '' : ghBadge(t('admin.ghUnreadable'), 'bad', app.keyFile.error || '')}` : '';
+        const appSection = `<div>
+          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">${escapeHtml(t('admin.ghAppTitle'))} ${appBadge}</p>
+          <dl>
+            ${ghRow(t('admin.ghAppId'), app.appId ? `<span class="font-mono">${escapeHtml(app.appId)}</span>` : '—', app.appIdSource)}
+            ${ghRow(t('admin.ghFoundIn'), escapeHtml(app.appIdSource || '—'))}
+            ${ghRow(t('admin.ghKeySource'), escapeHtml(app.keySource || '—') + keyFile)}
+            ${ghRow(t('admin.ghKeyFormat'), app.keyFormat ? ghBadge(app.keyFormat, ['rsa_pkcs1', 'pkcs8', 'escaped_newlines'].includes(app.keyFormat) ? 'ok' : 'bad', app.keyFormatDescription) + (app.keyHasCrlf ? ' ' + ghBadge('CRLF', 'warn', t('admin.ghCrlf')) : '') : '—')}
+            ${ghRow(t('admin.ghGithubCheck'), gh ? (gh.ok ? `${ghBadge(t('admin.ghKeyAccepted'), 'ok', t('admin.ghKeyAcceptedTitle'))} ${gh.htmlUrl ? `<a class="text-brand-600 hover:underline" href="${escapeHtml(gh.htmlUrl)}" target="_blank" rel="noopener">${escapeHtml(gh.name || gh.slug || '')} ↗</a>` : escapeHtml(gh.name || '')}` : `<span class="text-rose-600">${escapeHtml(gh.error || '')}</span>`) : '—')}
+            ${app.error ? ghRow(t('admin.ghError'), `<span class="text-rose-600">${escapeHtml(app.error)}</span>`) : ''}
+            ${ghRow(t('admin.ghConfigFile'), `<span class="font-mono">${escapeHtml(d.configFile || '')}</span> ${d.configFileFound ? '' : ghBadge(t('admin.ghNotFound'), 'off', '')}`)}
+          </dl>
+        </div>`;
+        const uc = d.userConnection || {};
+        const env = d.serverEnvToken || {};
+        const otherSection = `<div>
+          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">${escapeHtml(t('admin.ghFallbackTitle'))}</p>
+          <dl>
+            ${ghRow(t('admin.ghSrcUserConnection'), uc.connected ? `${ghBadge('@' + (uc.login || ''), 'warn', t('admin.ghUserTitle'))} <span class="text-slate-400">${escapeHtml(uc.scope || '')}</span>` : ghBadge(t('admin.ghNotConnected'), 'off', ''))}
+            ${ghRow(t('admin.ghSrcServerEnv'), env.set ? ghBadge(env.var, 'ok', t('admin.ghEnvTitle', { name: env.var })) : ghBadge(t('admin.ghNotSet'), 'off', ''))}
+            ${d.apiKeyBoundToken ? ghRow(t('admin.ghSrcApiKey'), ghBadge(t('admin.ghInUse'), 'ok', '')) : ''}
+            ${ghRow(t('admin.ghFallback'), escapeHtml(d.fallbackDescription || '—'))}
+          </dl>
+        </div>`;
+        const orgs = d.orgs || [];
+        const appTone = { installed: 'ok', not_installed: 'warn', error: 'bad', not_configured: 'off' };
+        const orgSection = `<div>
+          <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">${escapeHtml(t('admin.ghOrgsTitle'))}</p>
+          ${orgs.length === 0 ? `<p class="text-slate-400">${escapeHtml(t('admin.ghOrgsEmpty'))}</p>` : `<table class="w-full text-left">
+            <thead><tr class="text-[10px] uppercase tracking-wide text-slate-400"><th class="py-1">${escapeHtml(t('admin.ghOrg'))}</th><th>${escapeHtml(t('admin.ghAppInstall'))}</th><th>${escapeHtml(t('admin.ghUsing'))}</th></tr></thead>
+            <tbody>${orgs.map((o) => `<tr class="border-t border-slate-100">
+              <td class="py-1.5 pr-2 font-mono">${escapeHtml(o.org)}</td>
+              <td class="pr-2">${ghBadge(t('admin.ghInstall_' + o.app), appTone[o.app] || 'off', o.appError || o.why)}</td>
+              <td>${o.effective ? ghBadge(t(ghSourceKey(o.effective)), o.effective === 'user_connection' ? 'warn' : 'ok', o.why) : ghBadge(t('admin.ghNone'), 'bad', o.why)}</td>
+            </tr>`).join('')}</tbody></table>`}
+        </div>`;
+        const precedence = `<p class="text-[11px] text-slate-400">${escapeHtml(t('admin.ghOrder'))} ${(d.precedence || []).map((p, i) => `${i + 1}. ${escapeHtml(p)}`).join(' → ')}</p>`;
+        body.innerHTML = appSection + orgSection + otherSection + precedence;
+        if (recheck) adminShowLine('adminGithubAuthStatus', t('admin.ghRechecked'), true);
+      } catch (e) {
+        body.innerHTML = '';
+        adminShowLine('adminGithubAuthStatus', t('admin.loadFailed', { error: e.message }), false);
+      }
     }
     function adminGrantScope(g) {
       return g.org ? (g.repo ? `${g.org}/${g.repo}` : `${g.org}/*`) : t('admin.grantAllRepos');
@@ -8854,6 +8940,7 @@
     });
 
     document.querySelectorAll('.admin-tab').forEach((b) => b.addEventListener('click', () => switchAdminTab(b.dataset.adminTab)));
+    $('adminGithubAuthRecheckBtn').addEventListener('click', () => loadAdminGithubAuth(true));
     $('adminGrantAddBtn').addEventListener('click', addAdminGrant);
     async function adminTest(target, resultId, btnId) {
       const btn = $(btnId);

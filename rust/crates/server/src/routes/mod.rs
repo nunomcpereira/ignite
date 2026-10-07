@@ -11,6 +11,7 @@ pub mod org_report_schedule;
 pub mod ai_triage;
 pub mod findings_markdown;
 pub mod settings;
+pub mod github_auth_status;
 pub mod custom_secret_patterns;
 pub mod push_protection_webhook;
 pub mod code_scanning_webhook;

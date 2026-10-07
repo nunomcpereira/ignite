@@ -21,15 +21,19 @@ const DEFAULT_API_BASE: &str = "https://api.github.com";
 /// Re-mint a cached installation token this long before GitHub expires it,
 /// so a caller never gets one that dies mid-request.
 const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
+/// How long "the App isn't installed on this owner" is remembered. Without
+/// a limit, installing the App on an org later went unnoticed until a restart.
+const NOT_INSTALLED_TTL: Duration = Duration::from_secs(5 * 60);
 
 pub struct GithubAppAuth {
     app_id: String,
     key: jsonwebtoken::EncodingKey,
     api_base: String,
     http: reqwest::Client,
-    /// owner (lowercased) -> installation id, or `None` when the App isn't
-    /// installed there (cached so a non-installed org costs one lookup).
-    installations: Mutex<HashMap<String, Option<u64>>>,
+    /// owner (lowercased) -> (installation id, or `None` when the App isn't
+    /// installed there, cached at unix seconds). A `None` expires after
+    /// `NOT_INSTALLED_TTL`; a found id is kept until a mint 404s.
+    installations: Mutex<HashMap<String, (Option<u64>, u64)>>,
     /// owner (lowercased) -> (token, unix expiry seconds).
     tokens: Mutex<HashMap<String, (String, u64)>>,
     /// Serializes minting so concurrent callers for one owner share a token.
@@ -142,8 +146,10 @@ impl GithubAppAuth {
     /// account), or `None` when it isn't installed there.
     async fn installation_id(&self, owner: &str) -> Result<Option<u64>, GithubApiError> {
         let key = owner.to_ascii_lowercase();
-        if let Some(cached) = self.installations.lock().get(&key) {
-            return Ok(*cached);
+        if let Some((cached, at)) = self.installations.lock().get(&key) {
+            if cached.is_some() || now_secs() < at + NOT_INSTALLED_TTL.as_secs() {
+                return Ok(*cached);
+            }
         }
         let mut found = None;
         for path in [format!("orgs/{owner}/installation"), format!("users/{owner}/installation")] {
@@ -157,7 +163,7 @@ impl GithubAppAuth {
                 _ => return Err(GithubApiError::ApiFailed { method: "GET".into(), path, status, detail: body.to_string().chars().take(300).collect() }),
             }
         }
-        self.installations.lock().insert(key, found);
+        self.installations.lock().insert(key, (found, now_secs()));
         Ok(found)
     }
 
@@ -195,6 +201,17 @@ impl GithubAppAuth {
         let expires = body.get("expires_at").and_then(|v| v.as_str()).and_then(parse_expires_at).unwrap_or_else(|| now_secs() + 3600);
         self.tokens.lock().insert(key, (token.clone(), expires));
         Ok(Some(token))
+    }
+
+    /// `GET /app` signed with the App JWT: proves the private key belongs to
+    /// this App ID (GitHub answers 401 otherwise) and returns the App's
+    /// public metadata (`slug`, `name`, `html_url`, ...).
+    pub async fn app_info(&self) -> Result<Value, GithubApiError> {
+        let (status, body) = self.app_request(reqwest::Method::GET, "app").await?;
+        if status != 200 {
+            return Err(GithubApiError::ApiFailed { method: "GET".into(), path: "app".into(), status, detail: body.to_string().chars().take(300).collect() });
+        }
+        Ok(body)
     }
 
     /// Forgets cached tokens and installation ids (e.g. after the App was
