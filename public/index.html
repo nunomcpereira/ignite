@@ -36,7 +36,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20261007"></script>
+  <script src="i18n.js?v=20261007b"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -8766,6 +8766,7 @@
         const appWhy = (app.reasons || []).join('\n');
         let appBadge;
         if (app.loaded && app.github && app.github.ok) appBadge = ghBadge(t('admin.ghAppActive'), 'ok', appWhy);
+        else if (app.loaded && app.github && app.github.reached === false) appBadge = ghBadge(t('admin.ghAppUnreachable'), 'bad', `${appWhy}\n${app.github.error || ''}`);
         else if (app.loaded) appBadge = ghBadge(t('admin.ghAppRejected'), 'bad', `${appWhy}\n${(app.github && app.github.error) || ''}`);
         else if (app.restartNeeded) appBadge = ghBadge(t('admin.ghAppRestart'), 'warn', appWhy);
         else if (app.configured) appBadge = ghBadge(t('admin.ghAppBroken'), 'bad', appWhy);
@@ -8796,7 +8797,7 @@
           </dl>
         </div>`;
         const orgs = d.orgs || [];
-        const appTone = { installed: 'ok', not_installed: 'warn', error: 'bad', not_configured: 'off' };
+        const appTone = { installed: 'ok', not_installed: 'warn', error: 'bad', unreachable: 'bad', not_configured: 'off' };
         const orgSection = `<div>
           <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">${escapeHtml(t('admin.ghOrgsTitle'))}</p>
           ${orgs.length === 0 ? `<p class="text-slate-400">${escapeHtml(t('admin.ghOrgsEmpty'))}</p>` : `<table class="w-full text-left">

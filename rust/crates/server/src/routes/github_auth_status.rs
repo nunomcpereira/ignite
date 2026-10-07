@@ -149,6 +149,31 @@ fn value_origin(env_name: &str, config_field: &str, file: &Value, dir: &Path, co
     }
 }
 
+/// An error with its whole `source()` chain: reqwest's own message stops
+/// at "error sending request for url (...)", and the cause that actually
+/// tells DNS, TLS and proxy failures apart is further down.
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(inner) = cur {
+        let text = inner.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        cur = inner.source();
+    }
+    out
+}
+
+/// GitHub answered with an HTTP status (it saw the request) vs. the request
+/// never got there (DNS, proxy, TLS, timeout).
+fn reached_github(e: &ignite_github_api::GithubApiError) -> bool {
+    matches!(e, ignite_github_api::GithubApiError::ApiFailed { .. })
+}
+
+const UNREACHABLE_HINT: &str = " The server could not reach api.github.com at all (GitHub never saw the request): check the pod's DNS, HTTPS_PROXY/NO_PROXY and egress NetworkPolicy, or a TLS-intercepting proxy's CA.";
+
 fn source_code(s: GithubTokenSource) -> &'static str {
     match s {
         GithubTokenSource::ApiKey => "api_key",
@@ -223,13 +248,16 @@ async fn github_auth_status(State(state): State<Arc<AppState>>, RequireAuth(user
                 "permissions": info.get("permissions"),
             }),
             Err(e) => {
-                let text = e.to_string();
-                let hint = if text.contains("HTTP 401") {
+                let text = error_chain(&e);
+                let reached = reached_github(&e);
+                let hint = if !reached {
+                    UNREACHABLE_HINT
+                } else if text.contains("HTTP 401") {
                     " GitHub rejected the App JWT: the private key doesn't belong to this App ID, or the server clock is off by more than a minute."
                 } else {
                     ""
                 };
-                json!({ "ok": false, "error": format!("{text}{hint}") })
+                json!({ "ok": false, "reached": reached, "error": format!("{text}{hint}") })
             }
         },
         None => Value::Null,
@@ -272,7 +300,8 @@ async fn github_auth_status(State(state): State<Arc<AppState>>, RequireAuth(user
             Some(app) => match app.installation_token(org).await {
                 Ok(Some(_)) => ("installed", None),
                 Ok(None) => ("not_installed", None),
-                Err(e) => ("error", Some(e.to_string())),
+                Err(e) if reached_github(&e) => ("error", Some(error_chain(&e))),
+                Err(e) => ("unreachable", Some(format!("{}.{UNREACHABLE_HINT}", error_chain(&e)))),
             },
         };
         let (effective, why) = if api_key_token {
@@ -282,6 +311,7 @@ async fn github_auth_status(State(state): State<Arc<AppState>>, RequireAuth(user
                 "installed" => (Some(GithubTokenSource::GithubApp), format!("The GitHub App is installed on {org}, so its installation token is used. Not tied to a person or an SSO session.")),
                 "not_installed" => (fallback, format!("The GitHub App is configured but not installed on {org} (checked orgs/{org}/installation and users/{org}/installation), so Ignite falls back to {}. Install the App on {org} to fix it.", fallback_reason(fallback))),
                 "error" => (fallback, format!("The GitHub App could not mint a token for {org} ({}), so Ignite falls back to {}.", app_error.clone().unwrap_or_default(), fallback_reason(fallback))),
+                "unreachable" => (fallback, format!("Ignite could not reach GitHub to check the App on {org} ({}), so it falls back to {}, which needs GitHub to be reachable too.", app_error.clone().unwrap_or_default(), fallback_reason(fallback))),
                 _ => (fallback, format!("No GitHub App is active on this server, so Ignite uses {}.", fallback_reason(fallback))),
             }
         };
