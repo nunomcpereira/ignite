@@ -670,9 +670,9 @@ pub const ACKNOWLEDGMENTS_PATH: &str = ".ignite/acknowledgments.md";
 ///
 /// `acknowledgments` are findings a human has already justified (and, under
 /// dual custody, had approved): they're merged into
-/// [`ACKNOWLEDGMENTS_PATH`] in the same commit as the fixes, submitted to the
-/// gate as overrides (so a justified finding doesn't count as blocking — the
-/// gate has to judge the tree the way the merged repo will be judged), and
+/// [`ACKNOWLEDGMENTS_PATH`] in the same commit as the fixes — which the gate
+/// scan reads from the checkout, so a justified finding doesn't count as
+/// blocking (the gate judges the tree the way the merged repo will be) — and
 /// listed in the PR body under their own heading so a reviewer sees each
 /// justification next to the fixes. `candidates` may be empty when
 /// `acknowledgments` isn't — an acknowledgments-only PR.
@@ -707,12 +707,14 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
         return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some("none of the candidates' line ranges matched the current file contents".to_string()) };
     }
 
-    // Merge the justified acknowledgments into the repo's own file, and
-    // keep the resulting entries as the overrides the gate scan below
-    // submits — including any a human had already committed there.
+    // Merge the justified acknowledgments into the repo's own file. The
+    // gate scan below picks them up from that file itself (validate-all
+    // reads the scanned checkout's acknowledgments and attributes them to
+    // its repo-file actor), so they are not also sent as request
+    // overrides: those need an authenticated caller, which this loopback
+    // call doesn't have when IGNITE_API_KEY isn't set (e.g. on k8s).
     let ack_path = clone_dir.join(ACKNOWLEDGMENTS_PATH);
     let existing_ack_text = std::fs::read_to_string(&ack_path).unwrap_or_default();
-    let mut gate_overrides = ignite_acknowledgments::build_overrides(&ignite_acknowledgments::parse_blocks(&existing_ack_text));
     if let Some(merged) = ignite_acknowledgments::merge_acknowledgments(&existing_ack_text, acknowledgments) {
         if let Some(parent) = ack_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -722,7 +724,6 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
         if let Err(e) = std::fs::write(&ack_path, &merged) {
             return FixPrOutcome { branch, files_changed, already_open: false, pr_url: None, error: Some(format!("failed to write {ACKNOWLEDGMENTS_PATH}: {e}")) };
         }
-        gate_overrides = ignite_acknowledgments::build_overrides(&ignite_acknowledgments::parse_blocks(&merged));
         files_changed.push(ACKNOWLEDGMENTS_PATH.to_string());
     }
     if files_changed.is_empty() {
@@ -737,7 +738,7 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
     // still reject. One remediation attempt (LLM re-fix on the blocking
     // issues, applied on top of the first pass) before abandoning.
     let (gate_org, gate_repo) = full_name.split_once('/').unwrap_or((full_name, ""));
-    let mut gate_result = ignite_pipeline_gate::scan_checkout_with_overrides(http, server_base, gate_org, gate_repo, &clone_dir_str, &gate_overrides).await;
+    let mut gate_result = ignite_pipeline_gate::scan_checkout(http, server_base, gate_org, gate_repo, &clone_dir_str).await;
     if !gate_result.clean {
         let remediation_inputs: Vec<FixIssueInput> = gate_result.blocking_issues.iter().filter_map(issue_input_from_gate_value).collect();
         let mut remediated = false;
@@ -752,7 +753,7 @@ pub async fn open_fix_pr(runner: &ToolRunner, github_api: &GithubApi<'_>, http: 
                             }
                         }
                         files_changed.sort();
-                        let retry_gate = ignite_pipeline_gate::scan_checkout_with_overrides(http, server_base, gate_org, gate_repo, &clone_dir_str, &gate_overrides).await;
+                        let retry_gate = ignite_pipeline_gate::scan_checkout(http, server_base, gate_org, gate_repo, &clone_dir_str).await;
                         remediated = retry_gate.clean;
                         gate_result = retry_gate;
                     }
