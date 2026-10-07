@@ -179,6 +179,26 @@ impl DbStore {
     /// only the interactive fix-PR feature (`routes/fix_pr.rs`'s `apply`),
     /// kind `'fix-pr'`. The onboarding PR itself is recorded automatically
     /// by `finish_project` when it's given a `pr_url`.
+    /// Phase states (`phase` -> `state`) of `org/repo`'s newest still-running
+    /// scan created at or after `since` (SQLite `datetime` text, UTC), for
+    /// live progress in the GitHub Org view. `None` when there is none yet
+    /// (e.g. still cloning). Org/repo match case-insensitively.
+    pub fn running_scan_phase_states(&self, org: &str, repo: &str, since: &str) -> Option<Vec<(i64, String)>> {
+        let conn = self.conn.lock();
+        let project_id: i64 = conn
+            .query_row(
+                "SELECT id FROM projects WHERE org = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND status = 'running' AND created_at >= datetime(?, '-5 seconds') ORDER BY id DESC LIMIT 1",
+                params![org, repo, since],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()?;
+        let mut stmt = conn.prepare_cached("SELECT phase, state FROM steps WHERE project_id = ? ORDER BY phase").ok()?;
+        let rows = stmt.query_map(params![project_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))).ok()?;
+        Some(rows.filter_map(Result::ok).collect())
+    }
+
     pub fn record_pull_request(&self, project_id: i64, kind: &str, url: &str, branch: Option<&str>, files_changed: Option<i64>) {
         let conn = self.conn.lock();
         conn.execute("INSERT INTO pull_requests (project_id, kind, url, branch, files_changed) VALUES (?, ?, ?, ?, ?)", params![project_id, kind, url, branch, files_changed]).unwrap();

@@ -153,6 +153,31 @@ struct RepoStatus {
     scan_error_code: Option<&'static str>,
     /// GitHub's one-time link authorizing the failing token, when known.
     scan_error_sso_url: Option<String>,
+    /// While a scan of this repo runs: every enabled scan phase (1-5) with
+    /// its live state (`pending`/`running`/`success`/`failed`/...), for the
+    /// progress squares under the Scan button. `None` otherwise.
+    phases: Option<Vec<PhaseProgress>>,
+}
+
+#[derive(Debug, Serialize)]
+struct PhaseProgress {
+    phase: i64,
+    title: String,
+    state: String,
+}
+
+/// Phases a scan runs (validate-all stops before phase 6, shipping).
+fn scan_phase_progress(state: &AppState, org: &str, repo: &str, since: &str) -> Vec<PhaseProgress> {
+    let states = state.db.running_scan_phase_states(org, repo, since).unwrap_or_default();
+    super::phase_meta::resolve_phase_meta(&state.config)
+        .into_iter()
+        .filter(|p| p.enabled && p.id <= 5)
+        .map(|p| PhaseProgress {
+            phase: p.id,
+            state: states.iter().find(|(id, _)| *id == p.id).map(|(_, s)| s.clone()).unwrap_or_else(|| "pending".to_string()),
+            title: p.title,
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -209,17 +234,22 @@ fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoSta
                     nice_to_have_count,
                     scan_error_code: None,
                     scan_error_sso_url: None,
+                    phases: None,
                 },
             },
         );
     }
     let org_lc = org.to_ascii_lowercase();
     // Live state wins over whatever the last finished scan's row says.
-    for (set, label) in [(super::scan_queue::queued_keys(), "queued"), (super::scan_queue::running_keys(), "running")] {
-        for (o, repo) in set.into_iter().filter(|(o, _)| *o == org_lc) {
-            let _ = o;
-            out.entry(repo.clone()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status.status = Some(label.to_string());
-        }
+    for (o, repo) in super::scan_queue::queued_keys().into_iter().filter(|(o, _)| *o == org_lc) {
+        let _ = o;
+        out.entry(repo.clone()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status.status = Some("queued".to_string());
+    }
+    for ((o, repo), since) in super::scan_queue::running_since().into_iter().filter(|((o, _), _)| *o == org_lc) {
+        let _ = o;
+        let status = &mut out.entry(repo.clone()).or_insert_with(|| RepoStatusRow { repo: repo.clone(), status: RepoStatus::default() }).status;
+        status.status = Some("running".to_string());
+        status.phases = Some(scan_phase_progress(state, org, &repo, &since));
     }
     for ((o, repo), err) in RECENT_SCAN_FAILURES.lock().iter() {
         if o.eq_ignore_ascii_case(org) {

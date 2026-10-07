@@ -91,6 +91,25 @@ mod tests {
     }
 
     #[test]
+    fn running_scan_phase_states_reports_the_live_runs_steps() {
+        let (_dir, store) = open_test_db();
+        let since = "2000-01-01 00:00:00";
+        assert!(store.running_scan_phase_states("acme", "widgets", since).is_none());
+
+        let old = store.create_project("job-old", "acme", "widgets", false, "api", None).unwrap();
+        store.upsert_step(old, 1, "Input", "success", "");
+        store.finish_project("success", None, None, None, old);
+        let live = store.create_project("job-live", "acme", "widgets", false, "api", None).unwrap();
+        store.upsert_step(live, 1, "Input", "success", "");
+        store.upsert_step(live, 4, "Security", "running", "");
+
+        let states = store.running_scan_phase_states("ACME", "Widgets", since).unwrap();
+        assert_eq!(states, vec![(1, "success".to_string()), (4, "running".to_string())]);
+        // A run older than the current scan's slot is not reported as its progress.
+        assert!(store.running_scan_phase_states("acme", "widgets", "2999-01-01 00:00:00").is_none());
+    }
+
+    #[test]
     fn finish_project_updates_status_and_timestamps() {
         let (_dir, store) = open_test_db();
         let id = store.create_project("job-2", "acme", "widgets", false, "ui", None).unwrap();

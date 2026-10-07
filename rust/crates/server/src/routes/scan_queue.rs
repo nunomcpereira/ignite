@@ -440,8 +440,11 @@ pub(super) fn queued_keys() -> Vec<(String, String)> {
 }
 
 /// Lowercased `(org, repo)` keys of every executing scan.
-pub(super) fn running_keys() -> Vec<(String, String)> {
-    SCHED.lock().running.values().map(|r| scan_key(&r.info.org, &r.info.repo)).collect()
+/// Running scans' `(org, repo)` keys, with when each took its slot (UTC,
+/// SQLite `datetime` text) so progress lookups ignore older rows of the
+/// same repo.
+pub(super) fn running_since() -> Vec<((String, String), String)> {
+    SCHED.lock().running.values().map(|r| (scan_key(&r.info.org, &r.info.repo), r.started_at.format("%Y-%m-%d %H:%M:%S").to_string())).collect()
 }
 
 /// True when a new user-priority entry would have to wait.

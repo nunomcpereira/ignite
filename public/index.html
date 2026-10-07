@@ -33,10 +33,15 @@
       colors: { ...DEFAULT_BRAND.colors, ...overrides.colors, brand: { ...DEFAULT_BRAND.colors.brand, ...(overrides.colors && overrides.colors.brand) } },
     };
     document.title = window.IGNITE_BRAND.title;
+    // Brand shades as CSS custom properties, used by the dark theme's
+    // overrides (html[data-theme="dark"] ...) so they follow the brand too.
+    for (const [shade, hex] of Object.entries(window.IGNITE_BRAND.colors.brand)) {
+      document.documentElement.style.setProperty(`--brand-${shade}`, hex);
+    }
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20261007b"></script>
+  <script src="i18n.js?v=20261007c"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -92,70 +97,190 @@
       body.nav-expanded :is(#dashboardView, #onboardedReposView, #governanceView, #orgReposView, #settingsView) { padding-left: calc(14rem + 1.5rem); }
     }
 
-    /* Dark mode: the app's entire palette is hardcoded Tailwind utility
-       classes (bg-white, text-slate-800, ...) rather than CSS variables, so
-       retrofitting a real per-class dark palette would mean touching
-       thousands of class lists. Instead, invert the whole page's colors
-       (a well-established technique — the same one browser "force dark"
-       extensions use) once, on `body`. That single filter already darkens
-       *everything* inside body, Studio included — nothing else needs its
-       own `filter: invert(...)` declaration just to "be dark". The only
-       thing a second filter is ever for is the opposite: counter-inverting
-       (double-invert = original) a surface that's already deliberately
-       dark and must stay exactly as authored regardless of theme — right
-       now just the terminal-style log panels (`.terminal`,
-       `#studioOutputPanel`), whose ✓/✗/⚠ line colors are semantic and must
-       not flip. There are no <img> elements anywhere in this app, so
-       nothing photographic is at risk of inverting oddly.
-
-       Do NOT stack a third filter on top of that (e.g. re-inverting some
-       inner element back to "dark" again) even though the arithmetic nets
-       out correctly on paper — three or more `filter` declarations chained
-       down the same ancestor chain hit a real Chromium compositing bug
-       that renders the affected region solid black (reproduced directly:
-       Studio's header/tree/code panes went fully black once
-       `#studioView > div` + `#studioHeaderBar`/`#studioBody` each added
-       their own invert on top of body's). Two is the hard ceiling: body's
-       invert, plus at most one counter-invert per deliberately-dark
-       surface. Nothing in Studio needs a third layer — a light-authored
-       element (the header bar, banners, tree/code/issue panes) is already
-       correctly dark from body's filter alone with zero extra CSS.
-
-       `color-scheme: light` matters just as much as the filter itself:
-       `html`'s own `color-scheme: dark` (set so the browser's native
-       chrome — scrollbars, etc. — matches) otherwise inherits into every
-       native form control (<select>, <input>) under body too, so a plain
-       unstyled <select> renders with the *browser's* dark-native theme
-       (dark bg, light text) — then body's filter inverts THAT to
-       light-on-light, which is the invisible-dropdown-text bug this
-       comment used to not mention. Forcing `color-scheme: light` on body
-       makes every native control under it render light first, so the
-       filter is the only thing turning it dark, same as everything else
-       on the page. */
-    html[data-theme="dark"] { background: #0f172a; color-scheme: dark; }
-    html[data-theme="dark"] body { background: #fff; filter: invert(1) hue-rotate(180deg); color-scheme: light; }
-    html[data-theme="dark"] .terminal,
-    html[data-theme="dark"] #studioOutputPanel {
-      filter: invert(1) hue-rotate(180deg);
-    }
-    /* Chromium quirk, not spec behavior: a `position: fixed` descendant of a
-       `filter`-ed ancestor doesn't actually inherit that ancestor's filter
-       painting (verified directly - these 6 modals rendered in their
-       un-inverted, blinding-white authored colors while the rest of the
-       page was correctly dark). Each needs body's invert applied again
-       directly on itself. This is still only ONE filter reaching any given
-       pixel in these modals (body's never got there in the first place),
-       so it doesn't add a second link to the two-filter chain-depth limit
-       above - a `.terminal`/`#studioOutputPanel` nested inside one of these
-       still nets out to exactly one counter-invert on top of this. */
-    html[data-theme="dark"] #reviewModal,
-    html[data-theme="dark"] #studioView,
-    html[data-theme="dark"] #issuesViewModal,
-    html[data-theme="dark"] #fixPrModal,
-    html[data-theme="dark"] #checksReportModal,
-    html[data-theme="dark"] #phaseMaxModal {
-      filter: invert(1) hue-rotate(180deg);
-    }
+    /* Dark mode: a real dark palette modeled on Microsoft Teams' dark theme
+       (Fluent 2 neutral tokens: #141414 chrome, #1f1f1f canvas, #292929
+       cards, #3d3d3d strokes, #ffffff/#d6d6d6/#adadad text — neutral gray,
+       no blue tint). Light mode is untouched: everything below is scoped to
+       html[data-theme="dark"]. The app's colors are Tailwind utility classes,
+       so each color class used in this file gets a dark override; the
+       html[data-theme] prefix outranks Tailwind's own rules, and every
+       hover:/focus:/active:/disabled: variant is overridden too (otherwise
+       the higher-specificity base override would beat Tailwind's hover).
+       Brand shades come from --brand-* custom properties set from
+       window.IGNITE_BRAND, so white-labeling still applies in dark mode.
+       When adding a new color class to the markup, add its dark override to
+       the generated block below. */
+    html[data-theme="dark"] { color-scheme: dark; background: #1f1f1f; }
+    html[data-theme="dark"] body { background-color: #1f1f1f; color: #d6d6d6; }
+    html[data-theme="dark"] ::selection { background: color-mix(in srgb, var(--brand-500) 45%, transparent); color: #fff; }
+    html[data-theme="dark"] .text-white { color: #ffffff; }
+    html[data-theme="dark"] .bg-white { background-color: #292929; }
+    html[data-theme="dark"] .text-slate-800 { color: #f5f5f5; }
+    html[data-theme="dark"] .bg-slate-50 { background-color: #242424; }
+    html[data-theme="dark"] .text-slate-700 { color: #d6d6d6; }
+    html[data-theme="dark"] .border-slate-200 { border-color: #3d3d3d; }
+    html[data-theme="dark"] .text-brand-700 { color: var(--brand-300); }
+    html[data-theme="dark"] .text-slate-400 { color: #999999; }
+    html[data-theme="dark"] .text-slate-500 { color: #adadad; }
+    html[data-theme="dark"] .text-slate-300 { color: #707070; }
+    html[data-theme="dark"] .bg-brand-50 { background-color: color-mix(in srgb, var(--brand-500) 14%, transparent); }
+    html[data-theme="dark"] .text-brand-600 { color: var(--brand-300); }
+    html[data-theme="dark"] .text-slate-900 { color: #ffffff; }
+    html[data-theme="dark"] .text-rose-700 { color: #fda4af; }
+    html[data-theme="dark"] .bg-slate-900\/40 { background-color: rgba(20,20,20,0.4); }
+    html[data-theme="dark"] .border-slate-100 { border-color: #333333; }
+    html[data-theme="dark"] .border-slate-300 { border-color: #525252; }
+    html[data-theme="dark"] .text-rose-600 { color: #fda4af; }
+    html[data-theme="dark"] .text-slate-600 { color: #c7c7c7; }
+    html[data-theme="dark"] .bg-slate-50\/60 { background-color: rgba(36,36,36,0.6); }
+    html[data-theme="dark"] .border-brand-200 { border-color: color-mix(in srgb, var(--brand-500) 40%, transparent); }
+    html[data-theme="dark"] .bg-slate-200 { background-color: #3d3d3d; }
+    html[data-theme="dark"] .bg-violet-50 { background-color: rgba(139,92,246,0.12); }
+    html[data-theme="dark"] .border-violet-200 { border-color: rgba(167,139,250,0.35); }
+    html[data-theme="dark"] .text-violet-500 { color: #a78bfa; }
+    html[data-theme="dark"] .text-violet-700 { color: #c4b5fd; }
+    html[data-theme="dark"] .text-rose-500 { color: #fb7185; }
+    html[data-theme="dark"] .bg-slate-900\/50 { background-color: rgba(20,20,20,0.5); }
+    html[data-theme="dark"] .text-amber-600 { color: #fcd34d; }
+    html[data-theme="dark"] .text-violet-600 { color: #c4b5fd; }
+    html[data-theme="dark"] .bg-slate-800 { background-color: #3d3d3d; }
+    html[data-theme="dark"] .text-amber-800 { color: #fcd34d; }
+    html[data-theme="dark"] .bg-amber-50 { background-color: rgba(245,158,11,0.12); }
+    html[data-theme="dark"] .border-amber-200 { border-color: rgba(251,191,36,0.35); }
+    html[data-theme="dark"] .border-emerald-200 { border-color: rgba(52,211,153,0.35); }
+    html[data-theme="dark"] .bg-emerald-50 { background-color: rgba(16,185,129,0.12); }
+    html[data-theme="dark"] .text-emerald-800 { color: #6ee7b7; }
+    html[data-theme="dark"] .border-emerald-300 { border-color: rgba(52,211,153,0.55); }
+    html[data-theme="dark"] .bg-slate-900\/60 { background-color: rgba(20,20,20,0.6); }
+    html[data-theme="dark"] .bg-slate-100 { background-color: #333333; }
+    html[data-theme="dark"] .bg-rose-50 { background-color: rgba(244,63,94,0.12); }
+    html[data-theme="dark"] .border-rose-200 { border-color: rgba(251,113,133,0.35); }
+    html[data-theme="dark"] .text-amber-700 { color: #fcd34d; }
+    html[data-theme="dark"] .text-emerald-700 { color: #6ee7b7; }
+    html[data-theme="dark"] .border-slate-700 { border-color: #3d3d3d; }
+    html[data-theme="dark"] .bg-slate-950 { background-color: #0a0a0a; }
+    html[data-theme="dark"] .border-slate-800 { border-color: #2e2e2e; }
+    html[data-theme="dark"] .bg-slate-600 { background-color: #5c5c5c; }
+    html[data-theme="dark"] .border-brand-300 { border-color: var(--brand-400); }
+    html[data-theme="dark"] .text-emerald-600 { color: #6ee7b7; }
+    html[data-theme="dark"] .text-amber-500 { color: #fbbf24; }
+    html[data-theme="dark"] .bg-slate-900 { background-color: #141414; }
+    html[data-theme="dark"] .border-brand-400 { border-color: var(--brand-400); }
+    html[data-theme="dark"] .text-emerald-500 { color: #34d399; }
+    html[data-theme="dark"] .bg-rose-200 { background-color: rgba(244,63,94,0.3); }
+    html[data-theme="dark"] .text-rose-900 { color: #fda4af; }
+    html[data-theme="dark"] .bg-emerald-200 { background-color: rgba(16,185,129,0.3); }
+    html[data-theme="dark"] .text-emerald-900 { color: #6ee7b7; }
+    html[data-theme="dark"] .bg-amber-200 { background-color: rgba(245,158,11,0.3); }
+    html[data-theme="dark"] .text-amber-900 { color: #fcd34d; }
+    html[data-theme="dark"] .text-slate-100 { color: #f0f0f0; }
+    html[data-theme="dark"] .text-emerald-400 { color: #34d399; }
+    html[data-theme="dark"] .text-rose-400 { color: #fb7185; }
+    html[data-theme="dark"] .text-sky-300 { color: #7dd3fc; }
+    html[data-theme="dark"] .text-amber-300 { color: #fcd34d; }
+    html[data-theme="dark"] .bg-brand-100 { background-color: color-mix(in srgb, var(--brand-500) 22%, transparent); }
+    html[data-theme="dark"] .text-brand-800 { color: var(--brand-300); }
+    html[data-theme="dark"] .text-brand-500 { color: var(--brand-400); }
+    html[data-theme="dark"] .border-brand-100 { border-color: color-mix(in srgb, var(--brand-500) 25%, transparent); }
+    html[data-theme="dark"] .bg-slate-50\/50 { background-color: rgba(36,36,36,0.5); }
+    html[data-theme="dark"] .bg-slate-300 { background-color: #525252; }
+    html[data-theme="dark"] .bg-white\/70 { background-color: rgba(41,41,41,0.7); }
+    html[data-theme="dark"] .bg-cyan-50 { background-color: rgba(6,182,212,0.12); }
+    html[data-theme="dark"] .text-cyan-700 { color: #67e8f9; }
+    html[data-theme="dark"] .border-cyan-200 { border-color: rgba(34,211,238,0.35); }
+    html[data-theme="dark"] .border-indigo-200 { border-color: rgba(129,140,248,0.35); }
+    html[data-theme="dark"] .bg-indigo-50 { background-color: rgba(99,102,241,0.12); }
+    html[data-theme="dark"] .text-indigo-700 { color: #a5b4fc; }
+    html[data-theme="dark"] .bg-teal-50 { background-color: rgba(20,184,166,0.12); }
+    html[data-theme="dark"] .text-teal-700 { color: #5eead4; }
+    html[data-theme="dark"] .border-teal-200 { border-color: rgba(45,212,191,0.35); }
+    html[data-theme="dark"] .bg-sky-50 { background-color: rgba(14,165,233,0.12); }
+    html[data-theme="dark"] .text-sky-700 { color: #7dd3fc; }
+    html[data-theme="dark"] .border-sky-200 { border-color: rgba(56,189,248,0.35); }
+    html[data-theme="dark"] .border-slate-50 { border-color: #2e2e2e; }
+    html[data-theme="dark"] .bg-rose-100 { background-color: rgba(244,63,94,0.2); }
+    html[data-theme="dark"] .bg-emerald-100 { background-color: rgba(16,185,129,0.2); }
+    html[data-theme="dark"] .bg-amber-100 { background-color: rgba(245,158,11,0.2); }
+    html[data-theme="dark"] .text-indigo-800 { color: #a5b4fc; }
+    html[data-theme="dark"] .border-amber-300 { border-color: rgba(251,191,36,0.55); }
+    html[data-theme="dark"] .border-rose-300 { border-color: rgba(251,113,133,0.55); }
+    html[data-theme="dark"] .border-amber-400 { border-color: #fbbf24; }
+    html[data-theme="dark"] .bg-blue-50 { background-color: rgba(59,130,246,0.12); }
+    html[data-theme="dark"] .text-blue-600 { color: #93c5fd; }
+    html[data-theme="dark"] .border-blue-200 { border-color: rgba(96,165,250,0.35); }
+    html[data-theme="dark"] .text-red-600 { color: #fca5a5; }
+    html[data-theme="dark"] .border-red-200 { border-color: rgba(248,113,113,0.35); }
+    html[data-theme="dark"] .border-orange-200 { border-color: rgba(251,146,60,0.35); }
+    html[data-theme="dark"] .text-orange-700 { color: #fdba74; }
+    html[data-theme="dark"] .bg-orange-50 { background-color: rgba(249,115,22,0.12); }
+    html[data-theme="dark"] .bg-amber-50\/60 { background-color: rgba(245,158,11,0.06); }
+    html[data-theme="dark"] .focus\:border-brand-500:focus { border-color: var(--brand-500); }
+    html[data-theme="dark"] .hover\:text-brand-600:hover { color: var(--brand-300); }
+    html[data-theme="dark"] .hover\:bg-slate-100:hover { background-color: #383838; }
+    html[data-theme="dark"] .hover\:bg-slate-50:hover { background-color: #333333; }
+    html[data-theme="dark"] .hover\:text-brand-700:hover { color: var(--brand-300); }
+    html[data-theme="dark"] .hover\:bg-brand-700:hover { background-color: var(--brand-700); }
+    html[data-theme="dark"] .hover\:bg-rose-50:hover { background-color: rgba(244,63,94,0.12); }
+    html[data-theme="dark"] .hover\:text-slate-700:hover { color: #d6d6d6; }
+    html[data-theme="dark"] .hover\:text-red-600:hover { color: #fca5a5; }
+    html[data-theme="dark"] .hover\:border-brand-400:hover { border-color: var(--brand-400); }
+    html[data-theme="dark"] .hover\:text-brand-800:hover { color: var(--brand-300); }
+    html[data-theme="dark"] .hover\:bg-brand-100:hover { background-color: color-mix(in srgb, var(--brand-500) 22%, transparent); }
+    html[data-theme="dark"] .hover\:bg-violet-50:hover { background-color: rgba(139,92,246,0.12); }
+    html[data-theme="dark"] .hover\:border-brand-200:hover { border-color: color-mix(in srgb, var(--brand-500) 40%, transparent); }
+    html[data-theme="dark"] .hover\:text-slate-600:hover { color: #c7c7c7; }
+    html[data-theme="dark"] .hover\:bg-slate-900:hover { background-color: #474747; }
+    html[data-theme="dark"] .hover\:text-rose-500:hover { color: #fb7185; }
+    html[data-theme="dark"] .hover\:bg-emerald-100:hover { background-color: rgba(16,185,129,0.2); }
+    html[data-theme="dark"] .hover\:bg-violet-100:hover { background-color: rgba(139,92,246,0.2); }
+    html[data-theme="dark"] .hover\:bg-emerald-700:hover { background-color: #047857; }
+    html[data-theme="dark"] .hover\:bg-emerald-50:hover { background-color: rgba(16,185,129,0.12); }
+    html[data-theme="dark"] .hover\:text-slate-200:hover { color: #d6d6d6; }
+    html[data-theme="dark"] .hover\:text-rose-600:hover { color: #fda4af; }
+    html[data-theme="dark"] .hover\:bg-brand-50:hover { background-color: color-mix(in srgb, var(--brand-500) 14%, transparent); }
+    html[data-theme="dark"] .hover\:bg-slate-50\/60:hover { background-color: rgba(51,51,51,0.6); }
+    html[data-theme="dark"] .hover\:text-rose-700:hover { color: #fda4af; }
+    html[data-theme="dark"] .hover\:text-amber-700:hover { color: #fcd34d; }
+    html[data-theme="dark"] .hover\:text-emerald-700:hover { color: #6ee7b7; }
+    html[data-theme="dark"] .hover\:bg-slate-200:hover { background-color: #424242; }
+    html[data-theme="dark"] .hover\:text-slate-500:hover { color: #adadad; }
+    html[data-theme="dark"] .hover\:bg-indigo-100:hover { background-color: rgba(99,102,241,0.2); }
+    html[data-theme="dark"] .hover\:bg-slate-300:hover { background-color: #525252; }
+    html[data-theme="dark"] .hover\:bg-orange-700:hover { background-color: #c2410c; }
+    html[data-theme="dark"] .hover\:bg-amber-50\/40:hover { background-color: rgba(245,158,11,0.06); }
+    html[data-theme="dark"] .hover\:border-violet-300:hover { border-color: rgba(167,139,250,0.55); }
+    html[data-theme="dark"] .hover\:border-amber-300:hover { border-color: rgba(251,191,36,0.55); }
+    html[data-theme="dark"] .hover\:bg-amber-100:hover { background-color: rgba(245,158,11,0.2); }
+    html[data-theme="dark"] .hover\:border-brand-300:hover { border-color: var(--brand-400); }
+    html[data-theme="dark"] .hover\:text-emerald-900:hover { color: #6ee7b7; }
+    html[data-theme="dark"] .hover\:bg-sky-50:hover { background-color: rgba(14,165,233,0.12); }
+    html[data-theme="dark"] .hover\:text-slate-900:hover { color: #ffffff; }
+    html[data-theme="dark"] .hover\:border-rose-300:hover { border-color: rgba(251,113,133,0.55); }
+    html[data-theme="dark"] .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.12); }
+    html[data-theme="dark"] .hover\:bg-brand-50\/50:hover { background-color: color-mix(in srgb, var(--brand-500) 8%, transparent); }
+    html[data-theme="dark"] .hover\:text-slate-800:hover { color: #f5f5f5; }
+    html[data-theme="dark"] .active\:bg-brand-800:active { background-color: var(--brand-800); }
+    html[data-theme="dark"] .active\:bg-slate-100:active { background-color: #383838; }
+    html[data-theme="dark"] .disabled\:bg-slate-100:disabled { background-color: #333333; }
+    html[data-theme="dark"] .disabled\:text-slate-400:disabled { color: #999999; }
+    html[data-theme="dark"] .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: #333333; }
+    html[data-theme="dark"] .placeholder-slate-400::placeholder { color: #8a8a8a; }
+    /* Teams-style chrome: app bar and nav rail sit one step darker than the canvas. */
+    html[data-theme="dark"] body > header,
+    html[data-theme="dark"] #navRail { background-color: #141414; border-color: #2e2e2e; }
+    /* Modal/drawer backdrops: dim with black, not the (now near-canvas) slate. */
+    html[data-theme="dark"] :is(.bg-slate-900\/40, .bg-slate-900\/50, .bg-slate-900\/60) { background-color: rgba(0, 0, 0, .6); }
+    /* Authored-dark surfaces (terminals, log panels, diff blocks) keep their light text. */
+    html[data-theme="dark"] :is(.terminal, .bg-slate-800, .bg-slate-900, .bg-slate-950) .text-slate-300 { color: #d6d6d6; }
+    html[data-theme="dark"] :is(.terminal, .bg-slate-800, .bg-slate-900, .bg-slate-950) .text-slate-400 { color: #adadad; }
+    html[data-theme="dark"] #studioOutputLog { color: #d6d6d6; }
+    html[data-theme="dark"] .terminal { scrollbar-color: #474747 transparent; }
+    html[data-theme="dark"] .terminal::-webkit-scrollbar-thumb { background: #474747; }
+    html[data-theme="dark"] .shadow-card { box-shadow: 0 1px 2px rgba(0, 0, 0, .28), 0 4px 16px rgba(0, 0, 0, .22); }
+    html[data-theme="dark"] .hover\:shadow-cardHover:hover { box-shadow: 0 2px 4px rgba(0, 0, 0, .32), 0 8px 24px rgba(0, 0, 0, .3); }
+    html[data-theme="dark"] #historyDrawerPinBtn[aria-pressed="true"] { color: var(--brand-300); background: color-mix(in srgb, var(--brand-500) 18%, transparent); }
+    html[data-theme="dark"] #orgReposResults tr.org-tree-child > td:first-child::before,
+    html[data-theme="dark"] #orgReposResults tr.org-tree-child > td:first-child::after { border-color: #525252; }
     #themeToggleBtn svg { transition: transform .2s ease; }
 
     /* The org repository list contains several compact controls. Keep the
@@ -4386,6 +4511,11 @@
         if (postureDoc) $('studioPostureBtn').classList.remove('hidden');
         if (provenanceDoc) $('studioProvenanceBtn').classList.remove('hidden');
       } catch { /* documents are a bonus view — a failed fetch just leaves the buttons hidden */ }
+      // Dependencies/licenses: shown when this run stored its license scan.
+      try {
+        const depsRes = await fetch(`/api/projects/${encodeURIComponent(projectId)}/dependencies`);
+        if (depsRes.ok && studioState.historicalProjectId === projectId) $('studioDepsBtn').classList.remove('hidden');
+      } catch { /* no stored scan — the tab stays hidden */ }
     }
 
     // Screen to restore when Studio closes (e.g. the flagged-issues popup
@@ -4589,7 +4719,12 @@
       $('studioCodeWrap').innerHTML = '<p class="p-4 text-slate-400">Scanning dependency manifests (ORT if installed, else deps.dev lookups)…</p>';
       studioShowError(null);
       try {
-        const res = await fetch(`/api/pipeline/${studioState.jobId}/studio/dependencies`);
+        // Historical runs have no source on disk; read the license scan
+        // stored during Phase 3 instead.
+        const url = studioState.historical
+          ? `/api/projects/${encodeURIComponent(studioState.historicalProjectId)}/dependencies`
+          : `/api/pipeline/${studioState.jobId}/studio/dependencies`;
+        const res = await fetch(url);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Could not scan dependencies.');
         renderStudioDependencies(data);
@@ -5667,13 +5802,16 @@
       ];
       container.innerHTML = '';
       container.style.position = 'relative';
+      const cg = document.documentElement.dataset.theme === 'dark'
+        ? { fn: '#7f85f5', fnText: '#d6d6d6', dirBg: '#292929', dirBorder: '#525252', dirText: '#adadad', edge: '#707070' }
+        : { fn: '#4f46e5', fnText: '#1e293b', dirBg: '#f1f5f9', dirBorder: '#cbd5e1', dirText: '#475569', edge: '#94a3b8' };
       studioCallGraphInstance = cytoscape({
         container,
         elements,
         style: [
-          { selector: 'node[kind = "fn"]', style: { 'background-color': '#4f46e5', label: 'data(label)', 'font-size': 9, color: '#1e293b', 'text-valign': 'bottom', 'text-margin-y': 3, width: 14, height: 14 } },
-          { selector: ':parent', style: { 'background-color': '#f1f5f9', 'border-color': '#cbd5e1', 'border-width': 1, label: 'data(label)', 'font-size': 10, 'font-weight': 'bold', color: '#475569', 'text-valign': 'top', 'text-halign': 'center' } },
-          { selector: 'edge', style: { width: 1, 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', opacity: 0.6 } },
+          { selector: 'node[kind = "fn"]', style: { 'background-color': cg.fn, label: 'data(label)', 'font-size': 9, color: cg.fnText, 'text-valign': 'bottom', 'text-margin-y': 3, width: 14, height: 14 } },
+          { selector: ':parent', style: { 'background-color': cg.dirBg, 'border-color': cg.dirBorder, 'border-width': 1, label: 'data(label)', 'font-size': 10, 'font-weight': 'bold', color: cg.dirText, 'text-valign': 'top', 'text-halign': 'center' } },
+          { selector: 'edge', style: { width: 1, 'line-color': cg.edge, 'target-arrow-color': cg.edge, 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', opacity: 0.6 } },
           { selector: 'node:selected', style: { 'background-color': '#dc2626' } },
         ],
         layout: { name: 'fcose', quality: 'default', animate: false, nodeDimensionsIncludeLabels: true, packComponents: true },
@@ -6037,7 +6175,7 @@
           try {
             await navigator.clipboard.writeText(cell.dataset.copy);
             const prev = cell.style.backgroundColor;
-            cell.style.backgroundColor = '#fef3c7';
+            cell.style.backgroundColor = document.documentElement.dataset.theme === 'dark' ? 'rgba(245,158,11,.3)' : '#fef3c7';
             setTimeout(() => { cell.style.backgroundColor = prev; }, 200);
           } catch { /* clipboard permission denied — non-critical, cell is still selectable/readable as-is */ }
         });
@@ -7736,6 +7874,27 @@
     // the history drawer already uses.
     let onboardedReposLoaded = false;
 
+    // One square per scan phase under a running repo's Scan button, colored
+    // by that phase's live state (from GET /api/org-repos/:org/status).
+    const ORG_PHASE_SQUARE_CLASS = {
+      success: 'bg-emerald-500',
+      running: 'bg-brand-500 animate-pulse',
+      failed: 'bg-rose-500',
+      error: 'bg-rose-500',
+      skipped: 'bg-slate-400',
+      warning: 'bg-amber-500',
+    };
+    function orgRepoPhaseProgressHtml(phases) {
+      if (!Array.isArray(phases) || phases.length === 0) return '';
+      const total = phases.length;
+      const squares = phases.map((p, idx) => {
+        const cls = ORG_PHASE_SQUARE_CLASS[p.state] || 'bg-slate-200';
+        const label = t('orgRepos.phaseProgress', { n: idx + 1, total, title: p.title, state: p.state });
+        return `<span class="block flex-1 h-2 rounded-[2px] ${cls}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}"></span>`;
+      }).join('');
+      return `<div class="org-repo-phase-progress flex gap-0.5" role="group" aria-label="${escapeAttr(t('orgRepos.phaseProgressLabel'))}">${squares}</div>`;
+    }
+
     function formatScanDate(raw) {
       return raw ? escapeHtml(raw.replace('T', ' ').slice(0, 19)) : '';
     }
@@ -7954,7 +8113,7 @@
           return;
         }
         refreshOrgs(orgReposOrgs, { quiet: true });
-      }, 8000);
+      }, orgReposCache.some((r) => r.status === 'running') ? 4000 : 8000);
     }
     function scheduleOrgReposPollAgainQuietly() {
       orgReposPollTimer = setTimeout(() => {
@@ -8074,9 +8233,12 @@
           <td class="px-5 py-3.5 text-[11px] text-slate-500 whitespace-nowrap">${formatScanDate(r.lastScanAt)}</td>
           <td class="org-repo-action-cell px-5 py-3.5">
             <div>
+              <div class="inline-flex flex-col items-stretch gap-1">
               <button type="button" class="org-repo-scan-now text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-brand-600 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed" data-i="${i}" title="${escapeAttr(r.empty ? t('orgRepos.emptyRepoMessage') : t('orgRepos.scanNowTitle'))}" ${running || queuedSrv || r.empty ? 'disabled' : ''}>
                 <span class="org-repo-scan-now-label">${running ? t('orgRepos.scanning') : queuedSrv ? t('orgRepos.statusQueued') : t('orgRepos.scanNow')}</span>
               </button>
+              ${running ? orgRepoPhaseProgressHtml(r.phases) : ''}
+              </div>
               ${studioBtn}
             </div>
           </td>
@@ -8226,7 +8388,11 @@
       });
       $('orgReposTableBody').querySelectorAll('.org-repo-open-studio').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
-        btn.addEventListener('click', () => openHistoricalStudio(r.latestProjectId, r.org, r.repo));
+        // Org scans keep each repo's latest source (tier `repo-latest`), so
+        // open live Studio when it's still on disk: Dependencies (with
+        // licenses), SBOM, LOC and Posture all come from the real tree.
+        // Falls back to the read-only historical view otherwise.
+        btn.addEventListener('click', () => openStudioForRun({ jobId: r.latestJobId || undefined, projectId: r.latestProjectId, org: r.org, repo: r.repo }));
       });
       $('orgReposTableBody').querySelectorAll('.org-repo-scan-now').forEach((btn) => {
         const r = repos[Number(btn.dataset.i)];
@@ -9080,7 +9246,7 @@
       }
     }
 
-    const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, scanErrorCode: null, scanErrorSsoUrl: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null };
+    const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, scanErrorCode: null, scanErrorSsoUrl: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null, phases: null };
     function orgReposCacheKey(org) {
       return `${ORG_REPOS_CACHE_PREFIX}${org}|a${$('orgReposIncludeArchived').checked ? 1 : 0}f${$('orgReposIncludeForks').checked ? 1 : 0}`;
     }

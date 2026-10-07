@@ -75,6 +75,10 @@ pub struct SbomResult {
 
 /// Never throws / never fails the caller: returns the built-in fallback
 /// component list on any missing-tool/parse failure.
+fn syft_component_count(sbom: &serde_json::Value) -> usize {
+    sbom.get("components").and_then(|c| c.as_array()).map_or(0, |a| a.len())
+}
+
 pub async fn generate_sbom(root: &Path, runner: &ToolRunner, enabled: bool, manifests: &[ManifestSpec], max_deps_per_manifest: usize) -> std::io::Result<SbomResult> {
     let tooling = if enabled {
         syft_tooling(runner).await
@@ -98,6 +102,19 @@ pub async fn generate_sbom(root: &Path, runner: &ToolRunner, enabled: bool, mani
     let result: std::io::Result<SbomResult> = match run_result {
         Ok(_) => match tokio::fs::read_to_string(&report_path).await {
             Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                // Syft's directory catalogers only read lockfiles/installed
+                // packages, so a repo that commits package.json or
+                // requirements ranges without a lockfile comes back with
+                // zero components. Use the manifest-derived list then,
+                // rather than an empty SBOM.
+                Ok(sbom) if syft_component_count(&sbom) == 0 => {
+                    let fallback = generate_sbom_fallback(root, manifests, max_deps_per_manifest)?;
+                    if fallback.components.is_empty() {
+                        Ok(SbomResult { engine: "syft", sbom: SbomOutcome::Syft(sbom) })
+                    } else {
+                        Ok(SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(fallback) })
+                    }
+                }
                 Ok(sbom) => Ok(SbomResult { engine: "syft", sbom: SbomOutcome::Syft(sbom) }),
                 Err(_) => generate_sbom_fallback(root, manifests, max_deps_per_manifest).map(|f| SbomResult { engine: "fallback", sbom: SbomOutcome::Fallback(f) }),
             },
@@ -158,6 +175,51 @@ mod tests {
             _ => panic!("expected fallback"),
         }
         ignite_fs_utils::invalidate_walk_cache(root);
+    }
+
+    #[cfg(unix)]
+    fn runner_with_fake_syft(dir: &Path, components_json: &str) -> ToolRunner {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("fake-syft");
+        // `syft version` probe, then `syft <root> -o cyclonedx-json=<path> --quiet`.
+        let body = format!(
+            "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in cyclonedx-json=*) printf '%s' '{{\"bomFormat\":\"CycloneDX\",\"components\":{components_json}}}' > \"${{a#cyclonedx-json=}}\";; esac; done\nexit 0\n"
+        );
+        fs::write(&script, body).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut binaries = HashMap::new();
+        binaries.insert("syft", script.to_string_lossy().into_owned());
+        ToolRunner::new(binaries)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn empty_syft_sbom_uses_manifest_components() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("package.json"), r#"{"dependencies": {"express": "^4.0.0", "lodash": "^4.17.0"}}"#).unwrap();
+
+        let result = generate_sbom(&root, &runner_with_fake_syft(dir.path(), "[]"), true, &default_manifests(), 1000).await.unwrap();
+        assert_eq!(result.engine, "fallback");
+        match result.sbom {
+            SbomOutcome::Fallback(f) => assert_eq!(f.components.len(), 2),
+            _ => panic!("expected the manifest-derived list"),
+        }
+        ignite_fs_utils::invalidate_walk_cache(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_empty_syft_sbom_is_kept() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("package.json"), r#"{"dependencies": {"express": "^4.0.0"}}"#).unwrap();
+
+        let result = generate_sbom(&root, &runner_with_fake_syft(dir.path(), r#"[{"name":"express"}]"#), true, &default_manifests(), 1000).await.unwrap();
+        assert_eq!(result.engine, "syft");
+        ignite_fs_utils::invalidate_walk_cache(&root);
     }
 
     #[tokio::test]

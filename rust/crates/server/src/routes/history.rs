@@ -95,6 +95,21 @@ async fn project_issues(State(state): State<Arc<AppState>>, crate::auth::AuthOrU
     Json(json!({ "ok": true, "issues": state.db.get_project_issues(id) })).into_response()
 }
 
+/// GET /api/projects/:id/dependencies — the dependency/license scan stored
+/// for this run during Phase 3, so read-only (historical) Studio can show
+/// the Dependencies tab without a source tree on disk. 404 when the run
+/// stored none.
+async fn project_dependencies(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, headers: HeaderMap, Path(id_raw): Path<String>) -> Response {
+    let Some(id) = parse_id(&id_raw) else { return err(StatusCode::BAD_REQUEST, "Invalid project id.") };
+    if let Some(denied) = view_denied_for_project(&state, &headers, id) {
+        return denied;
+    }
+    match state.db.get_dependency_scan_cache(id).filter(|v| !v.is_null()) {
+        Some(scan) => Json(scan).into_response(),
+        None => err(StatusCode::NOT_FOUND, "No dependency scan stored for this run."),
+    }
+}
+
 /// GET /api/repositories/:org/:repo — US-01's new, additive endpoint:
 /// the durable repository identity plus every scan run ever recorded
 /// against it (including enrollment-only rows, each labeled), independent
@@ -338,6 +353,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/projects/effectivated", get(list_effectivated))
         .route("/api/projects/:id", get(project_details).delete(delete_project))
         .route("/api/projects/:id/issues", get(project_issues))
+        .route("/api/projects/:id/dependencies", get(project_dependencies))
         .route("/api/projects/:id/schedule", post(set_schedule))
         .route("/api/repositories/:org/:repo", get(repository_history))
         .route("/api/repositories/:org/:repo/findings", get(repository_findings))
