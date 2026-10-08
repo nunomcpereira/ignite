@@ -26,6 +26,11 @@ ID: gha-security::.github/workflows/deploy-docs.yml::14
 #   .github/workflows/deploy-docs.yml:14
 Acknowledge: Same justification as the `pages: write` entry above - the minimal, documented permission pair actions/deploy-pages needs for OIDC-based deployment.
 
+ID: malicious-dependency::docs-site/package.json::0
+# [ERROR] malicious-dependency - Dependency "react-dom==19.3.0" flagged by GuardDog (npm): metadata_mismatch, capability-network-outbound, capability-process-spawn [risk suspicious, 6.3/10].
+#   docs-site/package.json
+Acknowledge: False positive. GuardDog's only risk is metadata_mismatch on scripts.start: the npm registry manifest has "node server.js" while the tarball's package.json has none. npm adds that default start script itself when a package ships a server.js and declares no start script (normalize-package-data), and react-dom ships server.js (its SSR entry point). The capability-* hits are what a DOM/SSR renderer is expected to do. Official Meta package, used only by the docs-site build.
+
 ID: secret::docs-site/docs/ci-integration.md::493
 # [ERROR] secret - Hardcoded token
 #   docs-site/docs/ci-integration.md:493

@@ -53,6 +53,30 @@ pub struct GuarddogVerdict {
     pub pkg_key: String,
     pub hit_rules: Vec<String>,
     pub issue_count: i64,
+    /// GuardDog 3's own verdict (`risk_score.label`: `no_risks_detected`,
+    /// `low`, `suspicious`, `high_risk`) and score (0-10). `None` from
+    /// older GuardDog releases, which only report raw rule hits.
+    #[serde(default)]
+    pub risk_label: Option<String>,
+    #[serde(default)]
+    pub risk_score: Option<f64>,
+}
+
+impl GuarddogVerdict {
+    /// Finding severity for this verdict, or `None` when it isn't one.
+    /// GuardDog 3 reports `capability-*` hits (what a package *can* do:
+    /// network, spawn, filesystem) for nearly every real package — react,
+    /// docusaurus — and scores them with threats into a risk label; that
+    /// label is the verdict, not the raw hits. Without a label (GuardDog
+    /// 1.x/2.x), every hit stays blocking, as before.
+    pub fn severity(&self) -> Option<&'static str> {
+        match self.risk_label.as_deref() {
+            None => Some("error"),
+            Some("high_risk") => Some("error"),
+            Some("suspicious") => Some("warning"),
+            Some(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -143,7 +167,10 @@ pub fn guarddog_verdicts_from_report(report: &serde_json::Value) -> Vec<Guarddog
         if issue_count <= 0 && hit_rules.is_empty() {
             continue;
         }
-        verdicts.push(GuarddogVerdict { pkg_key, hit_rules, issue_count });
+        let risk = entry.get("risk_score").and_then(|r| r.as_object());
+        let risk_label = risk.and_then(|r| r.get("label")).and_then(|l| l.as_str()).map(str::to_string);
+        let risk_score = risk.and_then(|r| r.get("score")).and_then(|s| s.as_f64());
+        verdicts.push(GuarddogVerdict { pkg_key, hit_rules, issue_count, risk_label, risk_score });
     }
     verdicts
 }
@@ -159,7 +186,7 @@ pub async fn check_malicious_dependencies(root: &Path, runner: &ToolRunner, conf
     // Suffix bumps whenever report parsing changes, so verdicts cached by
     // an older parser (e.g. the one that read GuardDog 3's array output as
     // "no hits") are not reused.
-    let cache_version = tooling.version.as_deref().map(|v| format!("{v}+parse2"));
+    let cache_version = tooling.version.as_deref().map(|v| format!("{v}+parse3"));
     let (mut verified, mut timed_out) = (0usize, 0usize);
     for file in walk_files(root)? {
         let base = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -211,14 +238,20 @@ pub async fn check_malicious_dependencies(root: &Path, runner: &ToolRunner, conf
         };
 
         for v in &verdicts {
+            let Some(severity) = v.severity() else { continue };
             let rule_desc = if !v.hit_rules.is_empty() { v.hit_rules.join(", ") } else { format!("{} issue(s)", v.issue_count) };
+            let risk_desc = match (&v.risk_label, v.risk_score) {
+                (Some(label), Some(score)) => format!(" [risk {label}, {score:.1}/10]"),
+                (Some(label), None) => format!(" [risk {label}]"),
+                _ => String::new(),
+            };
             findings.push(MaliciousDependencyFinding {
                 file: rel.clone(),
                 line: None,
                 kind: "malicious-dependency",
                 tool: "guarddog",
-                severity: "error",
-                message: format!(r#"Dependency "{}" flagged by GuardDog ({}): {}."#, v.pkg_key, spec.ecosystem, rule_desc),
+                severity,
+                message: format!(r#"Dependency "{}" flagged by GuardDog ({}): {}{risk_desc}."#, v.pkg_key, spec.ecosystem, rule_desc),
             });
         }
     }
@@ -265,6 +298,33 @@ mod tests {
         assert_eq!(verdicts[0].pkg_key, "evil-pkg==0.0.1");
         assert_eq!(verdicts[0].hit_rules, vec!["npm-install-script".to_string()]);
         assert_eq!(verdicts[0].issue_count, 1);
+    }
+
+    #[test]
+    fn guarddog_3_risk_label_decides_severity() {
+        let entry = |dep: &str, label: &str, score: f64| serde_json::json!({"dependency": dep, "version": "1.0.0", "result": {"issues": 2, "results": {"capability-network-outbound": [{"location": "a.js:1"}]}, "risk_score": {"score": score, "label": label}}});
+        let report = serde_json::json!([
+            entry("react", "no_risks_detected", 0.0),
+            entry("@docusaurus/core", "low", 3.3),
+            entry("odd-pkg", "suspicious", 5.5),
+            entry("evil-pkg", "high_risk", 8.7),
+        ]);
+        let severities: Vec<(String, Option<&str>)> = guarddog_verdicts_from_report(&report).iter().map(|v| (v.pkg_key.clone(), v.severity())).collect();
+        assert_eq!(
+            severities,
+            vec![
+                ("react==1.0.0".to_string(), None),
+                ("@docusaurus/core==1.0.0".to_string(), None),
+                ("odd-pkg==1.0.0".to_string(), Some("warning")),
+                ("evil-pkg==1.0.0".to_string(), Some("error")),
+            ]
+        );
+        // Old GuardDog: no label, every hit blocks.
+        let old = guarddog_verdicts_from_report(&serde_json::json!({"x==1": {"results": {"npm-install-script": true}}}));
+        assert_eq!(old[0].severity(), Some("error"));
+        // Verdicts cached before the label existed still deserialize.
+        let cached: GuarddogVerdict = serde_json::from_value(serde_json::json!({"pkg_key": "y==1", "hit_rules": [], "issue_count": 1})).unwrap();
+        assert_eq!(cached.risk_label, None);
     }
 
     #[test]
@@ -333,7 +393,7 @@ mod tests {
     fn cache_roundtrips_verdicts_through_db_store() {
         let dir = tempdir().unwrap();
         let store = DbStore::open(&dir.path().join("test.db")).unwrap();
-        let verdicts = vec![GuarddogVerdict { pkg_key: "x==1.0.0".to_string(), hit_rules: vec!["npm-install-script".to_string()], issue_count: 1 }];
+        let verdicts = vec![GuarddogVerdict { pkg_key: "x==1.0.0".to_string(), hit_rules: vec!["npm-install-script".to_string()], issue_count: 1, risk_label: None, risk_score: None }];
         store.save_manifest_scan_cache("guarddog", "npm", "abc123", "0.1.0", &serde_json::to_value(&verdicts).unwrap());
         let cached = store.get_manifest_scan_cache("guarddog", "npm", "abc123", "0.1.0").unwrap();
         let roundtripped: Vec<GuarddogVerdict> = serde_json::from_value(cached).unwrap();

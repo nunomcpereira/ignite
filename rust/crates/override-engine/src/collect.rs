@@ -347,7 +347,9 @@ pub fn collect_phase4_issues(input: &Phase4Inputs) -> Vec<Issue> {
 
     if let Some(md) = &input.malicious_dependencies {
         for f in &md.findings {
-            push_simple(&mut issues, "malicious-dependency", Severity::Error, message_or_kind(f), f, None);
+            // GuardDog 3 "suspicious" verdicts come through as warnings.
+            let severity = if f.severity.as_deref() == Some("warning") { Severity::Warning } else { Severity::Error };
+            push_simple(&mut issues, "malicious-dependency", severity, message_or_kind(f), f, None);
         }
     }
 
