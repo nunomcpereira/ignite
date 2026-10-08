@@ -41,7 +41,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20261007c"></script>
+  <script src="i18n.js?v=20261008a"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -1524,6 +1524,31 @@
             <span data-i18n="fixPr.openPr">Open PR</span>
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fix-PR mode choice: shown before the AI preview when this run already
+       has justified findings — either AI fixes for every unjustified issue
+       (the original behavior) or a PR that only records the justifications. -->
+  <div id="fixPrChoiceModal" class="hidden fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-slate-800" data-i18n="fixPr.title">Generate fix PR</p>
+          <p id="fixPrChoiceSubtitle" class="text-xs text-slate-500 mt-0.5"></p>
+        </div>
+        <button id="fixPrChoiceCloseBtn" type="button" class="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0" data-i18n-title="common.close">✕</button>
+      </div>
+      <div class="px-6 py-4 space-y-3">
+        <button id="fixPrChoiceAiBtn" type="button" class="w-full text-left rounded-xl border border-slate-200 hover:border-brand-300 hover:bg-brand-50 px-4 py-3">
+          <p class="text-sm font-semibold text-slate-800" data-i18n="fixPr.choiceAi">✨ AI fixes for all unjustified findings</p>
+          <p class="text-xs text-slate-500 mt-0.5" data-i18n="fixPr.choiceAiDesc">Ask the AI to propose a fix for every open finding without a justification, then review them before opening the PR.</p>
+        </button>
+        <button id="fixPrChoiceAcksBtn" type="button" class="w-full text-left rounded-xl border border-slate-200 hover:border-brand-300 hover:bg-brand-50 px-4 py-3">
+          <p class="text-sm font-semibold text-slate-800" data-i18n="fixPr.choiceAcks">📝 Only the justifications provided</p>
+          <p class="text-xs text-slate-500 mt-0.5" data-i18n="fixPr.choiceAcksDesc">Open a PR that only records the justifications in .ignite/acknowledgments.md. No AI fixes are generated.</p>
+        </button>
       </div>
     </div>
   </div>
@@ -3432,7 +3457,57 @@
       }
     }
 
+    // Entry point for every "Generate fix PR" button. When the run already has
+    // justified findings, ask whether to run the AI over every unjustified
+    // finding or open a PR that only records the justifications; with none,
+    // confirm before sending every finding to the AI.
+    let fixPrChoiceJobId = null;
+    let fixPrChoiceAcks = [];
     async function triggerFixPrGeneration(jobId) {
+      const target = jobId || state.jobId;
+      if (!target) return;
+      let acks = [];
+      try {
+        const res = await fetch(`/api/pipeline/${target}/fix-pr/acknowledgments`);
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.acknowledgments)) acks = data.acknowledgments;
+      } catch { /* treated as "no justifications" — the confirm below still guards the AI run */ }
+      if (acks.length === 0) {
+        if (!confirm(t('fixPr.noAcksConfirm'))) return;
+        startAiFixPrPreview(target);
+        return;
+      }
+      fixPrChoiceJobId = target;
+      fixPrChoiceAcks = acks;
+      $('fixPrChoiceSubtitle').textContent = t('fixPr.choiceSubtitle', { count: acks.length });
+      $('fixPrChoiceModal').classList.remove('hidden');
+    }
+    function closeFixPrChoice() { $('fixPrChoiceModal').classList.add('hidden'); }
+    $('fixPrChoiceCloseBtn').addEventListener('click', closeFixPrChoice);
+    $('fixPrChoiceModal').addEventListener('click', (ev) => { if (ev.target.id === 'fixPrChoiceModal') closeFixPrChoice(); });
+    $('fixPrChoiceAiBtn').addEventListener('click', () => { closeFixPrChoice(); startAiFixPrPreview(fixPrChoiceJobId); });
+    $('fixPrChoiceAcksBtn').addEventListener('click', () => { closeFixPrChoice(); openAcksOnlyFixPr(fixPrChoiceJobId, fixPrChoiceAcks); });
+
+    // Justifications-only PR: no AI preview, the fix-PR modal opens with just
+    // the acknowledgments row; /fix-pr/apply accepts empty candidates when
+    // includeAcknowledgments is set.
+    function openAcksOnlyFixPr(jobId, acks) {
+      fixPrJobId = jobId;
+      fixPrCandidates = [];
+      fixPrAcks = acks;
+      $('fixPrProgress').classList.add('hidden');
+      $('fixPrNotification').classList.add('hidden');
+      $('fixPrAckCheck').checked = true;
+      $('fixPrList').innerHTML = `<p class="text-sm text-slate-500 py-6 text-center">${escapeHtml(t('fixPr.acksOnlyNote'))}</p>`;
+      $('fixPrStatus').textContent = '';
+      $('fixPrAckRow').classList.remove('hidden');
+      $('fixPrAckLabel').textContent = t('fixPr.includeAcks', { count: acks.length });
+      $('fixPrAckList').innerHTML = acks.map((a) => `<li class="truncate" title="${escapeAttr(a.justification)}"><span class="font-mono">${escapeHtml(a.file || '')}${a.line ? ':' + a.line : ''}</span> — ${escapeHtml(a.justification)}</li>`).join('');
+      updateFixPrOpenBtn();
+      $('fixPrModal').classList.remove('hidden');
+    }
+
+    async function startAiFixPrPreview(jobId) {
       fixPrJobId = jobId || state.jobId;
       if (!fixPrJobId) return;
       fixPrCandidates = [];
@@ -9987,6 +10062,14 @@
       $('historyDrawerBackdrop').classList.remove('hidden');
       $('historyDrawer').classList.remove('hidden');
       showHint('hint.screen.history');
+      refreshHistoryLists();
+    }
+    // Scans finish elsewhere too (CLI, pre-push, org scans), so every time
+    // the drawer is shown its lists are refetched instead of showing
+    // whatever was loaded at page start.
+    function refreshHistoryLists() {
+      loadProjects();
+      loadEffectivated();
     }
     function isHistoryPinned() { return document.body.classList.contains('history-pinned'); }
     function closeHistoryDrawer() {
@@ -10003,7 +10086,13 @@
       $('historyDrawerBackdrop').classList.add('hidden');
       $('historyDrawer').classList.toggle('hidden', !pinned);
       try { localStorage.setItem('ignite-history-pinned', pinned ? '1' : '0'); } catch { /* storage unavailable */ }
+      if (pinned) refreshHistoryLists();
     }
+    // A pinned drawer is never "opened" again, so refresh it when the tab
+    // comes back into view.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !$('historyDrawer').classList.contains('hidden')) refreshHistoryLists();
+    });
     $('historyDrawerPinBtn').addEventListener('click', () => setHistoryPinned(!isHistoryPinned()));
     $('historyDrawerPinBtn').title = t('history.pin');
     try { if (localStorage.getItem('ignite-history-pinned') === '1') setHistoryPinned(true); } catch { /* storage unavailable */ }
