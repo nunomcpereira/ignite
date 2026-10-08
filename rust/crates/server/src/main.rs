@@ -738,7 +738,7 @@ mod tests {
 
     fn agent_test_project() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke"}"#).unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke","license":"MIT"}"#).unwrap();
         std::fs::write(dir.path().join("app.js"), "console.log(1);\n").unwrap();
         dir
     }

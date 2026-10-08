@@ -507,6 +507,61 @@ pub fn scan_project_license_files(root: &Path) -> std::io::Result<Vec<LicenseFil
     Ok(findings)
 }
 
+static PROJECT_LICENSE_FILENAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:LICEN[CS]E|COPYING|UNLICENSE)(?:[.\-].*)?$").unwrap());
+static TOML_LICENSE_FIELD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*license(?:-file|-files)?\s*=").unwrap());
+static SETUP_CFG_LICENSE_FIELD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*license(?:_files?)?\s*=\s*\S").unwrap());
+static POM_LICENSE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)<license>").unwrap());
+
+/// Whether the project declares its OWN license anywhere a reader or tool
+/// would look: a root LICENSE/LICENCE/COPYING/UNLICENSE file (any
+/// extension), or a license field in a root manifest (package.json
+/// `license`/`licenses`, Cargo.toml/pyproject.toml `license`/`license-file`,
+/// setup.cfg `license`, pom.xml `<license>`). Root-only on purpose — a
+/// vendored dependency's LICENSE deeper in the tree doesn't license this
+/// project. An unreadable root counts as declared, so an I/O error never
+/// turns into a false "missing license" finding.
+pub fn project_declares_license(root: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else { return true };
+    if entries.flatten().any(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false) && PROJECT_LICENSE_FILENAME_RE.is_match(&e.file_name().to_string_lossy())) {
+        return true;
+    }
+    let read = |name: &str| std::fs::read_to_string(root.join(name)).ok();
+    if let Some(pkg) = read("package.json").and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+        let declared = |v: Option<&serde_json::Value>| match v {
+            Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
+            Some(serde_json::Value::Array(a)) => !a.is_empty(),
+            Some(serde_json::Value::Object(o)) => !o.is_empty(),
+            _ => false,
+        };
+        if declared(pkg.get("license")) || declared(pkg.get("licenses")) {
+            return true;
+        }
+    }
+    if ["Cargo.toml", "pyproject.toml"].iter().any(|f| read(f).is_some_and(|s| TOML_LICENSE_FIELD_RE.is_match(&s))) {
+        return true;
+    }
+    if read("setup.cfg").is_some_and(|s| SETUP_CFG_LICENSE_FIELD_RE.is_match(&s)) {
+        return true;
+    }
+    read("pom.xml").is_some_and(|s| POM_LICENSE_RE.is_match(&s))
+}
+
+/// The "no project license" finding `scan_project_license_files` can't
+/// raise: that scan only classifies LICENSE files that exist, so a repo
+/// with none produced no finding at all. Anchored at the root `LICENSE`
+/// path the fix creates, so the id stays stable per project.
+pub fn missing_project_license_finding(root: &Path) -> Option<LicenseFileFinding> {
+    if project_declares_license(root) {
+        return None;
+    }
+    Some(LicenseFileFinding {
+        file: "LICENSE".to_string(),
+        tier: "warning",
+        line: 1,
+        reason: "No project license declared — no root LICENSE/LICENCE/COPYING file and no license field in package.json, Cargo.toml, pyproject.toml, setup.cfg or pom.xml. Add a LICENSE file (for internal/proprietary code, a copyright + \"All rights reserved\" notice) and set the manifest's license field (\"UNLICENSED\" for a private npm package).".to_string(),
+    })
+}
+
 pub async fn licensee_tooling(runner: &ToolRunner) -> bool {
     runner.run_tool("licensee", &["version".to_string()], std::env::temp_dir().to_str().unwrap_or("."), RunToolOptions::default()).await.is_ok()
 }
@@ -531,6 +586,13 @@ pub async fn run_licensee_detect(root: &Path, runner: &ToolRunner) -> Option<Pro
     if !licensee_tooling(runner).await {
         return None;
     }
+    licensee_detect(root, runner).await
+}
+
+/// `run_licensee_detect` minus the tooling probe, for a caller that has
+/// already probed and needs to keep "not installed" apart from "found
+/// nothing" (both are `None` from `run_licensee_detect`).
+async fn licensee_detect(root: &Path, runner: &ToolRunner) -> Option<ProjectLicenseDetection> {
     let output = runner.run_tool("licensee", &["detect".to_string(), "--json".to_string(), root.to_string_lossy().into_owned()], &root.to_string_lossy(), RunToolOptions::default()).await.ok()?;
     let data: serde_json::Value = serde_json::from_str(&output.stdout).ok()?;
     let best = data.get("licenses").and_then(|l| l.as_array()).and_then(|a| a.first())?;
@@ -757,7 +819,32 @@ async fn run_ort_analyze_inner(root: &Path, runner: &ToolRunner, out_dir: &Path)
 pub struct DependencyLicenseScan {
     pub engine: &'static str,
     pub project_license: Option<ProjectLicenseDetection>,
+    /// Whether `licensee` was installed — `project_license: None` means
+    /// "nothing detected" only when this is true.
+    pub licensee_available: bool,
+    /// `!project_declares_license(root)`, independent of licensee.
+    pub project_license_missing: bool,
     pub manifests: Vec<LicenseScanManifest>,
+}
+
+/// The JSON shape the Studio Dependencies tab's `renderStudioDependencies`
+/// reads — one builder for the scan cache, the Studio live-scan fallback
+/// and `/api/dependencies/check-licenses`, so a new field can't land in
+/// one and be missing from the others.
+pub fn dependency_scan_json(scan: &DependencyLicenseScan) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "engine": scan.engine,
+        "projectLicense": scan.project_license.as_ref().map(|p| serde_json::json!({
+            "spdxId": p.spdx_id,
+            "confidence": p.confidence,
+            "tier": p.tier,
+            "reason": p.reason,
+        })),
+        "projectLicenseMissing": scan.project_license_missing,
+        "licenseeAvailable": scan.licensee_available,
+        "manifests": scan.manifests,
+    })
 }
 
 /// Combines `run_licensee_detect`'s whole-project license detection,
@@ -767,7 +854,11 @@ pub struct DependencyLicenseScan {
 /// and the fallback only for the rest, so one uncovered ecosystem never
 /// makes every other manifest's findings disappear.
 pub async fn scan_dependency_licenses(root: &Path, runner: &ToolRunner, client: &DepsDevClient, npm_http: &reqwest::Client, mut log: impl FnMut(&str)) -> std::io::Result<DependencyLicenseScan> {
-    let (project_license, ort_manifests) = futures::join!(run_licensee_detect(root, runner), run_ort_analyze(root, runner, &mut log));
+    let licensee = async {
+        let available = licensee_tooling(runner).await;
+        (available, if available { licensee_detect(root, runner).await } else { None })
+    };
+    let ((licensee_available, project_license), ort_manifests) = futures::join!(licensee, run_ort_analyze(root, runner, &mut log));
 
     let ort_ecosystems: HashSet<&str> = ort_manifests.as_deref().unwrap_or(&[]).iter().map(|m| m.ecosystem).collect();
     let fallback_manifests = scan_dependency_licenses_fallback(root, client, npm_http, &ort_ecosystems).await?;
@@ -787,7 +878,7 @@ pub async fn scan_dependency_licenses(root: &Path, runner: &ToolRunner, client: 
 
     let mut manifests = ort_manifests.unwrap_or_default();
     manifests.extend(fallback_manifests);
-    Ok(DependencyLicenseScan { engine, project_license, manifests })
+    Ok(DependencyLicenseScan { engine, project_license, licensee_available, project_license_missing: !project_declares_license(root), manifests })
 }
 
 /// Faithful port of `runLicenseComplianceCheck` — Phase 3's license
@@ -811,13 +902,16 @@ pub async fn run_license_compliance_check_with_scan(root: &Path, runner: &ToolRu
             return (vec![], None);
         }
     };
-    let license_files = match scan_project_license_files(root) {
+    let mut license_files = match scan_project_license_files(root) {
         Ok(f) => f,
         Err(e) => {
             log(&format!("⚠ License compliance scan failed (non-blocking): {e}"));
             return (vec![], None);
         }
     };
+    if scan.project_license_missing {
+        license_files.extend(missing_project_license_finding(root));
+    }
     let issues = collect_license_issues(root, &scan.manifests, &license_files);
     if !issues.is_empty() {
         let blocking = issues.iter().filter(|i| i.severity == Severity::Error).count();
@@ -833,17 +927,7 @@ pub async fn run_license_compliance_check_with_scan(root: &Path, runner: &ToolRu
 
     // Serialize the rich scan result for caching — the JSON shape matches
     // what the Studio Dependencies tab's `renderStudioDependencies` expects.
-    let scan_json = serde_json::json!({
-        "ok": true,
-        "engine": scan.engine,
-        "projectLicense": scan.project_license.as_ref().map(|p| serde_json::json!({
-            "spdxId": p.spdx_id,
-            "confidence": p.confidence,
-            "tier": p.tier,
-            "reason": p.reason,
-        })),
-        "manifests": scan.manifests,
-    });
+    let scan_json = dependency_scan_json(&scan);
 
     (issues, Some(scan_json))
 }
@@ -1235,7 +1319,7 @@ mod tests {
         let _guard = PATH_LOCK.lock().unwrap(); // real `ort`/`licensee` run here — must not race the PATH-mutating test
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("package.json"), r#"{"dependencies": {"@myorg/shared": "workspace:*"}}"#).unwrap();
+        fs::write(root.join("package.json"), r#"{"license": "MIT", "dependencies": {"@myorg/shared": "workspace:*"}}"#).unwrap();
 
         let runner = ignite_tool_runner::ToolRunner::new(HashMap::new());
         let client = DepsDevClient::new();
@@ -1588,6 +1672,63 @@ mod tests {
         let content = "This software is proprietary and confidential.\n";
         let classification = classify_license_text(content).unwrap();
         assert_eq!(classification.reason, "Commercial/proprietary license terms detected in LICENSE file.");
+    }
+
+    #[test]
+    fn project_declares_license_is_false_for_a_repo_with_no_license_file_or_field() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("package.json"), r#"{"name": "app", "private": true}"#).unwrap();
+        fs::create_dir_all(root.join("vendor/lib")).unwrap();
+        fs::write(root.join("vendor/lib/LICENSE"), "MIT License\n").unwrap(); // a vendored dep's LICENSE doesn't license the project
+        assert!(!project_declares_license(root));
+        let finding = missing_project_license_finding(root).expect("missing license must be flagged");
+        assert_eq!(finding.file, "LICENSE");
+        let issues = collect_license_issues(root, &[], &[finding]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, Severity::Warning);
+        assert_eq!(issues[0].category, "license-compliance");
+    }
+
+    #[test]
+    fn project_declares_license_accepts_root_license_files_and_manifest_fields() {
+        let cases: &[(&str, &str)] = &[
+            ("LICENSE", "All rights reserved.\n"),
+            ("LICENCE.md", "MIT\n"),
+            ("COPYING", "GPL\n"),
+            ("LICENSE-MIT", "MIT\n"),
+            ("package.json", r#"{"license": "UNLICENSED"}"#),
+            ("package.json", r#"{"licenses": [{"type": "MIT"}]}"#),
+            ("Cargo.toml", "[package]\nname = \"x\"\nlicense = \"MIT\"\n"),
+            ("Cargo.toml", "[package]\nname = \"x\"\nlicense-file = \"LICENSE.txt\"\n"),
+            ("pyproject.toml", "[project]\nname = \"x\"\nlicense = {text = \"MIT\"}\n"),
+            ("setup.cfg", "[metadata]\nlicense = MIT\n"),
+            ("pom.xml", "<project><licenses><license><name>MIT</name></license></licenses></project>"),
+        ];
+        for (file, content) in cases {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join(file), content).unwrap();
+            assert!(project_declares_license(dir.path()), "{file} with {content:?} should count as a declared license");
+            assert!(missing_project_license_finding(dir.path()).is_none());
+        }
+    }
+
+    #[test]
+    fn project_declares_license_rejects_empty_manifest_license_fields() {
+        for (file, content) in [("package.json", r#"{"license": "  "}"#), ("setup.cfg", "[metadata]\nlicense =\n"), ("Cargo.toml", "[package]\nname = \"x\"\n")] {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join(file), content).unwrap();
+            assert!(!project_declares_license(dir.path()), "{file} with {content:?} should not count");
+        }
+    }
+
+    #[test]
+    fn dependency_scan_json_carries_project_license_status() {
+        let scan = DependencyLicenseScan { engine: "fallback", project_license: None, licensee_available: false, project_license_missing: true, manifests: vec![] };
+        let json = dependency_scan_json(&scan);
+        assert_eq!(json["projectLicenseMissing"], true);
+        assert_eq!(json["licenseeAvailable"], false);
+        assert!(json["projectLicense"].is_null());
     }
 
     #[test]

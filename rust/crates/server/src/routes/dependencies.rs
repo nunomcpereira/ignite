@@ -29,14 +29,11 @@ async fn check_licenses(State(state): State<Arc<AppState>>, crate::auth::AuthOrU
     let client = ignite_deps_dev_client::DepsDevClient::new();
     let npm_http = reqwest::Client::new();
     match ignite_dependency_license_scan::scan_dependency_licenses(&project_path, &state.runner, &client, &npm_http, |_| {}).await {
-        Ok(scan) => Json(json!({
-            "ok": true,
-            "projectPath": project_path,
-            "engine": scan.engine,
-            "projectLicense": scan.project_license.map(|p| json!({ "spdxId": p.spdx_id, "confidence": p.confidence, "tier": p.tier, "reason": p.reason })),
-            "manifests": scan.manifests,
-        }))
-        .into_response(),
+        Ok(scan) => {
+            let mut result = ignite_dependency_license_scan::dependency_scan_json(&scan);
+            result["projectPath"] = json!(project_path);
+            Json(result).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }

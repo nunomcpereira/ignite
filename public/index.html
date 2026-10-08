@@ -4832,7 +4832,18 @@
              <p class="text-sm font-semibold mt-1">${escapeHtml(data.projectLicense.spdxId)}</p>
              <p class="text-[11px] mt-0.5">${escapeHtml(data.projectLicense.reason)}</p>
            </div>`
-        : '';
+        : data.projectLicenseMissing
+          ? `<div class="mb-4 p-3 rounded-lg border ${STUDIO_TIER_META.red.chip}">
+               <span class="text-[10px] font-bold uppercase">This project's own declared license</span>
+               <p class="text-sm font-semibold mt-1">None declared</p>
+               <p class="text-[11px] mt-0.5">No root LICENSE/LICENCE/COPYING file and no license field in the project manifest.</p>
+             </div>`
+          : data.licenseeAvailable === false
+            ? `<div class="mb-4 p-3 rounded-lg border ${STUDIO_TIER_META.internal.chip}">
+                 <span class="text-[10px] font-bold uppercase">This project's own declared license</span>
+                 <p class="text-[11px] mt-0.5">Not identified — <code>licensee</code> isn't installed, so the declared license wasn't classified.</p>
+               </div>`
+            : '';
 
       const summaryHtml = `
         <div class="flex items-center gap-4 mb-4 text-xs">

@@ -724,7 +724,7 @@ async fn dependencies(State(state): State<Arc<AppState>>, Path(job_id): Path<Str
     let npm_http = reqwest::Client::new();
     match ignite_dependency_license_scan::scan_dependency_licenses(&ctx.root, &state.runner, &client, &npm_http, |_| {}).await {
         Ok(scan) => {
-            let result = json!({ "ok": true, "engine": scan.engine, "projectLicense": scan.project_license.map(|p| json!({ "spdxId": p.spdx_id, "confidence": p.confidence, "tier": p.tier, "reason": p.reason })), "manifests": scan.manifests });
+            let result = ignite_dependency_license_scan::dependency_scan_json(&scan);
             if let Some(project_id) = ctx.project_id {
                 state.db.save_dependency_scan_cache(project_id, &result);
             }
