@@ -516,6 +516,8 @@ async fn get_auto_rescan_config(State(state): State<Arc<AppState>>, RequireAuth(
         "orgs": auto_rescan_selection_json(&state),
         "savedOrgs": state.db.list_saved_orgs(),
         "staleAfterHours": state.config.org_repos.auto_rescan_stale_after_hours,
+        "intervalMinutes": state.config.org_repos.auto_rescan_interval_minutes,
+        "lastSweepAt": state.db.get_scheduler_last_run(AUTO_RESCAN_JOB),
     }))
     .into_response()
 }
@@ -639,38 +641,85 @@ async fn collect_stale_targets(state: &Arc<AppState>, headers: &HeaderMap, selec
     groups
 }
 
-/// `POST /api/org-repos/auto-rescan/run` — meant to be hit once an hour by
-/// an external OS-level timer (launchd/cron/systemd; see
-/// `docs-site/docs/ci-integration.md`'s equivalent guidance for
-/// `scheduled-rescan`), the same "an unattended job authenticates with a
-/// real `IGNITE_API_KEY`, which `resolve_effective_github_token` then
-/// resolves through to that key's owning user's connected GitHub token"
-/// pattern every other unattended entry point in this codebase already
-/// uses — no separate token-provisioning story needed for this to work.
+/// `POST /api/org-repos/auto-rescan/run` — runs the auto-rescan sweep now.
+/// The server already runs it on its own every
+/// `orgRepos.autoRescanIntervalMinutes` ([`spawn_auto_rescan_scheduler`]);
+/// this endpoint is for a manual trigger or an external timer when the
+/// built-in one is off. Unlike the built-in sweep, a request can fall back
+/// to the calling user's connected GitHub account for the token.
 ///
-/// A no-op (200, `{"skipped": true}`) whenever no org is enrolled — safe
-/// for the external timer to call unconditionally every hour. Sweeps every
-/// org enrolled by clicking "Scan all" in the GitHub Org view
-/// (`auto_rescan_orgs`, minus the repos left unchecked there), always with archived/forked repos excluded — an
-/// unattended sweep should never surprise-scan something a human
-/// explicitly excluded by hand there.
+/// A no-op (200, `{"skipped": true}`) whenever no org is enrolled.
 async fn run_auto_rescan(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap) -> Response {
+    match sweep_auto_rescan(&state, &headers).await {
+        SweepOutcome::NoOrgs => Json(serde_json::json!({ "skipped": true, "reason": "no orgs enrolled (turn Auto-rescan on for an org)" })).into_response(),
+        SweepOutcome::NoToken => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": NO_TOKEN }))).into_response(),
+        SweepOutcome::Queued(0) => Json(serde_json::json!({ "skipped": false, "triggered": 0 })).into_response(),
+        SweepOutcome::Queued(count) => (StatusCode::ACCEPTED, Json(serde_json::json!({ "skipped": false, "triggered": count, "maxConcurrent": state.config.scan_queue.max_concurrent.max(1) }))).into_response(),
+    }
+}
+
+enum SweepOutcome {
+    NoOrgs,
+    /// No enrolled org had a usable GitHub token.
+    NoToken,
+    Queued(usize),
+}
+
+/// Queues a background scan for every stale repo of every org with
+/// auto-rescan on (minus its excluded repos; archived/forked repos never).
+async fn sweep_auto_rescan(state: &Arc<AppState>, headers: &HeaderMap) -> SweepOutcome {
     let selection = state.db.list_auto_rescan_selection();
     if selection.is_empty() {
-        return Json(serde_json::json!({ "skipped": true, "reason": "no orgs enrolled (click Scan all on an org)" })).into_response();
+        return SweepOutcome::NoOrgs;
     }
-    let groups = collect_stale_targets(&state, &headers, &selection).await;
+    let groups = collect_stale_targets(state, headers, &selection).await;
     if groups.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": NO_TOKEN }))).into_response();
+        return SweepOutcome::NoToken;
     }
     let mut count = 0;
     for (tok, targets) in groups {
-        count += enqueue_scans(&state, &tok, targets, Priority::Background, true, "auto-rescan");
+        count += enqueue_scans(state, &tok, targets, Priority::Background, true, "auto-rescan");
     }
-    if count == 0 {
-        return Json(serde_json::json!({ "skipped": false, "triggered": 0 })).into_response();
+    SweepOutcome::Queued(count)
+}
+
+const AUTO_RESCAN_JOB: &str = "org-repos.auto-rescan";
+const AUTO_RESCAN_TICK: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Starts the built-in auto-rescan sweep: every
+/// `orgRepos.autoRescanIntervalMinutes` (0 = off). Call once at boot.
+///
+/// Runs inside the server, so there's no API key to expire or revoke. With
+/// no request, each org's GitHub token comes from the GitHub App
+/// installation, else `GH_TOKEN`/`GITHUB_TOKEN`; an org with neither is
+/// skipped with a warning. Each run is claimed in `scheduler_runs`, so a
+/// restart doesn't reset the interval (a sweep that's overdue runs on the
+/// first tick after boot) and two server processes sharing the database
+/// never sweep twice in one interval.
+pub fn spawn_auto_rescan_scheduler(state: Arc<AppState>) {
+    let minutes = state.config.org_repos.auto_rescan_interval_minutes;
+    if minutes == 0 {
+        tracing::info!("built-in auto-rescan sweep off (orgRepos.autoRescanIntervalMinutes = 0)");
+        return;
     }
-    (StatusCode::ACCEPTED, Json(serde_json::json!({ "skipped": false, "triggered": count, "maxConcurrent": state.config.scan_queue.max_concurrent.max(1) }))).into_response()
+    let interval_secs = i64::from(minutes) * 60;
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(AUTO_RESCAN_TICK);
+        loop {
+            tick.tick().await;
+            if state.db.list_auto_rescan_selection().is_empty() {
+                continue;
+            }
+            if !state.db.try_claim_scheduler_run(AUTO_RESCAN_JOB, super::scan_queue::instance_id(), interval_secs) {
+                continue;
+            }
+            match sweep_auto_rescan(&state, &HeaderMap::new()).await {
+                SweepOutcome::NoOrgs => {}
+                SweepOutcome::NoToken => tracing::warn!("auto-rescan sweep: {NO_TOKEN}"),
+                SweepOutcome::Queued(n) => tracing::info!(queued = n, "auto-rescan sweep ran"),
+            }
+        }
+    });
 }
 
 #[derive(Debug, Deserialize)]

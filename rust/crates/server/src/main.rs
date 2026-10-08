@@ -157,6 +157,7 @@ async fn main() {
 
     routes::daily_report::spawn_scheduler(state.clone());
     routes::org_report_schedule::spawn_scheduler(state.clone());
+    routes::org_repos::spawn_auto_rescan_scheduler(state.clone());
     routes::tool_updates::spawn_startup_check(state.clone());
 
     let tls = state.config.tls.clone();

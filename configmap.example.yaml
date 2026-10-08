@@ -26,5 +26,7 @@ data:
   GITHUB_OAUTH_SCOPE: "repo"
   # GitHub App used for org scans/statuses (its private key goes in the Secret)
   GITHUB_APP_ID: ""
+  # Built-in auto-rescan sweep (minutes, 0 = off); uses the GitHub App, else GH_TOKEN
+  ORG_REPOS_AUTO_RESCAN_INTERVAL_MINUTES: "60"
   # Auth
   AUTH_MODE: "github"

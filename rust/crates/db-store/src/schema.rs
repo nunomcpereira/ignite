@@ -668,4 +668,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // Triage learning: per-finding verdicts and AI-proposed ignore rules
     // (see `rule_tuning.rs`).
     (43, "CREATE TABLE IF NOT EXISTS finding_verdicts (id INTEGER PRIMARY KEY AUTOINCREMENT, org TEXT NOT NULL, repo TEXT NOT NULL, fingerprint TEXT NOT NULL, issue_id TEXT NOT NULL, category TEXT NOT NULL, tool TEXT, rule TEXT, file TEXT, verdict TEXT NOT NULL CHECK (verdict IN ('false_positive','true_positive')), note TEXT, actor_email TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (org, repo, fingerprint)); CREATE INDEX IF NOT EXISTS idx_finding_verdicts_rule ON finding_verdicts(org, tool, rule); CREATE TABLE IF NOT EXISTS rule_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, org TEXT NOT NULL, repo TEXT NOT NULL, categories_json TEXT NOT NULL, file_patterns_json TEXT NOT NULL, line_patterns_json TEXT NOT NULL, reason TEXT NOT NULL, rationale TEXT NOT NULL, evidence_json TEXT NOT NULL, match_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'proposed', created_at TEXT NOT NULL DEFAULT (datetime('now')), decided_by TEXT, decided_at TEXT);"),
+    // In-process periodic jobs (auto-rescan sweep): one row per job, claimed
+    // atomically so only one server process runs each tick.
+    (44, "CREATE TABLE IF NOT EXISTS scheduler_runs (name TEXT PRIMARY KEY, last_run_at TEXT NOT NULL, owner TEXT);"),
 ];

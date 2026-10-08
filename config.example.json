@@ -244,7 +244,8 @@
     "strict": false
   },
   "orgRepos": {
-    "autoRescanStaleAfterHours": 24
+    "autoRescanStaleAfterHours": 24,
+    "autoRescanIntervalMinutes": 60
   },
   "scanQueue": {
     "maxConcurrent": 3,

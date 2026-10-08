@@ -54,6 +54,7 @@ mod compliance;
 mod custom_secret_patterns;
 mod webhook_deliveries;
 mod settings;
+mod scheduler_runs;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
 pub use daily_report::RepoDailyReport;

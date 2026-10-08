@@ -246,13 +246,16 @@ impl Default for Config {
 #[serde(rename_all = "camelCase", default)]
 pub struct OrgReposConfig {
     /// How stale a repo's last scan has to be before the auto-rescan sweep
-    /// (`POST /api/org-repos/auto-rescan/run`, meant to be hit hourly by
-    /// an external cron/launchd timer) re-queues it. A repo never scanned
-    /// at all is always considered stale regardless of this value.
+    /// re-queues it. A repo never scanned at all is always considered
+    /// stale regardless of this value.
     pub auto_rescan_stale_after_hours: u32,
+    /// How often the server runs the auto-rescan sweep itself (no external
+    /// timer or API key needed). 0 turns the built-in sweep off;
+    /// `POST /api/org-repos/auto-rescan/run` still works either way.
+    pub auto_rescan_interval_minutes: u32,
 }
 impl Default for OrgReposConfig {
-    fn default() -> Self { OrgReposConfig { auto_rescan_stale_after_hours: 24 } }
+    fn default() -> Self { OrgReposConfig { auto_rescan_stale_after_hours: 24, auto_rescan_interval_minutes: 60 } }
 }
 
 /// Server-wide scan admission (`server/src/routes/scan_queue.rs`). At most
@@ -1678,6 +1681,7 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_num::<u32>("SCAN_QUEUE_MAX_CONCURRENT") { merged.scan_queue.max_concurrent = v; }
     if let Some(v) = env_num::<u32>("SCAN_QUEUE_USER_RESERVED_SLOTS") { merged.scan_queue.user_reserved_slots = v; }
     if let Some(v) = env_num::<u32>("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS") { merged.org_repos.auto_rescan_stale_after_hours = v; }
+    if let Some(v) = env_num::<u32>("ORG_REPOS_AUTO_RESCAN_INTERVAL_MINUTES") { merged.org_repos.auto_rescan_interval_minutes = v; }
     if let Some(v) = env_bool("DAILY_REPORT_ENABLED") { merged.daily_report.enabled = v; }
     if let Some(v) = env_str("TLS_CERT_PATH") { merged.tls.cert_path = v; }
     if let Some(v) = env_str("TLS_KEY_PATH") { merged.tls.key_path = v; }
@@ -2124,6 +2128,7 @@ mod tests {
         assert_eq!(load_with_env("SCAN_QUEUE_MAX_CONCURRENT", "7").scan_queue.max_concurrent.to_string(), "7", "SCAN_QUEUE_MAX_CONCURRENT");
         assert_eq!(load_with_env("SCAN_QUEUE_USER_RESERVED_SLOTS", "2").scan_queue.user_reserved_slots.to_string(), "2", "SCAN_QUEUE_USER_RESERVED_SLOTS");
         assert_eq!(load_with_env("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS", "7").org_repos.auto_rescan_stale_after_hours.to_string(), "7", "ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS");
+        assert_eq!(load_with_env("ORG_REPOS_AUTO_RESCAN_INTERVAL_MINUTES", "0").org_repos.auto_rescan_interval_minutes.to_string(), "0", "ORG_REPOS_AUTO_RESCAN_INTERVAL_MINUTES");
         assert!(load_with_env("DAILY_REPORT_ENABLED", "true").daily_report.enabled, "DAILY_REPORT_ENABLED=true");
         assert_eq!(load_with_env("TLS_CERT_PATH", "/tls/a.crt").tls.cert_path, "/tls/a.crt", "TLS_CERT_PATH");
         assert_eq!(load_with_env("TLS_KEY_PATH", "/tls/a.key").tls.key_path, "/tls/a.key", "TLS_KEY_PATH");
@@ -2237,7 +2242,7 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 146, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 147, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
     }
 
     #[test]

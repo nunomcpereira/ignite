@@ -9533,9 +9533,9 @@
     });
 
     // The server keeps the orgs (and unchecked repos) saved by the last
-    // "Scan all" — the daily check itself runs outside this page (an
-    // external OS-level timer hitting `POST /api/org-repos/auto-rescan/run`,
-    // see that route's doc comment). Loading them here restores the tree.
+    // "Scan all" — the sweep itself runs inside the server every
+    // `orgRepos.autoRescanIntervalMinutes` (see `spawn_auto_rescan_scheduler`).
+    // Loading them here restores the tree.
     async function loadAutoRescanState() {
       try {
         const res = await fetch('/api/org-repos/auto-rescan');

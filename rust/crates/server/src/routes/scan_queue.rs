@@ -160,6 +160,11 @@ impl Scheduler {
 static SCHED: Lazy<Mutex<Scheduler>> = Lazy::new(|| Mutex::new(Scheduler { capacity: 1, ..Default::default() }));
 /// This server process, as the owner of the scan-job leases it holds.
 static INSTANCE_ID: Lazy<String> = Lazy::new(|| uuid::Uuid::new_v4().to_string());
+
+/// This process's id, as recorded on leases and scheduler claims.
+pub(crate) fn instance_id() -> &'static str {
+    &INSTANCE_ID
+}
 /// A lease lasts this long without a heartbeat.
 const LEASE_TTL_SECS: i64 = 120;
 const HEARTBEAT_SECS: u64 = 30;
