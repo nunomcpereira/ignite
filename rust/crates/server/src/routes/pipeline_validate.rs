@@ -869,7 +869,11 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
             // for the first time with no overrides yet — is exactly the
             // case someone most wants to open in Studio afterward, and
             // was exactly the case silently missing every persisted issue.
-            if let Some(failure_issue_list) = &e.issues {
+            // Persist the full Phase 4 list (warnings and nice-to-haves
+            // too), not just the blocking subset `e.issues` carries for the
+            // response — otherwise a blocked run's stored view loses every
+            // non-blocking finding the previous passing run showed.
+            if let Some(failure_issue_list) = e.issues.as_ref().map(|blocking| if phase4_done { &issues } else { blocking }) {
                 let issue_inputs: Vec<ignite_db_store::IssueInput> = failure_issue_list.iter().map(crate::routes::pipeline_onboard::issue_to_input).collect();
                 state.db.replace_project_issues(project_id, &issue_inputs, &overridden_ids);
             }

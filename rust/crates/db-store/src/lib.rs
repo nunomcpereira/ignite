@@ -329,6 +329,39 @@ mod tests {
     }
 
     #[test]
+    fn ignore_rule_acknowledgments_only_count_from_the_latest_scan() {
+        let (_dir, store) = open_test_db();
+        let rule_ack = |project_id, job_id| AddOverrideArgs {
+            project_id,
+            job_id,
+            phase: 4,
+            issue_id: "secret::a.txt::1",
+            category: "secret",
+            severity: "error",
+            summary: "key",
+            file: Some("a.txt"),
+            line: Some(1),
+            justification: "org rule",
+            actor_email: "ignore-rules@ignite.internal",
+            actor_name: None,
+            email_sent: false,
+        };
+        let ui = store.create_project("job-ui", "acme", "widgets", false, "ui", None).unwrap();
+        store.add_override_with_origin(rule_ack(ui, "job-ui"), "config_rule");
+        store.finish_project("success", None, None, None, ui);
+        let old = store.create_project("job-old", "acme", "widgets", false, "api", None).unwrap();
+        store.add_override_with_origin(rule_ack(old, "job-old"), "config_rule");
+        store.finish_project("success", None, None, None, old);
+        // The rule was removed from config.json: the new scan records none.
+        let newest = store.create_project("job-new", "acme", "widgets", false, "api", None).unwrap();
+        store.finish_project("failed", None, None, None, newest);
+
+        assert_eq!(store.prune_superseded_scans("job-new"), 1);
+        let summary = store.list_onboarded_repo_summaries(7, 30, 90).into_iter().find(|s| s.repo == "widgets").unwrap();
+        assert!(summary.acknowledgments.is_empty(), "a removed rule's acknowledgments must not linger: {:?}", summary.acknowledgments);
+    }
+
+    #[test]
     fn replace_project_issues_marks_overridden_status_and_round_trips_json_columns() {
         let (_dir, store) = open_test_db();
         let id = store.create_project("job-5", "acme", "widgets", false, "ui", None).unwrap();

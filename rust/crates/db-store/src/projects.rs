@@ -368,7 +368,9 @@ impl DbStore {
                 "SELECT o.id, o.phase, o.issue_id, o.category, o.severity, o.summary, o.file, o.line, o.justification,
                         o.actor_email, o.actor_name, o.email_sent, o.created_at, o.origin
                  FROM overrides o INNER JOIN projects p ON o.project_id = p.id
-                 WHERE p.org = ? AND p.repo = ? ORDER BY o.created_at DESC, o.id DESC",
+                 WHERE p.org = ?1 AND p.repo = ?2
+                   AND (o.origin != 'config_rule' OR o.job_id = ?3)
+                 ORDER BY o.created_at DESC, o.id DESC",
             ),
             conn.prepare_cached(
                 "SELECT pr.kind, pr.url, pr.branch, pr.files_changed, pr.created_at
@@ -390,7 +392,7 @@ impl DbStore {
                 let license_problems: i64 = count_stmt.query_row(params![latest.id, Some("license-compliance")], |row| row.get(0)).unwrap_or(0);
                 let sla_breaches: i64 = sla_stmt.query_row(params![latest.org, latest.repo, latest.id, sla_critical_days, sla_high_days, sla_medium_days], |row| row.get(0)).unwrap_or(0);
                 let acknowledgments = acks_stmt
-                    .query_map(params![latest.org, latest.repo], |row| {
+                    .query_map(params![latest.org, latest.repo, latest.job_id], |row| {
                         Ok(OverrideRow {
                             id: row.get(0)?,
                             phase: row.get(1)?,
@@ -563,6 +565,10 @@ impl DbStore {
             stmt.query_map(params![org, repo, keep_id], |row| row.get(0)).unwrap().filter_map(|r| r.ok()).collect()
         };
         for id in &old_ids {
+            // `ignoreRules` acknowledgments are re-derived from config.json on
+            // every scan; carrying an old run's copy forward would keep a
+            // removed rule's acknowledgment visible on the kept project.
+            tx.execute("DELETE FROM overrides WHERE project_id = ? AND origin = 'config_rule'", params![id]).unwrap();
             tx.execute("UPDATE overrides SET project_id = ?1 WHERE project_id = ?2", params![keep_id, id]).unwrap();
             tx.execute("UPDATE pull_requests SET project_id = ?1 WHERE project_id = ?2", params![keep_id, id]).unwrap();
             tx.execute("DELETE FROM projects WHERE id = ?", params![id]).unwrap();
