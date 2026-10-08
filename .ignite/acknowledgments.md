@@ -36,7 +36,7 @@ ID: secret::docs-site/docs/getting-started.md::127
 # [ERROR] secret - Hardcoded secret
 #   docs-site/docs/getting-started.md:127
 # Code: secret: { secretName: ignite-tls }
-Acknowledge: False positive in a documentation Kubernetes YAML example - `secret: { secretName: ignite-tls }` is the volume source key naming a Secret object, not a secret value; no credential appears anywhere in this line.
+Acknowledge: False positive in a documentation Kubernetes YAML example - the line is the pod volume source that names the ignite-tls Secret object by name; it carries no credential value.
 
 ID: secret::rust/crates/config/src/lib.rs::1475
 # [ERROR] secret - Hardcoded api_key
