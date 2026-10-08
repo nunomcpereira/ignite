@@ -315,3 +315,18 @@ mod characterization_tests {
         assert!(rows[0].metadata_json.is_none());
     }
 }
+
+/// Base URL for the server's calls to itself (org scans, the fix-PR gate,
+/// github-check, Onboarded Repos rescan, webhook baseline scans). With TLS
+/// on, the public port speaks HTTPS with a certificate issued for the real
+/// hostname, so these go to the plain-HTTP listener `main.rs` binds on
+/// `127.0.0.1:tls.internalHttpPort` instead. Otherwise the main port
+/// (`PORT` env, else `config.port`).
+pub fn loopback_base_url(config: &ignite_config::Config) -> String {
+    let port: u16 = if config.tls.enabled() {
+        config.tls.internal_http_port
+    } else {
+        std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config.port)
+    };
+    format!("http://127.0.0.1:{port}")
+}

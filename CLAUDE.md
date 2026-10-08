@@ -173,6 +173,10 @@ See `README.md`'s "System Architecture" diagram and "Pipeline Checks" table for 
 
 Settings live in `config.json` at the repo root (`config.example.json` is the template, `IGNITE_CONFIG_DIR` tells the server where to find it — defaults to cwd); environment variables override individual keys — see `.env.example` for the full list. `config.json` and `.env` are both gitignored and contain this developer's real org name, SMTP creds, etc. — don't commit them.
 
+## HTTPS (`tls`)
+
+`tls.{certPath,keyPath}` (`TLS_CERT_PATH`/`TLS_KEY_PATH`, PEM, unencrypted key) switches the main listener to HTTPS via `axum-server` + rustls (`ring` provider, no aws-lc). A bad cert/key exits at startup instead of falling back to plain HTTP. The server's calls to itself (org scans, fix-PR gate, github-check, Onboarded Repos rescan, webhook baseline scans) go through `state::loopback_base_url`, which with TLS on points at a plain-HTTP listener bound to `127.0.0.1:tls.internalHttpPort` (51339, `TLS_INTERNAL_HTTP_PORT`). New self-calls must use that helper, not `http://127.0.0.1:{port}`.
+
 ## White-label branding (`public/branding.config.js`)
 
 `public/index.html` never hardcodes brand values (product name, page title, header logo, support link, the `brand` accent color scale) — it reads them all from `window.IGNITE_BRAND`, defined by `public/branding.config.js` and merged over Ignite's own defaults (`DEFAULT_BRAND` in `index.html`'s `<head>`) so any key left out falls back to current Ignite branding unchanged. To apply a customer's brand, edit **only** `public/branding.config.js` — never edit brand values directly in `index.html`. This keeps the two non-conflicting: upstream feature commits touch `index.html`'s structure/logic, a customer's branding touches only their own file, and `git pull`/merge never sees the same line change on both sides. `branding.config.js` ships checked in with an empty override object (see its own header comment for every available key and an example) — the VS Code extension's own icon/name isn't covered by this and would need a separate per-customer build if ever themed too.

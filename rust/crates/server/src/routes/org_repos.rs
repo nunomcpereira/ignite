@@ -371,8 +371,7 @@ pub(super) async fn run_and_record_scan(runner: &ignite_tool_runner::ToolRunner,
 }
 
 pub(super) fn resolve_server_base(state: &AppState) -> String {
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
-    std::env::var("IGNITE_SERVER_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"))
+    std::env::var("IGNITE_SERVER_URL").unwrap_or_else(|_| crate::state::loopback_base_url(&state.config))
 }
 
 async fn scan_org_repo(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path((org, repo)): Path<(String, String)>) -> Response {

@@ -1,5 +1,10 @@
 {
   "port": 51337,
+  "tls": {
+    "certPath": "",
+    "keyPath": "",
+    "internalHttpPort": 51339
+  },
   "llm": {
     "provider": "local",
     "url": "http://localhost:8050",

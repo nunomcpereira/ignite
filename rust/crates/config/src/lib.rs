@@ -79,6 +79,44 @@ pub struct Config {
     /// wildcard. See [`OrgReportConfig`].
     #[serde(default)]
     pub org_reports: std::collections::BTreeMap<String, OrgReportConfig>,
+    /// HTTPS for the main listener. See [`TlsConfig`].
+    #[serde(default)]
+    pub tls: TlsConfig,
+}
+
+/// Serve HTTPS on `port` when both `certPath` and `keyPath` are set
+/// (`TLS_CERT_PATH` / `TLS_KEY_PATH`). `certPath` is the PEM certificate
+/// (`.crt`), ideally the full chain: server certificate first, then any
+/// intermediates. `keyPath` is its unencrypted PEM private key (`.key`). A
+/// certificate signing request (`.csr`) is not used.
+///
+/// The server also calls itself (org scans, the fix-PR gate, github-check,
+/// Onboarded Repos rescan, webhook baseline scans); with TLS on, those go to
+/// a plain-HTTP listener bound to `127.0.0.1:internalHttpPort` only, never
+/// reachable from outside the host/pod.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsConfig {
+    #[serde(default)]
+    pub cert_path: String,
+    #[serde(default)]
+    pub key_path: String,
+    #[serde(default = "default_tls_internal_http_port")]
+    pub internal_http_port: u16,
+}
+fn default_tls_internal_http_port() -> u16 {
+    51339
+}
+impl Default for TlsConfig {
+    fn default() -> Self {
+        TlsConfig { cert_path: String::new(), key_path: String::new(), internal_http_port: default_tls_internal_http_port() }
+    }
+}
+impl TlsConfig {
+    /// Both paths set: HTTPS on.
+    pub fn enabled(&self) -> bool {
+        !self.cert_path.trim().is_empty() && !self.key_path.trim().is_empty()
+    }
 }
 
 /// How an org's findings report is addressed.
@@ -197,6 +235,7 @@ impl Default for Config {
             daily_report: DailyReportConfig::default(),
             ignore_rules: Default::default(),
             org_reports: Default::default(),
+            tls: TlsConfig::default(),
         }
     }
 }
@@ -1640,6 +1679,9 @@ fn apply_env_overrides(merged: &mut Config) {
     if let Some(v) = env_num::<u32>("SCAN_QUEUE_USER_RESERVED_SLOTS") { merged.scan_queue.user_reserved_slots = v; }
     if let Some(v) = env_num::<u32>("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS") { merged.org_repos.auto_rescan_stale_after_hours = v; }
     if let Some(v) = env_bool("DAILY_REPORT_ENABLED") { merged.daily_report.enabled = v; }
+    if let Some(v) = env_str("TLS_CERT_PATH") { merged.tls.cert_path = v; }
+    if let Some(v) = env_str("TLS_KEY_PATH") { merged.tls.key_path = v; }
+    if let Some(v) = env_num("TLS_INTERNAL_HTTP_PORT") { merged.tls.internal_http_port = v; }
     if let Some(v) = env_str("DAILY_REPORT_TIME") { merged.daily_report.time = v; }
     if let Some(v) = env_str("DAILY_REPORT_TO") { merged.daily_report.to = v; }
     if let Some(v) = env_str("DAILY_REPORT_WEBHOOK_URL") { merged.daily_report.webhook_url = v; }
@@ -2083,6 +2125,9 @@ mod tests {
         assert_eq!(load_with_env("SCAN_QUEUE_USER_RESERVED_SLOTS", "2").scan_queue.user_reserved_slots.to_string(), "2", "SCAN_QUEUE_USER_RESERVED_SLOTS");
         assert_eq!(load_with_env("ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS", "7").org_repos.auto_rescan_stale_after_hours.to_string(), "7", "ORG_REPOS_AUTO_RESCAN_STALE_AFTER_HOURS");
         assert!(load_with_env("DAILY_REPORT_ENABLED", "true").daily_report.enabled, "DAILY_REPORT_ENABLED=true");
+        assert_eq!(load_with_env("TLS_CERT_PATH", "/tls/a.crt").tls.cert_path, "/tls/a.crt", "TLS_CERT_PATH");
+        assert_eq!(load_with_env("TLS_KEY_PATH", "/tls/a.key").tls.key_path, "/tls/a.key", "TLS_KEY_PATH");
+        assert_eq!(load_with_env("TLS_INTERNAL_HTTP_PORT", "6000").tls.internal_http_port, 6000, "TLS_INTERNAL_HTTP_PORT");
         assert!(!load_with_env("DAILY_REPORT_ENABLED", "false").daily_report.enabled, "DAILY_REPORT_ENABLED=false");
         assert_eq!(load_with_env("DAILY_REPORT_TIME", "pin-DAILY_REPORT_TIME").daily_report.time, "pin-DAILY_REPORT_TIME", "DAILY_REPORT_TIME");
         assert_eq!(load_with_env("DAILY_REPORT_TO", "pin-DAILY_REPORT_TO").daily_report.to, "pin-DAILY_REPORT_TO", "DAILY_REPORT_TO");
@@ -2192,7 +2237,7 @@ mod tests {
         let start = src.find("fn apply_env_overrides").unwrap();
         let body = &src[start..];
         let direct = body.lines().filter(|l| l.trim_start().starts_with("if let Some(v) = env_") && l.contains("{ merged.") && l.trim_end().ends_with("= v; }")).count();
-        assert_eq!(direct, 143, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
+        assert_eq!(direct, 146, "a direct env override was added or removed: update every_direct_env_override_lands_in_the_config_field_it_names");
     }
 
     #[test]

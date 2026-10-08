@@ -159,10 +159,15 @@ async fn main() {
     routes::org_report_schedule::spawn_scheduler(state.clone());
     routes::tool_updates::spawn_startup_check(state.clone());
 
+    let tls = state.config.tls.clone();
     let app = build_router(state, &public_dir);
 
     // Mirrors server.js: `process.env.PORT || CONFIG.port`.
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config_port);
+    if tls.enabled() {
+        serve_tls(app, port, &tls).await;
+        return;
+    }
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("failed to bind port");
     // Always visible regardless of RUST_LOG (tracing::info! is silent
     // unless a filter enabling it is set) — an operator starting the
@@ -171,6 +176,43 @@ async fn main() {
     eprintln!("Ignite (Rust) listening on http://0.0.0.0:{port}");
     tracing::info!("Ignite (Rust) listening on http://0.0.0.0:{port}");
     axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.expect("server error");
+}
+
+/// HTTPS on `0.0.0.0:port` with `tls.certPath`/`tls.keyPath` (PEM), plus
+/// plain HTTP on `127.0.0.1:tls.internalHttpPort` for the server's calls to
+/// itself (`state::loopback_base_url`). Exits on a bad certificate or key
+/// rather than silently falling back to plain HTTP on the public port.
+async fn serve_tls(app: axum::Router, port: u16, tls: &ignite_config::TlsConfig) {
+    if rustls::crypto::ring::default_provider().install_default().is_err() {
+        tracing::debug!("a rustls crypto provider was already installed");
+    }
+    let (cert, key) = (tls.cert_path.trim(), tls.key_path.trim());
+    let rustls_config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("TLS is configured but the certificate/key could not be loaded (certPath={cert}, keyPath={key}): {e}. The key must be an unencrypted PEM private key matching the certificate.");
+            std::process::exit(1);
+        }
+    };
+
+    let internal_port = tls.internal_http_port;
+    let internal = tokio::net::TcpListener::bind(("127.0.0.1", internal_port)).await.unwrap_or_else(|e| {
+        eprintln!("cannot bind the internal HTTP listener on 127.0.0.1:{internal_port} (tls.internalHttpPort): {e}");
+        std::process::exit(1);
+    });
+    let internal_app = app.clone();
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(internal, internal_app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
+            tracing::error!("internal HTTP listener stopped: {e}");
+        }
+    });
+
+    eprintln!("Ignite (Rust) listening on https://0.0.0.0:{port} (internal http://127.0.0.1:{internal_port})");
+    tracing::info!("Ignite (Rust) listening on https://0.0.0.0:{port} (internal http://127.0.0.1:{internal_port})");
+    axum_server::bind_rustls(std::net::SocketAddr::from(([0, 0, 0, 0], port)), rustls_config)
+        .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await
+        .expect("server error");
 }
 
 #[cfg(test)]

@@ -145,19 +145,9 @@ async fn repository_events_webhook(State(state): State<Arc<AppState>>, headers: 
         let runner = state.runner.clone();
         let org = org.clone();
         let repo = repo.clone();
-        // Same `PORT`-env-overrides-`config.json` precedence `main.rs`
-        // actually binds with — `state.config.port` alone is wrong in any
-        // deployment (containerized or otherwise) that sets `PORT` to bind
-        // a different port than the static config value.
-        let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
-        // `IGNITE_BASE_URL` is the same env var every other in-process
-        // caller of this server already reads to reach itself (the CLI,
-        // mcp-server) — a deployment terminating TLS itself or sitting
-        // behind an HTTPS-only reverse proxy sets it to the real external
-        // scheme/host, since a hardcoded `http://127.0.0.1:{port}` can't
-        // possibly be reachable at all if the server isn't actually
-        // listening on plain HTTP on that loopback address.
-        let server_base = std::env::var("IGNITE_BASE_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"));
+        // `IGNITE_BASE_URL` overrides; otherwise the server's own loopback
+        // listener (plain HTTP on 127.0.0.1 even when the public port has TLS).
+        let server_base = std::env::var("IGNITE_BASE_URL").unwrap_or_else(|_| crate::state::loopback_base_url(&state.config));
         let app_state = state.clone();
         tokio::spawn(async move {
             let http = reqwest::Client::new();

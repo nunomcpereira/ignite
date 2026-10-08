@@ -279,8 +279,7 @@ async fn github_check(State(state): State<Arc<AppState>>, crate::auth::AuthOrSca
                     // clean.
                     let clean_ids = match resolved_ref.strip_prefix("refs/heads/") {
                         Some(branch) if branch != sha.as_str() => {
-                            let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(state.config.port);
-                            let server_base = format!("http://127.0.0.1:{port}");
+                            let server_base = crate::state::loopback_base_url(&state.config);
                             ignite_fix_pr::gate_clean_issue_ids(&api, &http, &state.llm_config, &server_base, &full_name, branch, &candidates, &gh_token).await
                         }
                         _ => std::collections::HashSet::new(),

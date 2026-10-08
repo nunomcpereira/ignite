@@ -89,6 +89,48 @@ envFrom:
   - secretRef:    { name: ignite-secrets }  # GITHUB_OAUTH_CLIENT_SECRET, GH_TOKEN, ANTHROPIC_API_KEY, SMTP_PASS, ...
 ```
 
+### HTTPS
+
+Ignite serves HTTPS itself when it is given a certificate and its private key
+(PEM files):
+
+| File | Used | What it is |
+|---|---|---|
+| `.crt` | yes, `TLS_CERT_PATH` | the certificate; include intermediates after it (full chain) |
+| `.key` | yes, `TLS_KEY_PATH` | the private key, unencrypted |
+| `.csr` | no | the signing request you sent to the CA; not needed at runtime |
+
+```bash
+TLS_CERT_PATH=/etc/ignite/tls/server.crt
+TLS_KEY_PATH=/etc/ignite/tls/server.key
+```
+
+or in `config.json`: `"tls": { "certPath": "...", "keyPath": "..." }`. The
+server's own calls to itself use plain HTTP on `127.0.0.1:51339`
+(`TLS_INTERNAL_HTTP_PORT`), never reachable from outside. On Kubernetes,
+store the pair as a TLS Secret and mount it:
+
+```bash
+kubectl create secret tls ignite-tls --cert=server.crt --key=server.key -n <namespace>
+```
+
+```yaml
+containers:
+  - name: ignite
+    env:
+      - { name: TLS_CERT_PATH, value: /etc/ignite/tls/tls.crt }
+      - { name: TLS_KEY_PATH,  value: /etc/ignite/tls/tls.key }
+    volumeMounts:
+      - { name: tls, mountPath: /etc/ignite/tls, readOnly: true }
+volumes:
+  - name: tls
+    secret: { secretName: ignite-tls }
+```
+
+If your key is encrypted (`-----BEGIN ENCRYPTED PRIVATE KEY-----`), decrypt it
+once: `openssl pkey -in server.key -out server-plain.key`. If the CA sent the
+intermediate certificate separately, append it: `cat server.crt intermediate.crt > fullchain.crt`.
+
 One GitHub OAuth App covers every org in `GITHUB_ORGS` — it signs in the
 user, whose token then acts in each org they belong to. An org with OAuth
 app access restrictions must approve the app once.

@@ -32,6 +32,12 @@ ID: secret::docs-site/docs/ci-integration.md::493
 # Code: -d '{"regex": "acme_live_[a-zA-Z0-9]{24}", "sample": "token: acme_live_abcdef0123456789ghijklmn"}'
 Acknowledge: Fictional pattern/sample pair in a docs-site example curl command demonstrating the custom-secret-pattern playground endpoint - "acme_live_..." isn't a real vendor token format, and the sample string is fabricated for the example, not a real credential.
 
+ID: secret::docs-site/docs/getting-started.md::127
+# [ERROR] secret - Hardcoded secret
+#   docs-site/docs/getting-started.md:127
+# Code: secret: { secretName: ignite-tls }
+Acknowledge: False positive in a documentation Kubernetes YAML example - `secret: { secretName: ignite-tls }` is the volume source key naming a Secret object, not a secret value; no credential appears anywhere in this line.
+
 ID: secret::rust/crates/config/src/lib.rs::1475
 # [ERROR] secret - Hardcoded api_key
 #   rust/crates/config/src/lib.rs:1475
