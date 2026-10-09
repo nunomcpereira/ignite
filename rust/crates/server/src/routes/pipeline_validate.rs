@@ -348,7 +348,16 @@ pub(crate) async fn run_validate_all(state: Arc<AppState>, headers: axum::http::
         logger.log(1, &format!("Source project path: {}", project_path.display()));
         logger.log(1, &format!("Target metadata: {org}/{repo}"));
         logger.log(1, &format!("GxP-regulated process: {}", if is_gxp { "YES" } else { "no" }));
-        let source = if body.get("_client_is_mcp").and_then(|v| v.as_bool()).unwrap_or(false) { "mcp" } else { "api" };
+        // `scanPurpose: "fix-pr-gate"` (sent by `ignite-pipeline-gate`) marks a
+        // scan of an unmerged fix-PR branch, which must not become the repo's
+        // latest scan (see `ignite_db_store::FIX_PR_GATE_SOURCE`).
+        let source = if body.get("scanPurpose").and_then(|v| v.as_str()) == Some(ignite_db_store::FIX_PR_GATE_SOURCE) {
+            ignite_db_store::FIX_PR_GATE_SOURCE
+        } else if body.get("_client_is_mcp").and_then(|v| v.as_bool()).unwrap_or(false) {
+            "mcp"
+        } else {
+            "api"
+        };
         project_id = state.db.create_project(&job_id, &org, &repo, is_gxp, source, Some(&project_path.to_string_lossy())).map_err(|e| PipelineError::new(1, format!("Failed to create project record: {e}")))?;
         run_id = state.db.get_scan_run_for_legacy_project(project_id).map(|r| r.id);
         if let Some(rid) = run_id {

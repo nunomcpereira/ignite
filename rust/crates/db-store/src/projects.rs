@@ -8,6 +8,13 @@ use crate::types::*;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
+/// `projects.source` of a scan `ignite-pipeline-gate` runs on a proposed
+/// fix-PR branch before the PR is opened. It scans a branch that isn't
+/// merged, so it never counts as the repo's latest scan: a passing gate
+/// would otherwise show the repo as `success` until the next scan of the
+/// default branch flipped it back to `failed`.
+pub const FIX_PR_GATE_SOURCE: &str = "fix-pr-gate";
+
 impl DbStore {
     // ---------------- projects / steps / documents ----------------
 
@@ -248,13 +255,15 @@ impl DbStore {
     /// Removes the generated scan reports (SBOM, LOC metrics, posture,
     /// provenance, EU AI Act documents) from every *other* scan of
     /// `org/repo`, so only the latest scan of a repo keeps them. Uploaded
-    /// GxP documents and archived push payloads are untouched.
+    /// GxP documents and archived push payloads are untouched. A no-op for
+    /// a fix-PR gate scan, which isn't the repo's latest scan.
     pub fn delete_older_scan_reports(&self, org: &str, repo: &str, keep_project_id: i64) {
         let conn = self.conn.lock();
         if let Err(e) = conn.execute(
             "DELETE FROM documents WHERE project_id != ?1
                AND project_id IN (SELECT id FROM projects WHERE lower(org) = lower(?2) AND lower(repo) = lower(?3))
-               AND (name LIKE 'sbom.%' OR name IN ('loc-metrics.json', 'posture-report.json', 'provenance.json', 'ai-act-documents.json'))",
+               AND (name LIKE 'sbom.%' OR name IN ('loc-metrics.json', 'posture-report.json', 'provenance.json', 'ai-act-documents.json'))
+               AND NOT EXISTS (SELECT 1 FROM projects WHERE id = ?1 AND source = 'fix-pr-gate')",
             params![keep_project_id, org, repo],
         ) {
             tracing::error!("delete_older_scan_reports failed for {org}/{repo}: {e}");
@@ -327,7 +336,7 @@ impl DbStore {
         let Ok(mut latest_stmt) = conn.prepare_cached(
             "SELECT p.id, p.job_id, p.org, p.repo, p.status, COALESCE(p.finished_at, p.created_at) AS last_scan_at, p.repo_url
              FROM projects p
-             INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects GROUP BY org, repo) latest
+             INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects WHERE source != 'fix-pr-gate' GROUP BY org, repo) latest
                ON p.org = latest.org AND p.repo = latest.repo AND p.id = latest.max_id
              ORDER BY last_scan_at DESC",
         ) else {
@@ -529,7 +538,7 @@ impl DbStore {
 
     /// Keeps only the newest scan of a repo: deletes every *older*
     /// headless-scan project (`source = 'api'`, i.e. what `validate-all`
-    /// creates) for the same `(org, repo)` as the project with `job_id`,
+    /// creates, plus fix-PR gate scans) for the same `(org, repo)` as the project with `job_id`,
     /// so org-wide sweeps that rescan hundreds of repos on a schedule don't
     /// grow the scan history without bound. Returns how many were deleted.
     ///
@@ -558,7 +567,7 @@ impl DbStore {
                 .prepare(
                     "SELECT id FROM projects
                      WHERE lower(org) = lower(?1) AND lower(repo) = lower(?2) AND id < ?3
-                       AND source = 'api' AND status != 'running'
+                       AND source IN ('api', 'fix-pr-gate') AND status != 'running'
                        AND id NOT IN (SELECT project_id FROM retained_sources)",
                 )
                 .unwrap();

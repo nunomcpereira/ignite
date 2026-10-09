@@ -50,7 +50,9 @@ pub async fn scan_checkout(http: &Client, server_base: &str, org: &str, repo: &s
 /// fix PR that also carries `.ignite/acknowledgments.md`: the gate has to
 /// judge the tree the way the merged repo will actually be judged.
 pub async fn scan_checkout_with_overrides(http: &Client, server_base: &str, org: &str, repo: &str, project_path: &str, overrides: &[Value]) -> GateResult {
-    let mut body = json!({ "org": org, "repo": repo, "projectPath": project_path, "runLocalCi": false });
+    // `scanPurpose` keeps this scan of an unmerged branch from becoming the
+    // repo's latest scan in the org/onboarded-repos views.
+    let mut body = json!({ "org": org, "repo": repo, "projectPath": project_path, "runLocalCi": false, "scanPurpose": "fix-pr-gate" });
     if !overrides.is_empty() {
         body["overrides"] = Value::Array(overrides.to_vec());
     }

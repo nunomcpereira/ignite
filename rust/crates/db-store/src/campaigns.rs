@@ -23,7 +23,7 @@ use rusqlite::params;
 // yet, so without this filter a newly-started scan's `MAX(id)` row
 // briefly has zero matching issues, making `open_count` drop to 0 and
 // `resolved_count` spike to a false 100% completion mid-scan.
-const LATEST_PROJECT_PER_REPO_CTE: &str = "WITH latest AS (SELECT org, repo, MAX(id) AS project_id FROM projects WHERE status IN ('success', 'failed') GROUP BY org, repo)";
+const LATEST_PROJECT_PER_REPO_CTE: &str = "WITH latest AS (SELECT org, repo, MAX(id) AS project_id FROM projects WHERE status IN ('success', 'failed') AND source != 'fix-pr-gate' GROUP BY org, repo)";
 
 impl DbStore {
     // ---------------- security campaigns ----------------

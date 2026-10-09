@@ -47,7 +47,7 @@ impl DbStore {
             let Ok(mut stmt) = conn.prepare_cached(
                 "SELECT p.id, p.org, p.repo, p.status, COALESCE(p.finished_at, p.created_at)
                  FROM projects p
-                 INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects GROUP BY org, repo) latest
+                 INNER JOIN (SELECT org, repo, MAX(id) AS max_id FROM projects WHERE source != 'fix-pr-gate' GROUP BY org, repo) latest
                    ON p.org = latest.org AND p.repo = latest.repo AND p.id = latest.max_id
                  WHERE (?1 IS NULL OR lower(p.org) = lower(?1))
                  ORDER BY p.org, p.repo",

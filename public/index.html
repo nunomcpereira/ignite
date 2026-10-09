@@ -41,7 +41,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20261008a"></script>
+  <script src="i18n.js?v=20261009a"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -8269,14 +8269,11 @@
         } else {
           statusCell = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 bg-slate-50">${t('orgRepos.statusNew')}</span>`;
         }
-        // Colored by the *most critical* tier present — an error anywhere
-        // paints the whole count red even if most findings are just nice-
-        // to-haves, matching the same "worst case wins" semaphore logic
-        // Studio's own severity chips use, just collapsed to one number
-        // here since this table has no room for a per-tier breakdown.
-        // Justified (overridden) findings are still findings: they're
-        // counted and clickable, shown in violet with a ✓ when nothing
-        // else is open, so a passing repo's findings stay reachable.
+        // Open findings as errors/warnings/nice-to-have (red/amber/green),
+        // the same tiers Studio's severity chips use. Justified (overridden)
+        // findings are still findings: they're appended in violet with a ✓
+        // (or shown alone when nothing else is open), so a passing repo's
+        // findings stay reachable.
         let findingsCell;
         const justified = r.justifiedCount || 0;
         if (running || r.findingsCount == null) {
@@ -8286,9 +8283,13 @@
         } else if (r.findingsCount === 0) {
           findingsCell = `<button type="button" class="org-repo-view-findings font-semibold text-violet-600 hover:underline" data-i="${i}" title="${escapeAttr(t('orgRepos.findingsAllJustified', { count: justified }))}">${justified} <span class="text-[10px]">✓</span></button>`;
         } else {
-          const tierColor = (r.errorCount || 0) > 0 ? 'text-rose-600' : (r.warningCount || 0) > 0 ? 'text-amber-600' : 'text-emerald-600';
-          const title = justified > 0 ? ` title="${escapeAttr(t('orgRepos.findingsOpenJustified', { open: r.findingsCount, justified }))}"` : '';
-          findingsCell = `<button type="button" class="org-repo-view-findings font-semibold ${tierColor} hover:underline" data-i="${i}"${title}>${r.findingsCount + justified}</button>`;
+          const e = r.errorCount || 0, w = r.warningCount || 0, n = r.niceToHaveCount || 0;
+          const tier = (count, cls) => `<span class="${count > 0 ? cls : 'text-slate-400'}">${count}</span>`;
+          const sep = '<span class="text-slate-300">/</span>';
+          let title = t('orgRepos.findingsTiers', { errors: e, warnings: w, nice: n });
+          if (justified > 0) title += ' · ' + t('orgRepos.findingsOpenJustified', { open: r.findingsCount, justified });
+          const justifiedHtml = justified > 0 ? ` <span class="text-violet-600">+${justified}<span class="text-[10px]">✓</span></span>` : '';
+          findingsCell = `<button type="button" class="org-repo-view-findings font-semibold whitespace-nowrap hover:underline" data-i="${i}" title="${escapeAttr(title)}">${tier(e, 'text-rose-600')}${sep}${tier(w, 'text-amber-600')}${sep}${tier(n, 'text-emerald-600')}${justifiedHtml}</button>`;
         }
         const studioBtn = !running && r.latestProjectId
           ? `<button type="button" class="org-repo-open-studio text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 text-violet-600 hover:bg-slate-50 whitespace-nowrap" data-i="${i}" title="${escapeAttr(t('orgRepos.openStudioTitle'))}">${t('orgRepos.openStudio')}</button>`
@@ -8310,6 +8311,7 @@
           </td>
           <td class="org-repo-status-cell px-5 py-3.5">
             ${statusCell}
+            ${!running && (r.pendingPrs || []).length ? `<div class="mt-1 flex flex-wrap items-center gap-1 text-[10px]" title="${escapeAttr(t('orgRepos.prPendingTitle'))}"><span class="font-semibold text-sky-700">${t('orgRepos.prPending')}</span>${r.pendingPrs.filter((pr) => /^https:\/\//i.test(pr.url)).map((pr) => `<a href="${escapeAttr(pr.url)}" target="_blank" rel="noopener" class="font-semibold px-1.5 py-0.5 rounded-full border border-sky-200 bg-sky-50 text-sky-700 hover:underline">${pr.number ? '#' + pr.number : 'PR'} ↗</a>`).join('')}</div>` : ''}
             ${r.scanError && githubSsoInfo(r.scanError, r.scanErrorSsoUrl)
               ? `<div class="mt-1 text-[10px] max-w-[260px]">${githubSsoHintHtml(githubSsoInfo(r.scanError, r.scanErrorSsoUrl), r.scanError)}</div>`
               : r.scanError ? `<button type="button" class="org-repo-show-error block text-left text-[10px] text-rose-500 hover:text-rose-700 hover:underline mt-1 max-w-[220px] truncate" data-i="${i}" title="${escapeAttr(r.scanError)}">${escapeHtml(r.scanError)}</button>` : ''}
@@ -9332,7 +9334,7 @@
       }
     }
 
-    const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, scanErrorCode: null, scanErrorSsoUrl: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null, phases: null };
+    const ORG_REPO_STATUS_DEFAULTS = { known: false, status: null, lastScanAt: null, findingsCount: null, latestJobId: null, latestProjectId: null, scanError: null, scanErrorCode: null, scanErrorSsoUrl: null, acknowledgments: [], errorCount: null, warningCount: null, niceToHaveCount: null, phases: null, pendingPrs: [], justifiedCount: null };
     function orgReposCacheKey(org) {
       return `${ORG_REPOS_CACHE_PREFIX}${org}|a${$('orgReposIncludeArchived').checked ? 1 : 0}f${$('orgReposIncludeForks').checked ? 1 : 0}`;
     }

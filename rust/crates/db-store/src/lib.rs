@@ -57,6 +57,7 @@ mod settings;
 mod scheduler_runs;
 
 pub use overrides::GITHUB_DISMISSAL_ACTOR_EMAIL;
+pub use projects::FIX_PR_GATE_SOURCE;
 pub use daily_report::RepoDailyReport;
 pub use org_report_runs::OrgReportRun;
 pub use api_keys::{parse_api_key_scopes, API_KEY_SCOPES};
@@ -180,6 +181,27 @@ mod tests {
         assert_eq!(prs.len(), 2);
         assert!(prs.iter().any(|p| p.kind == "fix-pr" && p.url == "https://github.com/acme/widgets/pull/2" && p.files_changed == Some(3)));
         assert!(prs.iter().any(|p| p.kind == "onboarding"));
+    }
+
+    #[test]
+    fn fix_pr_gate_scans_never_become_the_repos_latest_scan() {
+        let (_dir, store) = open_test_db();
+        let real = store.create_project("job-real", "acme", "widgets", false, "api", None).unwrap();
+        store.finish_project("failed", Some("blocking findings"), None, None, real);
+        let gate = store.create_project("job-gate", "acme", "widgets", false, FIX_PR_GATE_SOURCE, None).unwrap();
+        store.finish_project("success", None, None, None, gate);
+
+        let summaries = store.list_onboarded_repo_summaries(7, 30, 90);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].latest_project_id, real, "a passing gate scan of an unmerged fix-PR branch must not mask the default branch's result");
+        assert_eq!(summaries[0].status, "failed");
+        assert_eq!(store.list_latest_scan_unjustified_findings(None).iter().map(|r| r.project_id).collect::<Vec<_>>(), vec![real]);
+
+        // The next real scan prunes the gate row along with older real scans.
+        let next = store.create_project("job-next", "acme", "widgets", false, "api", None).unwrap();
+        store.finish_project("failed", Some("blocking findings"), None, None, next);
+        assert_eq!(store.prune_superseded_scans("job-next"), 2);
+        assert!(!store.project_exists(gate));
     }
 
     #[test]

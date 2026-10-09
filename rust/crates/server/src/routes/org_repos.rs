@@ -157,6 +157,19 @@ struct RepoStatus {
     /// its live state (`pending`/`running`/`success`/`failed`/...), for the
     /// progress squares under the Scan button. `None` otherwise.
     phases: Option<Vec<PhaseProgress>>,
+    /// Fix PRs Ignite opened for this repo that are still open on GitHub.
+    /// A fix PR (fixes and/or justifications) doesn't change the repo's
+    /// status: that stays the default branch's last scan result until the
+    /// PR is merged and the repo rescanned. The UI lists these next to it.
+    pending_prs: Vec<PendingPr>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingPr {
+    url: String,
+    number: Option<u64>,
+    created_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -235,6 +248,12 @@ fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoSta
                     scan_error_code: None,
                     scan_error_sso_url: None,
                     phases: None,
+                    pending_prs: s
+                        .recent_prs
+                        .iter()
+                        .filter(|pr| pr.kind == "fix-pr")
+                        .map(|pr| PendingPr { url: pr.url.clone(), number: pr_number_from_url(&pr.url), created_at: pr.created_at.clone() })
+                        .collect(),
                 },
             },
         );
@@ -264,14 +283,88 @@ fn collect_repo_statuses(state: &AppState, org: &str) -> HashMap<String, RepoSta
     out
 }
 
-/// `GET /api/org-repos/:org/status` — scan status only, no GitHub call.
-/// The browser caches the repo list itself and polls this.
+fn pr_number_from_url(url: &str) -> Option<u64> {
+    let (_, rest) = url.split_once("/pull/")?;
+    rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// Whether a PR is still open, by URL. A closed/merged PR never reopens on
+/// its own often enough to matter here, so that answer is kept for the
+/// process lifetime; an open one is re-checked after `OPEN_PR_RECHECK`.
+static PR_OPEN_CACHE: Lazy<Mutex<HashMap<String, (bool, std::time::Instant)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+const OPEN_PR_RECHECK: std::time::Duration = std::time::Duration::from_secs(120);
+/// A PR whose state can't be looked up (no token, GitHub error) is still
+/// listed while it's this recent, and dropped after.
+const UNKNOWN_PR_MAX_AGE_DAYS: i64 = 14;
+
+/// Drops every fix PR in `statuses` that GitHub says is closed or merged.
+/// Lookups run concurrently, only for PRs not answered by the cache.
+async fn retain_open_prs(state: &AppState, headers: &HeaderMap, org: &str, statuses: &mut HashMap<String, RepoStatusRow>) {
+    let now = std::time::Instant::now();
+    let to_check: Vec<(String, String, u64)> = {
+        let cache = PR_OPEN_CACHE.lock();
+        statuses
+            .values()
+            .flat_map(|row| row.status.pending_prs.iter().map(move |pr| (row.repo.clone(), pr)))
+            .filter(|(_, pr)| match cache.get(&pr.url) {
+                Some((false, _)) => false,
+                Some((true, at)) => now.duration_since(*at) >= OPEN_PR_RECHECK,
+                None => true,
+            })
+            .filter_map(|(repo, pr)| pr.number.map(|n| (pr.url.clone(), repo, n)))
+            .collect()
+    };
+    if !to_check.is_empty() {
+        let token = org_token(state, headers, org).await.token;
+        if !token.is_empty() {
+            let api = GithubApi::new(&state.runner);
+            let lookups = to_check.iter().map(|(url, repo, number)| {
+                let api = &api;
+                let token = &token;
+                async move {
+                    let path = format!("repos/{org}/{repo}/pulls/{number}");
+                    let res = tokio::time::timeout(std::time::Duration::from_secs(10), api.gh_api_get(&path, token)).await;
+                    let open = match res {
+                        Ok(Ok(Some(v))) => v.get("state").and_then(|s| s.as_str()).map(|s| s == "open"),
+                        _ => None,
+                    };
+                    (url.clone(), open)
+                }
+            });
+            let results = futures::future::join_all(lookups).await;
+            let mut cache = PR_OPEN_CACHE.lock();
+            for (url, open) in results {
+                match open {
+                    Some(open) => {
+                        cache.insert(url, (open, now));
+                    }
+                    None => tracing::debug!("org-repos: could not look up PR state for {url}"),
+                }
+            }
+        }
+    }
+    let cache = PR_OPEN_CACHE.lock();
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(UNKNOWN_PR_MAX_AGE_DAYS)).format("%Y-%m-%d %H:%M:%S").to_string();
+    for row in statuses.values_mut() {
+        row.status.pending_prs.retain(|pr| match cache.get(&pr.url) {
+            Some((open, _)) => *open,
+            // SQLite `datetime('now')` text compares chronologically.
+            None => pr.created_at >= cutoff,
+        });
+    }
+}
+
+/// `GET /api/org-repos/:org/status` — scan status, plus a cached GitHub
+/// lookup of whether this org's fix PRs are still open. The browser caches
+/// the repo list itself and polls this.
 async fn org_repo_statuses(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path(org): Path<String>) -> Response {
     if !ignite_github_api::is_valid_github_owner(&org) {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid GitHub org name." }))).into_response();
     }
     clear_sso_failures_if_authorized(&state, &headers, &org).await;
-    Json(collect_repo_statuses(&state, &org).into_values().collect::<Vec<_>>()).into_response()
+    let mut statuses = collect_repo_statuses(&state, &org);
+    retain_open_prs(&state, &headers, &org, &mut statuses).await;
+    Json(statuses.into_values().collect::<Vec<_>>()).into_response()
 }
 
 async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth, headers: HeaderMap, Path(org): Path<String>, Query(q): Query<DiscoverQuery>) -> Response {
@@ -319,6 +412,7 @@ async fn list_org_repos(State(state): State<Arc<AppState>>, RequireAuth(_user): 
 
     clear_sso_failures_if_authorized(&state, &headers, &org).await;
     let mut statuses = collect_repo_statuses(&state, &org);
+    retain_open_prs(&state, &headers, &org, &mut statuses).await;
     let rows: Vec<OrgRepoRow> = discovered
         .into_iter()
         .map(|r| {
@@ -787,6 +881,13 @@ pub fn router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_number_from_url_reads_the_pull_number() {
+        assert_eq!(pr_number_from_url("https://github.com/acme/widgets/pull/42"), Some(42));
+        assert_eq!(pr_number_from_url("https://github.com/acme/widgets/pull/42/files"), Some(42));
+        assert_eq!(pr_number_from_url("https://github.com/acme/widgets"), None);
+    }
 
     #[test]
     fn ordered_targets_keep_request_order_and_skip_missing_empty_and_duplicate_repos() {
