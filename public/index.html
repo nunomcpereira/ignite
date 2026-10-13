@@ -41,7 +41,7 @@
   </script>
   <!-- i18n: static UI chrome translations (en/fr/pt/de) — window.IGNITE_I18N.translations.
        See CLAUDE.md's "Internationalization" section for the data-i18n*/t() convention. -->
-  <script src="i18n.js?v=20261009a"></script>
+  <script src="i18n.js?v=20261013a"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -2983,7 +2983,7 @@
           ? '<p class="text-xs text-slate-400">No issues match this filter.</p>'
           : '<p class="text-xs text-slate-400">No issues flagged (yet).</p>';
       wireIssueListInteractions(list, $('issuesViewExpandAllBtn'), filtered);
-      wireIssuesViewJustifyBar(list, issuesViewState.issues);
+      wireIssuesViewJustifyBar(list, filtered);
     }
 
     // Mirrors handleReviewRequired's own select-all/bulk-fill/submit wiring
@@ -3959,6 +3959,7 @@
           const idx = Number(cb.dataset.idx);
           const justification = list.querySelector(`.override-justification[data-idx="${idx}"]`).value.trim();
           if (!justification) {
+            if (!proceed) continue;
             errorEl.textContent = 'Every checked issue needs a justification.';
             return;
           }
@@ -3972,7 +3973,7 @@
           return;
         }
         let actor;
-        if (!authState.user && overrides.length > 0) {
+        if (proceed && !authState.user && overrides.length > 0) {
           const email = $('reviewActorEmail').value.trim();
           const name = $('reviewActorName').value.trim();
           if (!email || !email.includes('@')) {
@@ -3981,13 +3982,20 @@
           }
           actor = { email, name };
         }
+        const send = (body) => fetch(`/api/pipeline/${ev.jobId}/review-decision`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
         let res;
         try {
-          res = await fetch(`/api/pipeline/${ev.jobId}/review-decision`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ proceed, overrides, actor }),
-          });
+          res = await send({ proceed, overrides, actor });
+          // Stopping must always work: if the server won't take the
+          // justifications with it (expired session, different user),
+          // stop anyway without them.
+          if (!proceed && overrides.length > 0 && (res.status === 401 || res.status === 403)) {
+            res = await send({ proceed: false, overrides: [] });
+          }
         } catch {
           errorEl.textContent = 'Could not reach the server to send this decision — check your connection and try again.';
           return;
@@ -3999,18 +4007,23 @@
         // way to tell from here, and a refresh would just reconstruct
         // the same modal from the still-`reviewActive` server state,
         // making Stop/Continue look like it silently did nothing.
+        // Stopping a run that is no longer paused (already resolved, or
+        // lost to a server restart) has nothing left to stop — close the
+        // modal instead of trapping the user behind an error.
+        if (!proceed && (res.status === 404 || res.status === 410)) {
+          cleanup();
+          return;
+        }
         if (!res.ok) {
           let message = `Server rejected this decision (HTTP ${res.status}).`;
           try {
             const body = await res.json();
             if (body && body.error) message = body.error;
           } catch { /* non-JSON error body — keep the generic message */ }
-          // A 401 here means the session expired mid-review — Stop/Continue
-          // will keep failing the exact same way no matter how many times
-          // they're clicked, so the only way out of this modal is a reload.
-          // Offer that directly instead of leaving the user to guess it
-          // from prose (Esc/✕ route through submit(false), which hits this
-          // same dead end).
+          // A 401 here means the session expired mid-review — Continue
+          // keeps failing until the user signs in again, so offer the
+          // reload (which shows the sign-in) directly. "Stop pipeline"
+          // still works without a session.
           if (res.status === 401) {
             errorEl.innerHTML = `${escapeHtml(message)} <button type="button" id="reviewReloadBtn" class="font-semibold underline">Reload page</button>`;
             $('reviewReloadBtn').onclick = () => window.location.reload();
@@ -4446,6 +4459,7 @@
       }
       studioState.jobId = jobId;
       studioState.codeqlDbLanguages = [];
+      if (!fromReview || studioState.jobId !== jobId || !studioState.draftJustifications) studioState.draftJustifications = new Map();
       studioState.fromReview = fromReview;
       studioState.currentPath = null;
       studioState.suggestion = null;
@@ -4612,7 +4626,12 @@
       if (studioState.fromReview && studioState.jobId) {
         fetch(`/api/pipeline/${studioState.jobId}/issues`)
           .then((r) => r.json())
-          .then((data) => handleReviewRequired({ jobId: studioState.jobId, phase: 6, issues: data.issues || [] }))
+          .then((data) => {
+            const issues = data.issues || [];
+            handleReviewRequired({ jobId: studioState.jobId, phase: 6, issues });
+            const drafts = studioState.draftJustifications;
+            if (drafts?.size) applyImportedAcknowledgments($('reviewIssueList'), issues, drafts);
+          })
           .catch(() => {});
       }
     }
@@ -6558,6 +6577,70 @@
       return `<pre class="bg-slate-900 rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed mb-2">${removed}${added}</pre>`;
     }
 
+    // Justify (override) a finding from Studio. A finished run posts to
+    // the same /overrides endpoints as the "Flagged issues" popup. A run
+    // still paused at the review gate can't be overridden out-of-band (the
+    // paused pipeline decides from the review modal), so there the text is
+    // kept as a draft and filled into the review modal when Studio closes.
+    function studioJustifyBoxHtml(issue) {
+      if (issue.status === 'overridden') return '';
+      if (!studioState.fromReview && !studioState.jobId && !studioState.historicalProjectId) return '';
+      const draft = studioState.fromReview ? (studioState.draftJustifications?.get(issue.id) || '') : '';
+      return `
+        <div class="border border-slate-200 rounded-lg p-3 mb-3">
+          <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">${escapeHtml(t('studio.justify.title'))}</p>
+          <textarea id="studio-justify-text" rows="3" class="w-full text-xs px-2.5 py-2 rounded-lg border border-slate-200" placeholder="${escapeAttr(t('studio.justify.placeholder'))}">${escapeHtml(draft)}</textarea>
+          <button type="button" id="studio-justify-submit" class="mt-2 w-full text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">${escapeHtml(t(studioState.fromReview ? 'studio.justify.saveForReview' : 'studio.justify.submit'))}</button>
+          <p id="studio-justify-note" class="text-[11px] mt-1.5 text-slate-500">${draft ? escapeHtml(t('studio.justify.savedForReview')) : ''}</p>
+        </div>`;
+    }
+
+    function wireStudioJustifyBox(issue) {
+      const btn = $('studio-justify-submit');
+      if (!btn) return;
+      const note = $('studio-justify-note');
+      const say = (msg, error) => {
+        note.textContent = msg;
+        note.className = `text-[11px] mt-1.5 ${error ? 'text-rose-600' : 'text-slate-500'}`;
+      };
+      btn.addEventListener('click', async () => {
+        const justification = $('studio-justify-text').value.trim();
+        if (studioState.fromReview) {
+          if (!studioState.draftJustifications) studioState.draftJustifications = new Map();
+          if (justification) studioState.draftJustifications.set(issue.id, justification);
+          else studioState.draftJustifications.delete(issue.id);
+          say(justification ? t('studio.justify.savedForReview') : '', false);
+          return;
+        }
+        if (!justification) { say(t('studio.justify.needText'), true); return; }
+        const path = studioState.historical
+          ? `/api/projects/${encodeURIComponent(studioState.historicalProjectId)}/overrides`
+          : `/api/pipeline/${encodeURIComponent(studioState.jobId)}/overrides`;
+        btn.disabled = true;
+        try {
+          const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ overrides: [{ issueId: issue.id, justification }] }) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            say(res.status === 401 ? t('studio.justify.signIn') : (data.error || `HTTP ${res.status}`), true);
+            return;
+          }
+          if (data.pendingApproval) { say(t('studio.justify.pending'), false); return; }
+          // Same id can back more than one row (category::file::line).
+          studioState.issues.filter((i) => i.id === issue.id).forEach((i) => {
+            i.status = 'overridden';
+            i.justification = justification;
+            i.actorEmail = authState.user?.email;
+            i.actorName = authState.user?.name;
+          });
+          if (studioState.selectedIssue?.id === issue.id) studioRenderIssuePanel(issue);
+        } catch {
+          say(t('studio.justify.unreachable'), true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    }
+
     function studioRenderIssuePanel(issue) {
       const explainId = `studio-explain-${issue.id}`;
       const fixId = `studio-fix-${issue.id}`;
@@ -6611,6 +6694,7 @@
           ${issueAuthorLabel(issue.author) ? `<p class="text-[10px] text-slate-400 mt-1" title="${escapeHtml(issue.author.commit || '')}">${t('studio.lastChangedBy')} <span class="font-semibold text-slate-600">${escapeHtml(issueAuthorLabel(issue.author))}</span></p>` : ''}
           ${issue.duplicateRef ? `<button type="button" id="studio-jump-duplicate" class="text-[11px] font-semibold text-violet-600 hover:underline mt-1">Jump to ${escapeHtml(dupRefLabel)} ⧉</button>` : ''}
         </div>
+        ${studioJustifyBoxHtml(issue)}
         <div id="studio-issue-verdict" class="mb-3"></div>
         <div id="studio-issue-history" class="mb-3"></div>
         ${Array.isArray(issue.chain) && issue.chain.length > 1 ? `
@@ -6663,6 +6747,7 @@
         studioWireChainControls(issue);
       }
 
+      wireStudioJustifyBox(issue);
       loadStudioFindingHistory(issue);
 
       $('studio-issue-prev').addEventListener('click', () => studioNavigateIssue(-1));

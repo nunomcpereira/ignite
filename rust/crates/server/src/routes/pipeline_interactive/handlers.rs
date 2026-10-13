@@ -13,6 +13,10 @@ use super::*;
 /// there's no session to compare against instead).
 const UNAUTHENTICATED_SIMULATION_ACTOR: &str = "unauthenticated-simulation@ignite.internal";
 
+/// Recorded as the actor of a bare stop sent with no session (typically the
+/// owner's session expired while the run sat at the review gate).
+const STOPPED_WITHOUT_SESSION_ACTOR: &str = "session-expired@ignite.internal";
+
 async fn pipeline(State(state): State<Arc<AppState>>, crate::auth::OptionalUser(user): crate::auth::OptionalUser, headers: axum::http::HeaderMap, multipart: Multipart) -> Response {
     let upload = match parse_multipart(multipart).await {
         Ok(u) => u,
@@ -93,6 +97,24 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
             code: o.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }).collect())
         .unwrap_or_default();
+    // A bare stop (decline, no overrides) always works, whoever asks: the
+    // run only ends as blocked, nothing is approved or pushed, and the job
+    // id is a random UUID. Otherwise a run whose owner's session expired
+    // while it sat paused could neither continue nor be stopped.
+    if !proceed && overrides.is_empty() {
+        let actor = match &user {
+            Some(u) => Actor { email: u.email.clone(), name: u.name.clone().unwrap_or_else(|| u.email.clone()) },
+            None => Actor { email: STOPPED_WITHOUT_SESSION_ACTOR.to_string(), name: "Stopped without a session".to_string() },
+        };
+        return match state.review_gate.stop(&job_id, ReviewDecisionInput { proceed: false, overrides: Vec::new(), actor, origin }) {
+            crate::review_gate::ResolveOutcome::Resolved => (StatusCode::OK, axum::Json(json!({ "ok": true }))).into_response(),
+            _ => match unresolved_pending_review_owner(&state, &job_id) {
+                Some(_) => lost_review_response(),
+                None => (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response(),
+            },
+        };
+    }
+    let had_session = user.is_some();
     // A decision requires a real authenticated session, *unless* this is
     // the review gate for a run that itself started as an unauthenticated
     // simulation (`security.allow_unauthenticated_interactive_dry_run`) —
@@ -121,7 +143,7 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
     // second layer beyond "must be logged in" (or, here, "must be the
     // one unauthenticated-simulation sentinel"), since without it any
     // caller could still decide any other user's paused run.
-    match state.review_gate.resolve(&job_id, &caller_email, ReviewDecisionInput { proceed, overrides, actor, origin: origin }) {
+    match state.review_gate.resolve(&job_id, &caller_email, ReviewDecisionInput { proceed, overrides, actor, origin }) {
         crate::review_gate::ResolveOutcome::Resolved => (StatusCode::OK, axum::Json(json!({ "ok": true }))).into_response(),
         // US-04: the in-memory oneshot this run's paused task was
         // actually awaiting is gone after every process restart — true
@@ -134,31 +156,47 @@ async fn review_decision(axum::extract::Path(job_id): axum::extract::Path<String
         // restarted and it can't be resumed" is the honest, recoverable
         // failure this acceptance criterion actually asks for, instead of
         // a generic 404 that reads the same as a typo'd job id.
-        crate::review_gate::ResolveOutcome::NotFound => match lost_pending_review(&state, &job_id, &caller_email) {
-            Some(true) => (
-                StatusCode::GONE,
-                axum::Json(json!({
-                    "ok": false,
-                    "error": "This run was awaiting review, but the server restarted and resuming an in-progress run isn't supported yet — the prior findings are still on record. Start a new scan to continue.",
-                    "recoverable": true,
-                })),
-            )
-                .into_response(),
-            Some(false) => (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "This run was started by a different user." }))).into_response(),
+        crate::review_gate::ResolveOutcome::NotFound => match unresolved_pending_review_owner(&state, &job_id) {
+            Some(owner) if owner == caller_email => lost_review_response(),
+            Some(_) => not_the_owner_response(had_session),
             None => (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "No run is currently paused for review under this job id." }))).into_response(),
         },
-        crate::review_gate::ResolveOutcome::Forbidden => (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "This run was started by a different user." }))).into_response(),
+        crate::review_gate::ResolveOutcome::Forbidden => not_the_owner_response(had_session),
     }
 }
 
-/// `Some(true)` — an unresolved `pending_reviews` row exists for this job
-/// id and `caller_email` owns it (a restart-orphaned review). `Some(false)`
-/// — the row exists but belongs to a different owner. `None` — no such
-/// row at all (a genuinely unknown/already-resolved job id).
-fn lost_pending_review(state: &AppState, job_id: &str, caller_email: &str) -> Option<bool> {
+/// The caller isn't the run's owner. With no session at all that almost
+/// always means the owner's own session expired mid-review (the caller fell
+/// back to the unauthenticated-simulation identity), so say that instead of
+/// "a different user".
+fn not_the_owner_response(had_session: bool) -> Response {
+    if had_session {
+        (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "This run was started by a different user." }))).into_response()
+    } else {
+        (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Your session expired. Sign in again to continue this run, or stop the pipeline.", "code": "session_expired" }))).into_response()
+    }
+}
+
+fn lost_review_response() -> Response {
+    (
+        StatusCode::GONE,
+        axum::Json(json!({
+            "ok": false,
+            "error": "This run was awaiting review, but the server restarted and resuming an in-progress run isn't supported yet — the prior findings are still on record. Start a new scan to continue.",
+            "recoverable": true,
+        })),
+    )
+        .into_response()
+}
+
+/// Owner of this job's unresolved `pending_reviews` row (US-04's durable
+/// counterpart to `ReviewGate::wait`), if one exists: a review that was
+/// pending when the in-memory gate was lost to a restart. `None` for an
+/// unknown or already-resolved job id.
+fn unresolved_pending_review_owner(state: &AppState, job_id: &str) -> Option<String> {
     let project_id = state.db.get_project_id_by_job_id(job_id)?;
     let review = state.db.get_pending_review_by_project(project_id).filter(|r| r.resolved_at.is_none())?;
-    Some(review.owner_email == caller_email)
+    Some(review.owner_email)
 }
 
 pub fn router() -> Router<Arc<AppState>> {

@@ -79,6 +79,23 @@ impl ReviewGate {
             ResolveOutcome::NotFound
         }
     }
+
+    /// Stops the run paused under `job_id` without checking who is asking.
+    /// Only for a bare decline (no overrides, nothing published): the run
+    /// just ends as blocked, so knowing the job id (a random UUID) is
+    /// enough. Without this a run whose owner's session expired could never
+    /// be dismissed. `decision.proceed` is forced to `false` and its
+    /// overrides are dropped, so this can never approve or push anything.
+    pub fn stop(&self, job_id: &str, mut decision: ReviewDecisionInput) -> ResolveOutcome {
+        decision.proceed = false;
+        decision.overrides.clear();
+        let Some((tx, _)) = self.senders.lock().unwrap().remove(job_id) else { return ResolveOutcome::NotFound };
+        if tx.send(decision).is_ok() {
+            ResolveOutcome::Resolved
+        } else {
+            ResolveOutcome::NotFound
+        }
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +135,30 @@ mod tests {
             ReviewDecisionInput { proceed: true, overrides: vec![], actor: Actor { email: "attacker@example.com".into(), name: "Attacker".into() }, origin: "session" },
         );
         assert_eq!(resolved, ResolveOutcome::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn stop_ends_the_run_for_any_caller_and_never_proceeds() {
+        let gate = ReviewGate::default();
+        let rx = gate.wait("job-1", "owner@example.com");
+        let stopped = gate.stop(
+            "job-1",
+            ReviewDecisionInput {
+                proceed: true,
+                overrides: vec![SubmittedOverride { issue_id: "secret::a.js::1".into(), justification: "x".into(), code: None }],
+                actor: Actor { email: "someone@example.com".into(), name: "S".into() },
+                origin: "session",
+            },
+        );
+        assert_eq!(stopped, ResolveOutcome::Resolved);
+        let decision = rx.await.unwrap();
+        assert!(!decision.proceed);
+        assert!(decision.overrides.is_empty());
+    }
+
+    #[test]
+    fn stop_returns_not_found_for_unknown_job() {
+        let gate = ReviewGate::default();
+        assert_eq!(gate.stop("nope", ReviewDecisionInput { proceed: false, overrides: vec![], actor: Actor::default(), origin: "session" }), ResolveOutcome::NotFound);
     }
 }

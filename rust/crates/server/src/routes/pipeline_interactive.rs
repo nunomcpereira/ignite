@@ -885,22 +885,20 @@ mod tests {
         .expect("run never reached the review gate within the timeout — the fixture's blocking finding may not be getting flagged in this environment")
     }
 
-    /// Regression test for the "Stop pipeline"/Esc/✕ path leaving a run
-    /// stuck forever at the review gate when the caller's session has
-    /// expired: a bare decline (`proceed: false`, no overrides — exactly
-    /// what those all send) has nothing to attribute, so it must succeed
-    /// fully unauthenticated (no bearer token, no `actor` in the body),
-    /// driven through the real HTTP route (not `review_gate.resolve`
-    /// directly, which would bypass the auth-requirement bug entirely).
+    /// A session that expires while a run sits at the review gate must not
+    /// leave it stuck: "Stop pipeline"/Esc/✕ send a bare decline
+    /// (`proceed: false`, no overrides), which works with no session at
+    /// all, driven through the real HTTP route.
     ///
-    /// Previously this exercised the *opposite* expectation (a bare
-    /// decline with no overrides needed no auth at all) — that carve-out
-    /// was itself the bug (BUG-172): an unauthenticated caller who merely
-    /// guessed/observed a job id could abort or force-proceed a run they
-    /// had no relationship to. Every decision now requires a real
-    /// authenticated session that matches whoever started the run.
+    /// History: an earlier carve-out let an unauthenticated caller send
+    /// *any* no-override decision, including `proceed: true` (BUG-172, a
+    /// forced continue of someone else's run), so every decision was made
+    /// to require the owner's session. That left an expired session unable
+    /// to stop its own run. Now only the stop is open (`ReviewGate::stop`
+    /// forces `proceed: false` and drops overrides); continuing still
+    /// needs the owner's session.
     #[tokio::test]
-    async fn review_decision_without_auth_is_rejected() {
+    async fn review_decision_without_auth_can_stop_but_not_continue() {
         let _guard = HEAVY_PIPELINE_TEST_LOCK.lock().await;
         let (base, state) = spawn_test_server().await;
         let auth = auth_header(&state);
@@ -932,16 +930,14 @@ mod tests {
         .expect("run never reached the review gate within 180s — the fixture's blocking finding may not be getting flagged in this environment");
 
         // No bearer token at all — mirrors a session that expired while
-        // the pipeline sat paused for review. Must now be rejected, not
-        // silently accepted, even for a bare decline.
-        let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
-        assert_eq!(decision_res.status(), 401, "an unauthenticated decision — even a bare decline — must be rejected");
+        // the pipeline sat paused for review. Continuing is refused...
+        let proceed_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": true, "overrides": [] })).send().await.unwrap();
+        assert_eq!(proceed_res.status(), 401, "continuing a run without a session must be rejected");
 
-        // Clean up with a real authenticated decline so the spawned
-        // upload request actually resolves instead of hanging at the
-        // review gate for the rest of this test's timeout.
-        let decision_res2 = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).header("authorization", &auth_for_decision).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
-        assert_eq!(decision_res2.status(), 200);
+        // ...but a bare stop always works, so the run can be dismissed.
+        let decision_res = reqwest::Client::new().post(format!("{base_for_decision}/api/pipeline/{job_id}/review-decision")).json(&json!({ "proceed": false, "overrides": [] })).send().await.unwrap();
+        assert_eq!(decision_res.status(), 200, "a bare stop must work even without a session");
+        let _ = &auth_for_decision;
 
         let res = handle.await.unwrap();
         assert_eq!(res.status(), 200);
