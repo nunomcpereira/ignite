@@ -508,6 +508,7 @@ window.IGNITE_I18N = {
       'review.bulkPlaceholder': 'Justification to apply to all selected issues…',
       'review.stopPipeline': 'Stop pipeline',
       'review.stopPipelineTitle': 'Stop this pipeline run instead of continuing past the pause',
+      'review.submitJustificationsTitle': "Record the justified findings and end this run without continuing. They are kept and carried forward to the next scan.",
       'review.continueTitle': 'Continue the pipeline run with the overrides submitted above',
       'review.selectedCount': '{count} selected',
 
@@ -1163,6 +1164,7 @@ window.IGNITE_I18N = {
       'review.bulkPlaceholder': 'Justification à appliquer à tous les problèmes sélectionnés…',
       'review.stopPipeline': 'Arrêter le pipeline',
       'review.stopPipelineTitle': 'Arrêter cette exécution du pipeline au lieu de continuer après la pause',
+      'review.submitJustificationsTitle': "Enregistrer les constats justifiés et terminer cette exécution sans continuer. Ils sont conservés et reportés au prochain scan.",
       'review.continueTitle': 'Poursuivre l’exécution du pipeline avec les dérogations soumises ci-dessus',
       'review.selectedCount': '{count} sélectionné(s)',
 
@@ -1818,6 +1820,7 @@ window.IGNITE_I18N = {
       'review.bulkPlaceholder': 'Justificativa a aplicar a todos os problemas selecionados…',
       'review.stopPipeline': 'Parar pipeline',
       'review.stopPipelineTitle': 'Parar esta execução do pipeline em vez de continuar após a pausa',
+      'review.submitJustificationsTitle': "Registar os achados justificados e terminar esta execução sem continuar. Ficam guardados e são aplicados no próximo scan.",
       'review.continueTitle': 'Continuar a execução do pipeline com as exceções enviadas acima',
       'review.selectedCount': '{count} selecionado(s)',
 
@@ -2473,6 +2476,7 @@ window.IGNITE_I18N = {
       'review.bulkPlaceholder': 'Begründung, die auf alle ausgewählten Probleme angewendet werden soll…',
       'review.stopPipeline': 'Pipeline stoppen',
       'review.stopPipelineTitle': 'Diesen Pipeline-Lauf stoppen, anstatt nach der Pause fortzufahren',
+      'review.submitJustificationsTitle': "Die begründeten Befunde speichern und diesen Lauf beenden, ohne fortzufahren. Sie bleiben erhalten und gelten beim nächsten Scan weiter.",
       'review.continueTitle': 'Den Pipeline-Lauf mit den oben eingereichten Ausnahmen fortsetzen',
       'review.selectedCount': '{count} ausgewählt',
 
