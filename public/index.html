@@ -10408,6 +10408,16 @@
 
     $('scanQueueTab').addEventListener('click', () => setScanQueueOpen(!scanQueueOpen()));
     $('scanQueueCloseBtn').addEventListener('click', () => setScanQueueOpen(false));
+    // Esc or a press outside the panel minimizes it. pointerdown (not click) so a
+    // re-render inside the panel can't detach the target before we check it.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && scanQueueOpen()) setScanQueueOpen(false);
+    });
+    document.addEventListener('pointerdown', (e) => {
+      if (!scanQueueOpen()) return;
+      if ($('scanQueuePanel').contains(e.target) || $('scanQueueTab').contains(e.target)) return;
+      setScanQueueOpen(false);
+    });
     $('scanQueueWaiting').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-queue-action]');
       if (!btn || btn.disabled) return;
