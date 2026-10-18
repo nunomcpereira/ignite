@@ -23,6 +23,37 @@ This means an agent working on your codebase can catch a hardcoded secret,
 an ungoverned AI call, or a risky dependency *before* it's ever committed —
 the same gate that blocks onboarding, available as a tool call mid-session.
 
+## Guideline catalog
+
+`list_guidelines` returns the full text of each guideline (rationale and remediation). Every
+guideline with a mechanical check runs in `check_guidelines`/`check_project`; the
+ones marked *advice* have no reliable regex shape and are there for agents to
+follow while writing code. Many were added because they're the findings Ignite's
+Phase 3/4 engines report most often across real scans (license, credentials in
+URLs, `actions/checkout` credential persistence, Dockerfile HEALTHCHECK/USER/
+package pinning, OpenAPI security, Terraform exposure, ...).
+
+| Category | Guidelines |
+|---|---|
+| ai-governance | `ai-recursion-limit` |
+| security — secrets | `no-hardcoded-secrets`, `no-committed-env-files`, `no-committed-private-keys`, `no-credentials-in-urls`, `no-sensitive-data-in-logs` |
+| security — injection | `no-injection-sinks`, `no-sql-injection`, `no-xss-sinks`, `no-ssrf-sinks`, `no-path-traversal-sinks`, `no-insecure-deserialization`, `no-unsafe-xml-parsing` (defusedxml), `no-dynamic-urllib-open`, `no-template-var-in-href`, `no-handrolled-html-sanitization`, `no-log-injection` *(advice)* |
+| security — crypto/transport/auth | `no-weak-crypto`, `no-insecure-randomness`, `no-tls-verification-disabled` (incl. Ansible `validate_certs`, `curl -k`), `no-jwt-verification-disabled`, `no-plaintext-http-egress`, `no-csrf-disabled`, `no-permissive-cors`, `no-substring-url-validation`, `no-sensitive-data-in-browser-storage`, `no-debug-mode-enabled` |
+| security — GitHub Actions | `no-unpinned-gha-action` (full commit SHA), `gha-script-injection`, `gha-pwn-request`, `gha-write-all-permissions`, `gha-permissions-not-declared`, `gha-checkout-persist-credentials` |
+| container | `docker-runs-as-root`, `docker-non-numeric-user`, `docker-unpinned-base-image`, `docker-unpinned-packages`, `docker-secret-build-arg`, `docker-remote-script-execution`, `docker-missing-healthcheck`, `docker-exec-form-cmd`, `docker-pipefail`, `docker-signed-base-image` *(advice)*, `compose-runs-as-root`, `compose-privileged-container` |
+| iac | `iac-public-exposure`, `iac-encryption-disabled`, `iac-aws-baseline` *(advice)* |
+| api | `openapi-security-defined`, `openapi-operation-metadata` *(advice)*, `api-rate-limiting` *(advice)* |
+| supply-chain | `python-unpinned-requirements`, `lockfile-committed`, `keep-dependencies-patched` *(advice)* |
+| licensing | `project-license-declared` |
+| quality | `avoid-duplicated-code`, `maintainable-complexity`, `remove-dead-code`, `document-env-vars` *(all advice)* |
+| process | `ai-governance-workflow-required`, `llm-deep-scan-required` *(advice)* |
+
+`project-license-declared` and `lockfile-committed` look at the whole tree, so
+only `check_project` runs them. Test files are skipped where test fixtures would
+otherwise trip the check (TLS, JWT, logging, randomness, browser storage).
+These are fast regex checks for use while coding; the onboarding pipeline goes
+further (e.g. Phase 4's zizmor parses workflow expressions properly).
+
 ## Acknowledging findings via MCP
 
 `onboard_project` already accepts `overrides: [{issueId, justification}]`
