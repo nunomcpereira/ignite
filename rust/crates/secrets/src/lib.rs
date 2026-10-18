@@ -232,6 +232,7 @@ pub struct SecretsResult {
     pub gitignored_skipped: usize,
 }
 
+#[derive(Clone)]
 pub struct SecretsConfig {
     pub known_public_key_patterns: Vec<Regex>,
     pub max_scan_file_bytes: u64,

@@ -218,6 +218,7 @@ pub struct CssDeadCodeResult {
     pub scanned: Option<ScannedCounts>,
 }
 
+#[derive(Debug, Clone)]
 pub struct CssDeadCodeConfig {
     pub enabled: bool,
 }

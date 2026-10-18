@@ -71,6 +71,8 @@
     details > summary { list-style: none; }
     details > summary::-webkit-details-marker { display: none; }
     details[open] .chevron { transform: rotate(90deg); }
+    /* The running phase's 3-line preview duplicates the full log once the card is open. */
+    details[open] .phase-log-preview { display: none; }
     /* Nav rail: collapsed = icons only; .rail-expanded widens it and shows
        each button's label, and body.nav-expanded pushes every screen right
        by the extra width (14rem rail vs 3.5rem) so nothing sits under it. */
@@ -2295,7 +2297,7 @@
         // the mockup's embedded snippet); the full scrollback stays behind
         // the existing <details> toggle / maximize button.
         const previewHtml = ph.state === 'running' && hasLogs && !state.expandedPhases.has(p.id) ? `
-              <div class="bg-slate-900 rounded p-2.5 mt-2.5 font-mono text-[11px] leading-relaxed overflow-hidden">
+              <div class="phase-log-preview bg-slate-900 rounded p-2.5 mt-2.5 font-mono text-[11px] leading-relaxed overflow-hidden">
                 ${ph.logs.slice(-3).map(formatLogLine).join('')}
               </div>` : '';
         // Mirrors the mockup's de-emphasis of stages that aren't the current

@@ -170,6 +170,7 @@ pub struct BoundariesResult {
     pub zone_count: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
 pub struct BoundariesConfig {
     pub enabled: bool,
     pub preset: Option<String>,

@@ -147,6 +147,7 @@ fn strip_last_ext(base: &Path) -> PathBuf {
     PathBuf::from(TRAILING_EXT_RE.replace(&s, "").into_owned())
 }
 
+#[derive(Debug, Clone)]
 pub struct DeadCodeConfig {
     pub enabled: bool,
 }

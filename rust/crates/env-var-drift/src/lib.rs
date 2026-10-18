@@ -47,6 +47,7 @@ pub const KIND_STALE: &str = "env-template-stale-entry";
 /// live, and reading them whole only costs time.
 const MAX_FILE_BYTES: u64 = 2_000_000;
 
+#[derive(Debug, Clone)]
 pub struct EnvVarDriftConfig {
     pub enabled: bool,
 }

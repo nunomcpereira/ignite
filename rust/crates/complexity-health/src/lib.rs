@@ -346,6 +346,7 @@ pub struct ComplexityHealthResult {
     pub metrics: Option<HealthMetrics>,
 }
 
+#[derive(Debug, Clone)]
 pub struct ComplexityHealthConfig {
     pub enabled: bool,
     pub cyclomatic_warn_threshold: i64,

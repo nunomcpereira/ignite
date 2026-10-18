@@ -74,6 +74,46 @@ where
     }
 }
 
+/// Runs a synchronous (filesystem/CPU-bound) built-in check on tokio's
+/// blocking pool under the same per-check timeout as the external tools.
+/// `tokio::time::timeout` alone can't interrupt blocking code called
+/// inline: the timer is only checked when the future yields, and a sync
+/// call never does. Before this, a built-in check that hung (a huge
+/// generated file, a slow network volume) stalled the whole scan with
+/// "→ X starting..." as its last log line. A check that overruns is
+/// abandoned (its thread runs to completion in the background, the scan
+/// moves on) and comes back as `ErrorKind::TimedOut`; a panic becomes an
+/// error for that one check instead of taking down the run.
+async fn run_blocking_check<T, F>(name: &'static str, f: F) -> std::io::Result<T>
+where
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    run_blocking_check_within(name, check_timeout(), f).await
+}
+
+async fn run_blocking_check_within<T, F>(name: &'static str, timeout: std::time::Duration, f: F) -> std::io::Result<T>
+where
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::time::timeout(timeout, tokio::task::spawn_blocking(f)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(join_err)) => Err(std::io::Error::other(format!("{name} panicked: {join_err}"))),
+        Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("{name} timed out after {}s", timeout.as_secs()))),
+    }
+}
+
+/// Engine tag for a built-in check that returned an error, so coverage
+/// reports a timeout as `timed_out` rather than a generic failure.
+fn engine_for_check_error(e: &std::io::Error) -> &'static str {
+    if e.kind() == std::io::ErrorKind::TimedOut {
+        "timed_out"
+    } else {
+        "error"
+    }
+}
+
 fn to_oe_codeql_finding(f: &ignite_codeql_cross_file::CodeqlFinding) -> OeCodeqlFinding {
     OeCodeqlFinding {
         file: Some(f.file.clone()),
@@ -287,7 +327,12 @@ pub async fn run_phase4_checks(
     let secrets_cache: HashMap<String, ignite_secrets::CachedFileEntry> =
         secrets_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_secrets::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
     let __t_secrets = std::time::Instant::now();
-    let (mut secrets_result, secrets_new_cache) = ignite_secrets::check_secrets(root, &config.secrets, &secrets_cache)?;
+    // Fails closed: a secrets scan that errors or times out aborts Phase 4
+    // rather than letting the run pass with secrets unchecked.
+    let (mut secrets_result, secrets_new_cache) = {
+        let (root, secrets_config) = (root.to_path_buf(), config.secrets.clone());
+        run_blocking_check("secrets", move || ignite_secrets::check_secrets(&root, &secrets_config, &secrets_cache)).await.inspect_err(|e| log(&format!("✗ secrets failed: {e}")))?
+    };
     coverage.push(ignite_policy::CheckCoverage::completed("secrets", if config.secrets.gitleaks_enabled { "built-in+gitleaks" } else { "built-in" }, false).with_scope(format!("{} file(s) scanned, {} cache hit(s)", secrets_result.scanned, secrets_result.cache_hits)));
     store.replace_file_scan_cache(
         &config.org,
@@ -419,7 +464,10 @@ pub async fn run_phase4_checks(
     let governance_cache: HashMap<String, ignite_ai_governance::CachedFileEntry> =
         governance_cache.into_iter().filter_map(|(k, v)| serde_json::from_value::<ignite_ai_governance::CachedFileEntry>(v.findings).ok().map(|e| (k, e))).collect();
     let __t_governance = std::time::Instant::now();
-    let (governance_result, governance_new_cache) = ignite_ai_governance::check_ai_governance(root, &governance_cache)?;
+    let (governance_result, governance_new_cache) = {
+        let root = root.to_path_buf();
+        run_blocking_check("governance", move || ignite_ai_governance::check_ai_governance(&root, &governance_cache)).await.inspect_err(|e| log(&format!("✗ governance failed: {e}")))?
+    };
     store.replace_file_scan_cache(
         &config.org,
         &config.repo,
@@ -455,9 +503,13 @@ pub async fn run_phase4_checks(
         };
         log("→ fileEncapsulation starting...");
         let __t = std::time::Instant::now();
-        let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation).unwrap_or_else(|e| {
+        let file_encapsulation_result = {
+            let (root, fe_config) = (root.to_path_buf(), config.file_encapsulation.clone());
+            run_blocking_check("fileEncapsulation", move || ignite_file_encapsulation::check_file_encapsulation(&root, &fe_config)).await
+        }
+        .unwrap_or_else(|e| {
             log(&format!("✗ fileEncapsulation failed: {e}"));
-            ignite_file_encapsulation::FileEncapsulationResult { findings: vec![], engine: "error" }
+            ignite_file_encapsulation::FileEncapsulationResult { findings: vec![], engine: engine_for_check_error(&e) }
         });
         let ms = __t.elapsed().as_millis() as u64;
         task_timings.push(("fileEncapsulation", ms));
@@ -882,9 +934,13 @@ pub async fn run_phase4_checks(
     // I/O error from one of these six lightweight built-in checks (a
     // locked file, a dangling symlink). Each now degrades to an empty,
     // `engine: "error"`-tagged result and keeps going instead.
-    let file_encapsulation_result = ignite_file_encapsulation::check_file_encapsulation(root, &config.file_encapsulation).unwrap_or_else(|e| {
+    let file_encapsulation_result = {
+        let (root, fe_config) = (root.to_path_buf(), config.file_encapsulation.clone());
+        run_blocking_check("fileEncapsulation", move || ignite_file_encapsulation::check_file_encapsulation(&root, &fe_config)).await
+    }
+    .unwrap_or_else(|e| {
         log(&format!("✗ fileEncapsulation failed: {e}"));
-        ignite_file_encapsulation::FileEncapsulationResult { findings: vec![], engine: "error" }
+        ignite_file_encapsulation::FileEncapsulationResult { findings: vec![], engine: engine_for_check_error(&e) }
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("fileEncapsulation", ms));
@@ -926,9 +982,13 @@ pub async fn run_phase4_checks(
 
     log("→ euAiActDocuments starting...");
     let __t = std::time::Instant::now();
-    let ai_act_docs_result = ignite_compliance_documents::check_compliance_documents(root, config.eu_ai_act_documents_enabled).unwrap_or_else(|e| {
+    let ai_act_docs_result = {
+        let (root, enabled) = (root.to_path_buf(), config.eu_ai_act_documents_enabled);
+        run_blocking_check("euAiActDocuments", move || ignite_compliance_documents::check_compliance_documents(&root, enabled)).await
+    }
+    .unwrap_or_else(|e| {
         log(&format!("✗ euAiActDocuments failed: {e}"));
-        ignite_compliance_documents::ComplianceDocumentsResult { engine: "error", documents: Default::default() }
+        ignite_compliance_documents::ComplianceDocumentsResult { engine: engine_for_check_error(&e), documents: Default::default() }
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("euAiActDocuments", ms));
@@ -944,9 +1004,13 @@ pub async fn run_phase4_checks(
 
     log("→ deadCode starting...");
     let __t = std::time::Instant::now();
-    let dead_code_result = ignite_dead_code::check_dead_code(root, &config.dead_code).unwrap_or_else(|e| {
+    let dead_code_result = {
+        let (root, dc_config) = (root.to_path_buf(), config.dead_code.clone());
+        run_blocking_check("deadCode", move || ignite_dead_code::check_dead_code(&root, &dc_config)).await
+    }
+    .unwrap_or_else(|e| {
         log(&format!("✗ deadCode failed: {e}"));
-        ignite_dead_code::DeadCodeResult { findings: vec![], engine: "error", scanned: 0, reached: 0, entries: 0 }
+        ignite_dead_code::DeadCodeResult { findings: vec![], engine: engine_for_check_error(&e), scanned: 0, reached: 0, entries: 0 }
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("deadCode", ms));
@@ -958,13 +1022,18 @@ pub async fn run_phase4_checks(
     });
 
     let churn: HashMap<String, u64> = HashMap::new(); // git-churn weighting not yet wired (needs `git log --numstat`)
-    let org = config.org.clone();
-    let repo = config.repo.clone();
     log("→ health starting...");
     let __t = std::time::Instant::now();
-    let health_result = ignite_complexity_health::check_complexity_health(root, &config.complexity_health, &churn, |rel_path| store.get_runtime_coverage_for_file(&org, &repo, rel_path).and_then(|r| r.covered_pct)).unwrap_or_else(|e| {
+    // Runtime coverage is fetched up front (one query) so the check can run
+    // off the async task without borrowing the store.
+    let runtime_coverage = store.get_runtime_coverage_map(&config.org, &config.repo);
+    let health_result = {
+        let (root, health_config) = (root.to_path_buf(), config.complexity_health.clone());
+        run_blocking_check("health", move || ignite_complexity_health::check_complexity_health(&root, &health_config, &churn, |rel_path| runtime_coverage.get(rel_path).and_then(|r| r.covered_pct))).await
+    }
+    .unwrap_or_else(|e| {
         log(&format!("✗ health failed: {e}"));
-        ignite_complexity_health::ComplexityHealthResult { findings: vec![], engine: "error", metrics: None }
+        ignite_complexity_health::ComplexityHealthResult { findings: vec![], engine: engine_for_check_error(&e), metrics: None }
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("health", ms));
@@ -977,9 +1046,13 @@ pub async fn run_phase4_checks(
 
     log("→ cssDeadCode starting...");
     let __t = std::time::Instant::now();
-    let css_dead_code_result = ignite_css_dead_code::check_css_dead_code(root, &config.css_dead_code).unwrap_or_else(|e| {
+    let css_dead_code_result = {
+        let (root, css_config) = (root.to_path_buf(), config.css_dead_code.clone());
+        run_blocking_check("cssDeadCode", move || ignite_css_dead_code::check_css_dead_code(&root, &css_config)).await
+    }
+    .unwrap_or_else(|e| {
         log(&format!("✗ cssDeadCode failed: {e}"));
-        ignite_css_dead_code::CssDeadCodeResult { findings: vec![], engine: "error", scanned: None }
+        ignite_css_dead_code::CssDeadCodeResult { findings: vec![], engine: engine_for_check_error(&e), scanned: None }
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("cssDeadCode", ms));
@@ -992,9 +1065,13 @@ pub async fn run_phase4_checks(
 
     log("→ boundaries starting...");
     let __t = std::time::Instant::now();
-    let boundaries_result = ignite_boundaries::check_boundaries(root, &config.boundaries).unwrap_or_else(|e| {
+    let boundaries_result = {
+        let (root, boundaries_config) = (root.to_path_buf(), config.boundaries.clone());
+        run_blocking_check("boundaries", move || ignite_boundaries::check_boundaries(&root, &boundaries_config)).await
+    }
+    .unwrap_or_else(|e| {
         log(&format!("✗ boundaries failed: {e}"));
-        ignite_boundaries::BoundariesResult { findings: vec![], engine: "error", zone_count: None }
+        ignite_boundaries::BoundariesResult { findings: vec![], engine: engine_for_check_error(&e), zone_count: None }
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("boundaries", ms));
@@ -1007,9 +1084,13 @@ pub async fn run_phase4_checks(
 
     log("→ envVarDrift starting...");
     let __t = std::time::Instant::now();
-    let env_var_drift_result = ignite_env_var_drift::check_env_var_drift(root, &config.env_var_drift).unwrap_or_else(|e| {
+    let env_var_drift_result = {
+        let (root, drift_config) = (root.to_path_buf(), config.env_var_drift.clone());
+        run_blocking_check("envVarDrift", move || ignite_env_var_drift::check_env_var_drift(&root, &drift_config)).await
+    }
+    .unwrap_or_else(|e| {
         log(&format!("✗ envVarDrift failed: {e}"));
-        ignite_env_var_drift::EnvVarDriftResult { findings: vec![], engine: "error", templates: vec![] }
+        ignite_env_var_drift::EnvVarDriftResult { findings: vec![], engine: engine_for_check_error(&e), templates: vec![] }
     });
     let ms = __t.elapsed().as_millis() as u64;
     task_timings.push(("envVarDrift", ms));
@@ -1183,6 +1264,35 @@ fn derive_eu_ai_act_findings(posture: &ignite_feature_posture::PostureReport, do
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_hung_blocking_check_times_out_instead_of_stalling_the_scan() {
+        let t0 = std::time::Instant::now();
+        let r: std::io::Result<()> = run_blocking_check_within("stuck", std::time::Duration::from_millis(100), || {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            Ok(())
+        })
+        .await;
+        let e = r.unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(engine_for_check_error(&e), "timed_out");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1), "returned after {:?}", t0.elapsed());
+    }
+
+    #[tokio::test]
+    async fn a_panicking_blocking_check_degrades_to_an_error() {
+        let r: std::io::Result<()> = run_blocking_check_within("boom", std::time::Duration::from_secs(5), || panic!("boom")).await;
+        let e = r.unwrap_err();
+        assert_eq!(engine_for_check_error(&e), "error");
+        assert!(e.to_string().contains("boom panicked"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_blocking_check_result_and_error_pass_through() {
+        assert_eq!(run_blocking_check_within("ok", std::time::Duration::from_secs(5), || Ok(7)).await.unwrap(), 7);
+        let e = run_blocking_check_within::<(), _>("err", std::time::Duration::from_secs(5), || Err(std::io::Error::other("nope"))).await.unwrap_err();
+        assert_eq!(e.to_string(), "nope");
+    }
     use std::collections::HashMap as StdHashMap;
     use std::fs;
     use tempfile::tempdir;
