@@ -16,6 +16,18 @@ ID: codeql-sast::public/index.html::1375::js/xss-through-dom
 # Code: document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n-html')); });
 Acknowledge: Narrowed replacement for the previously-acknowledged finding at the old [data-i18n] innerHTML call (now textContent - see the applyStaticTranslations doc comment above it). Only elements explicitly opted in via data-i18n-html still use innerHTML, for the handful of translation keys whose copy deliberately carries inline markup (bold spans in upload.dropSubtitle, a line break in footer.note, etc). t()'s only inputs remain (1) the fixed attribute-name string 'data-i18n-html' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. No untrusted data reaches this call.
 
+ID: dependency-vulnerability::rust/crates/staging/Cargo.toml::12::zip::RUSTSEC-2026-0367
+# [ERROR] dependency-vulnerability - zip@2.4.2 — RUSTSEC-2026-0367: Insecure Preservation of SUID/SGID Bits during ZIP Extraction Leading to Potential Privilege Escalation (CVSS 7.3)
+#   rust/crates/staging/Cargo.toml:12
+# Code: zip = { version = "2", default-features = false, features = ["deflate"] }
+Acknowledge: Not reachable in Ignite. The advisory is about zip's own extract() helpers preserving SUID/SGID bits from the archive. rust/crates/staging never calls ZipArchive::extract() or ZipStreamReader::extract(): it walks entries itself, writes each file with fs::File::create and immediately forces mode 0o600 (staging/src/lib.rs set_permissions), so no mode bits from the archive are ever applied. Fixed only in zip 9.0.0 (major bump from 2.x); upgrade tracked as a separate change.
+
+ID: dependency-vulnerability::rust/crates/staging/Cargo.toml::12::zip::RUSTSEC-2026-0369
+# [ERROR] dependency-vulnerability - zip@2.4.2 — RUSTSEC-2026-0369: ZipStreamReader::extract() and ZipArchive::extract() apply Unix permissions through symlinks without confining the target (CVSS 9.1)
+#   rust/crates/staging/Cargo.toml:12
+# Code: zip = { version = "2", default-features = false, features = ["deflate"] }
+Acknowledge: Not reachable in Ignite. The advisory is about zip's extract() helpers applying Unix permissions through symlinks. rust/crates/staging never calls ZipArchive::extract() or ZipStreamReader::extract(); it skips every symlink entry (S_IFLNK check before writing), resolves each path inside the staging root (zip-slip guard), and forces mode 0o600 on each regular file it writes, so no permission is ever applied through a link. Fixed only in zip 9.0.0 (major bump from 2.x); upgrade tracked as a separate change.
+
 ID: gha-security::.github/workflows/deploy-docs.yml::13
 # [ERROR] gha-security - overly broad permissions (  pages: write)
 #   .github/workflows/deploy-docs.yml:13
@@ -25,11 +37,6 @@ ID: gha-security::.github/workflows/deploy-docs.yml::14
 # [ERROR] gha-security - overly broad permissions (  id-token: write)
 #   .github/workflows/deploy-docs.yml:14
 Acknowledge: Same justification as the `pages: write` entry above - the minimal, documented permission pair actions/deploy-pages needs for OIDC-based deployment.
-
-ID: malicious-dependency::docs-site/package.json::0
-# [ERROR] malicious-dependency - Dependency "react-dom==19.3.0" flagged by GuardDog (npm): metadata_mismatch, capability-network-outbound, capability-process-spawn [risk suspicious, 6.3/10].
-#   docs-site/package.json
-Acknowledge: False positive. GuardDog's only risk is metadata_mismatch on scripts.start: the npm registry manifest has "node server.js" while the tarball's package.json has none. npm adds that default start script itself when a package ships a server.js and declares no start script (normalize-package-data), and react-dom ships server.js (its SSR entry point). The capability-* hits are what a DOM/SSR renderer is expected to do. Official Meta package, used only by the docs-site build.
 
 ID: secret::docs-site/docs/ci-integration.md::493
 # [ERROR] secret - Hardcoded token
@@ -54,6 +61,60 @@ ID: secret::rust/crates/config/src/lib.rs::1476
 #   rust/crates/config/src/lib.rs:1476
 # Code: cfg.github.oauth.client_secret = "oauth-secret-value".to_string();
 Acknowledge: Same test as the entry above - a fabricated OAuth client secret literal used only to verify the redacting Debug impl, not a real credential.
+
+ID: secret::rust/crates/guidelines/src/catalog.rs::340
+# [ERROR] secret - Hardcoded connection-string credential
+#   rust/crates/guidelines/src/catalog.rs:340
+# Code: description: "A URL or connection string carries an inline password (`postgres://user:s3cret@db.prod:5432/app`, `https://user:token@host/...`). Placeholders (`${DB_PASSWORD}`, `<password>`, `password`, `changeme`) and loopback hosts are not flagged.",
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::1863
+# [ERROR] secret - Hardcoded private-key
+#   rust/crates/guidelines/src/checks.rs:1863
+# Code: assert_eq!(lines_of("noCommittedPrivateKeys", &format!("x\n-----BEGIN RSA PRIVATE KEY-----\n{body}\n"), "key.pem"), vec![2]);
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::1866
+# [ERROR] secret - Hardcoded private-key
+#   rust/crates/guidelines/src/checks.rs:1866
+# Code: assert_eq!(lines_of("noCommittedPrivateKeys", &format!("k = \"-----BEGIN OPENSSH PRIVATE KEY-----\\n{body}\\n\""), "a.py"), vec![1]);
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::1872
+# [ERROR] secret - Hardcoded connection-string credential
+#   rust/crates/guidelines/src/checks.rs:1872
+# Code: let hits = run_check("noCredentialsInUrls", "DB = 'postgres://app:S3cr3tPw@db.prod.internal:5432/app'\n", "settings.py").unwrap();
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::1875
+# [ERROR] secret - Hardcoded connection-string credential
+#   rust/crates/guidelines/src/checks.rs:1875
+# Code: assert!(lines_of("noCredentialsInUrls", "url: postgres://app:${DB_PASSWORD}@db:5432/app\n", "compose.yml").is_empty());
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::1876
+# [ERROR] secret - Hardcoded connection-string credential
+#   rust/crates/guidelines/src/checks.rs:1876
+# Code: assert!(lines_of("noCredentialsInUrls", "postgres://user:password@db.example.com/x\n", "README.md").is_empty());
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::1877
+# [ERROR] secret - Hardcoded connection-string credential
+#   rust/crates/guidelines/src/checks.rs:1877
+# Code: assert!(lines_of("noCredentialsInUrls", "postgres://postgres:postgres@localhost:5432/dev\n", "x.env.example").is_empty());
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::2069
+# [ERROR] secret - Hardcoded private-key
+#   rust/crates/guidelines/src/checks.rs:2069
+# Code: assert!(lines_of("noCommittedPrivateKeys", "placeholder=\"-----BEGIN PRIVATE KEY-----…\"\n", "a.tsx").is_empty());
+Acknowledge: 
+
+ID: secret::rust/crates/guidelines/src/checks.rs::765
+# [ERROR] secret - Hardcoded connection-string credential
+#   rust/crates/guidelines/src/checks.rs:765
+# Code: // scheme://user:password@host — group 1 is the password, group 2 the host.
+Acknowledge: 
 
 ID: secret::rust/crates/llm-client/src/lib.rs::482
 # [ERROR] secret - Hardcoded api_key
@@ -121,9 +182,9 @@ ID: secret::rust/crates/secrets/src/lib.rs::1024
 # Code: assert_eq!(matches[0].matched_text, "sk_live_abcdef0123456789");
 Acknowledge: Same fabricated Stripe-format fixture literal as the entry above, asserted as the expected match text in the same test - not a real credential.
 
-ID: secret::rust/crates/secrets/src/lib.rs::1025
+ID: secret::rust/crates/secrets/src/lib.rs::1026
 # [ERROR] secret - Hardcoded stripe-access-token
-#   rust/crates/secrets/src/lib.rs:1025
+#   rust/crates/secrets/src/lib.rs:1026
 # Code: assert_eq!(matches[1].matched_text, "sk_live_zzzzzz9999999999");
 Acknowledge: Same fabricated Stripe-format fixture literal as the two entries above, asserted as the expected second match in the same regex-tester unit test — not a real credential.
 
