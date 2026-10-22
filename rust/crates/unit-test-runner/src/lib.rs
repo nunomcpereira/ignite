@@ -61,6 +61,13 @@ struct DetectedRunner {
 /// a pyproject.toml or on a parse error.
 const PYPROJECT_DEPS_EXTRACT: &str = "(test -f pyproject.toml && python3 -c 'import tomllib; d = tomllib.load(open(\"pyproject.toml\", \"rb\")); p = d.get(\"project\", {}); names = (\"dev\", \"test\", \"tests\", \"testing\"); opt = p.get(\"optional-dependencies\", {}); grp = d.get(\"dependency-groups\", {}); deps = list(p.get(\"dependencies\", [])) + [x for n in names for x in opt.get(n, [])] + [x for n in names for x in grp.get(n, [])]; open(\"/tmp/_ignite_pyproject_deps.txt\", \"w\").write(chr(10).join(x for x in deps if isinstance(x, str)))' 2>/dev/null || true)";
 
+/// Printed (alone on a line) by a runner command whose test framework
+/// found no tests to run; `run_project_unit_tests` treats that language as
+/// not run rather than passed or failed.
+const NO_TESTS_MARKER: &str = "__IGNITE_NO_TESTS_COLLECTED__";
+
+const PYTEST_NO_TESTS_WRAPPER: &str = "{ pytest; rc=$?; if [ \"$rc\" -eq 5 ]; then echo __IGNITE_NO_TESTS_COLLECTED__; exit 0; fi; exit $rc; }";
+
 fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
     let mut matches = Vec::new();
 
@@ -122,7 +129,10 @@ fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
                 // ships 25.0.1). stdlib `tomllib` (3.11+), no extra tools.
                 PYPROJECT_DEPS_EXTRACT,
                 "(test -s /tmp/_ignite_pyproject_deps.txt && pip install --quiet --no-input --disable-pip-version-check -r /tmp/_ignite_pyproject_deps.txt || true)",
-                "pytest",
+                // pytest exits 5 when it collects no tests — a project
+                // with no test suite, not a failing one. Report it via a
+                // marker line instead of failing the phase.
+                PYTEST_NO_TESTS_WRAPPER,
             ]
             .join(" && "),
         });
@@ -190,12 +200,33 @@ pub async fn run_project_unit_tests(root: &Path, runner: &ToolRunner, mut log: i
         // copies straight into `/work`.
         let args = vec!["run".to_string(), "--rm".to_string(), "-v".to_string(), format!("{root_str}:/repo:ro"), "-w".to_string(), "/work".to_string(), m.image.clone(), "sh".to_string(), "-c".to_string(), format!("cp -a /repo/. /work && {}", m.command)];
         let env = std::collections::HashMap::new();
-        runner.run_tool_streaming("docker", &args, &std::env::temp_dir().to_string_lossy(), |line| log(&line.chars().take(400).collect::<String>()), &env, 10 * 60_000).await.map_err(|e| UnitTestError::TestsFailed(m.language, e.to_string()))?;
+        let mut no_tests = false;
+        runner
+            .run_tool_streaming(
+                "docker",
+                &args,
+                &std::env::temp_dir().to_string_lossy(),
+                |line| {
+                    if line.trim() == NO_TESTS_MARKER {
+                        no_tests = true;
+                    } else {
+                        log(&line.chars().take(400).collect::<String>());
+                    }
+                },
+                &env,
+                10 * 60_000,
+            )
+            .await
+            .map_err(|e| UnitTestError::TestsFailed(m.language, e.to_string()))?;
+        if no_tests {
+            log(&format!("ℹ {} project has no tests to run — skipping.", m.language));
+            continue;
+        }
         log(&format!("✓ {} unit tests passed.", m.language));
         languages.push(m.language);
     }
 
-    Ok(UnitTestResult { ran: true, languages })
+    Ok(UnitTestResult { ran: !languages.is_empty(), languages })
 }
 
 #[cfg(test)]
@@ -273,6 +304,27 @@ mod tests {
     }
 
     #[test]
+    fn pytest_wrapper_maps_exit_5_to_the_no_tests_marker_and_keeps_other_codes() {
+        assert!(PYTEST_NO_TESTS_WRAPPER.contains(NO_TESTS_MARKER));
+        let bin = tempfile::tempdir().unwrap();
+        let fake = bin.path().join("pytest");
+        let run = |code: i32| {
+            std::fs::write(&fake, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            let path = format!("{}:{}", bin.path().display(), std::env::var("PATH").unwrap_or_default());
+            std::process::Command::new("sh").arg("-c").arg(PYTEST_NO_TESTS_WRAPPER).env("PATH", path).output().unwrap()
+        };
+        let none = run(5);
+        assert!(none.status.success());
+        assert_eq!(String::from_utf8_lossy(&none.stdout).trim(), NO_TESTS_MARKER);
+        let failed = run(1);
+        assert_eq!(failed.status.code(), Some(1));
+        assert!(!String::from_utf8_lossy(&failed.stdout).contains(NO_TESTS_MARKER));
+        assert!(run(0).status.success());
+    }
+
+    #[test]
     fn python_runner_installs_pyproject_deps_even_if_editable_install_fails() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
@@ -281,7 +333,7 @@ mod tests {
         // Each step is `(... || true)`, so a failing `-e .` can't stop the direct install.
         let editable = python.command.find("-e . ||").unwrap();
         let direct = python.command.find("-r /tmp/_ignite_pyproject_deps.txt").unwrap();
-        assert!(direct > editable && python.command.ends_with("pytest"));
+        assert!(direct > editable && python.command.ends_with(PYTEST_NO_TESTS_WRAPPER));
     }
 
     #[test]
