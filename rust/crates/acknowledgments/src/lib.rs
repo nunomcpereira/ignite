@@ -206,10 +206,27 @@ fn render_body(mut blocks: Vec<(String, String)>) -> String {
     blocks.into_iter().map(|(_, b)| b).collect::<Vec<_>>().join("\n\n")
 }
 
+/// The part of an issue id after `<category>::<file>::<line>` (e.g.
+/// `zip::RUSTSEC-2026-0367`), or `None` when the id has nothing after the
+/// line. Strips the known prefix rather than splitting on `::`, so a file
+/// path containing `::` still works.
+fn id_discriminator<'a>(id: &'a str, category: &str, file: Option<&str>) -> Option<&'a str> {
+    let prefix = format!("{category}::{}::", file?);
+    id.strip_prefix(&prefix)?.split_once("::").map(|(_, d)| d)
+}
+
 /// Whether `entry` is a justified entry for `finding` whose line merely
-/// moved: same category and file, and the same flagged source line (`# Code:`).
+/// moved: same category and file, the same flagged source line (`# Code:`),
+/// and the same discriminator after the line number. The discriminator
+/// check matters for dependency advisories: every advisory against one
+/// dependency sits on the same manifest line with the same code, and only
+/// the advisory id in the discriminator tells them apart.
 fn follows_code(entry: &ExistingEntry, finding: &Finding, code: &str) -> bool {
-    !entry.justification.is_empty() && entry.category == finding.category && entry.file.as_deref() == finding.file.as_deref() && entry.code.as_deref() == Some(code)
+    !entry.justification.is_empty()
+        && entry.category == finding.category
+        && entry.file.as_deref() == finding.file.as_deref()
+        && entry.code.as_deref() == Some(code)
+        && id_discriminator(&entry.id, &entry.category, entry.file.as_deref()) == id_discriminator(&finding.id, &finding.category, finding.file.as_deref())
 }
 
 /// The regenerated body (everything after [`HEADER`]) for
@@ -239,7 +256,11 @@ pub fn regenerate(existing_text: &str, findings: &[Finding]) -> Option<String> {
             continue;
         }
         let code = code_for_finding(finding.snippet.as_ref());
-        let moved = code.as_deref().and_then(|c| existing.iter().position(|e| !e.superseded && follows_code(e, finding, c)));
+        // An entry whose own finding is still reported this run hasn't moved
+        // anywhere, so it's never re-keyed to a different finding.
+        let moved = code.as_deref().and_then(|c| {
+            existing.iter().position(|e| !e.superseded && !findings.iter().any(|f| f.id == e.id) && follows_code(e, finding, c))
+        });
         let justification = match moved {
             Some(i) => {
                 existing[i].superseded = true;
@@ -505,6 +526,42 @@ mod tests {
         assert!(!body.contains("ID: secret::a.rs::10"), "the old id must not survive");
         assert!(body.contains("Acknowledge: fake token fixture\n") || body.ends_with("Acknowledge: fake token fixture"));
         assert!(!body.contains("auto-carried-forward"));
+    }
+
+    const ZIP_LINE: &str = "zip = { version = \"2\", default-features = false }";
+    const JUSTIFIED_ZIP_0367: &str = "ID: dependency-vulnerability::Cargo.toml::12::zip::RUSTSEC-0367\n# [ERROR] dependency-vulnerability - zip RUSTSEC-0367\n#   Cargo.toml:12\n# Code: zip = { version = \"2\", default-features = false }\nAcknowledge: SUID bits are never applied\n";
+
+    fn zip_advisory(advisory: &str, line: i64) -> Finding {
+        with_code(finding(&format!("dependency-vulnerability::Cargo.toml::{line}::zip::{advisory}"), "dependency-vulnerability", "Cargo.toml", line, advisory), ZIP_LINE)
+    }
+
+    #[test]
+    fn a_new_advisory_on_the_same_dependency_line_gets_a_blank_entry_not_another_advisorys_justification() {
+        // RUSTSEC-0367 is still reported (and overridden); RUSTSEC-0429 is new on the same line.
+        let body = regenerate(JUSTIFIED_ZIP_0367, &[overridden(zip_advisory("RUSTSEC-0367", 12)), zip_advisory("RUSTSEC-0429", 12)]).unwrap();
+        let entries = parse_blocks(&body);
+        let get = |id: &str| entries.iter().find(|e| e.id == id).map(|e| e.justification.clone());
+        assert_eq!(get("dependency-vulnerability::Cargo.toml::12::zip::RUSTSEC-0367").as_deref(), Some("SUID bits are never applied"), "the existing entry stays");
+        assert_eq!(get("dependency-vulnerability::Cargo.toml::12::zip::RUSTSEC-0429").as_deref(), Some(""), "the new advisory needs its own justification");
+    }
+
+    #[test]
+    fn a_new_advisory_does_not_inherit_a_fixed_advisorys_justification() {
+        // RUSTSEC-0367 is gone (fixed); a different advisory appears on the same line.
+        let body = regenerate(JUSTIFIED_ZIP_0367, &[zip_advisory("RUSTSEC-0429", 12)]).unwrap();
+        let entries = parse_blocks(&body);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "dependency-vulnerability::Cargo.toml::12::zip::RUSTSEC-0429");
+        assert_eq!(entries[0].justification, "");
+    }
+
+    #[test]
+    fn an_advisory_whose_manifest_line_moved_keeps_its_own_justification() {
+        let body = regenerate(JUSTIFIED_ZIP_0367, &[zip_advisory("RUSTSEC-0367", 14)]).unwrap();
+        let entries = parse_blocks(&body);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "dependency-vulnerability::Cargo.toml::14::zip::RUSTSEC-0367");
+        assert_eq!(entries[0].justification, "SUID bits are never applied");
     }
 
     #[test]

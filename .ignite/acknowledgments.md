@@ -28,6 +28,12 @@ ID: dependency-vulnerability::rust/crates/staging/Cargo.toml::12::zip::RUSTSEC-2
 # Code: zip = { version = "2", default-features = false, features = ["deflate"] }
 Acknowledge: Not reachable in Ignite. The advisory is about zip's extract() helpers applying Unix permissions through symlinks. rust/crates/staging never calls ZipArchive::extract() or ZipStreamReader::extract(); it skips every symlink entry (S_IFLNK check before writing), resolves each path inside the staging root (zip-slip guard), and forces mode 0o600 on each regular file it writes, so no permission is ever applied through a link. Fixed only in zip 9.0.0 (major bump from 2.x); upgrade tracked as a separate change.
 
+ID: dependency-vulnerability::rust/crates/staging/Cargo.toml::12::zip::RUSTSEC-2026-0429
+# [ERROR] dependency-vulnerability - zip@2.4.2 — RUSTSEC-2026-0429: zip: `ZipArchive::extract` aborts the process on a symlink entry with a large declared size (CVE-2026-115909) (CVSS 7.5)
+#   rust/crates/staging/Cargo.toml:12
+# Code: zip = { version = "2", default-features = false, features = ["deflate"] }
+Acknowledge: Not reachable in Ignite. The abort is inside zip's own ZipArchive::extract() symlink handling. rust/crates/staging never calls ZipArchive::extract() or ZipStreamReader::extract(): extract_zip walks entries with by_index() and skips every symlink entry (S_IFLNK mode check) before reading any of its data, so a symlink entry's declared size is never acted on. The only other zip users in the workspace (server's pipeline_interactive.rs and its tests) write archives with ZipWriter and never extract. Fixed only in zip 9.0.0 (major bump from 2.x); upgrade tracked as a separate change.
+
 ID: gha-security::.github/workflows/deploy-docs.yml::13
 # [ERROR] gha-security - overly broad permissions (  pages: write)
 #   .github/workflows/deploy-docs.yml:13

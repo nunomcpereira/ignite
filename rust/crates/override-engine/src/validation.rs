@@ -50,9 +50,18 @@ pub fn validate_overrides<'a>(issues: &'a [Issue], overrides: &[SubmittedOverrid
                 // is safe regardless of what characters the file path itself
                 // contains.
                 let expected_prefix = issue.file.as_deref().map(|file| format!("{}::{file}::", issue.category));
+                //
+                // Only the line may differ: the discriminator after it (e.g.
+                // `zip::RUSTSEC-2026-0367`) must be identical. Several
+                // advisories against one dependency all sit on the same
+                // manifest line with the same code, so without this a
+                // justification for one advisory covered a different one.
+                let issue_discriminator = expected_prefix.as_deref().and_then(|prefix| discriminator_after_prefix(&issue.id, prefix));
                 if let Some(pos) = unmatched_overrides.iter().position(|o| {
                     o.code.as_deref().map(|c| c.trim()) == Some(code) &&
-                    expected_prefix.as_deref().is_some_and(|prefix| o.issue_id.starts_with(prefix))
+                    expected_prefix.as_deref().is_some_and(|prefix| {
+                        o.issue_id.starts_with(prefix) && discriminator_after_prefix(&o.issue_id, prefix) == issue_discriminator
+                    })
                 }) {
                     let o = unmatched_overrides.remove(pos);
                     applied.push((issue, o.justification.trim().to_string()));
@@ -67,6 +76,14 @@ pub fn validate_overrides<'a>(issues: &'a [Issue], overrides: &[SubmittedOverrid
     }
 
     ValidateOverridesResult { ok: unresolved_errors.is_empty(), unresolved_errors, applied }
+}
+
+/// The discriminator of an issue id (`<category>::<file>::<line>[::<discriminator>]`)
+/// given its known `<category>::<file>::` prefix: whatever follows the line
+/// number, or `None` when there's nothing after it. Takes the prefix rather
+/// than splitting on `::` so a file path containing `::` still works.
+fn discriminator_after_prefix<'a>(id: &'a str, prefix: &str) -> Option<&'a str> {
+    id.strip_prefix(prefix)?.split_once("::").map(|(_, d)| d)
 }
 
 /// Splits `validate_overrides`'s own `applied` list into overrides that
@@ -133,6 +150,37 @@ mod tests {
         let result = validate_overrides(&issues, &overrides);
         assert!(result.ok, "line-drifted issue with matching category/file/code must still be resolved via fuzzy match");
         assert_eq!(result.applied.len(), 1);
+    }
+
+    const ZIP_LINE: &str = "zip = { version = \"2\", default-features = false }";
+
+    fn zip_override(advisory: &str, line: i64) -> SubmittedOverride {
+        SubmittedOverride {
+            issue_id: format!("dependency-vulnerability::Cargo.toml::{line}::zip::{advisory}"),
+            justification: format!("{advisory} is not reachable"),
+            code: Some(ZIP_LINE.to_string()),
+        }
+    }
+
+    #[test]
+    fn fuzzy_match_never_moves_a_justification_to_a_different_advisory_on_the_same_line() {
+        // Every advisory against one dependency shares the manifest line and
+        // its code. A justification for RUSTSEC-0367 must not resolve a new
+        // RUSTSEC-0429 just because they look the same apart from the id.
+        let new_advisory = issue("dependency-vulnerability::Cargo.toml::2::zip::RUSTSEC-0429", "dependency-vulnerability", "Cargo.toml", ZIP_LINE);
+        let issues = [new_advisory];
+        let result = validate_overrides(&issues, &[zip_override("RUSTSEC-0367", 2)]);
+        assert!(!result.ok, "a different advisory must stay unresolved");
+        assert!(result.applied.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_match_follows_an_advisory_whose_manifest_line_moved() {
+        let moved = issue("dependency-vulnerability::Cargo.toml::2::zip::RUSTSEC-0367", "dependency-vulnerability", "Cargo.toml", ZIP_LINE);
+        let issues = [moved];
+        let result = validate_overrides(&issues, &[zip_override("RUSTSEC-0367", 12)]);
+        assert!(result.ok);
+        assert_eq!(result.applied[0].1, "RUSTSEC-0367 is not reachable");
     }
 
     #[test]
