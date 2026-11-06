@@ -104,6 +104,12 @@ pub struct PiiDataFlowResult {
     pub engine: &'static str,
 }
 
+/// `bearer scan` budget. The tool-runner default (2 min) is too short for
+/// a real repo: the scan was killed partway, reported nothing, and (before
+/// tool-runner killed process groups) left its worker processes running.
+/// Same 10 min budget Semgrep gets.
+const BEARER_SCAN_TIMEOUT_MS: u64 = 10 * 60_000;
+
 pub async fn bearer_tooling(runner: &ToolRunner) -> bool {
     runner
         .run_tool("bearer", &["version".to_string()], std::env::temp_dir().to_str().unwrap_or("."), RunToolOptions::default())
@@ -317,7 +323,9 @@ pub async fn check_pii_data_flow(root: &Path, runner: &ToolRunner, config: &PiiD
         args.push("--diff".to_string());
     }
 
-    let output = match runner.run_tool("bearer", &args, &root.to_string_lossy(), RunToolOptions::default()).await {
+    let output = match runner
+        .run_tool("bearer", &args, &root.to_string_lossy(), RunToolOptions { timeout_ms: Some(BEARER_SCAN_TIMEOUT_MS), ..Default::default() })
+        .await {
         Ok(o) => o,
         Err(_) => return PiiDataFlowResult { findings: vec![], engine: "disabled" },
     };

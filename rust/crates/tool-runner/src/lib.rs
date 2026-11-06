@@ -261,6 +261,54 @@ fn log_preview(s: &str) -> String {
     )
 }
 
+/// Kills a spawned tool's whole process group when dropped.
+///
+/// Every tool is spawned as the leader of its own process group
+/// (`process_group(0)`), so this guard reaches the processes it started
+/// too. `kill_on_drop` only signals the direct child: `bearer scan`
+/// starts `bearer processing-worker` children, and SIGKILLing the parent
+/// on a timeout left those workers running. In the container, where
+/// `ignite-server` was PID 1, they were reparented to it and piled up
+/// (~100 MB each) until the server restarted.
+///
+/// The guard fires on every exit path: normal completion (leftover
+/// processes in the group are by definition strays of a run that has
+/// finished), error, timeout, and the caller dropping the future. A tool
+/// that wants a long-lived daemon detaches it into its own session, which
+/// takes it out of this group, so it isn't affected.
+struct ProcessGroupGuard {
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pgid: Option<u32>,
+}
+
+impl ProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        ProcessGroupGuard { pgid: pid }
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid.and_then(|p| i32::try_from(p).ok()).filter(|&p| p > 1) {
+            // ESRCH (group already empty) is the normal case and is ignored.
+            // SAFETY: killpg takes plain integers and has no memory effects.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// Puts the child in a new process group led by itself, so
+/// `ProcessGroupGuard` can signal everything it spawns.
+fn isolate_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
 #[derive(Default)]
 pub struct RunToolOptions {
     pub env: HashMap<String, String>,
@@ -348,9 +396,20 @@ impl ToolRunner {
             // codeql/act/...) keeps running detached until it exits on its
             // own. See the identical note on `run_tool_streaming` below.
             .kill_on_drop(true);
+        isolate_process_group(&mut command);
+
+        let child = command.spawn().map_err(|e| ToolError::Failed {
+            command: binary.clone(),
+            args: redacted_args.join(" "),
+            timeout_note: String::new(),
+            detail: e.to_string(),
+        })?;
+        // Declared before `run` so it drops after it: on a timeout the
+        // leader is killed by `kill_on_drop`, then the rest of its group.
+        let _group = ProcessGroupGuard::new(child.id());
 
         let run = async {
-            let output = command.output().await.map_err(|e| ToolError::Failed {
+            let output = child.wait_with_output().await.map_err(|e| ToolError::Failed {
                 command: binary.clone(),
                 args: redacted_args.join(" "),
                 timeout_note: String::new(),
@@ -452,8 +511,10 @@ impl ToolRunner {
             // `child.kill()` below must not leak the child process — Tokio
             // otherwise leaves a dropped Child running as an orphan.
             .kill_on_drop(true);
+        isolate_process_group(&mut command);
 
         let mut child = command.spawn()?;
+        let _group = ProcessGroupGuard::new(child.id());
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
 
@@ -666,6 +727,186 @@ mod tests {
             .await
             .unwrap();
         assert!(out.stdout.starts_with("git version"));
+    }
+
+    /// Polls until `pid` no longer exists (or is a zombie awaiting reap
+    /// by init), up to ~3s.
+    #[cfg(unix)]
+    fn wait_for_pid_gone(pid: i32) -> bool {
+        for _ in 0..60 {
+            // SAFETY: signal 0 only probes for existence.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            let zombie = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().starts_with('Z'))
+                .unwrap_or(false);
+            if !alive || zombie {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    fn unique_pid_file(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("ignite-tool-runner-{tag}-{}-{nanos}.pid", std::process::id()))
+    }
+
+    #[cfg(unix)]
+    fn read_pid(path: &Path) -> i32 {
+        for _ in 0..60 {
+            if let Some(pid) = std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok()) {
+                return pid;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("grandchild never wrote its pid to {}", path.display());
+    }
+
+    /// The Bearer leak: a tool that starts a background worker and then
+    /// gets killed on timeout must not leave that worker running.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_tool_does_not_leave_grandchildren_running() {
+        let pid_file = unique_pid_file("timeout");
+        let alias = format!("alias.spawnworker=!sleep 60 >/dev/null 2>&1 & echo $! > {}; sleep 60", pid_file.display());
+        let runner = ToolRunner::new(HashMap::new());
+        let err = runner
+            .run_tool(
+                "git",
+                &["-c".to_string(), alias, "spawnworker".to_string()],
+                "/tmp",
+                RunToolOptions { timeout_ms: Some(1_000), ..Default::default() },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+        let worker = read_pid(&pid_file);
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(wait_for_pid_gone(worker), "worker {worker} survived the timed-out tool");
+    }
+
+    /// A tool that exits normally but leaves a stray background process
+    /// behind gets that process cleaned up too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn finished_tool_does_not_leave_grandchildren_running() {
+        let pid_file = unique_pid_file("finished");
+        let alias = format!("alias.spawnworker=!sleep 60 >/dev/null 2>&1 & echo $! > {}", pid_file.display());
+        let runner = ToolRunner::new(HashMap::new());
+        runner
+            .run_tool("git", &["-c".to_string(), alias, "spawnworker".to_string()], "/tmp", RunToolOptions::default())
+            .await
+            .unwrap();
+        let worker = read_pid(&pid_file);
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(wait_for_pid_gone(worker), "worker {worker} survived its finished tool");
+    }
+
+    /// PIDs of every `bearer processing-worker` currently on the host.
+    #[cfg(unix)]
+    fn bearer_worker_pids() -> std::collections::HashSet<i32> {
+        let out = std::process::Command::new("ps").args(["-axo", "pid=,command="]).output();
+        let Ok(out) = out else { return Default::default() };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains("bearer processing-worker"))
+            .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+            .collect()
+    }
+
+    /// A git repo of plain JS files big enough that `bearer scan` runs for
+    /// well over 10s. Bearer only scans git-tracked files and skips any
+    /// `.js` over 5KB with no blank lines or comments as "minified", hence the
+    /// commit and the shape of the generated code.
+    #[cfg(unix)]
+    fn bearer_corpus() -> PathBuf {
+        let dir = unique_pid_file("bearer-corpus").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let body: String = (0..150)
+            .map(|i| {
+                format!(
+                    "// handler {i}\nfunction handler{i}(user) {{\n  const email = user.email;\n\n  console.log(\"user\", email);\n  return fetch(\"/api/\" + user.ssn);\n}}\n\n"
+                )
+            })
+            .collect();
+        for n in 0..300 {
+            std::fs::write(dir.join(format!("m{n}.js")), &body).unwrap();
+        }
+        for args in [
+            vec!["init", "-q", "."],
+            vec!["add", "-A"],
+            vec!["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", "corpus"],
+        ] {
+            let ok = std::process::Command::new("git").args(&args).current_dir(&dir).status().unwrap().success();
+            assert!(ok, "git {args:?} failed");
+        }
+        dir
+    }
+
+    /// End to end against the real Bearer binary, reproducing the
+    /// production leak. Bearer's worker checks its parent exactly once, 5s
+    /// after it starts (`monitorParentProcess` uses a one-shot
+    /// `time.NewTimer`), so a `bearer scan` killed later than that leaves
+    /// its workers running forever. The 9s timeout here kills the scan
+    /// after that check. Only workers that appeared during this run are
+    /// considered, so another Bearer scan on the host doesn't affect the
+    /// result. Skips when bearer isn't installed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_bearer_scan_killed_on_timeout_leaves_no_workers() {
+        if std::process::Command::new("bearer").arg("version").output().is_err() {
+            eprintln!("skipping: bearer not installed on PATH");
+            return;
+        }
+        let corpus = bearer_corpus();
+        let before = bearer_worker_pids();
+
+        let mut binaries = HashMap::new();
+        binaries.insert("bearer", "bearer".to_string());
+        let runner = ToolRunner::new(binaries);
+        let args: Vec<String> = ["scan", ".", "--force", "--format", "json", "--quiet", "--disable-version-check", "--exit-code", "0"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sampler_done = done.clone();
+        let sampler = tokio::spawn(async move {
+            let mut seen = std::collections::HashSet::new();
+            while !sampler_done.load(std::sync::atomic::Ordering::SeqCst) {
+                seen.extend(bearer_worker_pids().difference(&before).copied());
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            seen
+        });
+        let result = runner
+            .run_tool("bearer", &args, &corpus.to_string_lossy(), RunToolOptions { timeout_ms: Some(9_000), ..Default::default() })
+            .await;
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        let spawned = sampler.await.unwrap();
+
+        let survivors: Vec<i32> = spawned.iter().copied().filter(|&pid| !wait_for_pid_gone(pid)).collect();
+        // Don't leave a failed run's workers behind on the dev machine.
+        for &pid in &survivors {
+            // SAFETY: plain signal to a PID this test saw appear.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&corpus);
+
+        if spawned.is_empty() || result.is_ok() {
+            eprintln!("skipping: scan didn't run past Bearer's 5s parent check (workers seen: {}, result ok: {})", spawned.len(), result.is_ok());
+            return;
+        }
+        assert!(survivors.is_empty(), "bearer workers outlived the timed-out scan: {survivors:?}");
     }
 
     #[tokio::test]

@@ -155,7 +155,7 @@ ENV PATH="/opt/pipx/bin:${PATH}"
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
       curl ca-certificates gnupg git unzip \
       python3 python3-pip python3-venv pipx \
-      ruby-full ant \
+      ruby-full ant tini \
     && rm -rf /var/lib/apt/lists/*
 # `gnupg`/`unzip` are deliberately never purged (unlike the build-only
 # packages below) - CodeQL's install still needs `unzip` well after this
@@ -386,4 +386,11 @@ ENV PATH="/home/ignite/.local/bin:${PATH}"
 # crates/server/src/routes/tool_updates.rs).
 ENV IGNITE_IN_CONTAINER=1
 EXPOSE 51337 51338
+# tini runs as PID 1 so ignite-server isn't: PID 1 inherits every orphaned
+# process in the container and must reap it. ignite-server doesn't, so a
+# tool's stray child (e.g. a `bearer processing-worker` whose `bearer scan`
+# was killed) used to stay alive or as a zombie until the pod restarted.
+# tool-runner also kills each tool's whole process group; this is the
+# backstop for anything that escapes the group.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["ignite-server"]
