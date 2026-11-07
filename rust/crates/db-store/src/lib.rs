@@ -841,6 +841,27 @@ mod tests {
     }
 
     #[test]
+    fn recent_checks_list_puts_running_projects_first_even_past_the_limit() {
+        let dir = tempdir().unwrap();
+        let store = DbStore::open(&dir.path().join("test.db")).unwrap();
+        let oldest_running = store.create_project("job-old", "acme", "slow", false, "ui", None).unwrap();
+        for i in 0..105 {
+            let id = store.create_project(&format!("job-{i}"), "acme", &format!("r{i}"), false, "ui", None).unwrap();
+            store.finish_project("success", None, None, None, id);
+        }
+        let newer_running = store.create_project("job-new", "acme", "fast", false, "ui", None).unwrap();
+
+        let ids: Vec<i64> = store.list_projects_running_first().iter().map(|p| p.id).collect();
+        assert_eq!(ids.len(), 100);
+        assert_eq!(&ids[..2], &[newer_running, oldest_running], "running first, newest first among them");
+        assert!(ids[2..].windows(2).all(|w| w[0] > w[1]), "then the rest newest first");
+
+        let plain: Vec<i64> = store.list_projects().iter().map(|p| p.id).collect();
+        assert_eq!(plain[0], newer_running);
+        assert!(!plain.contains(&oldest_running), "list_projects keeps its plain newest-first order");
+    }
+
+    #[test]
     fn migrations_are_idempotent_across_two_opens_of_the_same_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");

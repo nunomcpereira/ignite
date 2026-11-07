@@ -279,10 +279,24 @@ impl DbStore {
         .unwrap();
     }
 
+    /// The 100 most recent projects, newest first. `scheduled-rescan`
+    /// depends on that order (first row per repo = its latest run).
     pub fn list_projects(&self) -> Vec<ProjectListRow> {
+        self.list_projects_ordered("p.id DESC")
+    }
+
+    /// Like [`Self::list_projects`], but every `running` project comes first
+    /// (newest first among them), then the rest newest first — the order the
+    /// web UI's Recent Checks list shows. Running rows are ordered before the
+    /// `LIMIT`, so a long-running scan never drops off the list because 100
+    /// newer runs finished while it was still going (an org scan).
+    pub fn list_projects_running_first(&self) -> Vec<ProjectListRow> {
+        self.list_projects_ordered("(p.status = 'running') DESC, p.id DESC")
+    }
+
+    fn list_projects_ordered(&self, order_by: &str) -> Vec<ProjectListRow> {
         let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare_cached(
+        let sql = format!(
                 "SELECT p.id, p.job_id, p.org, p.repo, p.gxp, p.source, p.scan_location, p.status, p.error, p.repo_url, p.pr_url,
                         p.created_at, p.finished_at,
                         (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS doc_count,
@@ -290,9 +304,9 @@ impl DbStore {
                         (SELECT 1 FROM retained_sources r WHERE r.project_id = p.id) AS retained,
                         (SELECT r.tier FROM retained_sources r WHERE r.project_id = p.id) AS retained_tier,
                         p.source_commit_sha, p.shipped_commit_sha
-                 FROM projects p ORDER BY p.id DESC LIMIT 100",
-            )
-            .unwrap();
+                 FROM projects p ORDER BY {order_by} LIMIT 100"
+        );
+        let mut stmt = conn.prepare_cached(&sql).unwrap();
         stmt.query_map([], |row| {
             Ok(ProjectListRow {
                 id: row.get(0)?,

@@ -51,7 +51,8 @@ fn view_denied_for_job(state: &AppState, headers: &HeaderMap, job_id: &str) -> O
 }
 
 async fn list_projects(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(_user): crate::auth::AuthOrUnauthSimulation, headers: HeaderMap) -> Response {
-    let mut projects = state.db.list_projects();
+    // Running checks first, then newest first (the Recent Checks order).
+    let mut projects = state.db.list_projects_running_first();
     // US-17: with grants enforced, only the repositories the caller can view.
     if state.config.security.enforce_grants {
         projects.retain(|p| view_denied(&state, &headers, &p.org, &p.repo).is_none());
