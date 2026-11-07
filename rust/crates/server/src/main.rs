@@ -736,6 +736,29 @@ mod tests {
         (format!("http://{addr}"), token, state)
     }
 
+    /// The scan queue is readable wherever Recent Checks is: signed out it
+    /// needs unauthenticated simulation enabled, and changing it always
+    /// needs a signed-in user.
+    #[tokio::test]
+    async fn scan_queue_read_follows_recent_checks_access_and_writes_still_need_sign_in() {
+        let client = reqwest::Client::new();
+
+        let (closed, _key, _state) = spawn_test_server_with_state("q@example.com", None).await;
+        assert_eq!(client.get(format!("{closed}/api/scan-queue")).send().await.unwrap().status(), 401);
+
+        let config = ignite_config::Config { security: ignite_config::SecurityConfig { allow_unauthenticated_interactive_dry_run: true, ..Default::default() }, ..Default::default() };
+        let (open, key, _state) = spawn_test_server_with_state_and_config("q@example.com", None, config).await;
+        let res = client.get(format!("{open}/api/scan-queue")).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["canManage"], false);
+        assert!(body["queued"].is_array());
+        assert_eq!(client.delete(format!("{open}/api/scan-queue")).send().await.unwrap().status(), 401, "clearing still needs sign-in");
+
+        let signed_in: serde_json::Value = client.get(format!("{open}/api/scan-queue")).bearer_auth(&key).send().await.unwrap().json().await.unwrap();
+        assert_eq!(signed_in["canManage"], true);
+    }
+
     fn agent_test_project() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), r#"{"name":"smoke","license":"MIT"}"#).unwrap();

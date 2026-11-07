@@ -518,9 +518,35 @@ pub(super) fn queue_json() -> serde_json::Value {
     serde_json::json!({ "maxConcurrent": s.capacity, "userReservedSlots": s.reserved, "running": running, "queued": queued })
 }
 
-async fn get_queue(State(state): State<Arc<AppState>>, RequireAuth(_user): RequireAuth) -> Response {
+/// Readable by anyone who can read Recent Checks (`/api/projects`): a
+/// signed-in user, or anyone when unauthenticated simulation is enabled.
+/// Changing the queue still needs a signed-in user.
+async fn get_queue(State(state): State<Arc<AppState>>, crate::auth::AuthOrUnauthSimulation(user): crate::auth::AuthOrUnauthSimulation, headers: axum::http::HeaderMap) -> Response {
     init(&state);
-    Json(queue_json()).into_response()
+    let enforce = state.config.security.enforce_grants;
+    let visible = |org: &str, repo: &str| !enforce || crate::auth::require_grant(&state, &headers, "view", org, repo).is_ok();
+    Json(viewer_queue_json(queue_json(), user.is_some(), visible)).into_response()
+}
+
+/// The queue as one viewer may see it. Entries for repositories the viewer
+/// can't view are dropped (only matters with `security.enforceGrants`). A
+/// signed-out viewer doesn't see who started each scan (`actor` is an
+/// email) and gets `canManage: false`, so the UI hides reorder/remove.
+fn viewer_queue_json(mut queue: serde_json::Value, signed_in: bool, visible: impl Fn(&str, &str) -> bool) -> serde_json::Value {
+    for lane in ["running", "queued"] {
+        if let Some(entries) = queue.get_mut(lane).and_then(|v| v.as_array_mut()) {
+            entries.retain(|e| visible(e["org"].as_str().unwrap_or_default(), e["repo"].as_str().unwrap_or_default()));
+            if !signed_in {
+                for e in entries.iter_mut() {
+                    if let Some(o) = e.as_object_mut() {
+                        o.remove("actor");
+                    }
+                }
+            }
+        }
+    }
+    queue["canManage"] = serde_json::json!(signed_in);
+    queue
 }
 
 async fn clear_queue(State(state): State<Arc<AppState>>, RequireAuth(user): RequireAuth) -> Response {
@@ -769,6 +795,41 @@ mod tests {
         assert_eq!(next_lane(3, 1, 2, true, true), Some(Priority::User));
         assert_eq!(next_lane(3, 1, 0, true, true), Some(Priority::User));
         assert_eq!(next_lane(3, 1, 3, true, true), None);
+    }
+
+    fn sample_queue() -> serde_json::Value {
+        serde_json::json!({
+            "maxConcurrent": 3,
+            "running": [{ "org": "acme", "repo": "a", "actor": "dev@acme.test" }],
+            "queued": [
+                { "org": "acme", "repo": "b", "actor": "dev@acme.test", "position": 1 },
+                { "org": "other", "repo": "c", "actor": "ops@other.test", "position": 2 }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_signed_out_viewer_sees_the_queue_without_actors_and_cannot_manage_it() {
+        let v = super::viewer_queue_json(sample_queue(), false, |_, _| true);
+        assert_eq!(v["running"].as_array().unwrap().len(), 1);
+        assert_eq!(v["queued"].as_array().unwrap().len(), 2);
+        assert!(!v.to_string().contains('@'), "no actor emails for a signed-out viewer: {v}");
+        assert_eq!(v["canManage"], false);
+    }
+
+    #[test]
+    fn a_signed_in_viewer_sees_actors_and_can_manage() {
+        let v = super::viewer_queue_json(sample_queue(), true, |_, _| true);
+        assert_eq!(v["queued"][1]["actor"], "ops@other.test");
+        assert_eq!(v["canManage"], true);
+    }
+
+    #[test]
+    fn entries_for_repositories_the_viewer_cannot_view_are_dropped() {
+        let v = super::viewer_queue_json(sample_queue(), true, |org, _| org == "acme");
+        let repos: Vec<&str> = v["queued"].as_array().unwrap().iter().map(|e| e["repo"].as_str().unwrap()).collect();
+        assert_eq!(repos, vec!["b"]);
+        assert_eq!(v["running"].as_array().unwrap().len(), 1);
     }
 
     fn info(repo: &str) -> super::ScanInfo {

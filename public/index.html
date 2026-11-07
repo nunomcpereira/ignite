@@ -10374,11 +10374,14 @@
       $('scanQueueReserved').textContent = data.userReservedSlots ? t('queue.reserved', { n: data.userReservedSlots }) : '';
       $('scanQueueWaitingTitle').textContent = t('queue.waiting', { n: data.queued.length });
       $('scanQueueClearBtn').disabled = data.queued.length === 0;
+      $('scanQueueClearBtn').classList.toggle('hidden', data.canManage === false);
       $('historyQueueSignIn').classList.toggle('hidden', !scanQueueSignedOut);
       $('historyQueueBody').classList.toggle('hidden', scanQueueSignedOut);
       $('historyQueueRunningTitle').textContent = t('queue.running', { n: data.running.length, max: data.maxConcurrent });
       $('historyQueueWaitingTitle').textContent = t('queue.waiting', { n: data.queued.length });
-      const lists = scanQueueListsHtml(data);
+      // Signed out (unauthenticated simulation): the queue is visible but
+      // only a signed-in user can reorder or remove entries.
+      const lists = scanQueueListsHtml(data, data.canManage !== false);
       $('historyQueueRunning').innerHTML = lists.running;
       $('historyQueueWaiting').innerHTML = lists.waiting;
       if (!scanQueueOpen()) return;
@@ -10388,7 +10391,7 @@
 
     // Running/waiting list markup, shared by the Queue panel and the
     // Recent checks drawer's queue section.
-    function scanQueueListsHtml(data) {
+    function scanQueueListsHtml(data, canManage) {
       const running = data.running.length
         ? data.running.map((r) => `<li class="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-brand-50 border border-brand-100">
             <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse shrink-0"></span>
@@ -10407,9 +10410,9 @@
               <span class="block text-[12px] font-semibold text-slate-800 [overflow-wrap:anywhere]" title="${escapeAttr(`${q.org}/${q.repo}`)}">${escapeHtml(q.repo)}</span>
               <span class="block text-[10px] text-slate-400">${escapeHtml(q.org)} · ${scanQueueMeta(q)}</span>
             </span>
-            ${iconBtn('up', q.id, t('queue.moveUp'), 'M5 15l7-7 7 7', laneStart(q, i))}
+            ${canManage ? `${iconBtn('up', q.id, t('queue.moveUp'), 'M5 15l7-7 7 7', laneStart(q, i))}
             ${iconBtn('down', q.id, t('queue.moveDown'), 'M19 9l-7 7-7-7', laneEnd(q, i))}
-            ${iconBtn('remove', q.id, t('queue.remove'), 'M6 18L18 6M6 6l12 12', false)}
+            ${iconBtn('remove', q.id, t('queue.remove'), 'M6 18L18 6M6 6l12 12', false)}` : ''}
           </li>`).join('')
         : `<li class="text-[11px] text-slate-400">${escapeHtml(t('queue.emptyWaiting'))}</li>`;
       return { running, waiting };
