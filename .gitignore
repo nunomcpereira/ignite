@@ -15,3 +15,6 @@ docs/_site/
 release-checksums.json
 release-checksums.json.sig
 bug_tracker.md
+# Local secret keys (e.g. GitHub App private key). Only the public release key is tracked.
+keys/*
+!keys/ignite-release-public.pem
