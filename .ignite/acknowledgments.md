@@ -16,6 +16,12 @@ ID: codeql-sast::public/index.html::1375::js/xss-through-dom
 # Code: document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.getAttribute('data-i18n-html')); });
 Acknowledge: Narrowed replacement for the previously-acknowledged finding at the old [data-i18n] innerHTML call (now textContent - see the applyStaticTranslations doc comment above it). Only elements explicitly opted in via data-i18n-html still use innerHTML, for the handful of translation keys whose copy deliberately carries inline markup (bold spans in upload.dropSubtitle, a line break in footer.note, etc). t()'s only inputs remain (1) the fixed attribute-name string 'data-i18n-html' read off the DOM and (2) a lookup into window.IGNITE_I18N.translations, entirely defined by public/i18n.js - a file committed to this repo and only ever edited by a developer/operator, never populated from user input, the network, or any request parameter. No untrusted data reaches this call.
 
+ID: dependency-vulnerability::rust/crates/staging/Cargo.toml::12::zip::GHSA-q7v9-x93c-xqv3
+# [ERROR] dependency-vulnerability - zip@2.4.2 — GHSA-q7v9-x93c-xqv3: zip: Unbounded Symlink-Target Handling Can Abort Or Exhaust Memory During Extraction (CVE-2026-115909) (CVSS 7.5)
+#   rust/crates/staging/Cargo.toml:12
+# Code: zip = { version = "2", default-features = false, features = ["deflate"] }
+Acknowledge: Not reachable in Ignite. GHSA alias of RUSTSEC-2026-0429 (same CVE-2026-115909): the abort/memory exhaustion is in zip's own extract() symlink-target handling. rust/crates/staging never calls ZipArchive::extract() or ZipStreamReader::extract(): extract_zip walks entries with by_index() and skips every symlink entry (S_IFLNK mode check) before reading any of its data, so a symlink target is never read or allocated. Fixed only in zip 9.0.0 (major bump from 2.x); upgrade tracked as a separate change.
+
 ID: dependency-vulnerability::rust/crates/staging/Cargo.toml::12::zip::RUSTSEC-2026-0367
 # [ERROR] dependency-vulnerability - zip@2.4.2 — RUSTSEC-2026-0367: Insecure Preservation of SUID/SGID Bits during ZIP Extraction Leading to Potential Privilege Escalation (CVSS 7.3)
 #   rust/crates/staging/Cargo.toml:12
